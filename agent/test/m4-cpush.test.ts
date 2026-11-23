@@ -124,4 +124,25 @@ describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
       skippedFileIds: [],
     }), basePlanCommand(0))).toThrow('未被纳入');
   });
+
+  it('repairs unescaped literal newlines inside JSON string values returned by models', () => {
+    const rawWithLiteralNewlines = [
+      '{"kind":"ready","summary":"修复说明",',
+      '"groups":[{"id":"g1","fileIds":["f-order","f-retry","f-doc"],"message":"feat(order): 增加幂等锁',
+      '',
+      '- 修复并发抢锁逻辑',
+      '- 补充发布说明"}],"skippedFileIds":[]}',
+    ].join('\n');
+    const plan = parseCPushPlan(rawWithLiteralNewlines, basePlanCommand(0));
+    expect(plan).toEqual({
+      kind: 'ready',
+      summary: '修复说明',
+      groups: [{
+        id: 'g1',
+        fileIds: ['f-order', 'f-retry', 'f-doc'],
+        message: 'feat(order): 增加幂等锁\n\n- 修复并发抢锁逻辑\n- 补充发布说明',
+      }],
+      skippedFileIds: [],
+    });
+  });
 });

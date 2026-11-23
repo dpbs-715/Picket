@@ -60,17 +60,73 @@ export function cleanCommitMessage(raw: string): string {
   return normalized;
 }
 
+function repairJsonControlChars(json: string): string {
+  const validEscapes = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't']);
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < json.length; i += 1) {
+    const ch = json[i];
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+    if (ch === '\\') {
+      const next = json[i + 1];
+      if (next === undefined) {
+        out += '\\\\';
+        continue;
+      }
+      if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(json.slice(i + 2, i + 6))) {
+        out += json.slice(i, i + 6);
+        i += 5;
+        continue;
+      }
+      if (validEscapes.has(next)) {
+        out += `\\${next}`;
+        i += 1;
+        continue;
+      }
+      out += '\\\\';
+      continue;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0x1f) {
+      if (ch === '\n') out += '\\n';
+      else if (ch === '\r') out += '\\r';
+      else if (ch === '\t') out += '\\t';
+      else out += `\\u${code.toString(16).padStart(4, '0')}`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parseJsonCandidate(candidate: string): unknown {
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return JSON.parse(repairJsonControlChars(candidate));
+  }
+}
+
 function extractJsonObject(raw: string): unknown {
   const trimmed = stripReasoningBlocks(raw);
   const fenced = /```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```/i.exec(trimmed);
   const candidate = fenced ? fenced[1].trim() : trimmed;
   try {
-    return JSON.parse(candidate);
+    return parseJsonCandidate(candidate);
   } catch {
     const firstBrace = candidate.indexOf('{');
     const lastBrace = candidate.lastIndexOf('}');
     if (firstBrace >= 0 && lastBrace > firstBrace) {
-      return JSON.parse(candidate.slice(firstBrace, lastBrace + 1));
+      return parseJsonCandidate(candidate.slice(firstBrace, lastBrace + 1));
     }
     throw new Error('模型未返回有效的结构化审查 JSON');
   }
@@ -346,7 +402,8 @@ function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: strin
     '3. When `qaHistory` is non-empty, follow the user\'s answer within the authorized scope. Only place a `fileId` in `skippedFileIds` if the user explicitly chose/asked to skip it (`暂不提交`). If the user\'s free-text reply asks to include an unselected file (listed under `Unselected worktree files`), modify code, force-push, or is contradictory/unclear, MUST return `kind: "question"` explaining the boundary clearly in Chinese and offering valid choices within the authorized files.',
     '4. Existing user draft (`draft`): use it as an intent/writing constraint for the relevant commit(s), NEVER copy the same raw manual note blindly onto multiple unrelated commits.',
     '5. Every `group.message` MUST use two-part Conventional Commits format: `<type>(<optional scope>): <concise summary>\\n\\n- <bullet 1>\\n- <bullet 2>` (1–4 concise bullets, matching recent commit language or Chinese by default).',
-    '6. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas:',
+    '6. Keep any internal reasoning concise and focused on file attribution and commit summaries; do NOT restate diffs line by line.',
+    '7. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas:',
     'Schema Ready: {"kind":"ready","summary":"简短规划说明","groups":[{"id":"group-1","fileIds":["<exact fileId>"],"message":"feat(scope): 标题\\n\\n- 要点 1\\n- 要点 2"}],"skippedFileIds":[]}',
     'Schema Question: {"kind":"question","title":"简短问题标题","scope":"影响提交 2/2「docs」","description":"说明归属分歧及影响文件","affectedFileIds":["<exact fileId>"],"options":[{"id":"merge","label":"合并进提交 1"},{"id":"split","label":"单独提交并一起推送","recommended":true},{"id":"skip","label":"暂不提交"}]}',
   ].join('\n');
@@ -499,6 +556,19 @@ function buildResolveConflictPrompts(command: ResolveConflictCommand): { systemP
   return { systemPrompt, userPrompt: parts.join('\n\n') };
 }
 
+function resolveTaskMaxTokens(api: string, modelId: string, isTest: boolean): number {
+  if (isTest) return 64;
+  if (api === 'openai-responses') return 32_768;
+  const lower = modelId.toLowerCase();
+  if (/(?:kimi|k2|k3|reasoner|deepseek-r1|\br1\b|qwq|\bo1\b|\bo3\b|\bo4\b|gpt-5|claude-(?:sonnet|opus)-4|claude-3-7)/.test(lower)) {
+    return 24_576;
+  }
+  return 8_192;
+}
+const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
+const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
+const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
+
 function runAgentTask(
   command: TestConnectionRequest | GenerateCommitCommand | ReviewScopeCommand | PlanCPushCommand | ResolveConflictCommand,
   emit: (event: ProbeEvent) => void,
@@ -506,6 +576,15 @@ function runAgentTask(
   const envelope = { requestId: command.requestId, context: command.context };
   let cancelled = false;
   let activeAgent: Agent | undefined;
+  let lastActivitySentAt = 0;
+
+  const emitActivity = (force = false) => {
+    const now = Date.now();
+    if (force || now - lastActivitySentAt >= ACTIVITY_HEARTBEAT_INTERVAL_MS) {
+      lastActivitySentAt = now;
+      emit({ ...envelope, type: 'activity' });
+    }
+  };
 
   return {
     cancel: () => {
@@ -543,18 +622,33 @@ function runAgentTask(
           },
           streamFn: (targetModel, context, options) => models.streamSimple(targetModel, context, {
             ...options,
-            maxTokens: isTest ? 24 : command.type === 'planCPush' || command.type === 'resolveConflict' ? 4_096 : 2_048,
+            maxTokens: resolveTaskMaxTokens(targetModel.api, targetModel.id, isTest),
+            ...(targetModel.api === 'openai-responses'
+              && /(?:kimi|k2|k3|\bo1\b|\bo3\b|\bo4\b|gpt-5|reasoner|codex)/i.test(targetModel.id)
+              ? { samplingParams: { reasoning: { effort: 'low' } } }
+              : {}),
             temperature: command.type === 'reviewScope' || command.type === 'planCPush' || command.type === 'resolveConflict' ? 0.1 : 0.2,
             maxRetries: isTest ? 0 : 1,
-            timeoutMs: isTest ? 15_000 : 45_000,
+            timeoutMs: isTest ? TEST_CONNECTION_HTTP_TIMEOUT_MS : TASK_HTTP_CEILING_TIMEOUT_MS,
             cacheRetention: 'none',
             disableContinuation: true,
+            onResponse: () => {
+              emitActivity(true);
+            },
+            onProviderStreamEvent: () => {
+              emitActivity(false);
+            },
           }),
         });
         activeAgent = agent;
         unsubscribe = agent.subscribe((event) => {
-          if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-            emit({ ...envelope, type: 'textDelta', delta: event.assistantMessageEvent.delta });
+          if (event.type === 'message_update') {
+            if (event.assistantMessageEvent.type === 'text_delta') {
+              lastActivitySentAt = Date.now();
+              emit({ ...envelope, type: 'textDelta', delta: event.assistantMessageEvent.delta });
+            } else {
+              emitActivity(false);
+            }
           }
         });
 
@@ -582,18 +676,31 @@ function runAgentTask(
         }
 
         const rawText = last.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+        const hasThinkingOnly = !rawText.trim() && last.content.some((block) => block.type === 'thinking');
+        const wrapLengthTruncation = <T>(parseFn: () => T): T => {
+          try {
+            return parseFn();
+          } catch (err) {
+            if (last.stopReason === 'length') {
+              throw new Error('模型输出达到长度上限被截断，未能生成完整的结构化结果；请缩小单次勾选文件范围后重试');
+            }
+            throw err;
+          }
+        };
         if (command.type === 'testConnection') {
           emit({ ...envelope, type: 'completed', text: rawText.trim() || 'OK' });
+        } else if (hasThinkingOnly && last.stopReason === 'length') {
+          throw new Error('模型思考内容耗尽了输出长度上限，未生成最终正文；请缩小所选变更范围或改用非深度思考模型重试');
         } else if (command.type === 'generateCommit') {
           emit({ ...envelope, type: 'completed', text: cleanCommitMessage(rawText) });
         } else if (command.type === 'reviewScope') {
-          const findings = parseReviewFindings(rawText, command.files);
+          const findings = wrapLengthTruncation(() => parseReviewFindings(rawText, command.files));
           emit({ ...envelope, type: 'reviewCompleted', findings });
         } else if (command.type === 'planCPush') {
-          const plan = parseCPushPlan(rawText, command);
+          const plan = wrapLengthTruncation(() => parseCPushPlan(rawText, command));
           emit({ ...envelope, type: 'cPushPlanCompleted', plan });
         } else {
-          const resolution = parseConflictResolution(rawText, command);
+          const resolution = wrapLengthTruncation(() => parseConflictResolution(rawText, command));
           emit({ ...envelope, type: 'conflictResolved', resolution });
         }
       } catch (error) {

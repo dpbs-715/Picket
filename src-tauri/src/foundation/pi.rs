@@ -19,6 +19,8 @@ use tokio::{
 const PROTOCOL_VERSION: u32 = 1;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_TASK_TOTAL_TIMEOUT: Duration = Duration::from_secs(600);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_LINE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
@@ -140,6 +142,10 @@ pub enum PiEvent {
         request_id: String,
         context: RequestContext,
     },
+    Activity {
+        request_id: String,
+        context: RequestContext,
+    },
     TextDelta {
         request_id: String,
         context: RequestContext,
@@ -184,6 +190,10 @@ impl PiEvent {
     fn envelope(&self) -> Option<(&str, &RequestContext)> {
         match self {
             Self::Started {
+                request_id,
+                context,
+            }
+            | Self::Activity {
                 request_id,
                 context,
             }
@@ -458,7 +468,7 @@ impl PiSupervisor {
         request_id: String,
         expected_context: RequestContext,
         command: serde_json::Value,
-        task_timeout: Duration,
+        idle_timeout: Duration,
         secret_to_redact: Option<&str>,
         mut on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
     ) -> Result<PiTaskOutcome, String> {
@@ -523,10 +533,18 @@ impl PiSupervisor {
             String::from_utf8_lossy(&retained).into_owned()
         });
         let mut lines = BufReader::new(stdout).lines();
-        let exchange = timeout(task_timeout, async {
-            let ready = timeout(START_TIMEOUT, next_event(&mut lines))
-                .await
-                .map_err(|_| "Pi Core 启动握手超时".to_string())??;
+        let total_ceiling = if idle_timeout < Duration::from_secs(5) {
+            idle_timeout.saturating_mul(8)
+        } else {
+            MAX_TASK_TOTAL_TIMEOUT.max(idle_timeout)
+        };
+        let mut timed_out = false;
+        let exchange = match timeout(total_ceiling, async {
+            let ready = match timeout(START_TIMEOUT.min(total_ceiling), next_event(&mut lines)).await
+            {
+                Ok(result) => result?,
+                Err(_) => return Err("Pi Core 启动握手超时".to_string()),
+            };
             let PiEvent::Ready {
                 protocol_version,
                 pi_core_version,
@@ -546,6 +564,11 @@ impl PiSupervisor {
             write_command(&mut stdin, &command).await?;
             let mut cancel_sent = false;
             loop {
+                let step_timeout = if cancel_sent {
+                    CANCEL_SETTLE_TIMEOUT.min(idle_timeout)
+                } else {
+                    idle_timeout
+                };
                 let event = tokio::select! {
                     biased;
                     change = cancelled.changed(), if !cancel_sent => {
@@ -554,7 +577,15 @@ impl PiSupervisor {
                         cancel_sent = true;
                         continue;
                     }
-                    event = next_event(&mut lines) => event?,
+                    step = timeout(step_timeout, next_event(&mut lines)) => {
+                        match step {
+                            Ok(result) => result?,
+                            Err(_) => {
+                                timed_out = true;
+                                return Err("模型请求超时，当前草稿与选择已保留".to_string());
+                            }
+                        }
+                    }
                 };
                 if let PiEvent::ProtocolError { message } = event {
                     return Err(format!("Pi 协议拒绝请求：{message}"));
@@ -584,8 +615,13 @@ impl PiSupervisor {
             }
         })
         .await
-        .map_err(|_| "模型请求超时，当前草稿与选择已保留".to_string())
-        .and_then(|r| r);
+        {
+            Ok(result) => result,
+            Err(_) => {
+                timed_out = true;
+                Err("模型请求超时，当前草稿与选择已保留".to_string())
+            }
+        };
 
         let _ = write_command(&mut stdin, &serde_json::json!({ "type": "shutdown" })).await;
         drop(stdin);
@@ -598,16 +634,18 @@ impl PiSupervisor {
             }
         };
         let diagnostic = scrub(stderr_task.await.map_err(|e| e.to_string())?);
-        let status = exit.map_err(&scrub)?;
-        if !status.success() {
-            return Err(scrub(format!(
-                "Pi 进程异常退出（{status}）{}",
-                if diagnostic.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("：{}", diagnostic.trim())
-                }
-            )));
+        if !timed_out {
+            let status = exit.map_err(&scrub)?;
+            if !status.success() {
+                return Err(scrub(format!(
+                    "Pi 进程异常退出（{status}）{}",
+                    if diagnostic.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("：{}", diagnostic.trim())
+                    }
+                )));
+            }
         }
         exchange.map_err(|e| {
             let sanitized = scrub(e);
@@ -760,5 +798,95 @@ mod tests {
         assert!(duplicate.unwrap_err().contains("already running"));
         supervisor.shutdown().await.unwrap();
         assert_eq!(run.await.unwrap().unwrap().status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn activity_heartbeats_extend_idle_timeout_while_silent_hang_times_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let active_script = directory.path().join("thinking-stream.mjs");
+        std::fs::write(
+            &active_script,
+            r#"
+            import { createInterface } from 'node:readline';
+            const emit = (e) => process.stdout.write(JSON.stringify(e) + '\n');
+            emit({ type: 'ready', protocolVersion: 1, piCoreVersion: '1.6.0', nodeVersion: process.versions.node, pid: process.pid });
+            const rl = createInterface({ input: process.stdin });
+            rl.on('line', async (line) => {
+              const cmd = JSON.parse(line);
+              if (cmd.type === 'shutdown') { process.exit(0); return; }
+              const env = { requestId: cmd.requestId, context: cmd.context };
+              emit({ ...env, type: 'started' });
+              for (let i = 0; i < 4; i++) {
+                await new Promise((r) => setTimeout(r, 80));
+                emit({ ...env, type: 'activity' });
+              }
+              emit({ ...env, type: 'completed', text: 'feat: finished after long thinking\n\n- kept alive by activity heartbeats' });
+            });
+        "#,
+        )
+        .unwrap();
+
+        let supervisor = PiSupervisor::default();
+        let context = RequestContext {
+            repository_id: "repo-1".into(),
+            worktree_id: "wt-1".into(),
+            session_id: "sess-1".into(),
+            scope_version: "scope-1".into(),
+        };
+        let active_paths = PiPaths {
+            node: PiPaths::development().node,
+            script: active_script,
+        };
+        let outcome = supervisor
+            .run_task(
+                &active_paths,
+                "req-active".into(),
+                context.clone(),
+                serde_json::json!({ "type": "testConnection", "requestId": "req-active", "context": context }),
+                Duration::from_millis(180),
+                None,
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+        match outcome {
+            PiTaskOutcome::Completed { text } => assert!(text.contains("kept alive")),
+            other => panic!("expected Completed, got {other:?}"),
+        }
+
+        let silent_script = directory.path().join("silent-hang.mjs");
+        std::fs::write(
+            &silent_script,
+            r#"
+            import { createInterface } from 'node:readline';
+            const emit = (e) => process.stdout.write(JSON.stringify(e) + '\n');
+            emit({ type: 'ready', protocolVersion: 1, piCoreVersion: '1.6.0', nodeVersion: process.versions.node, pid: process.pid });
+            const rl = createInterface({ input: process.stdin });
+            rl.on('line', (line) => {
+              const cmd = JSON.parse(line);
+              if (cmd.type === 'shutdown') { process.exit(1); return; }
+              emit({ requestId: cmd.requestId, context: cmd.context, type: 'started' });
+              setTimeout(() => {}, 10_000);
+            });
+        "#,
+        )
+        .unwrap();
+        let silent_paths = PiPaths {
+            node: PiPaths::development().node,
+            script: silent_script,
+        };
+        let err = supervisor
+            .run_task(
+                &silent_paths,
+                "req-silent".into(),
+                context.clone(),
+                serde_json::json!({ "type": "testConnection", "requestId": "req-silent", "context": context }),
+                Duration::from_millis(180),
+                None,
+                |_| Ok(()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, "模型请求超时，当前草稿与选择已保留");
     }
 }

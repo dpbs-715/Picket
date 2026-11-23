@@ -3,6 +3,7 @@ import * as openaiCompletions from '@earendil-works/pi-ai/api/openai-completions
 import * as openaiResponses from '@earendil-works/pi-ai/api/openai-responses';
 import { createModels, createProvider, type MutableModels } from '@earendil-works/pi-ai/models';
 import type { Api, Model, ProviderStreams } from '@earendil-works/pi-ai';
+import type { ModelApiFormat } from '../../shared/model-protocol';
 import type { PiProviderSpec } from '../../shared/pi-protocol';
 
 interface ResolvedRuntimeModel {
@@ -18,11 +19,21 @@ const DEFAULT_BASE_URLS: Record<PiProviderSpec['provider'], string> = {
   custom: '',
 };
 
-function resolveApiAndStreams(provider: PiProviderSpec['provider']): { api: Api; streams: ProviderStreams } {
-  if (provider === 'anthropic') {
+function defaultApiFormat(provider: PiProviderSpec['provider']): ModelApiFormat {
+  if (provider === 'anthropic') return 'anthropic-messages';
+  if (provider === 'openai') return 'openai-responses';
+  return 'openai-completions';
+}
+
+function resolveApiAndStreams(
+  provider: PiProviderSpec['provider'],
+  explicitFormat?: ModelApiFormat,
+): { api: Api; streams: ProviderStreams } {
+  const format = explicitFormat ?? defaultApiFormat(provider);
+  if (format === 'anthropic-messages') {
     return { api: 'anthropic-messages', streams: anthropicMessages as unknown as ProviderStreams };
   }
-  if (provider === 'openai') {
+  if (format === 'openai-responses') {
     return { api: 'openai-responses', streams: openaiResponses as unknown as ProviderStreams };
   }
   return { api: 'openai-completions', streams: openaiCompletions as unknown as ProviderStreams };
@@ -51,19 +62,33 @@ export function createIsolatedModelRuntime(spec: PiProviderSpec): ResolvedRuntim
   // Keyless Ollama local endpoints run through the OpenAI SDK client, which
   // expects a non-empty placeholder string even when the local server ignores auth.
   const effectiveKey = requiresKey ? trimmedKey : 'ollama';
-  const { api, streams } = resolveApiAndStreams(spec.provider);
+  const { api, streams } = resolveApiAndStreams(spec.provider, spec.apiFormat);
+  let normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+  if (api === 'anthropic-messages' && /\/v1$/i.test(parsedUrl.pathname.replace(/\/+$/, ''))) {
+    // @anthropic-ai/sdk always appends `/v1/messages`; strip a trailing `/v1`
+    // when users paste an OpenAI-style `http://host:port/v1` gateway URL.
+    normalizedBaseUrl = normalizedBaseUrl.replace(/\/v1$/i, '');
+  }
 
   const model: Model<Api> = {
     id: spec.modelId.trim(),
     name: spec.modelId.trim(),
     api,
     provider: spec.provider,
-    baseUrl: baseUrl.replace(/\/+$/, ''),
+    baseUrl: normalizedBaseUrl,
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     reasoning: false,
     contextWindow: 128_000,
-    maxTokens: 4_096,
+    maxTokens: 32_768,
+    ...(api === 'openai-completions' ? {
+      compat: {
+        supportsStore: false,
+        supportsDeveloperRole: false,
+        supportsReasoningEffort: false,
+        maxTokensField: 'max_tokens' as const,
+      },
+    } : {}),
   };
 
   // Strictly isolate Pi Core from ambient environment variables, home files, or OAuth logins.

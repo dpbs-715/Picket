@@ -388,4 +388,92 @@ describe('M3 Pi Core tasks and provider adapters', () => {
     expect(await slowSidecar.waitFor((e) => e.type === 'cancelled')).toMatchObject({ type: 'cancelled', requestId: 'slow-gen' });
     expect(await slowSidecar.close()).toBe(0);
   });
+
+  it('emits activity heartbeats while reasoning_content streams before final JSON output', async () => {
+    const server = await startServer(async (_req, _body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      res.write(`data: ${JSON.stringify({
+        id: 'chatcmpl-think-1',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'Thinking step 1...' }, finish_reason: null }],
+      })}\n\n`);
+      await new Promise((r) => setTimeout(r, 1_050));
+      res.write(`data: ${JSON.stringify({
+        id: 'chatcmpl-think-1',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { reasoning_content: 'Thinking step 2...' }, finish_reason: null }],
+      })}\n\n`);
+      const planJson = JSON.stringify({
+        kind: 'ready',
+        summary: '单笔提交',
+        groups: [{ id: 'g1', fileIds: ['f1'], message: 'feat(berth): 新增泊位校验\n\n- 补充装卸时间校验逻辑' }],
+        skippedFileIds: [],
+      });
+      res.write(`data: ${JSON.stringify({
+        id: 'chatcmpl-think-1',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { content: planJson }, finish_reason: 'stop' }],
+      })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+
+    const sidecar = spawnSidecar();
+    await sidecar.waitFor((e) => e.type === 'ready');
+    sidecar.send({
+      type: 'planCPush',
+      requestId: 'plan-think-1',
+      context: { repositoryId: 'r', worktreeId: 'w', sessionId: 's', scopeVersion: 'v' },
+      model: { provider: 'custom', apiFormat: 'openai-completions', modelId: 'thinking-v1', baseUrl: `${server.url}/v1`, apiKey: 'test-key-local' },
+      branch: 'v1.9.0',
+      recentCommits: ['feat(berth): 初始化泊位表单'],
+      draft: '',
+      files: [{ fileId: 'f1', path: 'src/views/work/berth/sofDialog.vue', status: 'M', rangeKind: 'unstaged', added: 12, removed: 3, patch: '+const valid = true;' }],
+      unselectedPaths: [],
+      qaHistory: [],
+    });
+
+    const done = await sidecar.waitFor((e) => e.type === 'cPushPlanCompleted');
+    expect(done.type === 'cPushPlanCompleted' && done.plan.kind).toBe('ready');
+    const activities = sidecar.events.filter((e) => e.type === 'activity');
+    expect(activities.length).toBeGreaterThanOrEqual(2);
+    const leakedReasoning = sidecar.events
+      .filter((e): e is Extract<PiEvent, { type: 'textDelta' }> => e.type === 'textDelta')
+      .map((e) => e.delta)
+      .join('');
+    expect(leakedReasoning).not.toContain('Thinking step');
+    expect(await sidecar.close()).toBe(0);
+  });
+
+  it('reports length truncation clearly when maxTokens cuts off mid-JSON', async () => {
+    const server = await startServer((_req, _body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      res.write(`data: ${JSON.stringify({
+        id: 'chatcmpl-trunc-1',
+        object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { role: 'assistant', content: '{"kind":"ready","summary":"截断半截' }, finish_reason: 'length' }],
+      })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+
+    const sidecar = spawnSidecar();
+    await sidecar.waitFor((e) => e.type === 'ready');
+    sidecar.send({
+      type: 'planCPush',
+      requestId: 'plan-trunc-1',
+      context: { repositoryId: 'r', worktreeId: 'w', sessionId: 's', scopeVersion: 'v' },
+      model: { provider: 'custom', apiFormat: 'openai-completions', modelId: 'thinking-v1', baseUrl: `${server.url}/v1`, apiKey: 'test-key-local' },
+      branch: 'v1.9.0',
+      recentCommits: [],
+      draft: '',
+      files: [{ fileId: 'f1', path: 'a.ts', status: 'M', rangeKind: 'unstaged', added: 1, removed: 0, patch: '+1' }],
+      unselectedPaths: [],
+      qaHistory: [],
+    });
+
+    const failed = await sidecar.waitFor((e) => e.type === 'failed');
+    expect(failed.type === 'failed' && failed.message).toContain('达到长度上限被截断');
+    expect(await sidecar.close()).toBe(0);
+  });
 });

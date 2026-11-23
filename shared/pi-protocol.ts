@@ -1,4 +1,4 @@
-import { isModelProviderId, type ModelProviderId } from './model-protocol';
+import { isModelApiFormat, isModelProviderId, type ModelApiFormat, type ModelProviderId } from './model-protocol';
 
 export const PI_PROTOCOL_VERSION = 1;
 export const PI_CORE_VERSION = '1.6.0';
@@ -15,6 +15,7 @@ export interface RequestContext {
 
 export interface PiProviderSpec {
   provider: ModelProviderId;
+  apiFormat?: ModelApiFormat;
   modelId: string;
   baseUrl: string;
   apiKey: string;
@@ -187,6 +188,7 @@ export type ProbeEvent = {
   context: RequestContext;
 } & (
   | { type: 'started' }
+  | { type: 'activity' }
   | { type: 'textDelta'; delta: string }
   | { type: 'completed'; text: string }
   | { type: 'reviewCompleted'; findings: PiReviewFinding[] }
@@ -219,6 +221,7 @@ function decodeRequestContext(value: unknown): RequestContext {
 function decodeProviderSpec(value: unknown): PiProviderSpec {
   if (!isRecord(value)
     || !isModelProviderId(value.provider)
+    || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
     || typeof value.modelId !== 'string' || !value.modelId.trim()
     || typeof value.baseUrl !== 'string'
     || typeof value.apiKey !== 'string') {
@@ -226,6 +229,7 @@ function decodeProviderSpec(value: unknown): PiProviderSpec {
   }
   return {
     provider: value.provider,
+    ...(isModelApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
     modelId: value.modelId.trim(),
     baseUrl: value.baseUrl.trim(),
     apiKey: value.apiKey,
