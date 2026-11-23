@@ -3,7 +3,15 @@ import { sampleFiles } from './fixtures';
 
 export function repositorySnapshot(sequence = 1): GitRepositorySnapshot {
   return {
-    repository: { id: 'orders', name: 'real-contract-fixture', branches: [{ name: 'feat/pay', worktreeId: 'pay-tree' }, { name: 'fix/npe', worktreeId: 'fix-tree' }, { name: 'feat/invoice' }] },
+    repository: {
+      id: 'orders',
+      name: 'real-contract-fixture',
+      branches: [{ name: 'feat/pay', worktreeId: 'pay-tree' }, { name: 'fix/npe', worktreeId: 'fix-tree' }, { name: 'feat/invoice' }],
+      remoteBranches: [
+        { name: 'mirror/feat/pay', remote: 'mirror', localName: 'feat/pay' },
+        { name: 'mirror/feat/reconcile', remote: 'mirror', localName: 'feat/reconcile' },
+      ],
+    },
     activeWorktreeId: 'pay-tree', readSequence: sequence,
     worktrees: [
       { repositoryId: 'orders', worktreeId: 'pay-tree', label: 'pay', path: '/test-only/pay', branch: 'feat/pay', head: 'head-1', detached: false,

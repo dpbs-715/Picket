@@ -12,7 +12,7 @@ export type WorkbenchCommand =
   | { kind: 'openRepository'; requestId: string }
   | { kind: 'refresh'; target: Target; requestId: string }
   | { kind: 'pull'; target: Target; requestId: string; modelId?: string }
-  | { kind: 'switchBranch'; target: Target; requestId: string; branch: string; branchToken: string }
+  | { kind: 'switchBranch' | 'checkoutRemoteBranch'; target: Target; requestId: string; branch: string; branchToken: string }
   | { kind: 'openFile'; target: Target; requestId: string; fileId: string; editor: EditorId; line?: number }
   | { kind: 'generate' | 'review' | 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; draft: string; changedPaths?: string[] }
   | { kind: 'commit'; target: Target; requestId: string; fileIds: string[]; selections?: GitCommitSelection[]; draft: string; push: boolean; modelId?: string }

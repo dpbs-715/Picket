@@ -541,10 +541,93 @@ async fn refuses_custom_hooks_even_when_executable_hook_exists_only_in_target_tr
     assert!(!target_hooks.exists());
 }
 
+#[tokio::test]
+async fn lists_remote_branches_without_head_symref_and_checks_out_tracking_branch() {
+    let fixture = Fixture::new().unwrap();
+    let before_index = index(&fixture.root);
+    let store = RepositoryStore::default();
+    let snapshot = store.open(&fixture.root).await.unwrap();
+    assert!(
+        !snapshot
+            .repository
+            .remote_branches
+            .iter()
+            .any(|item| item.name.ends_with("/HEAD") || item.local_name == "HEAD"),
+        "remote_branches must exclude origin/HEAD symbolic ref: {:?}",
+        snapshot.repository.remote_branches
+    );
+    assert!(
+        snapshot.repository.remote_branches.contains(&RemoteBranch {
+            name: "origin/feat/remote-checkout".into(),
+            remote: "origin".into(),
+            local_name: "feat/remote-checkout".into(),
+        }),
+        "missing origin/feat/remote-checkout in {:?}",
+        snapshot.repository.remote_branches
+    );
+
+    let mut checkout_req = request(&snapshot, "origin/feat/remote-checkout");
+    checkout_req.action = BranchAction::CheckoutRemoteBranch;
+    let checked_out = store.change_branch(&checkout_req).await.unwrap();
+    assert_eq!(active(&checked_out).branch, "feat/remote-checkout");
+    assert_eq!(
+        git(
+            &fixture.root,
+            &["config", "--get", "branch.feat/remote-checkout.remote"]
+        )
+        .unwrap(),
+        b"origin\n"
+    );
+    assert_eq!(
+        git(
+            &fixture.root,
+            &["config", "--get", "branch.feat/remote-checkout.merge"]
+        )
+        .unwrap(),
+        b"refs/heads/feat/remote-checkout\n"
+    );
+    assert_drafts(&fixture, &before_index);
+
+    // Checking out a remote branch whose local branch already exists switches to that local branch:
+    let mut switch_existing_req = request(&checked_out, "origin/feat/branch-proof");
+    switch_existing_req.action = BranchAction::CheckoutRemoteBranch;
+    let switched_existing = store.change_branch(&switch_existing_req).await.unwrap();
+    assert_eq!(active(&switched_existing).branch, "feat/branch-proof");
+    assert_drafts(&fixture, &before_index);
+
+    // Refuses symbolic HEAD remote checkout:
+    let mut symref_req = request(&switched_existing, "origin/HEAD");
+    symref_req.action = BranchAction::CheckoutRemoteBranch;
+    assert!(store.change_branch(&symref_req).await.is_err());
+
+    // Refuses dirty cross-commit remote checkout without stash or reset:
+    let linked = fixture.root.parent().unwrap().join("linked worktree");
+    fs::write(linked.join("remote-ahead.txt"), "ahead\n").unwrap();
+    git(&linked, &["add", "remote-ahead.txt"]).unwrap();
+    git(&linked, &["commit", "-m", "test: remote ahead"]).unwrap();
+    git(
+        &linked,
+        &["push", "origin", "HEAD:refs/heads/feat/remote-different"],
+    )
+    .unwrap();
+    git(&fixture.root, &["fetch", "origin"]).unwrap();
+    let refreshed = store.open(&fixture.root).await.unwrap();
+    let mut dirty_remote_req = request(&refreshed, "origin/feat/remote-different");
+    dirty_remote_req.action = BranchAction::CheckoutRemoteBranch;
+    let error = store.change_branch(&dirty_remote_req).await.unwrap_err();
+    assert!(error.contains("不同提交"), "{error}");
+    assert_eq!(branch(&fixture.root), "feat/branch-proof");
+    assert_drafts(&fixture, &before_index);
+}
+
 #[test]
 fn branch_wire_format_never_accepts_paths_commands_or_creation_actions() {
     let base = serde_json::json!({"requestId":"branch-request", "target":{"repositoryId":"r", "worktreeId":"w", "sessionId":"s", "scopeVersion":"ui"}, "action":"switchBranch", "branch":"feat/existing", "branchToken":"rust-token"});
     assert!(serde_json::from_value::<BranchRequest>(base.clone()).is_ok());
+    let mut remote_checkout = base.clone();
+    remote_checkout["action"] = serde_json::json!("checkoutRemoteBranch");
+    remote_checkout["branch"] = serde_json::json!("origin/feat/existing");
+    assert!(serde_json::from_value::<BranchRequest>(remote_checkout).is_ok());
     for action in ["createBranch", "createWorktree"] {
         let mut removed = base.clone();
         removed["action"] = serde_json::json!(action);

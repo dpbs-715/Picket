@@ -271,9 +271,15 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
   const hydratedActiveModelId = restored.models === undefined
     ? state.activeModelId
     : state.activeModelId ?? restored.activeModelId ?? hydratedModels[0]?.id ?? null;
+  const installedEditors = restored.installedEditors ?? state.installedEditors;
+  const desiredEditor = state.editorModified ? state.editor : restored.editor;
+  const effectiveEditor = installedEditors && installedEditors.length > 0 && !installedEditors.includes(desiredEditor)
+    ? installedEditors[0]
+    : desiredEditor;
   let next: WorkbenchState = {
     ...state,
-    editor: state.editorModified ? state.editor : restored.editor,
+    editor: effectiveEditor,
+    ...(installedEditors !== undefined ? { installedEditors } : {}),
     emptyDraft: userEditedEmpty ? state.emptyDraft : restored.emptyDraft,
     emptyEditing: userEditedEmpty ? state.emptyEditing : restored.emptyEditing,
     models: hydratedModels,

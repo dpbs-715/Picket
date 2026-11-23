@@ -35,8 +35,18 @@ export interface GitWorktree {
   remote: GitRemote;
   files: GitChange[];
 }
+export interface GitRemoteBranch {
+  name: string;
+  remote: string;
+  localName: string;
+}
 export interface GitRepositorySnapshot {
-  repository: { id: string; name: string; branches: { name: string; worktreeId?: string }[] };
+  repository: {
+    id: string;
+    name: string;
+    branches: { name: string; worktreeId?: string }[];
+    remoteBranches?: GitRemoteBranch[];
+  };
   worktrees: GitWorktree[];
   activeWorktreeId: string;
   readSequence: number;
@@ -61,6 +71,8 @@ export function decodeGitReadReply(value: unknown): GitReadReply {
   if (!record(snapshot) || !count(snapshot.readSequence) || !string(snapshot.activeWorktreeId) || !record(snapshot.repository)
     || !string(snapshot.repository.id) || !string(snapshot.repository.name) || !Array.isArray(snapshot.repository.branches) || !Array.isArray(snapshot.worktrees)) return fail();
   if (!snapshot.repository.branches.every((branch) => record(branch) && string(branch.name) && (branch.worktreeId === undefined || string(branch.worktreeId)))) return fail();
+  if (snapshot.repository.remoteBranches !== undefined && (!Array.isArray(snapshot.repository.remoteBranches)
+    || !snapshot.repository.remoteBranches.every((branch) => record(branch) && string(branch.name) && string(branch.remote) && string(branch.localName)))) return fail();
   const ids = new Set<string>();
   for (const tree of snapshot.worktrees) {
     if (!record(tree) || !['repositoryId', 'worktreeId', 'label', 'path', 'branch', 'statusVersion'].every((key) => string(tree[key]))

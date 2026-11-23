@@ -3,6 +3,30 @@
 use super::*;
 use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
 
+pub(super) fn split_remote_branch(
+    short_name: &str,
+    remotes: &[String],
+) -> Option<(String, String)> {
+    if short_name.is_empty() || short_name.ends_with("/HEAD") {
+        return None;
+    }
+    let mut sorted_remotes: Vec<&str> = remotes.iter().map(String::as_str).collect();
+    sorted_remotes.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    for remote in sorted_remotes {
+        if let Some(local) = short_name.strip_prefix(&format!("{remote}/"))
+            && !local.is_empty()
+            && local != "HEAD"
+        {
+            return Some((remote.to_owned(), local.to_owned()));
+        }
+    }
+    let (remote, local) = short_name.split_once('/')?;
+    if remote.is_empty() || local.is_empty() || local == "HEAD" {
+        return None;
+    }
+    Some((remote.to_owned(), local.to_owned()))
+}
+
 pub(super) struct BranchState {
     pub status: Vec<u8>,
     pub branch: String,
@@ -310,7 +334,6 @@ impl RepositoryStore {
             .lock_owned()
             .await;
         let root = self.registered_branch_path(request).await?;
-        self.validate_branch_name(&root, &request.branch).await?;
         self.ensure_branch_write_allowed(&root).await?;
         let before = self.branch_state(&root).await?;
         if before.token()? != request.branch_token {
@@ -328,24 +351,119 @@ impl RepositoryStore {
                 .bytes(&root, &["worktree", "list", "--porcelain", "-z"])
                 .await?,
         )?;
-        let BranchAction::SwitchBranch = request.action;
-        if let Some(entry) = entries.iter().find(|entry| entry.branch == request.branch) {
-            let destination = fs::canonicalize(&entry.path)
-                .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
-            // An occupied branch is a navigation result, never a forced checkout.
-            return self.read_repository_locked(&destination).await;
-        }
-        let checkout_head = reader
-            .text(
-                &root,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    &format!("refs/heads/{}^{{commit}}", request.branch),
-                ],
-            )
-            .await
-            .map_err(|_| "所选本地分支已不存在，请刷新分支列表")?;
+        let (target_branch, checkout_head, switch_args): (String, String, Vec<String>) =
+            match request.action {
+                BranchAction::SwitchBranch => {
+                    self.validate_branch_name(&root, &request.branch).await?;
+                    if let Some(entry) = entries.iter().find(|entry| entry.branch == request.branch)
+                    {
+                        let destination = fs::canonicalize(&entry.path)
+                            .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
+                        // An occupied branch is a navigation result, never a forced checkout.
+                        return self.read_repository_locked(&destination).await;
+                    }
+                    let oid = reader
+                        .text(
+                            &root,
+                            &[
+                                "rev-parse",
+                                "--verify",
+                                &format!("refs/heads/{}^{{commit}}", request.branch),
+                            ],
+                        )
+                        .await
+                        .map_err(|_| "所选本地分支已不存在，请刷新分支列表")?;
+                    (
+                        request.branch.clone(),
+                        oid,
+                        vec![
+                            "switch".into(),
+                            "--no-guess".into(),
+                            "--no-overwrite-ignore".into(),
+                            request.branch.clone(),
+                        ],
+                    )
+                }
+                BranchAction::CheckoutRemoteBranch => {
+                    if request.branch.is_empty()
+                        || request.branch.starts_with('-')
+                        || request.branch.trim() != request.branch
+                        || request.branch.chars().any(char::is_control)
+                    {
+                        return Err("远程分支名称无效，请选择具体的远程分支".into());
+                    }
+                    let remotes = self.list_remotes_unlocked(&root).await.unwrap_or_default();
+                    let (remote_name, local_branch) =
+                        split_remote_branch(&request.branch, &remotes)
+                            .ok_or("远程分支名称无效，请选择具体的远程分支")?;
+                    self.validate_branch_name(&root, &local_branch).await?;
+                    let remote_ref = format!("refs/remotes/{}", request.branch);
+                    if reader
+                        .run(&root, &["symbolic-ref", "-q", &remote_ref])
+                        .await?
+                        .success
+                    {
+                        return Err("不能直接检出远端 HEAD 符号引用，请选择具体的远程分支".into());
+                    }
+                    let remote_head = reader
+                        .text(
+                            &root,
+                            &["rev-parse", "--verify", &format!("{remote_ref}^{{commit}}")],
+                        )
+                        .await
+                        .map_err(|_| "所选远程分支在本地跟踪引用中不存在，请先同步或刷新后重试")?;
+                    if let Some(entry) = entries.iter().find(|entry| entry.branch == local_branch) {
+                        let destination = fs::canonicalize(&entry.path)
+                            .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
+                        return self.read_repository_locked(&destination).await;
+                    }
+                    if let Ok(local_head) = reader
+                        .text(
+                            &root,
+                            &[
+                                "rev-parse",
+                                "--verify",
+                                &format!("refs/heads/{local_branch}^{{commit}}"),
+                            ],
+                        )
+                        .await
+                    {
+                        (
+                            local_branch.clone(),
+                            local_head,
+                            vec![
+                                "switch".into(),
+                                "--no-guess".into(),
+                                "--no-overwrite-ignore".into(),
+                                local_branch,
+                            ],
+                        )
+                    } else {
+                        let has_remote_fetch = remotes.contains(&remote_name)
+                            && reader
+                                .run(
+                                    &root,
+                                    &[
+                                        "config",
+                                        "--get-all",
+                                        &format!("remote.{remote_name}.fetch"),
+                                    ],
+                                )
+                                .await?
+                                .success;
+                        let mut args = vec![
+                            "switch".to_owned(),
+                            "--no-guess".to_owned(),
+                            "--no-overwrite-ignore".to_owned(),
+                        ];
+                        if has_remote_fetch {
+                            args.push("--track".to_owned());
+                        }
+                        args.extend(["-c".to_owned(), local_branch.clone(), remote_ref]);
+                        (local_branch, remote_head, args)
+                    }
+                }
+            };
         if !before.working.is_empty() && checkout_head != head {
             return Err("当前有暂存或未暂存改动，不能安全切换到不同提交；请先在 Git / IDE 中处理当前改动后再切换分支".into());
         }
@@ -357,16 +475,9 @@ impl RepositoryStore {
             return Err("Git 内容在校验期间变化，请刷新后重新操作；未执行写入".into());
         }
         let writer = reader.for_checkout(&root).await?;
+        let args_ref: Vec<&str> = switch_args.iter().map(String::as_str).collect();
         let output = writer
-            .write(
-                &root,
-                &[
-                    "switch",
-                    "--no-guess",
-                    "--no-overwrite-ignore",
-                    &request.branch,
-                ],
-            )
+            .write(&root, &args_ref)
             .await
             .map_err(|error| format!("{error}。请刷新核对实际分支状态；不会自动重试或回滚。"))?;
         if !output.success {
@@ -379,7 +490,7 @@ impl RepositoryStore {
         if !before.working.is_empty() && !before.preserves_changes(&after) {
             return Err("Git 操作后暂存区或工作草稿与预期不符，已停止后续动作；请刷新并在 Git / IDE 中核对，不会自动回滚".into());
         }
-        if after.branch != request.branch || after.head.as_deref() != Some(checkout_head.as_str()) {
+        if after.branch != target_branch || after.head.as_deref() != Some(checkout_head.as_str()) {
             return Err("Git 操作后的分支或 HEAD 与预期不符，请刷新核对；不会自动重试".into());
         }
         self.read_repository_locked(&root).await.map_err(|error| {
