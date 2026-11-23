@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
-import { Icon, IconButton, Popover } from '../../../ui/controls';
+import { HelpTip, Icon, IconButton, Popover } from '../../../ui/controls';
 import { isActiveSession, isProtected, messageLabels, orderedMessages } from '../state/workbench';
 import type { Repository, WorkbenchState, Worktree } from '../state/workbench';
 
@@ -146,9 +146,8 @@ export function ContextHeader(props: Props) {
       <div className="menu-anchor remote-anchor"><button type="button" className={`context-button remote-button mono ${worktree?.remote.kind === 'tracked' && worktree.remote.behind ? 'warning' : ''}`} disabled={!worktree} data-popover-trigger aria-expanded={menu === 'remote'} onClick={() => toggle('remote')} aria-label="远端详情">
         {worktree?.remote.kind === 'tracked' ? <><span>↑ {worktree.remote.ahead}</span><span>↓ {worktree.remote.behind}</span></> : '未同步'}
       </button>
-        {menu === 'remote' && worktree && <Popover title="远端详情" onClose={close} className="remote-menu"><div className="menu-title muted">跟踪远端分支</div>
+        {menu === 'remote' && worktree && <Popover title="远端详情" onClose={close} className="remote-menu"><div className="menu-title muted"><span>跟踪远端分支</span>{worktree.remote.kind === 'tracked' && worktree.remote.localOnly && <HelpTip placement="bottom" align="end" label="远端计数说明" text="仅基于本地跟踪引用，尚未联网检查远端；点击“拉取并变基”可联网同步。" />}</div>
           {worktree.remote.kind === 'tracked' ? <><p className="mono">{worktree.remote.branch}</p><p className="muted small">领先 {worktree.remote.ahead} 个提交　落后 {worktree.remote.behind} 个提交</p></> : <p className="warning help">{worktree.remote.reason}</p>}
-          {worktree.remote.kind === 'tracked' && worktree.remote.localOnly && <p className="muted help">仅基于本地跟踪引用，尚未联网检查远端。</p>}
           <div className="menu-divider"><button type="button" className="secondary" disabled={props.pullBusy || repoWorktrees.some(isActiveSession)} onClick={() => { close(); props.onPull(); }}>{props.pullBusy ? '同步中…' : '拉取并变基'}</button></div>
         </Popover>}
       </div>

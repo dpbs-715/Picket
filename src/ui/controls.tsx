@@ -22,6 +22,7 @@ const iconPaths = {
   cpu: 'M6 6h12v12H6zM9 9h6v6H9zM9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4',
   trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7',
   alert: 'm12 3 10 18H2zM12 9v5m0 3h.01',
+  help: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01',
 } as const;
 export type IconName = keyof typeof iconPaths;
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {
@@ -29,6 +30,36 @@ export function Icon({ name, className = '' }: { name: IconName; className?: str
 }
 export function IconButton({ icon, label, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { icon: IconName; label: string }) {
   return <button type="button" {...props} className={`icon-button ${props.className ?? ''}`} aria-label={label} title={label}><Icon name={icon} /></button>;
+}
+
+export function HelpTip({
+  text,
+  label,
+  align = 'center',
+  placement = 'top',
+}: {
+  text: string;
+  label?: string;
+  align?: 'start' | 'center' | 'end';
+  placement?: 'top' | 'bottom';
+}) {
+  const tipId = useId();
+  return (
+    <span
+      className={`help-tip help-tip-${align} help-tip-${placement}`}
+      tabIndex={0}
+      data-help-tip
+      aria-label={label ?? text}
+      aria-describedby={tipId}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      <Icon name="help" />
+      <span id={tipId} role="tooltip" className="help-tip-bubble">{text}</span>
+    </span>
+  );
 }
 
 export function useDismiss(onClose: () => void) {
@@ -63,7 +94,7 @@ export function Overlay({ title, children, onClose, covered = false }: { title: 
     if (covered) return;
     const previousFocus = document.activeElement;
     const panel = ref.current!;
-    (panel.querySelector<HTMLElement>('button, input, [tabindex="0"]') ?? panel).focus();
+    (panel.querySelector<HTMLElement>('button:not([data-help-tip]), input, select, [tabindex="0"]:not([data-help-tip])') ?? panel).focus();
     const trap = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); latestClose.current(); return; }
       if (event.key !== 'Tab') return;

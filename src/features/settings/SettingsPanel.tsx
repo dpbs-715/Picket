@@ -1,4 +1,4 @@
-import { Icon, IconButton, Overlay } from '../../ui/controls';
+import { HelpTip, Icon, IconButton, Overlay } from '../../ui/controls';
 import { editors } from '../workbench/state/workbench';
 import type { EditorId } from '../workbench/state/workbench';
 import { apiFormatFor, providerFor } from './modelProviders';
@@ -27,27 +27,27 @@ export function SettingsPanel(props: Props) {
     ?? editors[0];
   return <Overlay title="设置" onClose={props.onClose} covered={props.covered}>
     <div className="settings-content scroll-area">
-      <section><h2>编辑器联动</h2>
+      <section>
+        <div className="row section-title-row">
+          <h2>编辑器联动</h2>
+          {visibleEditors.length > 0 && <HelpTip placement="bottom" align="start" label="编辑器联动说明" text={`调用 ${editor.cli} 打开文件、已暂存 Diff 与审查行号；自动识别本机已安装编辑器并保存选择。`} />}
+        </div>
         {visibleEditors.length === 0 ? <div className="model-empty">
           <div className="empty-copy">
             <p className="empty-title">未检测到已安装的受支持编辑器</p>
-            <p className="muted help">安装 IntelliJ IDEA、RustRover、WebStorm、VS Code 或 Cursor 后重新打开应用即可自动识别。</p>
+            <p className="muted help">安装 IntelliJ IDEA、RustRover、WebStorm、VS Code 或 Cursor 后重新打开即可识别。</p>
           </div>
-        </div> : <>
-          <div className="editor-grid" role="group" aria-label="首选编辑器">
-            {visibleEditors.map((item) => <button type="button" key={item.id} aria-pressed={item.id === editor.id} onClick={() => props.onEditor(item.id)}>
-              {item.name}{item.id === editor.id && <Icon name="check" />}
-            </button>)}
-          </div>
-          <p className="mono muted help">CLI：{editor.cli} · 文件、Diff 与行号定位</p>
-          <p className="muted help">{props.installedEditors ? '已自动过滤为本机检测到的编辑器；首选编辑器及工作树草稿会在本机自动保存。' : '优先查找命令行入口与 macOS 应用包；首选编辑器及工作树草稿会在本机自动保存。'}</p>
-        </>}
+        </div> : <div className="editor-grid" role="group" aria-label="首选编辑器">
+          {visibleEditors.map((item) => <button type="button" key={item.id} aria-pressed={item.id === editor.id} onClick={() => props.onEditor(item.id)}>
+            {item.name}{item.id === editor.id && <Icon name="check" />}
+          </button>)}
+        </div>}
       </section>
       <section><div className="section-heading"><div className="row"><h2>模型管理</h2><span className="model-count mono">{props.models.length}</span></div>{props.models.length > 0 && <button type="button" className="secondary compact" onClick={props.onAddModel}><Icon name="plus" />添加模型</button>}</div>
         {props.error && <p className="form-result danger" role="alert">{props.error}</p>}
         {!props.models.length ? <div className="model-empty">
           <span className="empty-badge" aria-hidden="true"><Icon name="cpu" /></span>
-          <div className="empty-copy"><p className="empty-title">尚未配置可用模型</p><p className="muted help">用于生成提交说明、代码审查与 C-Push</p></div>
+          <div className="empty-copy"><p className="empty-title">尚未配置可用模型</p></div>
           <button type="button" className="primary model-empty-action" onClick={props.onAddModel}>添加第一个模型</button>
         </div>
           : <div className="model-list">{props.models.map((model) => {

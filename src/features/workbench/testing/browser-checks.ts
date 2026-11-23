@@ -46,6 +46,7 @@ export async function verifyWorkbench(root: Root) {
   assert(!document.querySelector('.changes-heading') && !document.querySelector('[aria-label="切换目录树视图"]') && !document.querySelector('[aria-label="刷新变更"]'), '空项目不应提前渲染变更工具栏');
   assert(document.querySelector<HTMLButtonElement>('.repository-open-button')?.classList.contains('primary'), '打开本机仓库应作为空项目唯一主入口');
   assert(!document.querySelector('.commit-empty button.primary'), '空项目下半区不应与打开仓库抢夺主按钮视觉层级');
+  assert(!document.querySelector('.commit-empty .help'), '提交说明空态不应展示冗余描述段落');
   assert(button('提交').disabled, '无仓库不应提交');
   await click('打开本机仓库…');
   assert(text().includes('此操作尚未接入'), `未接入的打开操作应明确说明：${text()}`);
@@ -212,6 +213,12 @@ export async function verifyWorkbench(root: Root) {
   await click('设置'); await click('添加第一个模型');
   const formatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
   assert(formatSelect && formatSelect.value === 'anthropic-messages', 'Anthropic 默认接口格式应为 anthropic-messages');
+  const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key 安全存储说明"]')!;
+  assert(
+    !!keyHelpTip && getComputedStyle(keyHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden'
+      && !document.querySelector('.model-form > p.help'),
+    '模型表单应移除底部常驻说明并将必要规则收敛为 ? 悬浮提示',
+  );
   await click('自定义兼容');
   assert((formatSelect.value as string) === 'openai-completions', '自定义兼容默认接口格式应为 openai-completions');
   await act(async () => {

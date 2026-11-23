@@ -35,7 +35,7 @@ export function MessageDock(props: Props) {
     </div>
     <div className="message-actions scroll-area">
       {primary.options?.map((option) => <button type="button" className={option.recommended ? 'primary' : 'secondary'} disabled={props.busy} key={option.id} onClick={() => props.onRespond(primary, { optionId: option.id })}>{option.label}</button>)}
-      {primary.kind === 'waitingManual' && <><button type="button" className="primary" disabled={!primary.files?.length} onClick={() => { const file = primary.files?.[0]; if (file) props.onOpenFile(file.id); }}><Icon name="external" />在 {props.editorShort} 中打开冲突文件</button><p className="muted help">对应写入已暂停。切回后将由桌面层重新核对 Git 状态。</p></>}
+      {primary.kind === 'waitingManual' && <button type="button" className="primary" disabled={!primary.files?.length} onClick={() => { const file = primary.files?.[0]; if (file) props.onOpenFile(file.id); }}><Icon name="external" />在 {props.editorShort} 中打开冲突文件</button>}
       {primary.kind === 'done' && <button type="button" className="secondary" onClick={() => props.onExpanded(false)}>知道了</button>}
       {canReply && <form className="message-reply" onSubmit={(event) => { event.preventDefault(); if (text.trim() && !props.busy) props.onRespond(primary, { text: text.trim() }); }}>
         <input aria-label="回复当前事项" value={text} onChange={(event) => props.onReply(primary.id, event.target.value)} placeholder={primary.kind === 'conflict' ? '输入合并要求，回车发送…' : '或输入更具体的要求，回车发送…'} />

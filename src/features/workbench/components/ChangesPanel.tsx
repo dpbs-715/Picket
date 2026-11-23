@@ -75,7 +75,7 @@ export function ChangesPanel(props: Props) {
         <span className="empty-badge" aria-hidden="true"><Icon name="folder" /></span>
         <div className="empty-copy">
           <p className="empty-title">打开你的 Git 仓库</p>
-          <p className="muted help">{props.repositoryReadsAvailable ? '只读加载分支与变更，不改动暂存区或草稿' : '选择本地目录加载分支与变更（浏览器预览不读取本机）'}</p>
+          {!props.repositoryReadsAvailable && <p className="muted help">浏览器预览不读取本机目录</p>}
         </div>
         <button type="button" className="primary repository-open-button" disabled={props.opening} onClick={props.onOpenRepository}>{props.opening ? '正在打开…' : '打开本机仓库…'}</button>
       </div>
@@ -86,7 +86,7 @@ export function ChangesPanel(props: Props) {
         </div>
         : !worktree.files.length ? <div className="empty-state">
           <span className="empty-badge success" aria-hidden="true"><Icon name="check" /></span>
-          <div className="empty-copy"><p className="empty-title">工作区干净</p><p className="muted help">可在顶部切换工作树或继续编写代码</p></div>
+          <div className="empty-copy"><p className="empty-title">工作区干净</p></div>
         </div>
         : view === 'list' ? worktree.files.map((file) => fileRow(file))
         : groupFiles(worktree.files).map((group) => {

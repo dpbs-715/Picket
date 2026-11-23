@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Icon, Overlay } from '../../ui/controls';
+import { HelpTip, Icon, Overlay } from '../../ui/controls';
 import { apiFormats, editModelInput, newModelInput, normalizedModel, providerFor, providers, validateModel } from './modelProviders';
 import type { ApiFormatId, ModelConfiguration, ModelInput } from './modelProviders';
 
@@ -87,9 +87,8 @@ export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Pro
       <label>显示名称<input disabled={operation === 'saving'} value={input.name} onChange={(event) => setInput({ ...input, name: event.target.value })} placeholder="为空时使用模型 ID" /></label>
       <label>模型 ID<input className="mono" disabled={operation === 'saving'} value={input.modelId} onChange={(event) => change({ ...input, modelId: event.target.value })} placeholder={provider.model} required /></label>
       {provider.needsUrl && <label>接口地址（Base URL）<input className="mono" disabled={operation === 'saving'} value={input.baseUrl} onChange={(event) => change({ ...input, baseUrl: event.target.value })} placeholder={provider.url} required /></label>}
-      {provider.needsKey && <label>API Key<input className="mono" disabled={operation === 'saving'} type="password" value={input.apiKey} onChange={(event) => change({ ...input, apiKey: event.target.value })} autoComplete="off" spellCheck={false} placeholder={canKeepExistingKey ? '留空则保留原钥匙串密钥；输入新值则替换' : '输入密钥'} required={!canKeepExistingKey} /></label>}
+      {provider.needsKey && <label><span className="label-row">API Key<HelpTip align="start" label="API Key 安全存储说明" text="密钥仅存入 macOS 系统钥匙串，不写入普通配置文件或日志。" /></span><input className="mono" disabled={operation === 'saving'} type="password" value={input.apiKey} onChange={(event) => change({ ...input, apiKey: event.target.value })} autoComplete="off" spellCheck={false} placeholder={canKeepExistingKey ? '留空则保留原钥匙串密钥；输入新值则替换' : '输入密钥'} required={!canKeepExistingKey} /></label>}
       {result && <p role="status" className={`form-result ${result.ok ? 'success' : 'danger'}`}>{result.text}</p>}
-      <p className="muted help">API Key 将存入 macOS 系统钥匙串，不写入普通配置或日志。示例模型 ID 不保证在当前账户可用。</p>
       <div className="form-actions"><button type="button" className="secondary" disabled={operation !== 'idle'} onClick={() => void submit('testing')}>
         {operation === 'testing' && <Icon name="refresh" className="spinning" />}{operation === 'testing' ? '测试中…' : '测试连接'}</button>
         <div className="row"><button type="button" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={operation !== 'idle'}>{operation === 'saving' ? '保存中…' : initialModel ? '保存修改' : '保存并使用'}</button></div>
