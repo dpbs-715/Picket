@@ -24,6 +24,8 @@ use tempfile::NamedTempFile;
 const STORAGE_VERSION: u8 = 1;
 const MODELS_FILE: &str = "models.json";
 const MAX_STORED_MODELS: usize = 64;
+const TEST_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(50);
+const AI_TASK_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,6 +33,8 @@ struct StoredModelRecord {
     id: String,
     name: String,
     provider: ProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_format: Option<ApiFormatKind>,
     model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
@@ -39,11 +43,17 @@ struct StoredModelRecord {
 }
 
 impl StoredModelRecord {
+    fn effective_api_format(&self) -> ApiFormatKind {
+        self.api_format
+            .unwrap_or_else(|| self.provider.default_api_format())
+    }
+
     fn to_public(&self) -> SavedModelConfiguration {
         SavedModelConfiguration {
             id: self.id.clone(),
             name: self.name.clone(),
             provider: self.provider,
+            api_format: Some(self.effective_api_format()),
             model_id: self.model_id.clone(),
             base_url: self.base_url.clone(),
         }
@@ -61,6 +71,7 @@ struct StoredModelsFile {
 #[derive(Clone, Debug)]
 pub struct ResolvedRuntimeSpec {
     pub provider: ProviderKind,
+    pub api_format: ApiFormatKind,
     pub model_id: String,
     pub base_url: String,
     pub api_key: String,
@@ -214,14 +225,87 @@ impl ModelStore {
         storage_dir: &Path,
         input: &ModelInput,
     ) -> Result<ModelSaveReply, String> {
-        let normalized = validate_and_normalize_model_input(input)?;
         let _guard = self.gate.lock().await;
         let (mut stored, _) = read_models_file(storage_dir)?;
+        let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
+
+        if let Some(target_id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let Some(index) = stored.models.iter().position(|m| m.id == target_id) else {
+                return Err("要编辑的模型不存在或已被删除。".into());
+            };
+            let existing = stored.models[index].clone();
+            let normalized = validate_and_normalize_model_input_with_options(
+                input,
+                existing.credential_ref.is_some(),
+            )?;
+
+            let mut newly_written_cred: Option<String> = None;
+            let mut obsolete_cred: Option<String> = None;
+            let next_credential_ref = if normalized.provider.needs_key() {
+                if !normalized.api_key.is_empty() {
+                    let new_account = short_token("cred", seq, &existing.id);
+                    self.vault.put(&new_account, &normalized.api_key)?;
+                    newly_written_cred = Some(new_account.clone());
+                    obsolete_cred = existing.credential_ref.clone();
+                    Some(new_account)
+                } else {
+                    let old_account = existing.credential_ref.as_deref().ok_or("请填写 API Key")?;
+                    if self.vault.get(old_account)?.is_none() {
+                        return Err(
+                            "该模型在 macOS 系统钥匙串中的原密钥已不存在，请重新填写 API Key。"
+                                .into(),
+                        );
+                    }
+                    existing.credential_ref.clone()
+                }
+            } else {
+                obsolete_cred = existing.credential_ref.clone();
+                None
+            };
+
+            let updated = StoredModelRecord {
+                id: existing.id.clone(),
+                name: normalized.name,
+                provider: normalized.provider,
+                api_format: Some(normalized.api_format),
+                model_id: normalized.model_id,
+                base_url: normalized.base_url,
+                credential_ref: next_credential_ref.clone(),
+            };
+            let public = updated.to_public();
+            stored.models[index] = updated;
+            if stored.active_model_id.is_none() {
+                stored.active_model_id = Some(existing.id.clone());
+            }
+
+            if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
+                if let Some(account) = newly_written_cred {
+                    let _ = self.vault.delete(&account);
+                }
+                return Err(format!("{error}；没有保存模型修改，输入已保留。"));
+            }
+            if let Some(old_account) = obsolete_cred
+                && next_credential_ref.as_deref() != Some(old_account.as_str())
+            {
+                let _ = self.vault.delete(&old_account);
+            }
+
+            let active_id = stored
+                .active_model_id
+                .clone()
+                .unwrap_or_else(|| existing.id.clone());
+            return Ok(ModelSaveReply {
+                protocol_version: MODEL_PROTOCOL_VERSION,
+                model: public,
+                active_model_id: active_id,
+            });
+        }
+
+        let normalized = validate_and_normalize_model_input(input)?;
         if stored.models.len() >= MAX_STORED_MODELS {
             return Err("已保存的模型数量已达上限，请先删除不再使用的模型。".into());
         }
 
-        let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let id = short_token("model", seq, &normalized.model_id);
         let credential_ref = if normalized.provider.needs_key() {
             let account = short_token("cred", seq, &id);
@@ -235,6 +319,7 @@ impl ModelStore {
             id: id.clone(),
             name: normalized.name,
             provider: normalized.provider,
+            api_format: Some(normalized.api_format),
             model_id: normalized.model_id,
             base_url: normalized.base_url,
             credential_ref: credential_ref.clone(),
@@ -342,19 +427,54 @@ impl ModelStore {
         let base_url = self.effective_base_url(record.provider, record.base_url.as_deref());
         Ok(ResolvedRuntimeSpec {
             provider: record.provider,
+            api_format: record.effective_api_format(),
             model_id: record.model_id.clone(),
             base_url,
             api_key,
         })
     }
 
+    #[cfg(test)]
     pub async fn test_connection(
         &self,
         paths: &PiPaths,
         supervisor: &PiSupervisor,
         input: &ModelInput,
     ) -> Result<ModelTestReply, String> {
-        let normalized = validate_and_normalize_model_input(input)?;
+        self.test_connection_with_storage(None, paths, supervisor, input)
+            .await
+    }
+
+    pub async fn test_connection_with_storage(
+        &self,
+        storage_dir: Option<&Path>,
+        paths: &PiPaths,
+        supervisor: &PiSupervisor,
+        input: &ModelInput,
+    ) -> Result<ModelTestReply, String> {
+        let mut stored_api_key: Option<String> = None;
+        if input.api_key.trim().is_empty()
+            && input.provider.needs_key()
+            && let (Some(dir), Some(target_id)) = (
+                storage_dir,
+                input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            )
+        {
+            let _guard = self.gate.lock().await;
+            let (stored, _) = read_models_file(dir)?;
+            if let Some(existing) = stored.models.iter().find(|m| m.id == target_id)
+                && let Some(account) = existing.credential_ref.as_deref()
+            {
+                stored_api_key = self.vault.get(account)?;
+            }
+        }
+        let normalized =
+            validate_and_normalize_model_input_with_options(input, stored_api_key.is_some())?;
+        let effective_key = if normalized.api_key.is_empty() {
+            stored_api_key.unwrap_or_default()
+        } else {
+            normalized.api_key
+        };
         let base_url = self.effective_base_url(normalized.provider, normalized.base_url.as_deref());
         let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let request_id = short_token("testconn", seq, &normalized.model_id);
@@ -370,9 +490,10 @@ impl ModelStore {
             "context": context,
             "model": {
                 "provider": normalized.provider.as_id(),
+                "apiFormat": normalized.api_format.as_id(),
                 "modelId": normalized.model_id,
                 "baseUrl": base_url,
-                "apiKey": normalized.api_key,
+                "apiKey": effective_key,
             }
         });
         let started_at = Instant::now();
@@ -382,8 +503,8 @@ impl ModelStore {
                 request_id,
                 context,
                 command,
-                Duration::from_secs(20),
-                Some(&normalized.api_key),
+                TEST_CONNECTION_IDLE_TIMEOUT,
+                Some(&effective_key),
                 |_| Ok(()),
             )
             .await?;
@@ -441,6 +562,7 @@ impl ModelStore {
             "context": context,
             "model": {
                 "provider": spec.provider.as_id(),
+                "apiFormat": spec.api_format.as_id(),
                 "modelId": spec.model_id,
                 "baseUrl": spec.base_url,
                 "apiKey": spec.api_key,
@@ -458,7 +580,7 @@ impl ModelStore {
                 request.request_id.clone(),
                 context,
                 command,
-                Duration::from_secs(60),
+                AI_TASK_IDLE_TIMEOUT,
                 Some(&spec.api_key),
                 |event| match event {
                     PiEvent::Started { request_id, .. } => on_stream(ModelStreamEvent::Started {
@@ -543,6 +665,7 @@ impl ModelStore {
             "context": context,
             "model": {
                 "provider": spec.provider.as_id(),
+                "apiFormat": spec.api_format.as_id(),
                 "modelId": spec.model_id,
                 "baseUrl": spec.base_url,
                 "apiKey": spec.api_key,
@@ -559,7 +682,7 @@ impl ModelStore {
                 request.request_id.clone(),
                 context,
                 command,
-                Duration::from_secs(60),
+                AI_TASK_IDLE_TIMEOUT,
                 Some(&spec.api_key),
                 |event| match event {
                     PiEvent::Started { request_id, .. } => on_stream(ModelStreamEvent::Started {

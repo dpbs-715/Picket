@@ -4,6 +4,24 @@ use serde::{Deserialize, Serialize};
 pub const MODEL_PROTOCOL_VERSION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApiFormatKind {
+    OpenaiCompletions,
+    OpenaiResponses,
+    AnthropicMessages,
+}
+
+impl ApiFormatKind {
+    pub fn as_id(self) -> &'static str {
+        match self {
+            Self::OpenaiCompletions => "openai-completions",
+            Self::OpenaiResponses => "openai-responses",
+            Self::AnthropicMessages => "anthropic-messages",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderKind {
     Anthropic,
@@ -34,6 +52,14 @@ impl ProviderKind {
         }
     }
 
+    pub fn default_api_format(self) -> ApiFormatKind {
+        match self {
+            Self::Anthropic => ApiFormatKind::AnthropicMessages,
+            Self::Openai => ApiFormatKind::OpenaiResponses,
+            Self::Deepseek | Self::Ollama | Self::Custom => ApiFormatKind::OpenaiCompletions,
+        }
+    }
+
     pub fn needs_key(self) -> bool {
         !matches!(self, Self::Ollama)
     }
@@ -59,6 +85,8 @@ pub struct SavedModelConfiguration {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_format: Option<ApiFormatKind>,
     pub model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -67,7 +95,11 @@ pub struct SavedModelConfiguration {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelInput {
+    #[serde(default)]
+    pub id: Option<String>,
     pub provider: ProviderKind,
+    #[serde(default)]
+    pub api_format: Option<ApiFormatKind>,
     pub name: String,
     pub model_id: String,
     pub base_url: String,
@@ -77,6 +109,7 @@ pub struct ModelInput {
 #[derive(Clone, Debug)]
 pub struct NormalizedModelInput {
     pub provider: ProviderKind,
+    pub api_format: ApiFormatKind,
     pub name: String,
     pub model_id: String,
     pub base_url: Option<String>,
@@ -244,6 +277,19 @@ pub fn validate_http_base_url(raw: &str) -> Result<String, String> {
 pub fn validate_and_normalize_model_input(
     input: &ModelInput,
 ) -> Result<NormalizedModelInput, String> {
+    validate_and_normalize_model_input_with_options(input, false)
+}
+
+pub fn validate_and_normalize_model_input_with_options(
+    input: &ModelInput,
+    allow_empty_key: bool,
+) -> Result<NormalizedModelInput, String> {
+    if let Some(raw) = &input.id
+        && (raw.trim().len() > 128 || raw.chars().any(char::is_control))
+    {
+        return Err("模型标识无效".into());
+    }
+
     let model_id = input.model_id.trim();
     if model_id.is_empty() {
         return Err("请填写模型 ID".into());
@@ -270,18 +316,26 @@ pub fn validate_and_normalize_model_input(
     let api_key = if input.provider.needs_key() {
         let trimmed = input.api_key.trim();
         if trimmed.is_empty() {
-            return Err("请填写 API Key".into());
+            if allow_empty_key {
+                String::new()
+            } else {
+                return Err("请填写 API Key".into());
+            }
+        } else {
+            if trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
+                return Err("API Key 包含非法控制字符或长度超出限制".into());
+            }
+            trimmed.to_owned()
         }
-        if trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-            return Err("API Key 包含非法控制字符或长度超出限制".into());
-        }
-        trimmed.to_owned()
     } else {
         String::new()
     };
 
     Ok(NormalizedModelInput {
         provider: input.provider,
+        api_format: input
+            .api_format
+            .unwrap_or_else(|| input.provider.default_api_format()),
         name,
         model_id: model_id.to_owned(),
         base_url,

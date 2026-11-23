@@ -454,7 +454,9 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Custom,
+                api_format: None,
                 name: "M5 Resolver".into(),
                 model_id: "resolver-v1".into(),
                 base_url: format!("{}/v1", server.base_url),

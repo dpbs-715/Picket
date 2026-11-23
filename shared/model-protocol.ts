@@ -5,16 +5,22 @@ export const MODEL_PROTOCOL_VERSION = 1;
 export const MODEL_PROVIDER_IDS = ['anthropic', 'openai', 'deepseek', 'ollama', 'custom'] as const;
 export type ModelProviderId = typeof MODEL_PROVIDER_IDS[number];
 
+export const MODEL_API_FORMATS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
+export type ModelApiFormat = typeof MODEL_API_FORMATS[number];
+
 export interface SavedModelConfiguration {
   id: string;
   name: string;
   provider: ModelProviderId;
+  apiFormat?: ModelApiFormat;
   modelId: string;
   baseUrl?: string;
 }
 
 export interface ModelInputPayload {
+  id?: string;
   provider: ModelProviderId;
+  apiFormat?: ModelApiFormat;
   name: string;
   modelId: string;
   baseUrl: string;
@@ -106,6 +112,10 @@ export function isModelProviderId(value: unknown): value is ModelProviderId {
   return typeof value === 'string' && (MODEL_PROVIDER_IDS as readonly string[]).includes(value);
 }
 
+export function isModelApiFormat(value: unknown): value is ModelApiFormat {
+  return typeof value === 'string' && (MODEL_API_FORMATS as readonly string[]).includes(value);
+}
+
 export function decodeSavedModelConfiguration(value: unknown): SavedModelConfiguration {
   if (!record(value)
     || 'apiKey' in value
@@ -113,6 +123,7 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     || typeof value.id !== 'string' || !value.id
     || typeof value.name !== 'string' || !value.name
     || !isModelProviderId(value.provider)
+    || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
     || typeof value.modelId !== 'string' || !value.modelId
     || !(value.baseUrl === undefined || value.baseUrl === null || typeof value.baseUrl === 'string')) {
     throw new Error('模型配置协议不匹配或包含非法字段。');
@@ -121,6 +132,7 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     id: value.id,
     name: value.name,
     provider: value.provider,
+    ...(isModelApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
     modelId: value.modelId,
     ...(typeof value.baseUrl === 'string' && value.baseUrl ? { baseUrl: value.baseUrl } : {}),
   };
@@ -169,9 +181,6 @@ export function decodeModelSaveReply(value: unknown): ModelSaveReply {
     throw new Error('模型保存回执不匹配。');
   }
   const model = decodeSavedModelConfiguration(value.model);
-  if (model.id !== value.activeModelId) {
-    throw new Error('保存的模型回执身份不一致。');
-  }
   return { protocolVersion: MODEL_PROTOCOL_VERSION, model, activeModelId: value.activeModelId };
 }
 

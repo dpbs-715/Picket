@@ -35,7 +35,9 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Anthropic,
+                api_format: None,
                 name: "Claude Sonnet 4".into(),
                 model_id: "claude-sonnet-4-20250514".into(),
                 base_url: "https://ignored.example.com".into(),
@@ -51,7 +53,9 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Ollama,
+                api_format: None,
                 name: " ".into(),
                 model_id: "qwen2.5-coder:14b".into(),
                 base_url: "http://127.0.0.1:11434/v1/".into(),
@@ -70,7 +74,9 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::AnthropicMessages),
                 name: "网关模型".into(),
                 model_id: "coding-v3".into(),
                 base_url: "https://gateway.example.com/v1".into(),
@@ -79,6 +85,10 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
         )
         .await
         .unwrap();
+    assert_eq!(
+        saved_custom.model.api_format,
+        Some(ApiFormatKind::AnthropicMessages)
+    );
 
     // S01 check on disk: models.json is 0600, has no plaintext secret; .keychain-db also has no plaintext secret!
     let models_json_path = temp.path().join("models.json");
@@ -123,6 +133,82 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
         .await
         .unwrap();
     assert_eq!(resolved_ollama.api_key, "");
+
+    // Edit existing custom model without re-entering API key -> preserves Keychain secret & active selection:
+    let edited_keep_key = cold_store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: Some(saved_custom.model.id.clone()),
+                provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                name: "网关模型（已编辑）".into(),
+                model_id: "coding-v4".into(),
+                base_url: "https://gateway2.example.com/v1".into(),
+                api_key: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited_keep_key.model.id, saved_custom.model.id);
+    assert_eq!(edited_keep_key.model.name, "网关模型（已编辑）");
+    assert_eq!(edited_keep_key.model.model_id, "coding-v4");
+    assert_eq!(
+        edited_keep_key.model.api_format,
+        Some(ApiFormatKind::OpenaiCompletions)
+    );
+    let resolved_after_keep = cold_store
+        .resolve_runtime_spec(temp.path(), &saved_custom.model.id)
+        .await
+        .unwrap();
+    assert_eq!(resolved_after_keep.api_key, secret_custom);
+    assert_eq!(
+        resolved_after_keep.api_format,
+        ApiFormatKind::OpenaiCompletions
+    );
+
+    // Edit existing custom model with a NEW API key -> rotates Keychain entry and deletes old credential_ref:
+    let before_rotate_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&models_json_path).unwrap()).unwrap();
+    let old_cred_ref = before_rotate_json["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == saved_custom.model.id)
+        .unwrap()["credentialRef"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let rotated_secret = "sk-custom-rotated-secret-9999";
+    let _ = cold_store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: Some(saved_custom.model.id.clone()),
+                provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::OpenaiResponses),
+                name: "网关模型（新密钥）".into(),
+                model_id: "coding-v5".into(),
+                base_url: "https://gateway2.example.com/v1".into(),
+                api_key: rotated_secret.into(),
+            },
+        )
+        .await
+        .unwrap();
+    let resolved_after_rotate = cold_store
+        .resolve_runtime_spec(temp.path(), &saved_custom.model.id)
+        .await
+        .unwrap();
+    assert_eq!(resolved_after_rotate.api_key, rotated_secret);
+    let check_vault = CredentialVault::with_keychain_file(
+        temp.path().join("picket-test.keychain-db"),
+        "picket-test-keychain-pw",
+    );
+    assert_eq!(
+        check_vault.get(&old_cred_ref).unwrap(),
+        None,
+        "old Keychain credential must be deleted when rotating key"
+    );
 
     // Select & delete down to zero:
     let selected = cold_store
@@ -173,7 +259,9 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
         "http://example.com:99999/v1",
     ] {
         let err = validate_and_normalize_model_input(&ModelInput {
+            id: None,
             provider: ProviderKind::Custom,
+            api_format: None,
             name: "Bad".into(),
             model_id: "m1".into(),
             base_url: bad_url.into(),
@@ -185,7 +273,9 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
 
     assert!(
         validate_and_normalize_model_input(&ModelInput {
+            id: None,
             provider: ProviderKind::Openai,
+            api_format: None,
             name: "GPT".into(),
             model_id: "gpt-4.1".into(),
             base_url: String::new(),
@@ -247,7 +337,9 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 &paths,
                 &supervisor,
                 &ModelInput {
+                    id: None,
                     provider,
+                    api_format: None,
                     name: String::new(),
                     model_id: "test-model".into(),
                     base_url: base_url.into(),
@@ -271,7 +363,9 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
             &paths,
             &supervisor,
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Custom,
+                api_format: None,
                 name: "Custom".into(),
                 model_id: "m".into(),
                 base_url: format!("{}/v1", server.base_url),
@@ -288,7 +382,9 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Custom,
+                api_format: None,
                 name: "Local SSE Model".into(),
                 model_id: "coder-v1".into(),
                 base_url: format!("{}/v1", server.base_url),

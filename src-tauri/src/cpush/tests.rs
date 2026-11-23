@@ -44,7 +44,9 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Custom,
+                api_format: None,
                 name: "CPush Planner".into(),
                 model_id: "planner-v1".into(),
                 base_url: format!("{}/v1", server.base_url),
@@ -219,7 +221,9 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
         .save_model(
             temp.path(),
             &ModelInput {
+                id: None,
                 provider: ProviderKind::Custom,
+                api_format: None,
                 name: "CPush Planner".into(),
                 model_id: "planner-v1".into(),
                 base_url: format!("{}/v1", server.base_url),

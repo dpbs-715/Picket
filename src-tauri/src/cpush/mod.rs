@@ -394,6 +394,8 @@ fn validate_plan_in_rust(
     }
 }
 
+const CPUSH_AI_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 impl CPushCoordinator {
     fn worktree_gate(&self, worktree_id: &str) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
         Ok(self
@@ -2115,6 +2117,7 @@ impl CPushCoordinator {
             "context": context,
             "model": {
                 "provider": spec.provider.as_id(),
+                "apiFormat": spec.api_format.as_id(),
                 "modelId": spec.model_id,
                 "baseUrl": spec.base_url,
                 "apiKey": spec.api_key,
@@ -2132,7 +2135,7 @@ impl CPushCoordinator {
                 pi_request_id,
                 context,
                 command,
-                Duration::from_secs(60),
+                CPUSH_AI_IDLE_TIMEOUT,
                 Some(&spec.api_key),
                 |_| Ok(()),
             )
@@ -2184,6 +2187,7 @@ impl CPushCoordinator {
             "context": context,
             "model": {
                 "provider": spec.provider.as_id(),
+                "apiFormat": spec.api_format.as_id(),
                 "modelId": spec.model_id,
                 "baseUrl": spec.base_url,
                 "apiKey": spec.api_key,
@@ -2202,7 +2206,7 @@ impl CPushCoordinator {
                 request_id.to_owned(),
                 context,
                 command,
-                Duration::from_secs(60),
+                CPUSH_AI_IDLE_TIMEOUT,
                 Some(&spec.api_key),
                 |_| Ok(()),
             )

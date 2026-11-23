@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import { readWindowPinned, setWindowPinned } from '../../desktop/window';
 import { Icon, IconButton } from '../../ui/controls';
 import { AddModelForm } from '../settings/AddModelForm';
+import type { ModelConfiguration } from '../settings/modelProviders';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { disconnectedBackend } from './commands';
 import type { WorkbenchBackend, WorkbenchCommand } from './commands';
@@ -21,7 +22,7 @@ interface Props { initialState?: WorkbenchState; backend?: WorkbenchBackend }
 export function Workbench({ initialState, backend = disconnectedBackend }: Props) {
   const [state, dispatch] = useReducer(workbenchReducer, initialState, (initial) => initial ?? emptyWorkbench());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [addModelOpen, setAddModelOpen] = useState(false);
+  const [modelForm, setModelForm] = useState<{ open: false } | { open: true; editing?: ModelConfiguration }>({ open: false });
   const [emptyTab, setEmptyTab] = useState<'commit' | 'review'>('commit');
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<string[]>([]);
@@ -44,7 +45,8 @@ export function Workbench({ initialState, backend = disconnectedBackend }: Props
   const tab = worktree?.tab ?? emptyTab;
   const draft = worktree?.draft ?? { text: state.emptyDraft, editing: state.emptyEditing, outdated: false };
   const model = state.models.find((model) => model.id === state.activeModelId);
-  const editor = editors.find((editor) => editor.id === state.editor)!;
+  const editor = editors.find((item) => item.id === state.editor) ?? editors[0];
+  const editorShort = state.installedEditors?.length === 0 ? 'IDE' : editor.short;
   const selected = worktree ? selectedFiles(worktree) : [];
   const canUseModel = !!model && selected.length > 0 && !worktree?.readError;
   const refreshing = !!worktree && pending.includes(`${worktree.repositoryId}:refresh`);
@@ -152,7 +154,7 @@ export function Workbench({ initialState, backend = disconnectedBackend }: Props
   function notify(text: string, key = viewKey) { setFeedback((previous) => ({ ...previous, [key]: text })); }
   async function execute(command: WorkbenchCommand, preserveFeedback = false): Promise<boolean> {
     const targetKey = 'target' in command ? command.target.worktreeId : viewKey;
-    const branching = command.kind === 'switchBranch' ? command : undefined;
+    const branching = command.kind === 'switchBranch' || command.kind === 'checkoutRemoteBranch' ? command : undefined;
     const committing = command.kind === 'commit' ? command : undefined;
     const pulling = command.kind === 'pull' ? command : undefined;
     const key = branching || committing ? `${(branching ?? committing)!.target.repositoryId}:write` : pulling ? `${pulling.target.repositoryId}:pull` : command.kind === 'openRepository' ? 'global:openRepository' : command.kind === 'refresh' ? `${command.target.repositoryId}:refresh` : `${targetKey}:${command.kind}`;
@@ -262,7 +264,13 @@ export function Workbench({ initialState, backend = disconnectedBackend }: Props
       if (branching) {
         if (!reply || !('kind' in reply) || reply.kind !== 'branch' || reply.requestId !== branching.requestId) throw new Error('Git 未返回匹配的分支结果，请刷新核对实际状态。');
         dispatch({ type: 'repositoryBranchFinished', repositoryId: branching.target.repositoryId, reply });
-        notify(`已切换到 ${branching.branch}，草稿和选择已保留。`, reply.snapshot.activeWorktreeId);
+        const landedBranch = reply.snapshot.worktrees.find((tree) => tree.worktreeId === reply.snapshot.activeWorktreeId)?.branch ?? branching.branch;
+        notify(
+          branching.kind === 'checkoutRemoteBranch' && landedBranch !== branching.branch
+            ? `已检出 ${landedBranch}（跟踪 ${branching.branch}），草稿和选择已保留。`
+            : `已切换到 ${landedBranch}，草稿和选择已保留。`,
+          reply.snapshot.activeWorktreeId,
+        );
       }
       if (reading && readKey) {
         if (!reply || ('kind' in reply && reply.kind !== undefined) || !('requestId' in reply) || reply.requestId !== reading.requestId) throw new Error('Git 未返回匹配的读取结果，当前草稿与选择已保留。');
@@ -409,14 +417,17 @@ export function Workbench({ initialState, backend = disconnectedBackend }: Props
     ? worktree.review.changedPaths.length || selected.some((file) => !worktree.review.scopeFileIds?.includes(file.id)) ? '已变化' : highCount ? `${highCount} 高危${suggestionCount ? ` · ${suggestionCount} 建议` : ''}` : suggestionCount ? `${suggestionCount} 建议` : noFilesReviewed ? '未覆盖' : '通过' : '';
 
   return <main className="workbench" aria-label="Picket 工作台">
-    <div className="workbench-content" inert={settingsOpen || addModelOpen}>
+    <div className="workbench-content" inert={settingsOpen || modelForm.open}>
       <ContextHeader key={`header:${viewKey}`} state={state} worktree={worktree} repository={repository} opening={opening} branchBusy={branchBusy} pullBusy={pullBusy} pinned={pinned} pinBusy={pinBusy} onPin={() => void pin()} onSettings={() => setSettingsOpen(true)}
         onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID() })} onSwitch={switchWorktree}
         onBranch={async (kind, branch) => worktree ? execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID() }) : false}
         onPull={() => { if (worktree) void execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), ...(model ? { modelId: model.id } : {}) }); }} />
       {feedback[viewKey] && <div className="operation-notice" role="alert"><span className="operation-notice-body"><Icon name="alert" className="operation-notice-icon" /><span>{feedback[viewKey]}</span></span><IconButton icon="close" label="关闭操作提示" onClick={() => notify('')} /></div>}
-      <ChangesPanel worktree={worktree} editorShort={editor.short} opening={opening} repositoryReadsAvailable={!!backend.repositoryReadsAvailable} onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID() })}
-        onSelect={(fileId) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }} onOpenFile={openFile} onReview={() => setTab('review')}
+      <ChangesPanel worktree={worktree} editorShort={editorShort} opening={opening} repositoryReadsAvailable={!!backend.repositoryReadsAvailable} onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID() })}
+        onSelect={(fileId) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
+        onSelectAll={() => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
+        onSelectFiles={(fileIds) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
+        onOpenFile={openFile} onReview={() => setTab('review')}
         refreshing={refreshing} onRefresh={() => { if (worktree) void execute({ kind: 'refresh', target: targetOf(worktree), requestId: crypto.randomUUID() }); }} />
       <section className="lower-workspace" aria-label="说明、审查与消息">
         <div className="tab-workspace" inert={!!worktree?.dockExpanded}>
@@ -428,15 +439,15 @@ export function Workbench({ initialState, backend = disconnectedBackend }: Props
             {tab === 'review' && worktree?.review.status === 'done' && <IconButton icon="refresh" label="重新审查已选范围" disabled={!canUseModel} onClick={() => void runModel('review')} />}
           </div></div>
           <div role="tabpanel" id={tab === 'commit' ? 'commit-panel' : 'review-panel'} aria-labelledby={tab === 'commit' ? 'commit-tab' : 'review-tab'} className="tab-panel">
-            {tab === 'commit' ? <CommitPanel text={draft.text} editing={draft.editing} outdated={draft.outdated} hasWorktree={!!worktree} textareaRef={textareaRef} onChange={(text) => dispatch({ type: 'draft', worktreeId: worktree?.worktreeId ?? null, text })} onEdit={editDraft} hasModel={!!model} canGenerate={canUseModel} generating={!!worktree?.requests.generate} onGenerate={() => void runModel('generate')} onCancelGenerate={() => cancelModel('generate')} onAddModel={() => setAddModelOpen(true)} />
-              : <ReviewPanel worktree={worktree} hasModel={!!model} canReview={canUseModel} onReview={(changedOnly) => void runModel('review', changedOnly)} onCancel={() => cancelModel('review')} onAddModel={() => setAddModelOpen(true)} onOpenFile={openFile} />}
+            {tab === 'commit' ? <CommitPanel text={draft.text} editing={draft.editing} outdated={draft.outdated} hasWorktree={!!worktree} textareaRef={textareaRef} onChange={(text) => dispatch({ type: 'draft', worktreeId: worktree?.worktreeId ?? null, text })} onEdit={editDraft} hasModel={!!model} canGenerate={canUseModel} generating={!!worktree?.requests.generate} onGenerate={() => void runModel('generate')} onCancelGenerate={() => cancelModel('generate')} onAddModel={() => setModelForm({ open: true })} />
+              : <ReviewPanel worktree={worktree} hasModel={!!model} canReview={canUseModel} onReview={(changedOnly) => void runModel('review', changedOnly)} onCancel={() => cancelModel('review')} onAddModel={() => setModelForm({ open: true })} onOpenFile={openFile} />}
           </div>
         </div>
-        {worktree && <MessageDock worktree={worktree} busy={busy} editorShort={editor.short} onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })} onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })} onRespond={(message, answer) => void respond(message, answer)} onOpenFile={openFile} onReview={() => setTab('review')} />}
+        {worktree && <MessageDock worktree={worktree} busy={busy} editorShort={editorShort} onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })} onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })} onRespond={(message, answer) => void respond(message, answer)} onOpenFile={openFile} onReview={() => setTab('review')} />}
       </section>
-      <ActionFooter key={`footer:${viewKey}`} worktree={worktree} models={state.models} activeModelId={state.activeModelId} busy={busy} onAddModel={() => setAddModelOpen(true)} onSelectModel={(id) => void selectModel(id)} onPrimary={primary} onCommit={commit} />
+      <ActionFooter key={`footer:${viewKey}`} worktree={worktree} models={state.models} activeModelId={state.activeModelId} busy={busy} onAddModel={() => setModelForm({ open: true })} onSelectModel={(id) => void selectModel(id)} onPrimary={primary} onCommit={commit} />
     </div>
-    {settingsOpen && <SettingsPanel editor={state.editor} models={state.models} activeModelId={state.activeModelId} onEditor={(editor) => dispatch({ type: 'editor', editor })} onSelectModel={(id) => void selectModel(id)} onDeleteModel={(id) => void deleteModel(id)} covered={addModelOpen} error={feedback[viewKey]} onClose={() => setSettingsOpen(false)} onAddModel={() => setAddModelOpen(true)} />}
-    {addModelOpen && <AddModelForm onClose={() => setAddModelOpen(false)} test={(input) => backend.testModel(input)} save={(input) => backend.saveModel(input)} onSaved={(model) => { dispatch({ type: 'modelSaved', model }); setAddModelOpen(false); setSettingsOpen(false); }} />}
+    {settingsOpen && <SettingsPanel editor={state.editor} installedEditors={state.installedEditors} models={state.models} activeModelId={state.activeModelId} onEditor={(editor) => dispatch({ type: 'editor', editor })} onSelectModel={(id) => void selectModel(id)} onEditModel={(target) => setModelForm({ open: true, editing: target })} onDeleteModel={(id) => void deleteModel(id)} covered={modelForm.open} error={feedback[viewKey]} onClose={() => setSettingsOpen(false)} onAddModel={() => setModelForm({ open: true })} />}
+    {modelForm.open && <AddModelForm key={modelForm.editing?.id ?? 'new'} initialModel={modelForm.editing} onClose={() => setModelForm({ open: false })} test={(input) => backend.testModel(input)} save={(input) => backend.saveModel(input)} onSaved={(savedModel) => { const wasEditing = !!modelForm.editing; dispatch({ type: 'modelSaved', model: savedModel }); setModelForm({ open: false }); if (!wasEditing) setSettingsOpen(false); }} />}
   </main>;
 }
