@@ -8,7 +8,13 @@ use serde::Serialize;
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const MAX_FILE_PATCH_BYTES: usize = 48 * 1024;
 const MAX_TOTAL_PATCH_BYTES: usize = 192 * 1024;
+const GENERATE_MAX_FILE_PATCH_BYTES: usize = 12 * 1024;
+const GENERATE_MAX_TOTAL_PATCH_BYTES: usize = 48 * 1024;
 const MIN_PARTIAL_PATCH_BUDGET: usize = 2 * 1024;
+const CPUSH_MAX_FILE_PATCH_BYTES: usize = 8 * 1024;
+const CPUSH_MAX_TOTAL_PATCH_BYTES: usize = 36 * 1024;
+const CPUSH_MIN_PARTIAL_PATCH_BUDGET: usize = 1536;
+const MAX_UNTRACKED_READ_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AiScopeMode {
@@ -84,6 +90,43 @@ fn format_untracked_patch(path: &str, content: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+pub(crate) fn truncate_patch_head_tail(raw_patch: &str, max_bytes: usize) -> String {
+    if raw_patch.len() <= max_bytes {
+        return raw_patch.to_owned();
+    }
+    const MARKER_RESERVE: usize = 64;
+    if max_bytes < MARKER_RESERVE + 128 {
+        let cut = raw_patch.floor_char_boundary(max_bytes.saturating_sub(20));
+        return format!("{}\n... [truncated]", &raw_patch[..cut]);
+    }
+    let usable = max_bytes - MARKER_RESERVE;
+    let head_budget = (usable * 13) / 20;
+    let tail_budget = usable - head_budget;
+
+    let max_head = raw_patch.floor_char_boundary(head_budget);
+    let head_end = raw_patch[..max_head]
+        .rfind('\n')
+        .filter(|&idx| idx > 0)
+        .unwrap_or(max_head);
+
+    let min_tail = raw_patch.ceil_char_boundary(raw_patch.len().saturating_sub(tail_budget));
+    let tail_search_start = min_tail.max(head_end);
+    let tail_start = raw_patch[tail_search_start..]
+        .find('\n')
+        .map(|offset| tail_search_start + offset + 1)
+        .filter(|&idx| idx < raw_patch.len())
+        .unwrap_or(tail_search_start);
+
+    let omitted_lines = raw_patch[head_end..tail_start].lines().count().max(1);
+    let head = raw_patch[..head_end].trim_end_matches('\n');
+    let tail = raw_patch[tail_start..].trim_start_matches('\n');
+    if tail.is_empty() {
+        format!("{head}\n... [省略后续 {omitted_lines} 行改动] ...")
+    } else {
+        format!("{head}\n... [省略中间 {omitted_lines} 行改动] ...\n{tail}")
+    }
 }
 
 impl RepositoryStore {
@@ -277,7 +320,14 @@ impl RepositoryStore {
                 }
             };
 
-            let remaining = MAX_TOTAL_PATCH_BYTES.saturating_sub(total_patch_bytes);
+            let (file_patch_cap, total_patch_cap) = match mode {
+                AiScopeMode::Generate => (
+                    GENERATE_MAX_FILE_PATCH_BYTES,
+                    GENERATE_MAX_TOTAL_PATCH_BYTES,
+                ),
+                AiScopeMode::Review => (MAX_FILE_PATCH_BYTES, MAX_TOTAL_PATCH_BYTES),
+            };
+            let remaining = total_patch_cap.saturating_sub(total_patch_bytes);
             if remaining < MIN_PARTIAL_PATCH_BUDGET {
                 skipped_paths.push(format!(
                     "{}（所选总改动较大，超出单次上下文上限）",
@@ -285,11 +335,10 @@ impl RepositoryStore {
                 ));
                 continue;
             }
-            let allowed = MAX_FILE_PATCH_BYTES.min(remaining);
+            let allowed = file_patch_cap.min(remaining);
             let final_patch = if raw_patch.len() > allowed {
-                let cut = raw_patch.floor_char_boundary(allowed);
                 skipped_paths.push(format!("{}（大文件改动较大，仅部分覆盖）", change.path));
-                format!("{}\n... [truncated]", &raw_patch[..cut])
+                truncate_patch_head_tail(&raw_patch, allowed)
             } else {
                 raw_patch
             };
@@ -415,12 +464,12 @@ impl RepositoryStore {
             Vec::new()
         };
 
-        let mut files = Vec::with_capacity(selections.len());
-        let mut total_patch_bytes = 0usize;
+        let mut raw_entries: Vec<(Option<String>, Option<String>)> =
+            Vec::with_capacity(selections.len());
 
         for item in selections {
             let change = change_by_id[item.file_id.as_str()];
-            let mut patch = None;
+            let mut raw_patch_opt = None;
             let mut skip_reason = None;
 
             if change.ignored_for_review {
@@ -430,131 +479,135 @@ impl RepositoryStore {
                 ));
             } else if change.binary {
                 skip_reason = Some("二进制文件（不展开文本补丁）".into());
-            } else {
-                let raw_patch_opt: Option<String> = if change.range.kind == "partial"
-                    || change.range.kind == "staged"
-                {
-                    let base_tree = live_tree.head.as_deref().unwrap_or(EMPTY_TREE_OID);
-                    let mut args = vec![
-                        "diff-index",
-                        "--cached",
-                        "-p",
-                        "--find-renames",
-                        "--no-ext-diff",
-                        "--no-textconv",
-                        "--unified=3",
-                        base_tree,
-                        "--",
-                    ];
-                    if let Some(previous) = change.previous_path.as_deref() {
-                        args.push(previous);
-                    }
-                    args.push(&change.path);
-                    let bytes = worktree_reader.bytes(&root, &args).await?;
-                    if bytes.contains(&0) {
-                        skip_reason = Some("二进制文件".into());
-                        None
-                    } else {
-                        match String::from_utf8(bytes) {
-                            Ok(text) => Some(text),
-                            Err(_) => {
-                                skip_reason = Some("非 UTF-8 编码文本".into());
-                                None
-                            }
-                        }
-                    }
-                } else if change.git_status == "??" {
-                    let full_path = root.join(&change.path);
-                    let metadata = fs::symlink_metadata(&full_path)
-                        .map_err(|_| "无法读取未跟踪变更文件；当前草稿与选择已保留")?;
-                    if metadata.file_type().is_symlink() {
-                        let link = fs::read_link(&full_path).map_err(|_| "无法读取符号链接目标")?;
-                        Some(format_untracked_patch(
-                            &change.path,
-                            &format!("symlink -> {}", link.display()),
-                        ))
-                    } else if metadata.len() as usize > MAX_FILE_PATCH_BYTES {
-                        skip_reason = Some("大文件（超出单文件内联上限）".into());
-                        None
-                    } else {
-                        let bytes = fs::read(&full_path)
-                            .map_err(|_| "无法读取未跟踪文件内容；当前草稿与选择已保留")?;
-                        if bytes.contains(&0) {
-                            skip_reason = Some("二进制文件".into());
-                            None
-                        } else {
-                            match String::from_utf8(bytes) {
-                                Ok(text) => Some(format_untracked_patch(&change.path, &text)),
-                                Err(_) => {
-                                    skip_reason = Some("非 UTF-8 编码文本".into());
-                                    None
-                                }
-                            }
-                        }
-                    }
+            } else if change.range.kind == "partial" || change.range.kind == "staged" {
+                let base_tree = live_tree.head.as_deref().unwrap_or(EMPTY_TREE_OID);
+                let mut args = vec![
+                    "diff-index",
+                    "--cached",
+                    "-p",
+                    "--find-renames",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--unified=1",
+                    base_tree,
+                    "--",
+                ];
+                if let Some(previous) = change.previous_path.as_deref() {
+                    args.push(previous);
+                }
+                args.push(&change.path);
+                let bytes = worktree_reader.bytes(&root, &args).await?;
+                if bytes.contains(&0) {
+                    skip_reason = Some("二进制文件".into());
                 } else {
-                    let bytes = worktree_reader
-                        .bytes(
-                            &root,
-                            &[
-                                "diff-files",
-                                "-p",
-                                "--no-ext-diff",
-                                "--no-textconv",
-                                "--unified=3",
-                                "--",
-                                &change.path,
-                            ],
-                        )
-                        .await?;
+                    match String::from_utf8(bytes) {
+                        Ok(text) => raw_patch_opt = Some(text),
+                        Err(_) => skip_reason = Some("非 UTF-8 编码文本".into()),
+                    }
+                }
+            } else if change.git_status == "??" {
+                let full_path = root.join(&change.path);
+                let metadata = fs::symlink_metadata(&full_path)
+                    .map_err(|_| "无法读取未跟踪变更文件；当前草稿与选择已保留")?;
+                if metadata.file_type().is_symlink() {
+                    let link = fs::read_link(&full_path).map_err(|_| "无法读取符号链接目标")?;
+                    raw_patch_opt = Some(format_untracked_patch(
+                        &change.path,
+                        &format!("symlink -> {}", link.display()),
+                    ));
+                } else if metadata.len() as usize > MAX_UNTRACKED_READ_BYTES {
+                    skip_reason = Some("大文件（超出单文件内联上限）".into());
+                } else {
+                    let bytes = fs::read(&full_path)
+                        .map_err(|_| "无法读取未跟踪文件内容；当前草稿与选择已保留")?;
                     if bytes.contains(&0) {
                         skip_reason = Some("二进制文件".into());
-                        None
                     } else {
                         match String::from_utf8(bytes) {
-                            Ok(text) => Some(text),
-                            Err(_) => {
-                                skip_reason = Some("非 UTF-8 编码文本".into());
-                                None
+                            Ok(text) => {
+                                raw_patch_opt = Some(format_untracked_patch(&change.path, &text))
                             }
+                            Err(_) => skip_reason = Some("非 UTF-8 编码文本".into()),
                         }
                     }
-                };
-
-                if let Some(raw_patch) = raw_patch_opt {
-                    let remaining = MAX_TOTAL_PATCH_BYTES.saturating_sub(total_patch_bytes);
-                    if remaining < MIN_PARTIAL_PATCH_BUDGET {
-                        skip_reason = Some("所选总改动较大，省略内联补丁".into());
-                    } else {
-                        let allowed = MAX_FILE_PATCH_BYTES.min(remaining);
-                        let final_patch = if raw_patch.len() > allowed {
-                            let cut = raw_patch.floor_char_boundary(allowed);
-                            skip_reason = Some("大文件改动较大，补丁已截断".into());
-                            format!("{}\n... [truncated]", &raw_patch[..cut])
-                        } else {
-                            raw_patch
-                        };
-                        total_patch_bytes += final_patch.len();
-                        patch = Some(final_patch);
+                }
+            } else {
+                let bytes = worktree_reader
+                    .bytes(
+                        &root,
+                        &[
+                            "diff-files",
+                            "-p",
+                            "--no-ext-diff",
+                            "--no-textconv",
+                            "--unified=1",
+                            "--",
+                            &change.path,
+                        ],
+                    )
+                    .await?;
+                if bytes.contains(&0) {
+                    skip_reason = Some("二进制文件".into());
+                } else {
+                    match String::from_utf8(bytes) {
+                        Ok(text) => raw_patch_opt = Some(text),
+                        Err(_) => skip_reason = Some("非 UTF-8 编码文本".into()),
                     }
                 }
             }
 
-            files.push(FrozenCPushFile {
-                file_id: change.id.clone(),
-                path: change.path.clone(),
-                previous_path: change.previous_path.clone(),
-                status: change.status.clone(),
-                range_kind: change.range.kind.clone(),
-                added: change.range.added,
-                removed: change.range.removed,
-                ignored_for_review: change.ignored_for_review,
-                binary: change.binary,
-                content_version: change.content_version.clone(),
-                patch,
-                skip_reason,
-            });
+            raw_entries.push((raw_patch_opt, skip_reason));
         }
+
+        let mut patch_indices: Vec<usize> = raw_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, (patch, _))| patch.as_ref().map(|p| (idx, p.len())))
+            .map(|(idx, _)| idx)
+            .collect();
+        patch_indices.sort_by_key(|&idx| (raw_entries[idx].0.as_ref().map_or(0, String::len), idx));
+
+        let mut remaining_budget = CPUSH_MAX_TOTAL_PATCH_BYTES;
+        for (pos, &idx) in patch_indices.iter().enumerate() {
+            let files_left = patch_indices.len() - pos;
+            let fair_share = (remaining_budget / files_left).min(CPUSH_MAX_FILE_PATCH_BYTES);
+            let Some(raw_patch) = raw_entries[idx].0.take() else {
+                continue;
+            };
+            if raw_patch.len() <= fair_share {
+                remaining_budget = remaining_budget.saturating_sub(raw_patch.len());
+                raw_entries[idx].0 = Some(raw_patch);
+            } else if fair_share >= CPUSH_MIN_PARTIAL_PATCH_BUDGET {
+                let slimmed = truncate_patch_head_tail(&raw_patch, fair_share);
+                remaining_budget = remaining_budget.saturating_sub(slimmed.len());
+                raw_entries[idx].0 = Some(slimmed);
+                raw_entries[idx].1 = Some("大文件改动较大，补丁已精简".into());
+            } else {
+                raw_entries[idx].1 = Some("所选总改动较大，省略内联补丁".into());
+            }
+        }
+
+        let files = selections
+            .iter()
+            .zip(raw_entries)
+            .map(|(item, (patch, skip_reason))| {
+                let change = change_by_id[item.file_id.as_str()];
+                FrozenCPushFile {
+                    file_id: change.id.clone(),
+                    path: change.path.clone(),
+                    previous_path: change.previous_path.clone(),
+                    status: change.status.clone(),
+                    range_kind: change.range.kind.clone(),
+                    added: change.range.added,
+                    removed: change.range.removed,
+                    ignored_for_review: change.ignored_for_review,
+                    binary: change.binary,
+                    content_version: change.content_version.clone(),
+                    patch,
+                    skip_reason,
+                }
+            })
+            .collect();
 
         Ok(ExtractedCPushScope {
             branch: live_tree.branch,
@@ -623,5 +676,92 @@ impl RepositoryStore {
             });
         }
         Ok((snapshot, selections))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repository::smoke::Fixture;
+
+    #[test]
+    fn head_tail_truncation_preserves_both_ends_and_utf8_boundaries() {
+        let mut raw =
+            String::from("--- a/src/views/sofDialog.vue\n+++ b/src/views/sofDialog.vue\n");
+        for idx in 0..300 {
+            raw.push_str(&format!(
+                "+  <div>表单字段 {idx}：泊位与装卸作业时间校验</div>\n"
+            ));
+        }
+        raw.push_str("+export function submitSofDialog() { return true; }\n");
+
+        let slimmed = truncate_patch_head_tail(&raw, 1024);
+        assert!(slimmed.len() <= 1024);
+        assert!(slimmed.starts_with("--- a/src/views/sofDialog.vue"));
+        assert!(slimmed.contains("[省略中间"));
+        assert!(slimmed.contains("+export function submitSofDialog()"));
+    }
+
+    #[tokio::test]
+    async fn cpush_scope_distributes_patch_budget_across_many_large_files() {
+        let fixture = Fixture::new().unwrap();
+        for idx in 0..7 {
+            let mut content = format!("<template><section id=\"view-{idx}\">\n");
+            for line in 0..320 {
+                content.push_str(&format!(
+                    "  <p>业务字段 {idx}-{line}：装卸港作业节点记录</p>\n"
+                ));
+            }
+            content.push_str(&format!(
+                "</section></template>\n<script setup>\nconst pageId = {idx};\n</script>\n"
+            ));
+            fs::write(fixture.root.join(format!("page-{idx}.vue")), content).unwrap();
+        }
+
+        let store = RepositoryStore::default();
+        let snapshot = store.open(&fixture.root).await.unwrap();
+        let tree = &snapshot.worktrees[0];
+        let selections: Vec<CommitSelection> = tree
+            .files
+            .iter()
+            .filter(|f| f.path.starts_with("page-"))
+            .map(|f| CommitSelection {
+                file_id: f.id.clone(),
+                commit_token: f.commit_token.clone(),
+            })
+            .collect();
+        assert_eq!(selections.len(), 7);
+
+        let target = ReadTarget {
+            repository_id: tree.repository_id.clone(),
+            worktree_id: tree.worktree_id.clone(),
+            session_id: "sess-budget".into(),
+            scope_version: tree.status_version.clone(),
+        };
+        let extracted = store
+            .extract_cpush_scope(&target, &selections)
+            .await
+            .unwrap();
+        assert_eq!(extracted.files.len(), 7);
+
+        let total_bytes: usize = extracted
+            .files
+            .iter()
+            .map(|f| f.patch.as_ref().map_or(0, String::len))
+            .sum();
+        assert!(total_bytes <= CPUSH_MAX_TOTAL_PATCH_BYTES);
+
+        for file in &extracted.files {
+            let patch = file
+                .patch
+                .as_deref()
+                .expect("every file gets fair patch share");
+            assert!(patch.contains("<template><section"));
+            assert!(patch.contains("<script setup>"));
+            assert_eq!(
+                file.skip_reason.as_deref(),
+                Some("大文件改动较大，补丁已精简")
+            );
+        }
     }
 }
