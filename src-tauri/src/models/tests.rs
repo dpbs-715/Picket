@@ -42,11 +42,15 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 model_id: "claude-sonnet-4-20250514".into(),
                 base_url: "https://ignored.example.com".into(),
                 api_key: format!("  {secret_claude}  "),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await
         .unwrap();
     assert_eq!(saved_anthropic.model.base_url, None);
+    assert_eq!(saved_anthropic.model.context_window, Some(200_000));
+    assert_eq!(saved_anthropic.model.max_output_tokens, Some(16_384));
     assert_eq!(saved_anthropic.active_model_id, saved_anthropic.model.id);
 
     let saved_ollama = store
@@ -60,11 +64,15 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 model_id: "qwen2.5-coder:14b".into(),
                 base_url: "http://127.0.0.1:11434/v1/".into(),
                 api_key: "must-be-discarded-for-ollama".into(),
+                context_window: Some(32_768),
+                max_output_tokens: Some(4_096),
             },
         )
         .await
         .unwrap();
     assert_eq!(saved_ollama.model.name, "qwen2.5-coder:14b");
+    assert_eq!(saved_ollama.model.context_window, Some(32_768));
+    assert_eq!(saved_ollama.model.max_output_tokens, Some(4_096));
     assert_eq!(
         saved_ollama.model.base_url.as_deref(),
         Some("http://127.0.0.1:11434/v1")
@@ -81,6 +89,8 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 model_id: "coding-v3".into(),
                 base_url: "https://gateway.example.com/v1".into(),
                 api_key: secret_custom.into(),
+                context_window: Some(256_000),
+                max_output_tokens: Some(32_768),
             },
         )
         .await
@@ -146,6 +156,8 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 model_id: "coding-v4".into(),
                 base_url: "https://gateway2.example.com/v1".into(),
                 api_key: String::new(),
+                context_window: Some(128_000),
+                max_output_tokens: Some(16_384),
             },
         )
         .await
@@ -191,6 +203,8 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 model_id: "coding-v5".into(),
                 base_url: "https://gateway2.example.com/v1".into(),
                 api_key: rotated_secret.into(),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await
@@ -266,6 +280,8 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             model_id: "m1".into(),
             base_url: bad_url.into(),
             api_key: "sk-ok".into(),
+            context_window: None,
+            max_output_tokens: None,
         })
         .unwrap_err();
         assert!(!err.is_empty(), "expected error for {bad_url}");
@@ -280,8 +296,26 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             model_id: "gpt-4.1".into(),
             base_url: String::new(),
             api_key: "   ".into(),
+            context_window: None,
+            max_output_tokens: None,
         })
         .is_err()
+    );
+
+    assert!(
+        validate_and_normalize_model_input(&ModelInput {
+            id: None,
+            provider: ProviderKind::Openai,
+            api_format: None,
+            name: "GPT".into(),
+            model_id: "gpt-4.1".into(),
+            base_url: String::new(),
+            api_key: "sk-ok".into(),
+            context_window: Some(16_384),
+            max_output_tokens: Some(32_768),
+        })
+        .unwrap_err()
+        .contains("不能超过上下文长度")
     );
 
     assert!(
@@ -344,6 +378,8 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                     model_id: "test-model".into(),
                     base_url: base_url.into(),
                     api_key: api_key.into(),
+                    context_window: None,
+                    max_output_tokens: None,
                 },
             )
             .await
@@ -370,6 +406,8 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 model_id: "m".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: leaked_key.into(),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await
@@ -389,6 +427,8 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 model_id: "coder-v1".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-saved-in-keychain-only".into(),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await

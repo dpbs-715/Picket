@@ -1,3 +1,4 @@
+pub mod defaults;
 pub mod keychain;
 pub mod smoke;
 pub mod store;

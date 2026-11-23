@@ -1,7 +1,7 @@
 import { HelpTip, Icon, IconButton, Overlay } from '../../ui/controls';
 import { editors } from '../workbench/state/workbench';
 import type { EditorId } from '../workbench/state/workbench';
-import { apiFormatFor, providerFor } from './modelProviders';
+import { apiFormatFor, formatTokenCount, providerFor, resolveDefaultTokenLimits } from './modelProviders';
 import type { ModelConfiguration } from './modelProviders';
 
 interface Props {
@@ -56,12 +56,16 @@ export function SettingsPanel(props: Props) {
             const effectiveFormat = model.apiFormat ?? providerMeta.defaultApiFormat;
             const formatShort = apiFormatFor(effectiveFormat).short;
             const showFormat = model.provider === 'custom' || effectiveFormat !== providerMeta.defaultApiFormat;
-            const detailTitle = `${providerMeta.label}（${formatShort}）· ${model.modelId}${model.baseUrl ? ` · ${model.baseUrl}` : ''}`;
+            const fallbackLimits = resolveDefaultTokenLimits(model.provider, effectiveFormat);
+            const contextWindow = model.contextWindow ?? fallbackLimits.contextWindow;
+            const maxOutputTokens = model.maxOutputTokens ?? fallbackLimits.maxOutputTokens;
+            const tokenSummary = `${formatTokenCount(contextWindow)}/${formatTokenCount(maxOutputTokens)}`;
+            const detailTitle = `${providerMeta.label}（${formatShort}）· ${model.modelId} · 上下文 ${contextWindow} / 最大输出 ${maxOutputTokens}${model.baseUrl ? ` · ${model.baseUrl}` : ''}`;
             return <div className={`model-row ${active ? 'is-active' : ''}`} key={model.id}>
               <button type="button" className="model-select" aria-pressed={active} title={detailTitle} onClick={() => props.onSelectModel(model.id)}>
                 <span className="model-body">
                   <span className="model-title-row"><strong className="truncate">{model.name}</strong>{active && <span className="model-active-badge"><span className="status-dot" />当前使用</span>}</span>
-                  <span className="model-meta-row"><span className="model-provider">{providerMeta.label}{showFormat ? ` · ${formatShort}` : ''}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-id truncate">{model.modelId}</span></span>
+                  <span className="model-meta-row"><span className="model-provider">{providerMeta.label}{showFormat ? ` · ${formatShort}` : ''}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-id truncate">{model.modelId}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-tokens">{tokenSummary}</span></span>
                 </span>
               </button>
               <div className="model-actions">

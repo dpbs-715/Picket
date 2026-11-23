@@ -212,7 +212,10 @@ export async function verifyWorkbench(root: Root) {
   await mount(fixture('no-model'));
   await click('设置'); await click('添加第一个模型');
   const formatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
+  const ctxInput = document.querySelector<HTMLInputElement>('input[aria-label="上下文长度"]')!;
+  const maxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="最大输出 Token"]')!;
   assert(formatSelect && formatSelect.value === 'anthropic-messages', 'Anthropic 默认接口格式应为 anthropic-messages');
+  assert(ctxInput.value === '200000' && maxOutInput.value === '16384', 'Anthropic 默认上下文与最大输出 Token 应从共享默认配置加载');
   const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key 安全存储说明"]')!;
   assert(
     !!keyHelpTip && getComputedStyle(keyHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden'
@@ -221,11 +224,13 @@ export async function verifyWorkbench(root: Root) {
   );
   await click('自定义兼容');
   assert((formatSelect.value as string) === 'openai-completions', '自定义兼容默认接口格式应为 openai-completions');
+  assert((ctxInput.value as string) === '128000' && (maxOutInput.value as string) === '16384', '自定义兼容应加载对应默认 Token 配置');
   await act(async () => {
     formatSelect.value = 'openai-responses';
     formatSelect.dispatchEvent(new Event('change', { bubbles: true }));
   });
   assert((formatSelect.value as string) === 'openai-responses', '接口格式下拉框应支持自由切换协议');
+  assert((ctxInput.value as string) === '200000' && (maxOutInput.value as string) === '32768', '未手动改动时切换接口格式应联动更新默认 Token 配置');
   await click('Ollama（本地）');
   assert(!document.querySelector('input[type="password"]'), 'Ollama 不应要求 Key');
   assert(document.querySelector('input[value="http://127.0.0.1:11434/v1"]'), 'Ollama 地址默认值错误');
@@ -244,7 +249,16 @@ export async function verifyWorkbench(root: Root) {
     async execute(command) { modelCalls.push(command); },
     async saveModel(input) {
       editedPayload = input;
-      return { id: input.id ?? 'new-id', name: input.name, provider: input.provider, apiFormat: input.apiFormat, modelId: input.modelId, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}) };
+      return {
+        id: input.id ?? 'new-id',
+        name: input.name,
+        provider: input.provider,
+        apiFormat: input.apiFormat,
+        modelId: input.modelId,
+        contextWindow: input.contextWindow,
+        maxOutputTokens: input.maxOutputTokens,
+        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+      };
     },
   });
   await click('设置');
@@ -254,6 +268,10 @@ export async function verifyWorkbench(root: Root) {
   assert(text().includes('编辑模型') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', '打开编辑模型不应回填明文密钥');
   const editModelIdInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')].find((el) => el.value === 'gpt-4.1')!;
   type(editModelIdInput, 'gpt-4.1-mini'); await tick();
+  const editCtxInput = document.querySelector<HTMLInputElement>('input[aria-label="上下文长度"]')!;
+  const editMaxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="最大输出 Token"]')!;
+  type(editCtxInput, '256000');
+  type(editMaxOutInput, '24576'); await tick();
   const editFormatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
   await act(async () => {
     editFormatSelect.value = 'openai-completions';
@@ -264,9 +282,12 @@ export async function verifyWorkbench(root: Root) {
     !!editedPayload && (editedPayload as { id?: string; apiKey: string; apiFormat?: string }).id === 'test-gpt'
       && (editedPayload as { apiKey: string }).apiKey === ''
       && (editedPayload as { apiFormat?: string }).apiFormat === 'openai-completions'
+      && (editedPayload as { contextWindow?: number }).contextWindow === 256_000
+      && (editedPayload as { maxOutputTokens?: number }).maxOutputTokens === 24_576
       && !!document.querySelector('[aria-label="关闭设置"]')
-      && text().includes('gpt-4.1-mini'),
-    '编辑模型留空密钥应就地保存更新并回到设置列表，同时不切走当前使用模型',
+      && text().includes('gpt-4.1-mini')
+      && text().includes('256K/24K'),
+    '编辑模型留空密钥应就地保存更新并回到设置列表，同时保留自定义上下文长度与最大输出 Token',
   );
   await click('删除模型 Claude Sonnet 4');
   assert(text().includes('GPT-4.1') && !text().includes('Claude Sonnet 4'), '删除当前模型没有回退');

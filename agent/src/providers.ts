@@ -3,6 +3,11 @@ import * as openaiCompletions from '@earendil-works/pi-ai/api/openai-completions
 import * as openaiResponses from '@earendil-works/pi-ai/api/openai-responses';
 import { createModels, createProvider, type MutableModels } from '@earendil-works/pi-ai/models';
 import type { Api, Model, ProviderStreams } from '@earendil-works/pi-ai';
+import {
+  resolveDefaultApiFormat,
+  resolveDefaultBaseUrl,
+  resolveDefaultTokenLimits,
+} from '../../shared/model-defaults';
 import type { ModelApiFormat } from '../../shared/model-protocol';
 import type { PiProviderSpec } from '../../shared/pi-protocol';
 
@@ -11,36 +16,22 @@ interface ResolvedRuntimeModel {
   model: Model<Api>;
 }
 
-const DEFAULT_BASE_URLS: Record<PiProviderSpec['provider'], string> = {
-  anthropic: 'https://api.anthropic.com',
-  openai: 'https://api.openai.com/v1',
-  deepseek: 'https://api.deepseek.com',
-  ollama: 'http://127.0.0.1:11434/v1',
-  custom: '',
-};
-
-function defaultApiFormat(provider: PiProviderSpec['provider']): ModelApiFormat {
-  if (provider === 'anthropic') return 'anthropic-messages';
-  if (provider === 'openai') return 'openai-responses';
-  return 'openai-completions';
-}
-
 function resolveApiAndStreams(
   provider: PiProviderSpec['provider'],
   explicitFormat?: ModelApiFormat,
-): { api: Api; streams: ProviderStreams } {
-  const format = explicitFormat ?? defaultApiFormat(provider);
+): { format: ModelApiFormat; api: Api; streams: ProviderStreams } {
+  const format = explicitFormat ?? resolveDefaultApiFormat(provider);
   if (format === 'anthropic-messages') {
-    return { api: 'anthropic-messages', streams: anthropicMessages as unknown as ProviderStreams };
+    return { format, api: 'anthropic-messages', streams: anthropicMessages as unknown as ProviderStreams };
   }
   if (format === 'openai-responses') {
-    return { api: 'openai-responses', streams: openaiResponses as unknown as ProviderStreams };
+    return { format, api: 'openai-responses', streams: openaiResponses as unknown as ProviderStreams };
   }
-  return { api: 'openai-completions', streams: openaiCompletions as unknown as ProviderStreams };
+  return { format, api: 'openai-completions', streams: openaiCompletions as unknown as ProviderStreams };
 }
 
 export function createIsolatedModelRuntime(spec: PiProviderSpec): ResolvedRuntimeModel {
-  const baseUrl = (spec.baseUrl || DEFAULT_BASE_URLS[spec.provider]).trim();
+  const baseUrl = (spec.baseUrl || resolveDefaultBaseUrl(spec.provider)).trim();
   if (!baseUrl) {
     throw new Error('缺少模型服务接口地址（Base URL）');
   }
@@ -62,13 +53,16 @@ export function createIsolatedModelRuntime(spec: PiProviderSpec): ResolvedRuntim
   // Keyless Ollama local endpoints run through the OpenAI SDK client, which
   // expects a non-empty placeholder string even when the local server ignores auth.
   const effectiveKey = requiresKey ? trimmedKey : 'ollama';
-  const { api, streams } = resolveApiAndStreams(spec.provider, spec.apiFormat);
+  const { format, api, streams } = resolveApiAndStreams(spec.provider, spec.apiFormat);
   let normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
   if (api === 'anthropic-messages' && /\/v1$/i.test(parsedUrl.pathname.replace(/\/+$/, ''))) {
     // @anthropic-ai/sdk always appends `/v1/messages`; strip a trailing `/v1`
     // when users paste an OpenAI-style `http://host:port/v1` gateway URL.
     normalizedBaseUrl = normalizedBaseUrl.replace(/\/v1$/i, '');
   }
+  const tokenDefaults = resolveDefaultTokenLimits(spec.provider, format);
+  const contextWindow = spec.contextWindow ?? tokenDefaults.contextWindow;
+  const maxTokens = spec.maxOutputTokens ?? tokenDefaults.maxOutputTokens;
 
   const model: Model<Api> = {
     id: spec.modelId.trim(),
@@ -79,8 +73,8 @@ export function createIsolatedModelRuntime(spec: PiProviderSpec): ResolvedRuntim
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     reasoning: false,
-    contextWindow: 128_000,
-    maxTokens: 32_768,
+    contextWindow,
+    maxTokens,
     ...(api === 'openai-completions' ? {
       compat: {
         supportsStore: false,

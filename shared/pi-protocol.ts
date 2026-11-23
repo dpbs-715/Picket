@@ -19,6 +19,8 @@ export interface PiProviderSpec {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 export interface PiDiffFile {
@@ -224,7 +226,9 @@ function decodeProviderSpec(value: unknown): PiProviderSpec {
     || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
     || typeof value.modelId !== 'string' || !value.modelId.trim()
     || typeof value.baseUrl !== 'string'
-    || typeof value.apiKey !== 'string') {
+    || typeof value.apiKey !== 'string'
+    || !(value.contextWindow === undefined || value.contextWindow === null || (typeof value.contextWindow === 'number' && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0))
+    || !(value.maxOutputTokens === undefined || value.maxOutputTokens === null || (typeof value.maxOutputTokens === 'number' && Number.isSafeInteger(value.maxOutputTokens) && value.maxOutputTokens > 0))) {
     throw new Error('Invalid model specification');
   }
   return {
@@ -233,6 +237,8 @@ function decodeProviderSpec(value: unknown): PiProviderSpec {
     modelId: value.modelId.trim(),
     baseUrl: value.baseUrl.trim(),
     apiKey: value.apiKey,
+    ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
+    ...(typeof value.maxOutputTokens === 'number' ? { maxOutputTokens: value.maxOutputTokens } : {}),
   };
 }
 

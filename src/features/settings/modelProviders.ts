@@ -1,18 +1,39 @@
-export const apiFormats = [
-  { id: 'openai-completions', label: 'OpenAI Chat Completions（/chat/completions）', short: 'Chat Completions' },
-  { id: 'openai-responses', label: 'OpenAI Responses（/responses）', short: 'Responses' },
-  { id: 'anthropic-messages', label: 'Anthropic Messages（/v1/messages）', short: 'Anthropic' },
-] as const;
-export type ApiFormatId = typeof apiFormats[number]['id'];
+import {
+  formatTokenCount,
+  MODEL_API_FORMAT_DEFAULTS,
+  MODEL_PROVIDER_DEFAULTS,
+  MODEL_TOKEN_LIMITS,
+  resolveDefaultTokenLimits,
+  validateTokenLimits,
+} from '../../../shared/model-defaults';
+import { MODEL_API_FORMATS, MODEL_PROVIDER_IDS } from '../../../shared/model-protocol';
+import type { ModelApiFormat, ModelProviderId } from '../../../shared/model-protocol';
 
-export const providers = [
-  { id: 'anthropic', label: 'Anthropic', defaultApiFormat: 'anthropic-messages', needsKey: true, needsUrl: false, model: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', url: '' },
-  { id: 'openai', label: 'OpenAI', defaultApiFormat: 'openai-responses', needsKey: true, needsUrl: false, model: 'gpt-4.1', name: 'GPT-4.1', url: '' },
-  { id: 'deepseek', label: 'DeepSeek', defaultApiFormat: 'openai-completions', needsKey: true, needsUrl: false, model: 'deepseek-chat', name: 'DeepSeek V3', url: '' },
-  { id: 'ollama', label: 'Ollama（本地）', defaultApiFormat: 'openai-completions', needsKey: false, needsUrl: true, model: 'qwen2.5-coder:14b', name: 'Qwen 2.5 Coder', url: 'http://127.0.0.1:11434/v1' },
-  { id: 'custom', label: '自定义兼容', defaultApiFormat: 'openai-completions', needsKey: true, needsUrl: true, model: 'custom-code-model', name: '自定义模型', url: 'https://api.example.com/v1' },
-] as const;
-export type ProviderId = typeof providers[number]['id'];
+export { formatTokenCount, MODEL_TOKEN_LIMITS, resolveDefaultTokenLimits };
+
+export const apiFormats = MODEL_API_FORMATS.map((id) => ({
+  id,
+  label: MODEL_API_FORMAT_DEFAULTS[id].label,
+  short: MODEL_API_FORMAT_DEFAULTS[id].short,
+}));
+export type ApiFormatId = ModelApiFormat;
+
+export const providers = MODEL_PROVIDER_IDS.map((id) => {
+  const cfg = MODEL_PROVIDER_DEFAULTS[id];
+  return {
+    id,
+    label: cfg.label,
+    defaultApiFormat: cfg.defaultApiFormat,
+    needsKey: cfg.needsKey,
+    needsUrl: cfg.needsUrl,
+    model: cfg.exampleModelId,
+    name: cfg.exampleName,
+    url: cfg.placeholderUrl,
+    defaultContextWindow: cfg.defaultContextWindow,
+    defaultMaxOutputTokens: cfg.defaultMaxOutputTokens,
+  };
+});
+export type ProviderId = ModelProviderId;
 
 export interface ModelConfiguration {
   id: string;
@@ -21,6 +42,8 @@ export interface ModelConfiguration {
   apiFormat?: ApiFormatId;
   modelId: string;
   baseUrl?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 // Credentials exist only in the open form and the explicit desktop request.
@@ -33,26 +56,50 @@ export interface ModelInput {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
-export function providerFor(id: ProviderId) { return providers.find((provider) => provider.id === id)!; }
-export function apiFormatFor(id: ApiFormatId) { return apiFormats.find((format) => format.id === id)!; }
+export function providerFor(id: ProviderId) {
+  return providers.find((provider) => provider.id === id)!;
+}
+
+export function apiFormatFor(id: ApiFormatId) {
+  return apiFormats.find((format) => format.id === id)!;
+}
+
 export function newModelInput(provider: ProviderId = 'anthropic'): ModelInput {
   const defaults = providerFor(provider);
-  return { provider, apiFormat: defaults.defaultApiFormat, name: defaults.name, modelId: defaults.model, baseUrl: defaults.url, apiKey: '' };
+  const limits = resolveDefaultTokenLimits(provider, defaults.defaultApiFormat);
+  return {
+    provider,
+    apiFormat: defaults.defaultApiFormat,
+    name: defaults.name,
+    modelId: defaults.model,
+    baseUrl: defaults.url,
+    apiKey: '',
+    contextWindow: limits.contextWindow,
+    maxOutputTokens: limits.maxOutputTokens,
+  };
 }
+
 export function editModelInput(model: ModelConfiguration): ModelInput {
   const defaults = providerFor(model.provider);
+  const apiFormat = model.apiFormat ?? defaults.defaultApiFormat;
+  const fallbackLimits = resolveDefaultTokenLimits(model.provider, apiFormat);
   return {
     id: model.id,
     provider: model.provider,
-    apiFormat: model.apiFormat ?? defaults.defaultApiFormat,
+    apiFormat,
     name: model.name,
     modelId: model.modelId,
     baseUrl: model.baseUrl ?? defaults.url,
     apiKey: '',
+    contextWindow: model.contextWindow ?? fallbackLimits.contextWindow,
+    maxOutputTokens: model.maxOutputTokens ?? fallbackLimits.maxOutputTokens,
   };
 }
+
 export function validateModel(input: ModelInput, options?: { canKeepExistingKey?: boolean }): string | undefined {
   const provider = providerFor(input.provider);
   if (!input.modelId.trim()) return '请填写模型 ID';
@@ -60,20 +107,36 @@ export function validateModel(input: ModelInput, options?: { canKeepExistingKey?
     if (!input.baseUrl.trim()) return '请填写接口地址';
     try {
       const url = new URL(input.baseUrl.trim());
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '接口地址须为不含用户名和密码的 HTTP / HTTPS 地址';
-    } catch { return '请填写有效的 HTTP / HTTPS 接口地址'; }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+        return '接口地址须为不含用户名和密码的 HTTP / HTTPS 地址';
+      }
+    } catch {
+      return '请填写有效的 HTTP / HTTPS 接口地址';
+    }
   }
-  if (provider.needsKey && !input.apiKey.trim() && !options?.canKeepExistingKey) return '请填写 API Key';
+  if (provider.needsKey && !input.apiKey.trim() && !options?.canKeepExistingKey) {
+    return '请填写 API Key';
+  }
+  const effectiveFormat = input.apiFormat ?? provider.defaultApiFormat;
+  const fallbackLimits = resolveDefaultTokenLimits(input.provider, effectiveFormat);
+  const contextWindow = input.contextWindow ?? fallbackLimits.contextWindow;
+  const maxOutputTokens = input.maxOutputTokens ?? fallbackLimits.maxOutputTokens;
+  return validateTokenLimits(contextWindow, maxOutputTokens);
 }
+
 export function normalizedModel(input: ModelInput): ModelInput {
   const provider = providerFor(input.provider);
+  const apiFormat = input.apiFormat ?? provider.defaultApiFormat;
+  const fallbackLimits = resolveDefaultTokenLimits(input.provider, apiFormat);
   return {
     ...(input.id ? { id: input.id } : {}),
     provider: input.provider,
-    apiFormat: input.apiFormat ?? provider.defaultApiFormat,
+    apiFormat,
     name: input.name.trim() || input.modelId.trim(),
     modelId: input.modelId.trim(),
     baseUrl: provider.needsUrl ? input.baseUrl.trim() : '',
     apiKey: provider.needsKey ? input.apiKey.trim() : '',
+    contextWindow: input.contextWindow ?? fallbackLimits.contextWindow,
+    maxOutputTokens: input.maxOutputTokens ?? fallbackLimits.maxOutputTokens,
   };
 }

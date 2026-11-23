@@ -1,3 +1,4 @@
+use super::defaults::{model_defaults, resolve_default_token_limits, validate_token_limits};
 use crate::repository::types::{CommitSelection, ReadTarget};
 use serde::{Deserialize, Serialize};
 
@@ -43,39 +44,43 @@ impl ProviderKind {
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Anthropic => "Anthropic",
-            Self::Openai => "OpenAI",
-            Self::Deepseek => "DeepSeek",
-            Self::Ollama => "Ollama（本地）",
-            Self::Custom => "自定义兼容",
-        }
+        model_defaults()
+            .providers
+            .get(self.as_id())
+            .map(|entry| entry.label.as_str())
+            .unwrap_or(self.as_id())
     }
 
     pub fn default_api_format(self) -> ApiFormatKind {
-        match self {
-            Self::Anthropic => ApiFormatKind::AnthropicMessages,
-            Self::Openai => ApiFormatKind::OpenaiResponses,
-            Self::Deepseek | Self::Ollama | Self::Custom => ApiFormatKind::OpenaiCompletions,
-        }
+        model_defaults()
+            .providers
+            .get(self.as_id())
+            .map(|entry| entry.default_api_format)
+            .unwrap_or(ApiFormatKind::OpenaiCompletions)
     }
 
     pub fn needs_key(self) -> bool {
-        !matches!(self, Self::Ollama)
+        model_defaults()
+            .providers
+            .get(self.as_id())
+            .map(|entry| entry.needs_key)
+            .unwrap_or(!matches!(self, Self::Ollama))
     }
 
     pub fn needs_url(self) -> bool {
-        matches!(self, Self::Ollama | Self::Custom)
+        model_defaults()
+            .providers
+            .get(self.as_id())
+            .map(|entry| entry.needs_url)
+            .unwrap_or(matches!(self, Self::Ollama | Self::Custom))
     }
 
     pub fn default_base_url(self) -> &'static str {
-        match self {
-            Self::Anthropic => "https://api.anthropic.com",
-            Self::Openai => "https://api.openai.com/v1",
-            Self::Deepseek => "https://api.deepseek.com",
-            Self::Ollama => "http://127.0.0.1:11434/v1",
-            Self::Custom => "",
-        }
+        model_defaults()
+            .providers
+            .get(self.as_id())
+            .map(|entry| entry.default_base_url.as_str())
+            .unwrap_or("")
     }
 }
 
@@ -90,6 +95,10 @@ pub struct SavedModelConfiguration {
     pub model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -104,6 +113,10 @@ pub struct ModelInput {
     pub model_id: String,
     pub base_url: String,
     pub api_key: String,
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +127,8 @@ pub struct NormalizedModelInput {
     pub model_id: String,
     pub base_url: Option<String>,
     pub api_key: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,14 +346,23 @@ pub fn validate_and_normalize_model_input_with_options(
         String::new()
     };
 
+    let api_format = input
+        .api_format
+        .unwrap_or_else(|| input.provider.default_api_format());
+    let (default_context_window, default_max_output_tokens) =
+        resolve_default_token_limits(input.provider, Some(api_format));
+    let context_window = input.context_window.unwrap_or(default_context_window);
+    let max_output_tokens = input.max_output_tokens.unwrap_or(default_max_output_tokens);
+    validate_token_limits(context_window, max_output_tokens)?;
+
     Ok(NormalizedModelInput {
         provider: input.provider,
-        api_format: input
-            .api_format
-            .unwrap_or_else(|| input.provider.default_api_format()),
+        api_format,
         name,
         model_id: model_id.to_owned(),
         base_url,
         api_key,
+        context_window,
+        max_output_tokens,
     })
 }

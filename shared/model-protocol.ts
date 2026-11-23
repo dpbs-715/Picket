@@ -15,6 +15,8 @@ export interface SavedModelConfiguration {
   apiFormat?: ModelApiFormat;
   modelId: string;
   baseUrl?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 export interface ModelInputPayload {
@@ -25,6 +27,8 @@ export interface ModelInputPayload {
   modelId: string;
   baseUrl: string;
   apiKey: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 export interface ModelTestReply {
@@ -125,7 +129,9 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     || !isModelProviderId(value.provider)
     || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
     || typeof value.modelId !== 'string' || !value.modelId
-    || !(value.baseUrl === undefined || value.baseUrl === null || typeof value.baseUrl === 'string')) {
+    || !(value.baseUrl === undefined || value.baseUrl === null || typeof value.baseUrl === 'string')
+    || !(value.contextWindow === undefined || value.contextWindow === null || (typeof value.contextWindow === 'number' && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0))
+    || !(value.maxOutputTokens === undefined || value.maxOutputTokens === null || (typeof value.maxOutputTokens === 'number' && Number.isSafeInteger(value.maxOutputTokens) && value.maxOutputTokens > 0))) {
     throw new Error('模型配置协议不匹配或包含非法字段。');
   }
   return {
@@ -135,6 +141,8 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     ...(isModelApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
     modelId: value.modelId,
     ...(typeof value.baseUrl === 'string' && value.baseUrl ? { baseUrl: value.baseUrl } : {}),
+    ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
+    ...(typeof value.maxOutputTokens === 'number' ? { maxOutputTokens: value.maxOutputTokens } : {}),
   };
 }
 

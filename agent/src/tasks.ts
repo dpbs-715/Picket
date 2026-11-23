@@ -17,6 +17,7 @@ import type {
   ReviewScopeCommand,
   TestConnectionRequest,
 } from '../../shared/pi-protocol';
+import { MODEL_GLOBAL_DEFAULTS } from '../../shared/model-defaults';
 import { createProbe } from './probe';
 import { createIsolatedModelRuntime, sanitizeProviderError } from './providers';
 
@@ -556,15 +557,6 @@ function buildResolveConflictPrompts(command: ResolveConflictCommand): { systemP
   return { systemPrompt, userPrompt: parts.join('\n\n') };
 }
 
-function resolveTaskMaxTokens(api: string, modelId: string, isTest: boolean): number {
-  if (isTest) return 64;
-  if (api === 'openai-responses') return 32_768;
-  const lower = modelId.toLowerCase();
-  if (/(?:kimi|k2|k3|reasoner|deepseek-r1|\br1\b|qwq|\bo1\b|\bo3\b|\bo4\b|gpt-5|claude-(?:sonnet|opus)-4|claude-3-7)/.test(lower)) {
-    return 24_576;
-  }
-  return 8_192;
-}
 const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
 const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
@@ -622,7 +614,9 @@ function runAgentTask(
           },
           streamFn: (targetModel, context, options) => models.streamSimple(targetModel, context, {
             ...options,
-            maxTokens: resolveTaskMaxTokens(targetModel.api, targetModel.id, isTest),
+            maxTokens: isTest
+              ? Math.min(MODEL_GLOBAL_DEFAULTS.testConnectionMaxOutputTokens, targetModel.maxTokens)
+              : targetModel.maxTokens,
             ...(targetModel.api === 'openai-responses'
               && /(?:kimi|k2|k3|\bo1\b|\bo3\b|\bo4\b|gpt-5|reasoner|codex)/i.test(targetModel.id)
               ? { samplingParams: { reasoning: { effort: 'low' } } }

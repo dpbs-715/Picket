@@ -461,6 +461,8 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                 model_id: "resolver-v1".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-m5-secret-7788".into(),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await

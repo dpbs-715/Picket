@@ -51,6 +51,8 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
                 model_id: "planner-v1".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: secret.into(),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await
@@ -228,6 +230,8 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
                 model_id: "planner-v1".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-cpush-split-9900".into(),
+                context_window: None,
+                max_output_tokens: None,
             },
         )
         .await

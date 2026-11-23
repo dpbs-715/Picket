@@ -1,0 +1,95 @@
+{
+  "limits": {
+    "minContextWindow": 4096,
+    "maxContextWindow": 2000000,
+    "minMaxOutputTokens": 256,
+    "maxMaxOutputTokens": 131072
+  },
+  "defaults": {
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384,
+    "testConnectionMaxOutputTokens": 64
+  },
+  "apiFormats": {
+    "openai-completions": {
+      "label": "OpenAI Chat Completions（/chat/completions）",
+      "short": "Chat Completions",
+      "defaultContextWindow": 128000,
+      "defaultMaxOutputTokens": 8192
+    },
+    "openai-responses": {
+      "label": "OpenAI Responses（/responses）",
+      "short": "Responses",
+      "defaultContextWindow": 200000,
+      "defaultMaxOutputTokens": 32768
+    },
+    "anthropic-messages": {
+      "label": "Anthropic Messages（/v1/messages）",
+      "short": "Anthropic",
+      "defaultContextWindow": 200000,
+      "defaultMaxOutputTokens": 16384
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "label": "Anthropic",
+      "defaultApiFormat": "anthropic-messages",
+      "needsKey": true,
+      "needsUrl": false,
+      "defaultBaseUrl": "https://api.anthropic.com",
+      "placeholderUrl": "",
+      "exampleModelId": "claude-sonnet-4-20250514",
+      "exampleName": "Claude Sonnet 4",
+      "defaultContextWindow": 200000,
+      "defaultMaxOutputTokens": 16384
+    },
+    "openai": {
+      "label": "OpenAI",
+      "defaultApiFormat": "openai-responses",
+      "needsKey": true,
+      "needsUrl": false,
+      "defaultBaseUrl": "https://api.openai.com/v1",
+      "placeholderUrl": "",
+      "exampleModelId": "gpt-4.1",
+      "exampleName": "GPT-4.1",
+      "defaultContextWindow": 200000,
+      "defaultMaxOutputTokens": 32768
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "defaultApiFormat": "openai-completions",
+      "needsKey": true,
+      "needsUrl": false,
+      "defaultBaseUrl": "https://api.deepseek.com",
+      "placeholderUrl": "",
+      "exampleModelId": "deepseek-chat",
+      "exampleName": "DeepSeek V3",
+      "defaultContextWindow": 128000,
+      "defaultMaxOutputTokens": 8192
+    },
+    "ollama": {
+      "label": "Ollama（本地）",
+      "defaultApiFormat": "openai-completions",
+      "needsKey": false,
+      "needsUrl": true,
+      "defaultBaseUrl": "http://127.0.0.1:11434/v1",
+      "placeholderUrl": "http://127.0.0.1:11434/v1",
+      "exampleModelId": "qwen2.5-coder:14b",
+      "exampleName": "Qwen 2.5 Coder",
+      "defaultContextWindow": 64000,
+      "defaultMaxOutputTokens": 8192
+    },
+    "custom": {
+      "label": "自定义兼容",
+      "defaultApiFormat": "openai-completions",
+      "needsKey": true,
+      "needsUrl": true,
+      "defaultBaseUrl": "",
+      "placeholderUrl": "https://api.example.com/v1",
+      "exampleModelId": "custom-code-model",
+      "exampleName": "自定义模型",
+      "defaultContextWindow": 128000,
+      "defaultMaxOutputTokens": 16384
+    }
+  }
+}

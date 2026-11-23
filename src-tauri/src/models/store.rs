@@ -1,6 +1,6 @@
 //! Persistent non-secret model catalog (`models.json`) paired with macOS Keychain
 //! (`CredentialVault`) and Pi Core task execution for M3.
-use super::{keychain::CredentialVault, types::*};
+use super::{defaults::resolve_default_token_limits, keychain::CredentialVault, types::*};
 use crate::{
     foundation::pi::{PiEvent, PiPaths, PiSupervisor, PiTaskOutcome, RequestContext},
     repository::{self, RepositoryStore, ai_context::AiScopeMode},
@@ -38,6 +38,10 @@ struct StoredModelRecord {
     model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_ref: Option<String>,
 }
@@ -48,7 +52,18 @@ impl StoredModelRecord {
             .unwrap_or_else(|| self.provider.default_api_format())
     }
 
+    fn effective_token_limits(&self) -> (u32, u32) {
+        let format = self.effective_api_format();
+        let (default_ctx, default_max_out) =
+            resolve_default_token_limits(self.provider, Some(format));
+        (
+            self.context_window.unwrap_or(default_ctx),
+            self.max_output_tokens.unwrap_or(default_max_out),
+        )
+    }
+
     fn to_public(&self) -> SavedModelConfiguration {
+        let (context_window, max_output_tokens) = self.effective_token_limits();
         SavedModelConfiguration {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -56,6 +71,8 @@ impl StoredModelRecord {
             api_format: Some(self.effective_api_format()),
             model_id: self.model_id.clone(),
             base_url: self.base_url.clone(),
+            context_window: Some(context_window),
+            max_output_tokens: Some(max_output_tokens),
         }
     }
 }
@@ -75,6 +92,8 @@ pub struct ResolvedRuntimeSpec {
     pub model_id: String,
     pub base_url: String,
     pub api_key: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
 }
 
 #[derive(Clone, Default)]
@@ -270,6 +289,8 @@ impl ModelStore {
                 api_format: Some(normalized.api_format),
                 model_id: normalized.model_id,
                 base_url: normalized.base_url,
+                context_window: Some(normalized.context_window),
+                max_output_tokens: Some(normalized.max_output_tokens),
                 credential_ref: next_credential_ref.clone(),
             };
             let public = updated.to_public();
@@ -322,6 +343,8 @@ impl ModelStore {
             api_format: Some(normalized.api_format),
             model_id: normalized.model_id,
             base_url: normalized.base_url,
+            context_window: Some(normalized.context_window),
+            max_output_tokens: Some(normalized.max_output_tokens),
             credential_ref: credential_ref.clone(),
         };
         let public = record.to_public();
@@ -425,12 +448,15 @@ impl ModelStore {
             String::new()
         };
         let base_url = self.effective_base_url(record.provider, record.base_url.as_deref());
+        let (context_window, max_output_tokens) = record.effective_token_limits();
         Ok(ResolvedRuntimeSpec {
             provider: record.provider,
             api_format: record.effective_api_format(),
             model_id: record.model_id.clone(),
             base_url,
             api_key,
+            context_window,
+            max_output_tokens,
         })
     }
 
@@ -494,6 +520,8 @@ impl ModelStore {
                 "modelId": normalized.model_id,
                 "baseUrl": base_url,
                 "apiKey": effective_key,
+                "contextWindow": normalized.context_window,
+                "maxOutputTokens": normalized.max_output_tokens,
             }
         });
         let started_at = Instant::now();
@@ -566,6 +594,8 @@ impl ModelStore {
                 "modelId": spec.model_id,
                 "baseUrl": spec.base_url,
                 "apiKey": spec.api_key,
+                "contextWindow": spec.context_window,
+                "maxOutputTokens": spec.max_output_tokens,
             },
             "branch": scope.branch,
             "recentCommits": scope.recent_commits,
@@ -669,6 +699,8 @@ impl ModelStore {
                 "modelId": spec.model_id,
                 "baseUrl": spec.base_url,
                 "apiKey": spec.api_key,
+                "contextWindow": spec.context_window,
+                "maxOutputTokens": spec.max_output_tokens,
             },
             "branch": scope.branch,
             "draft": request.draft,
