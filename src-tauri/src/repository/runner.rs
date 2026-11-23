@@ -18,6 +18,7 @@ enum ExecutionMode {
     Read,
     Write,
     Hook,
+    Remote,
 }
 const OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
 #[derive(Clone)]
@@ -168,6 +169,10 @@ impl GitReader {
         self.execute(root, args, ExecutionMode::Hook, index, None)
             .await
     }
+    pub async fn remote(&self, root: &Path, args: &[&str]) -> Result<GitOutput, String> {
+        self.execute(root, args, ExecutionMode::Remote, None, None)
+            .await
+    }
     async fn execute(
         &self,
         root: &Path,
@@ -225,8 +230,18 @@ impl GitReader {
         if let Some(index) = index {
             command.env("GIT_INDEX_FILE", index);
         }
+        let allow_protocol = if mode == ExecutionMode::Remote {
+            "file:https:http:ssh:git"
+        } else {
+            ""
+        };
+        let timeout_secs = if mode == ExecutionMode::Remote {
+            30
+        } else {
+            15
+        };
         command
-            .env("GIT_ALLOW_PROTOCOL", "")
+            .env("GIT_ALLOW_PROTOCOL", allow_protocol)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", ":");
@@ -265,7 +280,7 @@ impl GitReader {
         let result = tokio::select! {
             status = child.wait() => status.map_err(|_| "Git 进程异常退出，请刷新核对实际状态".to_string()),
             _ = cancelled.changed() => { let _ = child.kill().await; Err("应用正在退出，已停止 Git 读取".into()) },
-            _ = tokio::time::sleep(Duration::from_secs(15)) => { let _ = child.kill().await; Err("Git 操作超时，请刷新核对实际状态；不会自动重试写入".into()) },
+            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => { let _ = child.kill().await; Err("Git 操作超时，请刷新核对实际状态；不会自动重试写入".into()) },
         };
         let stdin_result = match writer {
             Some(writer) => Some(writer.await.map_err(|_| "无法回收 Git 输入任务")?),

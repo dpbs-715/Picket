@@ -46,6 +46,7 @@ const notices = [];
 // immutable source, not a blanket license inference for future dependencies.
 const piLicenseSource = 'https://github.com/earendil-works/pi/blob/faac585884ae2c013a6b1400f3e9e77f10b34bac/LICENSE';
 const piPackages = new Set(['@earendil-works/pi-agent-core', '@earendil-works/pi-ai', '@earendil-works/pi-schema', '@earendil-works/pi-telemetry']);
+const standardWebhooksLicenseSource = 'https://github.com/standard-webhooks/standard-webhooks/blob/daee8284cfe9d4e435ec16e3e68a8f30084d6aaf/libraries/LICENSE';
 for (const directory of [...packageRoots].sort()) {
   const dependency = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
   const licenses = (await readdir(directory)).filter((name) => /^(license|copying|notice)([._-]|$)/i.test(name));
@@ -55,6 +56,8 @@ for (const directory of [...packageRoots].sort()) {
       `${name}\n${await readFile(join(directory, name), 'utf8')}`))).join('\n');
   } else if (piPackages.has(dependency.name) && dependency.version === '1.6.0' && dependency.license === 'MIT') {
     text = `${piLicenseSource}\n${await readFile(join(root, 'agent/licenses/pi-1.6.0-LICENSE'), 'utf8')}`;
+  } else if (dependency.name === 'standardwebhooks' && dependency.version === '1.3.0' && dependency.license === 'MIT') {
+    text = `${standardWebhooksLicenseSource}\n${await readFile(join(root, 'agent/licenses/standardwebhooks-1.3.0-LICENSE'), 'utf8')}`;
   } else throw new Error(`Missing bundled dependency license: ${dependency.name}`);
   notices.push(`${dependency.name}@${dependency.version}\n${text}`);
 }

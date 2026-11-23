@@ -294,13 +294,7 @@ impl RepositoryStore {
         Ok(())
     }
 
-    /// `parent` comes only from the native picker (or a disposable test fixture),
-    /// never from WebView input. Existing directories are never reused/deleted.
-    pub async fn change_branch(
-        &self,
-        request: &BranchRequest,
-        parent: Option<&Path>,
-    ) -> Result<RepositorySnapshot> {
+    pub async fn change_branch(&self, request: &BranchRequest) -> Result<RepositorySnapshot> {
         validate_request_id(&request.request_id)?;
         if !self
             .inner
@@ -327,75 +321,34 @@ impl RepositoryStore {
         let head = before
             .head
             .as_deref()
-            .ok_or("仓库尚无首次提交，请先在 Git / IDE 中完成首次提交后再创建分支或 Worktree")?;
+            .ok_or("仓库尚无首次提交，请先在 Git / IDE 中完成首次提交后再切换分支")?;
         let reader = &self.inner.reader;
         let entries = parse::worktrees(
             &reader
                 .bytes(&root, &["worktree", "list", "--porcelain", "-z"])
                 .await?,
         )?;
-        let mut checkout_head = head.to_owned();
-        let destination = if request.action == BranchAction::SwitchBranch {
-            if let Some(entry) = entries.iter().find(|entry| entry.branch == request.branch) {
-                let destination = fs::canonicalize(&entry.path)
-                    .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
-                // An occupied branch is a navigation result, never a forced checkout.
-                return self.read_repository_locked(&destination).await;
-            }
-            let target_head = reader
-                .text(
-                    &root,
-                    &[
-                        "rev-parse",
-                        "--verify",
-                        &format!("refs/heads/{}^{{commit}}", request.branch),
-                    ],
-                )
-                .await
-                .map_err(|_| "所选本地分支已不存在，请刷新分支列表")?;
-            if !before.working.is_empty() && target_head != head {
-                return Err("当前有暂存或未暂存改动，不能安全切换到不同提交；请先新建分支带走改动，或在 Git / IDE 中处理".into());
-            }
-            checkout_head = target_head;
-            root.clone()
-        } else {
-            if before.branch == request.branch
-                || entries.iter().any(|entry| entry.branch == request.branch)
-                || reader
-                    .run(
-                        &root,
-                        &[
-                            "show-ref",
-                            "--verify",
-                            "--quiet",
-                            &format!("refs/heads/{}", request.branch),
-                        ],
-                    )
-                    .await?
-                    .success
-            {
-                return Err("同名分支已存在，请换一个分支名；未执行创建".into());
-            }
-            if request.action == BranchAction::CreateWorktree {
-                let parent = fs::canonicalize(parent.ok_or("尚未选择新 Worktree 的父目录")?)
-                    .map_err(|_| "所选父目录不可访问")?;
-                if !parent.is_dir() {
-                    return Err("请选择新 Worktree 的父目录".into());
-                }
-                if entries.iter().any(|entry| parent.starts_with(&entry.path))
-                    || parent.starts_with(&root)
-                {
-                    return Err("新 Worktree 不能放在已有工作树内，请选择外部父目录".into());
-                }
-                let path = parent.join(request.branch.replace('/', "-"));
-                if fs::symlink_metadata(&path).is_ok() {
-                    return Err(format!("目标路径已存在，不会覆盖：{}", display(&path)?));
-                }
-                path
-            } else {
-                root.clone()
-            }
-        };
+        let BranchAction::SwitchBranch = request.action;
+        if let Some(entry) = entries.iter().find(|entry| entry.branch == request.branch) {
+            let destination = fs::canonicalize(&entry.path)
+                .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
+            // An occupied branch is a navigation result, never a forced checkout.
+            return self.read_repository_locked(&destination).await;
+        }
+        let checkout_head = reader
+            .text(
+                &root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    &format!("refs/heads/{}^{{commit}}", request.branch),
+                ],
+            )
+            .await
+            .map_err(|_| "所选本地分支已不存在，请刷新分支列表")?;
+        if !before.working.is_empty() && checkout_head != head {
+            return Err("当前有暂存或未暂存改动，不能安全切换到不同提交；请先在 Git / IDE 中处理当前改动后再切换分支".into());
+        }
         // Recheck after all validation and any slow filesystem inspection.
         self.ensure_branch_write_allowed(&root).await?;
         self.ensure_checkout_filters_allowed(&root, &checkout_head)
@@ -404,88 +357,33 @@ impl RepositoryStore {
             return Err("Git 内容在校验期间变化，请刷新后重新操作；未执行写入".into());
         }
         let writer = reader.for_checkout(&root).await?;
-        if request.action == BranchAction::CreateWorktree {
-            fs::create_dir(&destination)
-                .map_err(|_| "无法独占创建目标目录（可能已存在或没有权限），未执行 Git 写入")?;
-        }
-        let output = match request.action {
-            BranchAction::CreateBranch => {
-                writer
-                    .write(
-                        &root,
-                        &[
-                            "switch",
-                            "--no-track",
-                            "--no-overwrite-ignore",
-                            "-c",
-                            &request.branch,
-                        ],
-                    )
-                    .await
-            }
-            BranchAction::SwitchBranch => {
-                writer
-                    .write(
-                        &root,
-                        &[
-                            "switch",
-                            "--no-guess",
-                            "--no-overwrite-ignore",
-                            &request.branch,
-                        ],
-                    )
-                    .await
-            }
-            BranchAction::CreateWorktree => {
-                writer
-                    .write(
-                        &root,
-                        &[
-                            "worktree",
-                            "add",
-                            "--no-track",
-                            "-b",
-                            &request.branch,
-                            &display(&destination)?,
-                            head,
-                        ],
-                    )
-                    .await
-            }
-        }
-        .map_err(|error| format!("{error}。请刷新核对实际分支与目录；不会自动重试或回滚。"))?;
+        let output = writer
+            .write(
+                &root,
+                &[
+                    "switch",
+                    "--no-guess",
+                    "--no-overwrite-ignore",
+                    &request.branch,
+                ],
+            )
+            .await
+            .map_err(|error| format!("{error}。请刷新核对实际分支状态；不会自动重试或回滚。"))?;
         if !output.success {
             return Err(format!(
-                "Git 操作未完成：{}。请刷新核对实际状态；不会自动重试、清理目录或回滚。",
+                "Git 操作未完成：{}。请刷新核对实际状态；不会自动重试或回滚。",
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
         let after = self.branch_state(&root).await?;
-        if (request.action != BranchAction::SwitchBranch || !before.working.is_empty())
-            && !before.preserves_changes(&after)
-        {
+        if !before.working.is_empty() && !before.preserves_changes(&after) {
             return Err("Git 操作后暂存区或工作草稿与预期不符，已停止后续动作；请刷新并在 Git / IDE 中核对，不会自动回滚".into());
         }
-        let created = self.branch_state(&destination).await?;
-        if created.branch != request.branch
-            || created.head.as_deref() != Some(checkout_head.as_str())
-        {
+        if after.branch != request.branch || after.head.as_deref() != Some(checkout_head.as_str()) {
             return Err("Git 操作后的分支或 HEAD 与预期不符，请刷新核对；不会自动重试".into());
         }
-        if request.action == BranchAction::CreateWorktree
-            && (before.branch != after.branch
-                || before.head != after.head
-                || !created.working.is_empty())
-        {
-            return Err(
-                "Worktree 创建结果不符合预期，请刷新核对原工作树与新目录；不会移动草稿或自动清理"
-                    .into(),
-            );
-        }
-        self.read_repository_locked(&destination)
-            .await
-            .map_err(|error| {
-                format!("Git 已执行，但读取结果失败：{error}。请刷新核对，不要重复创建。")
-            })
+        self.read_repository_locked(&root).await.map_err(|error| {
+            format!("Git 已切换分支，但读取结果失败：{error}。请刷新核对实际状态。")
+        })
     }
 }

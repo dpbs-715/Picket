@@ -250,55 +250,22 @@ async fn commits_mixed_deletions_renames_symlinks_executables_binary_and_glob_pa
 }
 
 #[tokio::test]
-async fn refuses_protected_branches_and_detached_head_then_commits_after_creating_branch() {
-    for protected in ["main", "master"] {
+async fn allows_direct_commit_on_main_and_master_while_refusing_detached_head_until_branched() {
+    for main_branch in ["main", "master"] {
         let fixture = Fixture::new().unwrap();
-        git(&fixture.root, &["branch", "-m", protected]).unwrap();
-        let before_index = git(&fixture.root, &["ls-files", "--stage", "-z"]).unwrap();
+        git(&fixture.root, &["branch", "-m", main_branch]).unwrap();
         let store = RepositoryStore::default();
         let snapshot = store.open(&fixture.root).await.unwrap();
-        let error = store
+        let (_, commit) = store
             .commit(&commit_request(
                 &snapshot,
                 &["part.txt"],
-                "feat: blocked on main",
-            ))
-            .await
-            .unwrap_err();
-        assert!(error.contains("保护分支"), "{error}");
-        assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "1");
-        assert_eq!(
-            git(&fixture.root, &["ls-files", "--stage", "-z"]).unwrap(),
-            before_index
-        );
-
-        let switched = store
-            .change_branch(
-                &BranchRequest {
-                    request_id: format!("branch-from-{protected}"),
-                    target: ReadTarget {
-                        repository_id: active(&snapshot).repository_id.clone(),
-                        worktree_id: active(&snapshot).worktree_id.clone(),
-                        session_id: "w01".into(),
-                        scope_version: "ui".into(),
-                    },
-                    action: BranchAction::CreateBranch,
-                    branch: "feat/safe-dev".into(),
-                    branch_token: active(&snapshot).branch_token.clone().unwrap(),
-                },
-                None,
-            )
-            .await
-            .unwrap();
-        let (_, commit) = store
-            .commit(&commit_request(
-                &switched,
-                &["part.txt"],
-                "feat: commit on dev branch",
+                &format!("feat: direct commit on {main_branch}"),
             ))
             .await
             .unwrap();
-        assert_eq!(commit.branch, "feat/safe-dev");
+        assert_eq!(commit.branch, main_branch);
+        assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "2");
         assert_eq!(
             text(&fixture.root, &["show", "HEAD:part.txt"]),
             "first=2\nsecond=1"
@@ -775,14 +742,20 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
     assert!(interrupted_err.contains("中断"), "{interrupted_err}");
     assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "2");
 
-    // Forged tokens, branchToken, UI scopeVersion, empty message, and M5 push=true are rejected:
+    // Forged tokens, branchToken, UI scopeVersion, empty message, and push=true on local-only endpoint are rejected:
     let mut bad_token = commit_request(&next_snap, &["新 文件.ts"], "feat: forged");
     bad_token.selections[0].commit_token = active(&next_snap).branch_token.clone().unwrap();
     assert!(store.commit(&bad_token).await.unwrap_err().contains("凭证"));
 
-    let mut push_req = commit_request(&next_snap, &["新 文件.ts"], "feat: push in m2");
+    let mut push_req = commit_request(&next_snap, &["新 文件.ts"], "feat: push on local endpoint");
     push_req.push = true;
-    assert!(store.commit(&push_req).await.unwrap_err().contains("M5"));
+    assert!(
+        store
+            .commit(&push_req)
+            .await
+            .unwrap_err()
+            .contains("仅本地提交入口")
+    );
 
     let mut empty_msg = commit_request(&next_snap, &["新 文件.ts"], "   \n\t  ");
     empty_msg.request_id = "empty-msg-1".into();

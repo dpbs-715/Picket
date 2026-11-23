@@ -1,8 +1,10 @@
 import type { ModelConfiguration } from '../../settings/modelProviders';
+import type { CPushCommandReply, CPushLandedCommit, CPushProgressEvent, CPushQaItem, CPushTimelineItem } from '../../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitCommitReply } from '../../../../shared/git-commit-protocol';
 import type { GitReadReply, GitReadTarget } from '../../../../shared/git-read-protocol';
-import { finishRepositoryRead, finishRepositoryBranch, finishRepositoryCommit, readScopeVersion } from './repositories';
+import type { WorkbenchRestoreReply } from '../../../../shared/workbench-persistence-protocol';
+import { finishCPushCommand, finishRepositoryRead, finishRepositoryBranch, finishRepositoryCommit, hydrateWorkbench, readScopeVersion, receiveCPushProgress } from './repositories';
 
 export type Target = GitReadTarget;
 
@@ -41,6 +43,18 @@ export interface Message {
   progress?: { completed: number; total: number; label: string };
 }
 
+export interface ActiveCPushState {
+  runId: string;
+  frozenTarget: Target;
+  frozenFileIds: string[];
+  draftRevisionAtStart: number;
+  modelId: string;
+  timeline: CPushTimelineItem[];
+  qaLog: CPushQaItem[];
+  commits: CPushLandedCommit[];
+  canRetryRemaining: boolean;
+}
+
 export interface Worktree extends Target {
   label: string;
   path: string;
@@ -60,10 +74,12 @@ export interface Worktree extends Target {
     skippedPaths: string[];
     changedPaths: string[];
     scopeFileIds?: string[];
+    reviewedFileIds?: string[];
     error?: string;
   };
   sessionStatus: 'idle' | 'running' | 'needsDecision' | 'conflict' | 'waitingManual' | 'pushFailed' | 'done';
   messages: Message[];
+  cPush?: ActiveCPushState;
   tab: 'commit' | 'review';
   dockExpanded: boolean;
   replies: Record<string, string>;
@@ -86,6 +102,7 @@ export interface WorkbenchState {
   models: ModelConfiguration[];
   activeModelId: string | null;
   editor: EditorId;
+  editorModified?: boolean;
   navigationRevision: number;
   repositoryBranches: Record<string, { requestId: string; navigationRevision: number }>;
   repositoryCommits: Record<string, { requestId: string; worktreeId: string; draftRevision: number; committedFileIds: string[] }>;
@@ -159,10 +176,15 @@ export function primaryAction(worktree: Worktree | undefined, hasModel: boolean)
 export type WorkbenchEvent =
   | { type: 'message'; target: Target; message: Message; sessionStatus?: Worktree['sessionStatus'] }
   | { type: 'generated'; target: Target; requestId: string; text: string }
-  | { type: 'reviewed'; target: Target; requestId: string; findings: Finding[]; skippedPaths: string[] }
-  | { type: 'files'; target: Target; nextScopeVersion: string; files: Change[]; changedPaths: string[] };
+  | { type: 'reviewed'; target: Target; requestId: string; findings: Finding[]; skippedPaths: string[]; reviewedFileIds?: string[] }
+  | { type: 'files'; target: Target; nextScopeVersion: string; files: Change[]; changedPaths: string[] }
+  | { type: 'cPushProgress'; progress: CPushProgressEvent };
 
 export type WorkbenchAction =
+  | { type: 'workbenchHydrated'; restored: WorkbenchRestoreReply }
+  | { type: 'cPushStarted'; worktreeId: string; runId: string; frozenTarget: Target; frozenFileIds: string[]; modelId: string; expandDock: boolean }
+  | { type: 'cPushSettled'; reply: CPushCommandReply; expandDock?: boolean }
+  | { type: 'cPushStartFailed'; worktreeId: string; runId: string }
   | { type: 'repositoryBranchStarted'; repositoryId: string; requestId: string }
   | { type: 'repositoryBranchFinished'; repositoryId: string; reply: GitBranchReply }
   | { type: 'repositoryBranchFailed'; repositoryId: string; requestId: string }
@@ -185,6 +207,7 @@ export type WorkbenchAction =
   | { type: 'modelSaved'; model: ModelConfiguration }
   | { type: 'modelSelected'; modelId: string }
   | { type: 'modelDeleted'; modelId: string }
+  | { type: 'modelsSynced'; models: ModelConfiguration[]; activeModelId: string | null }
   | { type: 'event'; event: WorkbenchEvent };
 
 function matchesTarget(worktree: Worktree, target: Target) {
@@ -193,6 +216,7 @@ function matchesTarget(worktree: Worktree, target: Target) {
 }
 
 function receiveEvent(worktree: Worktree, event: WorkbenchEvent): Worktree {
+  if (event.type === 'cPushProgress') return worktree;
   if (!matchesTarget(worktree, event.target)) return worktree;
   switch (event.type) {
     case 'message':
@@ -210,12 +234,20 @@ function receiveEvent(worktree: Worktree, event: WorkbenchEvent): Worktree {
       const request = worktree.requests.review;
       if (request?.id !== event.requestId) return worktree;
       const reviewedIds = new Set(request.fileIds);
-      const preserved = worktree.review.findings.filter((finding) => !reviewedIds.has(finding.fileId));
+      const preserved = worktree.review.findings.filter((finding) => !reviewedIds.has(finding.fileId) && worktree.selectedIds.includes(finding.fileId));
       const reviewedPaths = worktree.files.filter((file) => reviewedIds.has(file.id)).map((file) => file.path);
+      const matchesSkipped = (entry: string, path: string) => entry === path || entry.startsWith(`${path}（`);
+      const incomingReviewedIds = event.reviewedFileIds
+        ?? request.fileIds.filter((id) => {
+          const file = worktree.files.find((item) => item.id === id);
+          return !!file && !file.ignoredForReview && !file.binary;
+        });
+      const preservedReviewedIds = (worktree.review.reviewedFileIds ?? []).filter((id) => !reviewedIds.has(id) && worktree.selectedIds.includes(id));
       return { ...worktree, requests: { ...worktree.requests, review: undefined },
         review: { status: 'done', findings: [...preserved, ...event.findings],
-          scopeFileIds: [...new Set([...(worktree.review.scopeFileIds ?? []), ...request.fileIds])],
-          skippedPaths: [...new Set([...worktree.review.skippedPaths.filter((path) => !reviewedPaths.includes(path)), ...event.skippedPaths])],
+          scopeFileIds: [...new Set([...(worktree.review.scopeFileIds ?? []).filter((id) => worktree.selectedIds.includes(id)), ...request.fileIds])],
+          reviewedFileIds: [...new Set([...preservedReviewedIds, ...incomingReviewedIds])],
+          skippedPaths: [...new Set([...worktree.review.skippedPaths.filter((entry) => !reviewedPaths.some((path) => matchesSkipped(entry, path))), ...event.skippedPaths])],
           changedPaths: worktree.review.changedPaths.filter((path) => !reviewedPaths.includes(path)) } };
     }
     case 'files': {
@@ -234,6 +266,65 @@ function receiveEvent(worktree: Worktree, event: WorkbenchEvent): Worktree {
 }
 
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
+  if (action.type === 'workbenchHydrated') return hydrateWorkbench(state, action.restored);
+  if (action.type === 'event' && action.event.type === 'cPushProgress') {
+    return receiveCPushProgress(state, action.event.progress);
+  }
+  if (action.type === 'cPushStarted') {
+    return {
+      ...state,
+      worktrees: state.worktrees.map((tree) => {
+        if (tree.worktreeId !== action.worktreeId || isActiveSession(tree)) return tree;
+        const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+        const progressMsg: Message = {
+          id: `progress-${action.runId}`,
+          kind: 'progress',
+          title: '正在分析并拆分已选改动…',
+          description: '已固定本次授权范围；未选文件与未暂存草稿保留在原处。',
+          scope: `${action.frozenFileIds.length} 个已选文件`,
+          progress: { completed: 1, total: 3, label: '读取范围 → 规划拆分 → 写入提交' },
+        };
+        return {
+          ...tree,
+          sessionStatus: 'running',
+          dockExpanded: action.expandDock ? true : tree.dockExpanded,
+          messages: [...reviewMessages, progressMsg],
+          cPush: {
+            runId: action.runId,
+            frozenTarget: action.frozenTarget,
+            frozenFileIds: action.frozenFileIds,
+            draftRevisionAtStart: tree.draft.revision,
+            modelId: action.modelId,
+            timeline: [
+              { state: 'done', label: `已固定 ${action.frozenFileIds.length} 个已选文件范围` },
+              { state: 'active', label: '正在分析改动归属并规划拆分提交…' },
+            ],
+            qaLog: [],
+            commits: [],
+            canRetryRemaining: false,
+          },
+        };
+      }),
+    };
+  }
+  if (action.type === 'cPushSettled') return finishCPushCommand(state, action.reply, action.expandDock);
+  if (action.type === 'cPushStartFailed') {
+    return {
+      ...state,
+      worktrees: state.worktrees.map((tree) => {
+        if (tree.worktreeId !== action.worktreeId || tree.cPush?.runId !== action.runId || tree.cPush.commits.length > 0) {
+          return tree;
+        }
+        return {
+          ...tree,
+          sessionStatus: 'idle',
+          dockExpanded: false,
+          messages: tree.messages.filter((msg) => msg.kind === 'review'),
+          cPush: undefined,
+        };
+      }),
+    };
+  }
   if (action.type === 'repositoryBranchStarted') return { ...state, navigationRevision: state.navigationRevision + 1, repositoryBranches: { ...state.repositoryBranches, [action.repositoryId]: { requestId: action.requestId, navigationRevision: state.navigationRevision + 1 } } };
   if (action.type === 'repositoryBranchFinished') return finishRepositoryBranch(state, action.repositoryId, action.reply);
   if (action.type === 'repositoryBranchFailed') {
@@ -263,7 +354,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       ? { ...tree, readError: action.error ?? '状态读取失败，请重新刷新；草稿与选择已保留。',
         review: { ...tree.review, status: tree.review.status === 'running' ? tree.requests.review?.previousReviewStatus ?? 'idle' : tree.review.status }, requests: {} } : tree) };
   }
-  if (action.type === 'editor') return { ...state, editor: action.editor };
+  if (action.type === 'editor') return { ...state, editor: action.editor, editorModified: true };
+  if (action.type === 'modelsSynced') return { ...state, models: action.models, activeModelId: action.activeModelId };
   if (action.type === 'modelSaved') return { ...state, models: [...state.models.filter((model) => model.id !== action.model.id), action.model], activeModelId: action.model.id };
   if (action.type === 'modelSelected') return state.models.some((model) => model.id === action.modelId) ? { ...state, activeModelId: action.modelId } : state;
   if (action.type === 'modelDeleted') {

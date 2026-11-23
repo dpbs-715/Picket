@@ -83,12 +83,21 @@ pub fn exit_after_cleanup(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         repositories.shutdown().await;
         if let Err(error) = app
+            .state::<crate::repository::editor::EditorLauncher>()
+            .cleanup()
+        {
+            eprintln!("Temporary editor snapshot cleanup failed: {error}");
+            app.state::<DesktopLifecycle>().fail();
+        }
+        if let Err(error) = app
             .state::<crate::repository::smoke::SmokeState>()
             .cleanup()
         {
             eprintln!("Temporary repository read proof cleanup failed: {error}");
             app.state::<DesktopLifecycle>().fail();
         }
+        app.state::<crate::models::smoke::ModelSmokeState>()
+            .cleanup();
         let result = supervisor.shutdown().await;
         let lifecycle = app.state::<DesktopLifecycle>();
         let passed = result.is_ok()

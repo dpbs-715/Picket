@@ -90,10 +90,6 @@ impl Drop for IndexLock {
     }
 }
 
-pub(super) fn is_protected_branch(branch: &str) -> bool {
-    matches!(branch, "main" | "master")
-}
-
 fn ensure_safe_repo_path(path: &str) -> Result<()> {
     parse::relative(path)?;
     if path
@@ -277,7 +273,7 @@ async fn write_tree(reader: &GitReader, root: &Path, index: &Path) -> Result<Str
 }
 
 impl RepositoryStore {
-    async fn registered_worktree_root(
+    pub(super) async fn registered_worktree_root(
         &self,
         target: &ReadTarget,
     ) -> Result<(Registration, PathBuf)> {
@@ -448,13 +444,7 @@ impl RepositoryStore {
         let live_status = parse::status(&live_state.status)?;
         if live_status.branch == "(detached)" {
             return Err(
-                "当前处于分离 HEAD，请先在顶部新建或切换开发分支后再提交；草稿与选择已保留".into(),
-            );
-        }
-        if is_protected_branch(&live_status.branch) {
-            return Err(
-                "当前为保护分支（main / master），请先在顶部新建或切换开发分支后再提交；草稿与选择已保留"
-                    .into(),
+                "当前处于分离 HEAD，请先在顶部切换已有分支，或在 IDE / 终端切好分支后再提交；草稿与选择已保留".into(),
             );
         }
         if live_status.branch != commit_state.branch || live_status.head != commit_state.head {
@@ -638,7 +628,7 @@ impl RepositoryStore {
         validate_request_id(&request.request_id)?;
         if request.push {
             return Err(
-                "远端推送将在 M5 接入；本次未执行提交或推送，草稿与选择已保留。当前请使用「仅本地提交」。"
+                "仅本地提交入口不执行推送；需要提交并推送时请通过受控同步与推送命令执行，本次未执行提交或推送。"
                     .into(),
             );
         }
@@ -720,13 +710,7 @@ impl RepositoryStore {
             .ok_or("当前工作树缺少有效提交授权，请刷新后重新确认范围；草稿与选择已保留")?;
         if commit_state.detached {
             return Err(
-                "当前处于分离 HEAD，请先在顶部新建或切换开发分支后再提交；草稿与选择已保留".into(),
-            );
-        }
-        if is_protected_branch(&commit_state.branch) {
-            return Err(
-                "当前为保护分支（main / master），请先在顶部新建或切换开发分支后再提交；草稿与选择已保留"
-                    .into(),
+                "当前处于分离 HEAD，请先在顶部切换已有分支，或在 IDE / 终端切好分支后再提交；草稿与选择已保留".into(),
             );
         }
         let mut selected_files = Vec::with_capacity(request.selections.len());

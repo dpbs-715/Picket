@@ -22,9 +22,7 @@ pub struct RefreshRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum BranchAction {
-    CreateBranch,
     SwitchBranch,
-    CreateWorktree,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -79,6 +77,91 @@ pub struct CommitReply {
     pub target: ReadTarget,
     pub snapshot: RepositorySnapshot,
     pub commit: CommitResult,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EditorKind {
+    Idea,
+    Webstorm,
+    Vscode,
+    Cursor,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenFileRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    pub file_id: String,
+    pub editor: EditorKind,
+    pub line: Option<u32>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenFileAction {
+    Open,
+    Goto,
+    Diff,
+    StagedDiff,
+    Merge,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFileReply {
+    pub protocol_version: u8,
+    pub kind: &'static str,
+    pub request_id: String,
+    pub target: ReadTarget,
+    pub editor: EditorKind,
+    pub file_path: String,
+    pub action: OpenFileAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkbenchTab {
+    Commit,
+    Review,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PersistedWorktreeState {
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub draft_text: String,
+    pub draft_editing: bool,
+    pub draft_outdated: bool,
+    pub selected_ids: Vec<String>,
+    pub scope_version: String,
+    pub tab: WorkbenchTab,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkbenchSaveRequest {
+    pub revision: u64,
+    pub editor: EditorKind,
+    pub active_worktree_id: Option<String>,
+    pub empty_draft: String,
+    pub empty_editing: bool,
+    pub worktrees: Vec<PersistedWorktreeState>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchRestoreReply {
+    pub protocol_version: u8,
+    pub editor: EditorKind,
+    pub active_worktree_id: Option<String>,
+    pub empty_draft: String,
+    pub empty_editing: bool,
+    pub worktrees: Vec<PersistedWorktreeState>,
+    pub snapshots: Vec<RepositorySnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<crate::models::types::SavedModelConfiguration>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_model_id: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub c_push_sessions: Option<Vec<crate::cpush::types::CPushSessionSnapshot>>,
+    pub warning: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

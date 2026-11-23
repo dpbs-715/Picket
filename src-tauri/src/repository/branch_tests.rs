@@ -9,7 +9,7 @@ fn active(snapshot: &RepositorySnapshot) -> &WorktreeSnapshot {
         .find(|tree| tree.worktree_id == snapshot.active_worktree_id)
         .unwrap()
 }
-fn request(snapshot: &RepositorySnapshot, action: BranchAction, branch: &str) -> BranchRequest {
+fn request(snapshot: &RepositorySnapshot, branch: &str) -> BranchRequest {
     static REQUEST: AtomicU64 = AtomicU64::new(0);
     let tree = active(snapshot);
     BranchRequest {
@@ -20,7 +20,7 @@ fn request(snapshot: &RepositorySnapshot, action: BranchAction, branch: &str) ->
             session_id: "branch-tests".into(),
             scope_version: "not-a-write-authorization".into(),
         },
-        action,
+        action: BranchAction::SwitchBranch,
         branch: branch.into(),
         branch_token: tree.branch_token.clone().unwrap(),
     }
@@ -55,67 +55,6 @@ fn assert_drafts(fixture: &Fixture, expected_index: &[u8]) {
 }
 
 #[tokio::test]
-async fn creates_development_branch_from_main_and_master_without_changing_drafts_or_staging() {
-    for protected in ["main", "master"] {
-        let fixture = Fixture::new().unwrap();
-        git(&fixture.root, &["branch", "-m", protected]).unwrap();
-        git(
-            &fixture.root,
-            &["config", "branch.autoSetupMerge", "always"],
-        )
-        .unwrap();
-        let before_index = index(&fixture.root);
-        let store = RepositoryStore::default();
-        let snapshot = store.open(&fixture.root).await.unwrap();
-        let result = store
-            .change_branch(
-                &request(&snapshot, BranchAction::CreateBranch, "feat/新分支"),
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(active(&result).branch, "feat/新分支");
-        assert_eq!(active(&result).head, active(&snapshot).head);
-        assert!(matches!(active(&result).remote, Remote::Missing { .. }));
-        assert_eq!(branch(&fixture.root), "feat/新分支");
-        assert_drafts(&fixture, &before_index);
-    }
-}
-
-#[tokio::test]
-async fn creates_clean_worktree_in_native_selected_parent_and_leaves_source_untouched() {
-    let fixture = Fixture::new().unwrap();
-    let parent = fixture.root.parent().unwrap().join("外部 父目录");
-    fs::create_dir(&parent).unwrap();
-    let before_index = index(&fixture.root);
-    let store = RepositoryStore::default();
-    let snapshot = store.open(&fixture.root).await.unwrap();
-    let result = store
-        .change_branch(
-            &request(&snapshot, BranchAction::CreateWorktree, "feat/新工作树"),
-            Some(&parent),
-        )
-        .await
-        .unwrap();
-    let created = active(&result);
-    assert_eq!(created.branch, "feat/新工作树");
-    assert_eq!(
-        Path::new(&created.path),
-        fs::canonicalize(parent.join("feat-新工作树")).unwrap()
-    );
-    assert_eq!(created.head, active(&snapshot).head);
-    assert!(created.files.is_empty());
-    assert!(matches!(created.remote, Remote::Missing { .. }));
-    assert_eq!(branch(&fixture.root), "feat/read-proof");
-    assert_drafts(&fixture, &before_index);
-    fixture.verify_unchanged().unwrap();
-    assert_eq!(
-        fs::read(Path::new(&created.path).join("part.txt")).unwrap(),
-        b"first=1\nsecond=1\n"
-    );
-}
-
-#[tokio::test]
 async fn switches_same_head_branch_with_mixed_staging_and_jumps_to_occupied_worktree() {
     let fixture = Fixture::new().unwrap();
     git(&fixture.root, &["branch", "feat/existing"]).unwrap();
@@ -123,19 +62,13 @@ async fn switches_same_head_branch_with_mixed_staging_and_jumps_to_occupied_work
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
     let changed = store
-        .change_branch(
-            &request(&snapshot, BranchAction::SwitchBranch, "feat/existing"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/existing"))
         .await
         .unwrap();
     assert_eq!(active(&changed).branch, "feat/existing");
     assert_drafts(&fixture, &before_index);
     let jumped = store
-        .change_branch(
-            &request(&changed, BranchAction::SwitchBranch, "feat/linked"),
-            None,
-        )
+        .change_branch(&request(&changed, "feat/linked"))
         .await
         .unwrap();
     assert_ne!(jumped.active_worktree_id, changed.active_worktree_id);
@@ -157,10 +90,7 @@ async fn clean_worktree_can_switch_to_a_different_commit() {
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
     let result = store
-        .change_branch(
-            &request(&snapshot, BranchAction::SwitchBranch, "feat/old"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/old"))
         .await
         .unwrap();
     assert_eq!(active(&result).branch, "feat/old");
@@ -184,10 +114,7 @@ async fn refuses_dirty_cross_commit_checkout_without_stash_or_reset() {
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
     let error = store
-        .change_branch(
-            &request(&snapshot, BranchAction::SwitchBranch, "feat/different"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/different"))
         .await
         .unwrap_err();
     assert!(error.contains("不同提交"), "{error}");
@@ -200,13 +127,10 @@ async fn refuses_dirty_cross_commit_checkout_without_stash_or_reset() {
 async fn rejects_stale_head_branch_index_and_unstaged_half_of_a_partial_file() {
     for change in ["head", "branch", "index", "draft"] {
         let fixture = Fixture::new().unwrap();
+        git(&fixture.root, &["branch", "feat/target"]).unwrap();
         let store = RepositoryStore::default();
         let snapshot = store.open(&fixture.root).await.unwrap();
-        let operation = request(
-            &snapshot,
-            BranchAction::CreateBranch,
-            "feat/must-not-create",
-        );
+        let operation = request(&snapshot, "feat/target");
         match change {
             "head" => {
                 git(&fixture.root, &["commit", "-m", "test: outside commit"]).unwrap();
@@ -225,19 +149,12 @@ async fn rejects_stale_head_branch_index_and_unstaged_half_of_a_partial_file() {
         }
         let before_index = index(&fixture.root);
         let before_draft = fs::read(fixture.root.join("part.txt")).unwrap();
-        let error = store.change_branch(&operation, None).await.unwrap_err();
+        let error = store.change_branch(&operation).await.unwrap_err();
         assert!(error.contains("变化"), "{change}: {error}");
         assert_eq!(index(&fixture.root), before_index);
         assert_eq!(
             fs::read(fixture.root.join("part.txt")).unwrap(),
             before_draft
-        );
-        assert!(
-            git(
-                &fixture.root,
-                &["show-ref", "--verify", "refs/heads/feat/must-not-create"]
-            )
-            .is_err()
         );
     }
 }
@@ -255,6 +172,7 @@ async fn refuses_hooks_filters_locks_and_existing_git_operations_without_executi
         "hidden-index",
     ] {
         let fixture = Fixture::new().unwrap();
+        git(&fixture.root, &["branch", "feat/blocked"]).unwrap();
         let marker = fixture.root.parent().unwrap().join("must-not-run");
         if ["hook", "default-hook", "relative-hook", "filter"].contains(&guard) {
             let hooks = if guard == "default-hook" {
@@ -305,10 +223,7 @@ async fn refuses_hooks_filters_locks_and_existing_git_operations_without_executi
         let snapshot = store.open(&fixture.root).await.unwrap();
         assert!(
             store
-                .change_branch(
-                    &request(&snapshot, BranchAction::CreateBranch, "feat/blocked"),
-                    None
-                )
+                .change_branch(&request(&snapshot, "feat/blocked"))
                 .await
                 .is_err(),
             "{guard}"
@@ -327,7 +242,7 @@ async fn refuses_hooks_filters_locks_and_existing_git_operations_without_executi
 }
 
 #[tokio::test]
-async fn rejects_invalid_duplicate_and_missing_branches_and_unsafe_worktree_paths() {
+async fn rejects_invalid_and_missing_branches() {
     let fixture = Fixture::new().unwrap();
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
@@ -339,106 +254,63 @@ async fn rejects_invalid_duplicate_and_missing_branches_and_unsafe_worktree_path
         "../outside",
         "feat/../outside",
         "@{-1}",
-        "feat/linked",
+        "missing",
     ] {
         assert!(
             store
-                .change_branch(&request(&snapshot, BranchAction::CreateBranch, name), None)
+                .change_branch(&request(&snapshot, name))
                 .await
                 .is_err(),
             "{name}"
         );
     }
-    assert!(
-        store
-            .change_branch(
-                &request(&snapshot, BranchAction::SwitchBranch, "missing"),
-                None
-            )
-            .await
-            .is_err()
-    );
-    let parent = fixture.root.parent().unwrap();
-    let existing = parent.join("feat-existing");
-    fs::create_dir(&existing).unwrap();
-    fs::write(existing.join("keep.txt"), "must stay").unwrap();
-    assert!(
-        store
-            .change_branch(
-                &request(&snapshot, BranchAction::CreateWorktree, "feat/existing"),
-                Some(parent)
-            )
-            .await
-            .unwrap_err()
-            .contains("已存在")
-    );
-    assert_eq!(fs::read(existing.join("keep.txt")).unwrap(), b"must stay");
-    assert!(
-        git(
-            &fixture.root,
-            &["show-ref", "--verify", "refs/heads/feat/existing"]
-        )
-        .is_err()
-    );
-    assert!(
-        store
-            .change_branch(
-                &request(&snapshot, BranchAction::CreateWorktree, "feat/nested"),
-                Some(&fixture.root)
-            )
-            .await
-            .unwrap_err()
-            .contains("工作树内")
-    );
     fixture.verify_unchanged().unwrap();
 }
 
 #[tokio::test]
 async fn repeated_and_concurrent_requests_never_write_twice() {
     let fixture = Fixture::new().unwrap();
+    git(&fixture.root, &["branch", "feat/once"]).unwrap();
+    git(&fixture.root, &["branch", "feat/one"]).unwrap();
+    git(&fixture.root, &["branch", "feat/two"]).unwrap();
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
-    let operation = request(&snapshot, BranchAction::CreateBranch, "feat/once");
+    let operation = request(&snapshot, "feat/once");
     let (first, duplicate) = tokio::join!(
-        store.change_branch(&operation, None),
-        store.change_branch(&operation, None)
+        store.change_branch(&operation),
+        store.change_branch(&operation)
     );
     assert_ne!(first.is_ok(), duplicate.is_ok());
     assert!(
         store
-            .change_branch(&operation, None)
+            .change_branch(&operation)
             .await
             .unwrap_err()
             .contains("不会重复")
     );
     let current = store.open(&fixture.root).await.unwrap();
-    let one = request(&current, BranchAction::CreateBranch, "feat/one");
-    let two = request(&current, BranchAction::CreateBranch, "feat/two");
-    let (first, second) = tokio::join!(
-        store.change_branch(&one, None),
-        store.change_branch(&two, None)
-    );
+    let one = request(&current, "feat/one");
+    let two = request(&current, "feat/two");
+    let (first, second) = tokio::join!(store.change_branch(&one), store.change_branch(&two));
     assert_ne!(first.is_ok(), second.is_ok());
 }
 
 #[tokio::test]
 async fn requires_registered_target_and_rust_token_not_ui_scope_and_rejects_after_shutdown() {
     let fixture = Fixture::new().unwrap();
+    git(&fixture.root, &["branch", "feat/target"]).unwrap();
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
-    let mut operation = request(&snapshot, BranchAction::CreateBranch, "feat/rejected");
+    let mut operation = request(&snapshot, "feat/target");
     operation.branch_token = operation.target.scope_version.clone();
-    assert!(store.change_branch(&operation, None).await.is_err());
-    let mut operation = request(&snapshot, BranchAction::CreateBranch, "feat/rejected");
+    assert!(store.change_branch(&operation).await.is_err());
+    let mut operation = request(&snapshot, "feat/target");
     operation.target.repository_id = "other-repository".into();
-    assert!(store.change_branch(&operation, None).await.is_err());
+    assert!(store.change_branch(&operation).await.is_err());
     store.shutdown().await;
     assert!(
         store
-            .change_branch(
-                &request(&snapshot, BranchAction::CreateBranch, "feat/rejected"),
-                None
-            )
+            .change_branch(&request(&snapshot, "feat/target"))
             .await
             .is_err()
     );
@@ -446,8 +318,9 @@ async fn requires_registered_target_and_rust_token_not_ui_scope_and_rejects_afte
 }
 
 #[tokio::test]
-async fn branch_creation_preserves_renames_binary_files_and_symlinks() {
+async fn branch_switch_preserves_renames_binary_files_and_symlinks() {
     let fixture = Fixture::new().unwrap();
+    git(&fixture.root, &["branch", "feat/mixed"]).unwrap();
     git(
         &fixture.root,
         &["mv", "--", "pnpm-lock.yaml", "新 名\n字.lock"],
@@ -464,10 +337,7 @@ async fn branch_creation_preserves_renames_binary_files_and_symlinks() {
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
     let changed = store
-        .change_branch(
-            &request(&snapshot, BranchAction::CreateBranch, "feat/mixed"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/mixed"))
         .await
         .unwrap();
     assert_eq!(active(&changed).head, active(&snapshot).head);
@@ -494,6 +364,7 @@ async fn branch_creation_preserves_renames_binary_files_and_symlinks() {
 async fn refuses_filter_needed_only_by_the_target_branch_but_allows_unused_filter_config() {
     let fixture = Fixture::new().unwrap();
     let linked = fixture.root.parent().unwrap().join("linked worktree");
+    git(&linked, &["branch", "feat/unused-filter"]).unwrap();
     let marker = fixture.root.parent().unwrap().join("filter-must-not-run");
     let script = fixture.root.parent().unwrap().join("filter.sh");
     fs::write(
@@ -533,10 +404,7 @@ async fn refuses_filter_needed_only_by_the_target_branch_but_allows_unused_filte
     let store = RepositoryStore::default();
     let snapshot = store.open(&linked).await.unwrap();
     let error = store
-        .change_branch(
-            &request(&snapshot, BranchAction::SwitchBranch, "feat/filtered"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/filtered"))
         .await
         .unwrap_err();
     assert!(error.contains("过滤器"), "{error}");
@@ -544,10 +412,7 @@ async fn refuses_filter_needed_only_by_the_target_branch_but_allows_unused_filte
     assert!(!marker.exists());
     // This worktree has no filter attributes at HEAD, index or in its files.
     let result = store
-        .change_branch(
-            &request(&snapshot, BranchAction::CreateBranch, "feat/unused-filter"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/unused-filter"))
         .await
         .unwrap();
     assert_eq!(active(&result).branch, "feat/unused-filter");
@@ -584,10 +449,7 @@ async fn checkout_never_overwrites_an_ignored_user_file() {
     assert!(active(&snapshot).files.is_empty());
     assert!(
         store
-            .change_branch(
-                &request(&snapshot, BranchAction::SwitchBranch, "feat/with-cache"),
-                None
-            )
+            .change_branch(&request(&snapshot, "feat/with-cache"))
             .await
             .is_err()
     );
@@ -599,30 +461,26 @@ async fn checkout_never_overwrites_an_ignored_user_file() {
 }
 
 #[tokio::test]
-async fn can_create_branch_from_detached_head_and_explicitly_refuses_unborn_repository() {
+async fn can_switch_existing_branch_from_detached_head_and_explicitly_refuses_unborn_repository() {
     let fixture = Fixture::new().unwrap();
+    git(&fixture.root, &["branch", "feat/from-detached"]).unwrap();
     git(&fixture.root, &["checkout", "--detach"]).unwrap();
     let expected_index = index(&fixture.root);
     let store = RepositoryStore::default();
     let snapshot = store.open(&fixture.root).await.unwrap();
     let changed = store
-        .change_branch(
-            &request(&snapshot, BranchAction::CreateBranch, "feat/from-detached"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/from-detached"))
         .await
         .unwrap();
     assert!(!active(&changed).detached);
+    assert_eq!(active(&changed).branch, "feat/from-detached");
     assert_drafts(&fixture, &expected_index);
     let unborn = tempfile::tempdir().unwrap();
     git(unborn.path(), &["init", "-b", "main"]).unwrap();
     fs::write(unborn.path().join("draft.txt"), "keep\n").unwrap();
     let snapshot = store.open(unborn.path()).await.unwrap();
     let error = store
-        .change_branch(
-            &request(&snapshot, BranchAction::CreateBranch, "feat/unborn"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "main"))
         .await
         .unwrap_err();
     assert!(error.contains("首次提交"), "{error}");
@@ -674,10 +532,7 @@ async fn refuses_custom_hooks_even_when_executable_hook_exists_only_in_target_tr
     let store = RepositoryStore::default();
     let snapshot = store.open(&linked).await.unwrap();
     let error = store
-        .change_branch(
-            &request(&snapshot, BranchAction::SwitchBranch, "feat/target-hook"),
-            None,
-        )
+        .change_branch(&request(&snapshot, "feat/target-hook"))
         .await
         .unwrap_err();
     assert!(error.contains("hooksPath"), "{error}");
@@ -687,9 +542,14 @@ async fn refuses_custom_hooks_even_when_executable_hook_exists_only_in_target_tr
 }
 
 #[test]
-fn branch_wire_format_never_accepts_paths_or_commands() {
-    let base = serde_json::json!({"requestId":"branch-request", "target":{"repositoryId":"r", "worktreeId":"w", "sessionId":"s", "scopeVersion":"ui"}, "action":"createWorktree", "branch":"feat/new", "branchToken":"rust-token"});
+fn branch_wire_format_never_accepts_paths_commands_or_creation_actions() {
+    let base = serde_json::json!({"requestId":"branch-request", "target":{"repositoryId":"r", "worktreeId":"w", "sessionId":"s", "scopeVersion":"ui"}, "action":"switchBranch", "branch":"feat/existing", "branchToken":"rust-token"});
     assert!(serde_json::from_value::<BranchRequest>(base.clone()).is_ok());
+    for action in ["createBranch", "createWorktree"] {
+        let mut removed = base.clone();
+        removed["action"] = serde_json::json!(action);
+        assert!(serde_json::from_value::<BranchRequest>(removed).is_err());
+    }
     for field in ["path", "parent", "shell", "force"] {
         let mut invalid = base.clone();
         invalid[field] = serde_json::json!("untrusted");

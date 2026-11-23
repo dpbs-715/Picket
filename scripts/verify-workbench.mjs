@@ -100,7 +100,7 @@ try {
   const screenshotOption = process.argv.find((argument) => argument.startsWith('--screenshots='));
   if (screenshotOption) {
     const destination = resolve(screenshotOption.slice('--screenshots='.length)); mkdirSync(destination, { recursive: true });
-    for (const scenario of ['empty', 'running', 'question', 'typing', 'done', 'review-during-question', 'push-failed', 'conflict', 'manual', 'resolved', 'no-model', 'single', 'long-paths']) {
+    for (const scenario of ['empty', 'clean', 'running', 'question', 'typing', 'done', 'review-during-question', 'push-failed', 'conflict', 'manual', 'resolved', 'no-model', 'single', 'long-paths']) {
       await navigate(`scenario=${scenario}`);
       await evaluate(`new Promise(resolve => {
         const inspect = () => { if (document.querySelector('.workbench')) { requestAnimationFrame(() => requestAnimationFrame(resolve)); return true; } };
@@ -113,6 +113,10 @@ try {
     await evaluate(`document.getElementById('review-tab').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     let detail = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(destination, 'review.png'), Buffer.from(detail.data, 'base64'));
+    await navigate('scenario=typing');
+    await evaluate(`document.querySelector('button[aria-label="设置"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    detail = await send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(join(destination, 'settings-models.png'), Buffer.from(detail.data, 'base64'));
     await navigate('scenario=no-model');
     await evaluate(`document.querySelector('button[aria-label="设置"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     detail = await send('Page.captureScreenshot', { format: 'png' });

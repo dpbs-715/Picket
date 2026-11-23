@@ -19,7 +19,7 @@ export interface GitChange {
   contentVersion: string;
   commitToken: string;
 }
-export type GitRemote = { kind: 'tracked'; branch: string; ahead: number; behind: number; localOnly: true }
+export type GitRemote = { kind: 'tracked'; branch: string; ahead: number; behind: number; localOnly: boolean }
   | { kind: 'missing' | 'error'; reason: string };
 export interface GitWorktree {
   repositoryId: string;
@@ -68,7 +68,7 @@ export function decodeGitReadReply(value: unknown): GitReadReply {
       || !(tree.head === null || string(tree.head)) || !(tree.branchToken === null || string(tree.branchToken)) || !(tree.readError === null || string(tree.readError)) || !record(tree.remote) || !Array.isArray(tree.files)) return fail();
     ids.add(tree.worktreeId as string);
     const remote = tree.remote;
-    if (remote.kind === 'tracked' ? !string(remote.branch) || !count(remote.ahead) || !count(remote.behind) || remote.localOnly !== true
+    if (remote.kind === 'tracked' ? !string(remote.branch) || !count(remote.ahead) || !count(remote.behind) || typeof remote.localOnly !== 'boolean'
       : !['missing', 'error'].includes(remote.kind as string) || !string(remote.reason)) return fail();
     const fileIds = new Set<string>();
     for (const file of tree.files) {

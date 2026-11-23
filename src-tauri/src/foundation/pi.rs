@@ -20,7 +20,7 @@ const PROTOCOL_VERSION: u32 = 1;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_LINE_BYTES: usize = 64 * 1024;
+const MAX_LINE_BYTES: usize = 256 * 1024;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 
 #[derive(Clone)]
@@ -53,10 +53,74 @@ impl PiPaths {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestContext {
-    repository_id: String,
-    worktree_id: String,
-    session_id: String,
-    scope_version: String,
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub session_id: String,
+    pub scope_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiReviewFinding {
+    pub file_id: String,
+    pub path: String,
+    pub line: u32,
+    pub severity: String,
+    pub title: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiCPushCommitGroup {
+    pub id: String,
+    pub message: String,
+    pub file_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiCPushQuestionOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub recommended: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PiCPushPlan {
+    Ready {
+        summary: String,
+        groups: Vec<PiCPushCommitGroup>,
+        skipped_file_ids: Vec<String>,
+    },
+    Question {
+        title: String,
+        scope: String,
+        description: String,
+        affected_file_ids: Vec<String>,
+        options: Vec<PiCPushQuestionOption>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiResolvedConflictFile {
+    pub file_id: String,
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiConflictResolution {
+    pub summary: String,
+    pub resolved_files: Vec<PiResolvedConflictFile>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,6 +149,22 @@ pub enum PiEvent {
         request_id: String,
         context: RequestContext,
         text: String,
+    },
+    ReviewCompleted {
+        request_id: String,
+        context: RequestContext,
+        findings: Vec<PiReviewFinding>,
+    },
+    #[serde(rename = "cPushPlanCompleted")]
+    CPushPlanCompleted {
+        request_id: String,
+        context: RequestContext,
+        plan: PiCPushPlan,
+    },
+    ConflictResolved {
+        request_id: String,
+        context: RequestContext,
+        resolution: PiConflictResolution,
     },
     Cancelled {
         request_id: String,
@@ -117,6 +197,21 @@ impl PiEvent {
                 context,
                 ..
             }
+            | Self::ReviewCompleted {
+                request_id,
+                context,
+                ..
+            }
+            | Self::CPushPlanCompleted {
+                request_id,
+                context,
+                ..
+            }
+            | Self::ConflictResolved {
+                request_id,
+                context,
+                ..
+            }
             | Self::Cancelled {
                 request_id,
                 context,
@@ -129,6 +224,15 @@ impl PiEvent {
             _ => None,
         }
     }
+}
+
+#[derive(Debug)]
+pub enum PiTaskOutcome {
+    Completed { text: String },
+    ReviewCompleted { findings: Vec<PiReviewFinding> },
+    CPushPlanCompleted { plan: PiCPushPlan },
+    ConflictResolved { resolution: PiConflictResolution },
+    Cancelled,
 }
 
 #[derive(Debug, Serialize)]
@@ -345,6 +449,174 @@ impl PiSupervisor {
         })?;
         report.child_exit_code = status.code().unwrap_or(-1);
         Ok(report)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_task(
+        &self,
+        paths: &PiPaths,
+        request_id: String,
+        expected_context: RequestContext,
+        command: serde_json::Value,
+        task_timeout: Duration,
+        secret_to_redact: Option<&str>,
+        mut on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
+    ) -> Result<PiTaskOutcome, String> {
+        let scrub = |raw: String| -> String {
+            let Some(secret) = secret_to_redact.map(str::trim).filter(|s| !s.is_empty()) else {
+                return raw;
+            };
+            raw.replace(secret, "[REDACTED]")
+        };
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err("无效的模型请求身份".into());
+        }
+        let (cancel, mut cancelled) = watch::channel(false);
+        let _registration = {
+            let mut active = self.0.active.lock().map_err(|_| "模型请求协调器不可用")?;
+            if self.0.closing.load(Ordering::SeqCst) {
+                return Err("应用正在退出，已停止模型请求".into());
+            }
+            if active.contains_key(&request_id) {
+                return Err("相同的模型请求已在运行中".into());
+            }
+            active.insert(request_id.clone(), cancel);
+            ActiveRequest {
+                id: request_id.clone(),
+                state: self.0.clone(),
+            }
+        };
+        if !paths.node.is_file() || !paths.script.is_file() {
+            return Err("随包 Pi Core 运行时缺失，请先准备桌面运行时".into());
+        }
+        let working_directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let mut child = Command::new(&paths.node)
+            .arg(&paths.script)
+            .current_dir(working_directory.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| scrub(format!("无法启动随包 Pi 运行时：{e}")))?;
+        let pid = child.id().ok_or("Pi 进程缺少 PID")?;
+        let mut stdin = child.stdin.take().ok_or("缺少 Pi 标准输入")?;
+        let stdout = child.stdout.take().ok_or("缺少 Pi 标准输出")?;
+        let mut stderr = child.stderr.take().ok_or("缺少 Pi 错误输出")?;
+        let stderr_task = tokio::spawn(async move {
+            let mut retained = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while let Ok(count) = stderr.read(&mut chunk).await {
+                if count == 0 {
+                    break;
+                }
+                let room = MAX_STDERR_BYTES.saturating_sub(retained.len());
+                retained.extend_from_slice(&chunk[..count.min(room)]);
+            }
+            String::from_utf8_lossy(&retained).into_owned()
+        });
+        let mut lines = BufReader::new(stdout).lines();
+        let exchange = timeout(task_timeout, async {
+            let ready = timeout(START_TIMEOUT, next_event(&mut lines))
+                .await
+                .map_err(|_| "Pi Core 启动握手超时".to_string())??;
+            let PiEvent::Ready {
+                protocol_version,
+                pi_core_version,
+                pid: reported_pid,
+                ..
+            } = &ready
+            else {
+                return Err("Pi Core 未返回有效就绪握手".into());
+            };
+            if *protocol_version != PROTOCOL_VERSION
+                || *reported_pid != pid
+                || pi_core_version != "1.6.0"
+            {
+                return Err("Pi Core 协议或版本不兼容".into());
+            }
+            on_event(&ready)?;
+            write_command(&mut stdin, &command).await?;
+            let mut cancel_sent = false;
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    change = cancelled.changed(), if !cancel_sent => {
+                        change.map_err(|_| "取消通道已关闭".to_string())?;
+                        write_command(&mut stdin, &serde_json::json!({ "type": "cancel", "requestId": request_id })).await?;
+                        cancel_sent = true;
+                        continue;
+                    }
+                    event = next_event(&mut lines) => event?,
+                };
+                if let PiEvent::ProtocolError { message } = event {
+                    return Err(format!("Pi 协议拒绝请求：{message}"));
+                }
+                let Some((id, event_context)) = event.envelope() else {
+                    return Err("收到未预期的 Pi 控制事件".into());
+                };
+                if id != request_id || event_context != &expected_context {
+                    return Err("Pi 响应的目标工作树或请求身份不匹配".into());
+                }
+                on_event(&event)?;
+                match event {
+                    PiEvent::Completed { text, .. } => return Ok(PiTaskOutcome::Completed { text }),
+                    PiEvent::ReviewCompleted { findings, .. } => {
+                        return Ok(PiTaskOutcome::ReviewCompleted { findings });
+                    }
+                    PiEvent::CPushPlanCompleted { plan, .. } => {
+                        return Ok(PiTaskOutcome::CPushPlanCompleted { plan });
+                    }
+                    PiEvent::ConflictResolved { resolution, .. } => {
+                        return Ok(PiTaskOutcome::ConflictResolved { resolution });
+                    }
+                    PiEvent::Cancelled { .. } => return Ok(PiTaskOutcome::Cancelled),
+                    PiEvent::Failed { message, .. } => return Err(message),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| "模型请求超时，当前草稿与选择已保留".to_string())
+        .and_then(|r| r);
+
+        let _ = write_command(&mut stdin, &serde_json::json!({ "type": "shutdown" })).await;
+        drop(stdin);
+        let exit = match timeout(EXIT_TIMEOUT, child.wait()).await {
+            Ok(status) => status.map_err(|e| e.to_string()),
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err("Pi 进程未按时退出，已被终止".into())
+            }
+        };
+        let diagnostic = scrub(stderr_task.await.map_err(|e| e.to_string())?);
+        let status = exit.map_err(&scrub)?;
+        if !status.success() {
+            return Err(scrub(format!(
+                "Pi 进程异常退出（{status}）{}",
+                if diagnostic.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("：{}", diagnostic.trim())
+                }
+            )));
+        }
+        exchange.map_err(|e| {
+            let sanitized = scrub(e);
+            if diagnostic.trim().is_empty() {
+                sanitized
+            } else {
+                format!("{sanitized}（{}）", diagnostic.trim())
+            }
+        })
     }
 }
 

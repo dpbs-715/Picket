@@ -24,16 +24,28 @@ export function SettingsPanel(props: Props) {
         {editors.map((editor) => <button type="button" key={editor.id} aria-pressed={editor.id === props.editor} onClick={() => props.onEditor(editor.id)}>
           {editor.name}{editor.id === props.editor && <Icon name="check" />}
         </button>)}
-      </div><p className="mono muted help">CLI：{editor.cli} · 文件、Diff 与行号定位</p><p className="muted help">需安装编辑器命令行工具。真实 IDE 联动在 M2 接入；本次选择仅在当前窗口保留。</p></section>
-      <section><div className="section-heading"><h2>模型管理 ({props.models.length})</h2><button type="button" className="secondary compact" onClick={props.onAddModel}><Icon name="plus" />添加模型</button></div>
+      </div><p className="mono muted help">CLI：{editor.cli} · 文件、Diff 与行号定位</p><p className="muted help">优先查找命令行入口与 macOS 应用包；首选编辑器及工作树草稿会在本机自动保存。</p></section>
+      <section><div className="section-heading"><div className="row"><h2>模型管理</h2><span className="model-count mono">{props.models.length}</span></div>{props.models.length > 0 && <button type="button" className="secondary compact" onClick={props.onAddModel}><Icon name="plus" />添加模型</button>}</div>
         {props.error && <p className="form-result danger" role="alert">{props.error}</p>}
-        {!props.models.length ? <div className="model-empty"><p>尚未配置可用模型</p><button type="button" className="primary" onClick={props.onAddModel}>添加第一个模型</button></div>
-          : <div className="model-list">{props.models.map((model) => <div className="model-row" key={model.id}>
-            <button type="button" className="model-select" aria-pressed={model.id === props.activeModelId} onClick={() => props.onSelectModel(model.id)}>
-              <span className="row"><strong className="truncate">{model.name}</strong>{model.id === props.activeModelId && <span className="success small">当前使用</span>}</span>
-              <span className="mono muted small truncate">{providerFor(model.provider).label} · {model.modelId}</span>
-            </button><IconButton icon="trash" label={`删除模型 ${model.name}`} onClick={() => props.onDeleteModel(model.id)} />
-          </div>)}</div>}
+        {!props.models.length ? <div className="model-empty">
+          <span className="empty-badge" aria-hidden="true"><Icon name="cpu" /></span>
+          <div className="empty-copy"><p className="empty-title">尚未配置可用模型</p><p className="muted help">用于生成提交说明、代码审查与 C-Push</p></div>
+          <button type="button" className="primary model-empty-action" onClick={props.onAddModel}>添加第一个模型</button>
+        </div>
+          : <div className="model-list">{props.models.map((model) => {
+            const active = model.id === props.activeModelId;
+            const providerLabel = providerFor(model.provider).label;
+            const detailTitle = `${providerLabel} · ${model.modelId}${model.baseUrl ? ` · ${model.baseUrl}` : ''}`;
+            return <div className={`model-row ${active ? 'is-active' : ''}`} key={model.id}>
+              <button type="button" className="model-select" aria-pressed={active} title={detailTitle} onClick={() => props.onSelectModel(model.id)}>
+                <span className="model-body">
+                  <span className="model-title-row"><strong className="truncate">{model.name}</strong>{active && <span className="model-active-badge"><span className="status-dot" />当前使用</span>}</span>
+                  <span className="model-meta-row"><span className="model-provider">{providerLabel}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-id truncate">{model.modelId}</span></span>
+                </span>
+              </button>
+              <IconButton icon="trash" className="model-delete" label={`删除模型 ${model.name}`} onClick={() => props.onDeleteModel(model.id)} />
+            </div>;
+          })}</div>}
       </section>
     </div>
   </Overlay>;

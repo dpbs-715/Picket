@@ -78,44 +78,46 @@ async function checkReadOnlyRepository() {
   await waitForUi(() => !!document.querySelector('.worktree-menu'));
   [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((button) => button.textContent?.includes('feat/read-proof'))!.click();
   await waitForUi(() => document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft');
+  await waitForUi(() => !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled, 'read-switch-refresh-settled');
+  document.querySelector('input[aria-label="选择 part.txt"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-open')!.click();
+  await waitForUi(() => (document.querySelector('.operation-notice')?.textContent ?? '').includes('已在 IDEA 打开已暂存 Diff：part.txt'), 'ide-staged-diff-notice');
   await invoke('verify_repository_read_smoke');
+  await invoke('verify_repository_ide_smoke');
 }
 
 async function checkBranchOperations() {
-  function click(label: string) {
-    const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === label);
-    if (!button) throw new Error(`Missing branch smoke button: ${label}`);
-    button.click();
-  }
-  function fill(label: string, branch: string) {
-    const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, branch);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  }
   document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
-  await waitForUi(() => !!document.querySelector('.branch-menu'));
-  click('新建分支（带走当前改动）');
-  await waitForUi(() => !!document.querySelector('input[aria-label="新分支名"]'));
-  fill('新分支名', 'feat/branch-proof');
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  click('切出');
-  await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/branch-proof') === true);
+  await waitForUi(() => !!document.querySelector('.branch-menu'), 'branch-menu-open');
+  const menuText = document.querySelector('.branch-menu')!.textContent ?? '';
+  if (menuText.includes('新建分支') || menuText.includes('新建 Worktree')) {
+    throw new Error('Branch menu still renders removed branch/worktree creation items');
+  }
+  const targetBranchBtn = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')]
+    .find((button) => button.textContent?.includes('feat/branch-proof'));
+  if (!targetBranchBtn) throw new Error('Missing existing branch feat/branch-proof in branch menu');
+  targetBranchBtn.click();
+  await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/branch-proof') === true, 'branch-switched');
   if (document.querySelector<HTMLTextAreaElement>('textarea')?.value !== 'read-proof: keep manual draft'
-    || document.querySelector<HTMLInputElement>('input[aria-label="选择 新 文件.ts"]')?.checked) throw new Error('Creating branch lost draft or selection');
-  document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click();
-  await waitForUi(() => !!document.querySelector('.worktree-menu'));
-  click('新建 Worktree');
-  await waitForUi(() => !!document.querySelector('input[aria-label="Worktree 新分支名"]'));
-  fill('Worktree 新分支名', 'feat/worktree-proof');
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  click('创建');
-  await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/worktree-proof') === true);
+    || document.querySelector<HTMLInputElement>('input[aria-label="选择 新 文件.ts"]')?.checked) {
+    throw new Error('Switching branch lost draft or selection');
+  }
+
+  // Click occupied branch `feat/linked` in branch menu -> jumps to existing linked worktree:
+  document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
+  await waitForUi(() => !!document.querySelector('.branch-menu'), 'branch-menu-reopen');
+  [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')]
+    .find((button) => button.textContent?.includes('feat/linked'))!.click();
+  await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/linked') === true, 'occupied-worktree-jumped');
   if (document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft'
-    || document.querySelector('input[aria-label="选择 part.txt"]')) throw new Error('Creating worktree moved source changes or draft');
+    || document.querySelector('input[aria-label="选择 part.txt"]')) {
+    throw new Error('Jumping to linked worktree leaked source changes or draft');
+  }
   document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click();
-  await waitForUi(() => !!document.querySelector('.worktree-menu'));
-  [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((button) => button.textContent?.includes('feat/branch-proof'))!.click();
-  await waitForUi(() => document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft');
+  await waitForUi(() => !!document.querySelector('.worktree-menu'), 'worktree-menu-open');
+  [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')]
+    .find((button) => button.textContent?.includes('feat/branch-proof'))!.click();
+  await waitForUi(() => document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft', 'worktree-switched-back');
+  await waitForUi(() => !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled, 'worktree-switch-refresh-settled');
   await invoke('verify_repository_branch_smoke');
 }
 
@@ -155,6 +157,114 @@ async function checkCommitOperations() {
   await invoke('verify_repository_commit_smoke');
 }
 
+async function checkPersistenceOperations() {
+  const findButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label || item.getAttribute('aria-label') === label);
+  findButton('设置')!.click();
+  await waitForUi(() => !!document.querySelector('.overlay-heading h1'), 'persistence-settings-open');
+  [...document.querySelectorAll<HTMLButtonElement>('.editor-grid button')].find((item) => item.textContent?.includes('VS Code'))!.click();
+  findButton('关闭设置')!.click();
+  await waitForUi(() => !document.querySelector('.overlay'), 'persistence-settings-closed');
+  findButton('手动编写')!.click();
+  await waitForUi(() => !!document.querySelector('textarea'), 'persistence-textarea');
+  const draft = document.querySelector<HTMLTextAreaElement>('textarea')!;
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(draft, 'persisted-across-restart: keep draft');
+  draft.dispatchEvent(new Event('input', { bubbles: true }));
+  const lockCheckbox = document.querySelector<HTMLInputElement>('input[aria-label="选择 pnpm-lock.yaml"]')!;
+  lockCheckbox.click();
+  await waitForUi(() => lockCheckbox.checked, 'persistence-lock-selected');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  await invoke('verify_repository_persistence_smoke');
+}
+
+async function checkModelM3Operations() {
+  const secret = 'sk-ui-smoke-keychain-secret-8899';
+  const baseUrl = await invoke<string>('start_model_smoke_server');
+  const setInput = (el: HTMLInputElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const findButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label || item.getAttribute('aria-label') === label);
+
+  findButton('添加模型')!.click();
+  await waitForUi(() => !!document.querySelector('.model-form'), 'm3-model-form-open');
+  findButton('自定义兼容')!.click();
+  await waitForUi(() => !!document.querySelector('.model-form input[type="password"]'), 'm3-custom-provider');
+  const formInputs = [...document.querySelectorAll<HTMLInputElement>('.model-form input')];
+  setInput(formInputs[0], 'Smoke Coder');
+  setInput(formInputs[1], 'smoke-coder-v1');
+  setInput(formInputs[2], baseUrl);
+  setInput(formInputs[3], secret);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  findButton('测试连接')!.click();
+  await waitForUi(() => (document.querySelector('.model-form .form-result')?.textContent ?? '').includes('连接成功'), 'm3-test-conn-ok');
+  findButton('保存并使用')!.click();
+  await waitForUi(() => !document.querySelector('.overlay') && !!document.querySelector('.model-button'), 'm3-model-saved');
+
+  // Select `part.txt` alongside already-selected `pnpm-lock.yaml`, clear manual draft, and generate:
+  const partCheckbox = document.querySelector<HTMLInputElement>('input[aria-label="选择 part.txt"]')!;
+  if (!partCheckbox.checked) {
+    partCheckbox.click();
+    await waitForUi(() => partCheckbox.checked, 'm3-part-selected');
+  }
+  findButton('清空提交说明')!.click();
+  await waitForUi(() => !document.querySelector('textarea'), 'm3-draft-cleared');
+  findButton('生成提交说明')!.click();
+  await waitForUi(
+    () => document.querySelector<HTMLTextAreaElement>('textarea')?.value
+      === 'feat(scope): 更新已暂存配置项并同步所选范围\n\n- 提交已暂存的配置键值调整\n- 同步记录所选锁文件范围变更',
+    'm3-generate-completed',
+  );
+
+  // Switch to Review tab and review selected scope (`part.txt` + `pnpm-lock.yaml`):
+  document.querySelector<HTMLButtonElement>('#review-tab')!.click();
+  await waitForUi(() => !!findButton('开始审查已选范围'), 'm3-review-tab');
+  findButton('开始审查已选范围')!.click();
+  await waitForUi(() => !!document.querySelector('.review-finding') && (document.querySelector('.review-coverage')?.textContent ?? '').includes('pnpm-lock.yaml'), 'm3-review-completed');
+
+  await invoke('verify_model_m3_smoke', { secret });
+  await checkCPushM4Operations(secret);
+}
+
+async function checkCPushM4Operations(secret: string) {
+  const findButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label || item.getAttribute('aria-label') === label);
+  await invoke('prepare_cpush_m4_smoke');
+  document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.click();
+  await waitForUi(() => !!document.querySelector('input[aria-label="选择 RELEASE_NOTES.md"]') && !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled, 'm4-release-notes-loaded');
+
+  const partBox = document.querySelector<HTMLInputElement>('input[aria-label="选择 part.txt"]')!;
+  const docBox = document.querySelector<HTMLInputElement>('input[aria-label="选择 RELEASE_NOTES.md"]')!;
+  const lockBox = document.querySelector<HTMLInputElement>('input[aria-label="选择 pnpm-lock.yaml"]')!;
+  if (!partBox.checked) partBox.click();
+  if (!docBox.checked) docBox.click();
+  if (lockBox.checked) lockBox.click();
+  await waitForUi(() => partBox.checked && docBox.checked && !lockBox.checked, 'm4-selection-ready');
+
+  findButton('C-Push')!.click();
+  await waitForUi(() => (document.querySelector('.workbench')?.textContent ?? '').includes('发布说明要一起提交吗？'), 'm4-question-arrived');
+  findButton('单独提交并一起推送')!.click();
+  await waitForUi(() => (document.querySelector('.workbench')?.textContent ?? '').includes('2 个提交已推送至 origin/feat/branch-proof'), 'm4-split-and-pushed');
+  await invoke('verify_cpush_m4_smoke', { secret });
+
+  // M5 conflict + Agent merge + dirty-worktree preservation (`R03`, `R06`):
+  await invoke('prepare_m5_conflict_smoke');
+  document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.click();
+  await waitForUi(() => !!document.querySelector('input[aria-label="选择 RELEASE_NOTES.md"]') && !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled, 'm5-conflict-doc-loaded');
+  const m5DocBox = document.querySelector<HTMLInputElement>('input[aria-label="选择 RELEASE_NOTES.md"]')!;
+  const m5LockBox = document.querySelector<HTMLInputElement>('input[aria-label="选择 pnpm-lock.yaml"]')!;
+  const m5ExtraBox = document.querySelector<HTMLInputElement>('input[aria-label="选择 新 文件.ts"]')!;
+  if (!m5DocBox.checked) m5DocBox.click();
+  if (m5LockBox.checked) m5LockBox.click();
+  if (m5ExtraBox.checked) m5ExtraBox.click();
+  await waitForUi(() => m5DocBox.checked && !m5LockBox.checked && !m5ExtraBox.checked, 'm5-conflict-selection-ready');
+
+  findButton('C-Push')!.click();
+  await waitForUi(() => (document.querySelector('.workbench')?.textContent ?? '').includes('同步远端改动遇到代码冲突'), 'm5-conflict-detected');
+  findButton('让 Agent 合并')!.click();
+  await waitForUi(() => (document.querySelector('.workbench')?.textContent ?? '').includes('1 个提交已推送至 origin/feat/branch-proof'), 'm5-conflict-merged-and-pushed');
+  await invoke('verify_m5_conflict_smoke');
+}
+
 // Runs only when the native harness explicitly signals after WebView loading.
 export function registerUiSmoke() {
   window.addEventListener('picket:foundation-smoke', () => {
@@ -165,6 +275,8 @@ export function registerUiSmoke() {
       await checkReadOnlyRepository();
       await checkBranchOperations();
       await checkCommitOperations();
+      await checkPersistenceOperations();
+      await checkModelM3Operations();
       await runPiProbe('ui-complete', () => {});
       await runGitProbe();
       await runPiProbe('ui-close', (event) => {

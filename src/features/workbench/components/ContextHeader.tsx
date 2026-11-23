@@ -11,54 +11,30 @@ interface Props {
   pinned: boolean;
   opening: boolean;
   branchBusy: boolean;
+  pullBusy?: boolean;
   pinBusy: boolean;
   onPin(): void;
   onSettings(): void;
   onOpenRepository(): void;
   onSwitch(worktreeId: string, expand?: boolean): void;
-  onBranch(kind: 'createBranch' | 'createWorktree' | 'switchBranch', branch: string): Promise<boolean>;
+  onBranch(kind: 'switchBranch', branch: string): Promise<boolean>;
   onPull(): void;
-}
-
-function BranchForm({ kind, onSubmit, disabled }: { kind: 'createBranch' | 'createWorktree'; onSubmit: Props['onBranch']; disabled: boolean }) {
-  const [branch, setBranch] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  return <form className="branch-form" onSubmit={(event) => {
-    event.preventDefault();
-    if (busy || disabled || !branch.trim()) return;
-    setBusy(true);
-    void onSubmit(kind, branch.trim()).then((accepted) => {
-      if (!accepted) setError('未完成创建，分支名与当前改动已保留。请查看操作提示后重试。');
-    }).finally(() => setBusy(false));
-  }}>
-    <div className="row"><input aria-label={kind === 'createBranch' ? '新分支名' : 'Worktree 新分支名'} placeholder={kind === 'createBranch' ? 'feat/new-branch' : 'feat/invoice'} value={branch} disabled={busy || disabled} onChange={(event) => { setBranch(event.target.value); setError(''); }} required />
-      <button type="submit" className="primary compact" disabled={busy || disabled}>{busy ? '处理中…' : kind === 'createBranch' ? '切出' : '创建'}</button></div>
-    {kind === 'createWorktree' && <p className="muted help">创建时选择父目录；新目录以分支名命名，/ 替换为 -。原工作树的改动不会移入新目录。</p>}
-    {error && <p className="danger help" role="alert">{error}</p>}
-  </form>;
 }
 
 export function ContextHeader(props: Props) {
   const [menu, setMenu] = useState<Menu>(null);
-  const [creating, setCreating] = useState<'createBranch' | 'createWorktree' | null>(null);
   const { state, worktree, repository } = props;
   const repoWorktrees = state.worktrees.filter((tree) => tree.repositoryId === repository?.id);
   const pending = state.worktrees.some(isActiveSession);
   const branchDisabled = props.branchBusy || !!worktree?.readError || repoWorktrees.some(isActiveSession);
-  async function submitBranch(kind: 'createBranch' | 'createWorktree' | 'switchBranch', branch: string) {
-    const accepted = await props.onBranch(kind, branch);
+  async function submitBranch(branch: string) {
+    const accepted = await props.onBranch('switchBranch', branch);
     if (accepted) setMenu(null);
     return accepted;
   }
-  function toggle(next: Menu) { setMenu(menu === next ? null : next); setCreating(null); }
+  function toggle(next: Menu) { setMenu(menu === next ? null : next); }
   function switchTree(id: string, expand = false) { props.onSwitch(id, expand); setMenu(null); }
   const close = () => setMenu(null);
-  const createActions = (single: boolean) => <div className="menu-divider">
-    <button type="button" disabled={branchDisabled} onClick={() => setCreating('createBranch')}><Icon name="plus" />新建分支（带走当前改动）</button>
-    {single && <button type="button" disabled={branchDisabled} onClick={() => setCreating('createWorktree')}><Icon name="plus" />新建 Worktree</button>}
-    {creating && <BranchForm key={creating} kind={creating} disabled={branchDisabled} onSubmit={submitBranch} />}
-  </div>;
 
   return <header className="context-header">
     <div className="context-row context-top" data-tauri-drag-region>
@@ -103,18 +79,16 @@ export function ContextHeader(props: Props) {
             {repoWorktrees.map((tree) => <button type="button" key={tree.worktreeId} aria-pressed={tree.worktreeId === worktree.worktreeId} onClick={() => switchTree(tree.worktreeId)}>
               <span className="row min-width-zero"><span className={`status-dot status-${tree.sessionStatus}`} /><span className="mono truncate">{tree.label}</span><span className="mono muted small truncate">{tree.branch}</span></span><span className="muted small">{tree.readError ? '不可用' : tree.files.length ? `${tree.files.length} 项` : '干净'}</span>
             </button>)}
-            <div className="menu-divider"><button type="button" disabled={branchDisabled} onClick={() => setCreating('createWorktree')}><Icon name="plus" />新建 Worktree</button>{creating === 'createWorktree' && <BranchForm kind="createWorktree" disabled={branchDisabled} onSubmit={submitBranch} />}</div>
           </Popover>}
         </div><span className="muted">/</span></>}
         <div className="menu-anchor branch-anchor">
           <button type="button" className={`context-button ${worktree && isProtected(worktree.branch) ? 'warning' : ''}`} disabled={!worktree} data-popover-trigger aria-expanded={menu === 'branch'} onClick={() => toggle('branch')}><Icon name="branch" /><span className="mono truncate">{worktree?.detached ? '分离 HEAD' : worktree?.branch ?? '未选择分支'}</span>{worktree && <Icon name="down" />}</button>
           {menu === 'branch' && worktree && <Popover title="分支" onClose={close} className="branch-menu">
-            {isProtected(worktree.branch) && <p className="warning menu-note">保护分支：提交或推送前须先切开发分支</p>}
-            {repository?.branches.map((branch) => <button type="button" key={branch.name} disabled={!branch.worktreeId && branchDisabled} aria-pressed={branch.name === worktree.branch} onClick={() => {
+            {repository?.branches.length ? repository.branches.map((branch) => <button type="button" key={branch.name} disabled={!branch.worktreeId && branchDisabled} aria-pressed={branch.name === worktree.branch} onClick={() => {
               if (branch.worktreeId) switchTree(branch.worktreeId);
-              else { void submitBranch('switchBranch', branch.name); }
-            }}><span className="mono truncate">{branch.name}</span>{branch.worktreeId && branch.worktreeId !== worktree.worktreeId ? <span className="small muted truncate">跳转 {state.worktrees.find((tree) => tree.worktreeId === branch.worktreeId)?.label}</span> : branch.name === worktree.branch && <Icon name="check" />}</button>)}
-            {createActions(repoWorktrees.length <= 1)}
+              else { void submitBranch(branch.name); }
+            }}><span className="row min-width-zero"><span className="mono truncate">{branch.name}</span>{isProtected(branch.name) && <span className="branch-tag">保护分支</span>}</span>{branch.worktreeId && branch.worktreeId !== worktree.worktreeId ? <span className="small muted truncate">跳转 {state.worktrees.find((tree) => tree.worktreeId === branch.worktreeId)?.label}</span> : branch.name === worktree.branch && <Icon name="check" />}</button>)
+              : <p className="muted menu-note">尚无本地分支</p>}
           </Popover>}
         </div>
       </div>
@@ -124,7 +98,7 @@ export function ContextHeader(props: Props) {
         {menu === 'remote' && worktree && <Popover title="远端详情" onClose={close} className="remote-menu"><div className="menu-title muted">跟踪远端分支</div>
           {worktree.remote.kind === 'tracked' ? <><p className="mono">{worktree.remote.branch}</p><p className="muted small">领先 {worktree.remote.ahead} 个提交　落后 {worktree.remote.behind} 个提交</p></> : <p className="warning help">{worktree.remote.reason}</p>}
           {worktree.remote.kind === 'tracked' && worktree.remote.localOnly && <p className="muted help">仅基于本地跟踪引用，尚未联网检查远端。</p>}
-          <div className="menu-divider"><button type="button" className="secondary" onClick={props.onPull}>拉取并变基</button></div>
+          <div className="menu-divider"><button type="button" className="secondary" disabled={props.pullBusy || repoWorktrees.some(isActiveSession)} onClick={() => { close(); props.onPull(); }}>{props.pullBusy ? '同步中…' : '拉取并变基'}</button></div>
         </Popover>}
       </div>
     </div>

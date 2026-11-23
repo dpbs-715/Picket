@@ -1,6 +1,9 @@
 import { act, createElement } from 'react';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitCommitReply } from '../../../../shared/git-commit-protocol';
+import type { GitOpenFileReply } from '../../../../shared/ide-protocol';
+import type { GenerateCommitReply, ReviewScopeReply } from '../../../../shared/model-protocol';
+import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
 import type { Root } from 'react-dom/client';
 import { Workbench } from '../Workbench';
 import { disconnectedBackend } from '../commands';
@@ -40,6 +43,9 @@ export async function verifyWorkbench(root: Root) {
 
   await mount(fixture('empty'));
   assert(text().includes('打开你的 Git 仓库') && !text().includes('my-order-service'), '默认状态混入示例');
+  assert(!document.querySelector('.changes-heading') && !document.querySelector('[aria-label="切换目录树视图"]') && !document.querySelector('[aria-label="刷新变更"]'), '空项目不应提前渲染变更工具栏');
+  assert(document.querySelector<HTMLButtonElement>('.repository-open-button')?.classList.contains('primary'), '打开本机仓库应作为空项目唯一主入口');
+  assert(!document.querySelector('.commit-empty button.primary'), '空项目下半区不应与打开仓库抢夺主按钮视觉层级');
   assert(button('提交').disabled, '无仓库不应提交');
   await click('打开本机仓库…');
   assert(text().includes('此操作尚未接入'), `未接入的打开操作应明确说明：${text()}`);
@@ -53,7 +59,9 @@ export async function verifyWorkbench(root: Root) {
   assert(document.querySelector('[aria-label="关闭设置"]'), '取消添加后应回到设置');
   await click('关闭设置');
   assert(textarea.value === '尚未选择仓库时写的草稿', '打开设置不能丢失草稿');
-  checks.push('真实默认空态、手动输入、共用模型入口与取消返回');
+  await mount(fixture('clean'));
+  assert(text().includes('工作区干净') && !!document.querySelector('[aria-label="刷新变更"]') && !document.querySelector('[aria-label="切换目录树视图"]'), '干净工作区应保留刷新并隐藏无意义的目录树切换');
+  checks.push('真实默认空态、干净工作区层级、手动输入、共用模型入口与取消返回');
 
   const subscription: { receive?: (event: WorkbenchEvent) => void } = {};
   const typingState = fixture('typing');
@@ -128,13 +136,16 @@ export async function verifyWorkbench(root: Root) {
   await mount(single);
   assert(!document.querySelector('.worktree-anchor'), '单目录仓库应隐藏工作树选择器');
   await click('main');
-  assert(text().includes('新建 Worktree'), '单目录仓库缺少新建 Worktree 入口');
-  await click('新建 Worktree');
-  assert(document.querySelector('[aria-label="Worktree 新分支名"]'), 'Worktree 内联表单不可达');
+  assert(
+    document.querySelector('.branch-menu .branch-tag')?.textContent === '保护分支'
+      && !text().includes('新建分支')
+      && !text().includes('新建 Worktree'),
+    '单目录分支菜单应仅展示已有分支与保护分支短标签，不再展示新建分支或 Worktree 入口',
+  );
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   await click('提交');
-  assert(button('仅本地提交').disabled && text().includes('保护分支'), '保护分支应禁止直接写入');
-  checks.push('单目录 Worktree 可达与保护分支拦截');
+  assert(!button('仅本地提交').disabled && !button('提交并推送').disabled && document.querySelector('.scope-menu .branch-tag')?.textContent === '保护分支', '保护分支应仅展示紧凑标签并允许直接提交');
+  checks.push('单目录隐藏工作树选择器、精简分支菜单与保护分支短标签直接提交');
 
   await mount(fixture('no-model'));
   await click('设置'); await click('添加第一个模型');
@@ -151,14 +162,19 @@ export async function verifyWorkbench(root: Root) {
 
   const modelCalls: WorkbenchCommand[] = [];
   await mount(fixture('typing'), { ...disconnectedBackend, async execute(command) { modelCalls.push(command); } });
-  await click('设置'); await click('删除模型 Claude Sonnet 4');
+  await click('设置');
+  const activeSelect = document.querySelector<HTMLButtonElement>('.model-row.is-active .model-select')!;
+  assert(activeSelect && getComputedStyle(activeSelect).backgroundColor === 'rgba(0, 0, 0, 0)', '选中模型背景应由整张卡片承载而非局部内嵌块');
+  await click('删除模型 Claude Sonnet 4');
   assert(text().includes('GPT-4.1') && !text().includes('Claude Sonnet 4'), '删除当前模型没有回退');
   assert(modelCalls.length === 1 && modelCalls[0].kind === 'deleteModel', '删除误触发模型选择');
   await click('关闭设置');
   assert(button('GPT-4.1'), '设置与底栏没有共享选中模型');
-  await click('设置'); await click('删除模型 GPT-4.1'); await click('关闭设置');
+  await click('设置'); await click('删除模型 GPT-4.1');
+  assert(!!document.querySelector('.model-empty') && ![...document.querySelectorAll('.settings-content button')].some((item) => item.textContent?.trim() === '添加模型'), '零模型空态不应重复展示顶部添加按钮');
+  await click('关闭设置');
   assert(!document.querySelector('.model-button') && button('添加模型'), '删到零后仍保留空模型下拉');
-  checks.push('两处模型状态共享、删除不触发选择、删到零回到无模型（脚本化边界）');
+  checks.push('两处模型状态共享、卡片式模型列表、删除不触发选择与删到零回到无模型（脚本化边界）');
 
   await mount(fixture('no-model'), { ...disconnectedBackend, async saveModel(input) {
     assert(input.apiKey === '' && input.provider === 'ollama', '隐藏的 Key 不应进入本地模型保存请求');
@@ -264,11 +280,28 @@ export async function verifyWorkbench(root: Root) {
   await click('手动编写'); type(document.querySelector<HTMLTextAreaElement>('textarea')!, '取消后仍保留'); await tick();
   await click('打开本机仓库…');
   assert(document.querySelector<HTMLTextAreaElement>('textarea')?.value === '取消后仍保留' && text().includes('打开你的 Git 仓库'), '取消目录选择丢失输入或伪造打开成功');
-  checks.push('打开目录取消保持原输入与空态（协议夹具）');
+  let rejectNonGit = false;
+  await mount(fixture('empty'), { ...reads, async execute(command) {
+    if (command.kind === 'openRepository' && rejectNonGit) {
+      throw new Error('无法打开“plain-folder”：该目录未受 Git 管理（未找到 .git），请先执行 git init 或选择其他 Git 仓库');
+    }
+    return reads.execute(command);
+  } });
+  await click('打开本机仓库…');
+  rejectNonGit = true;
+  await click('real-contract-fixture');
+  await click('打开本机仓库…');
+  await act(async () => { window.dispatchEvent(new Event('focus')); });
+  assert(
+    (document.querySelector('.operation-notice')?.textContent ?? '').includes('未受 Git 管理')
+      && text().includes('real-contract-fixture'),
+    '切换非 Git 目录时窗口聚焦自动刷新不应冲掉错误提示',
+  );
+  checks.push('打开目录取消、切换非 Git 目录报错保留与窗口聚焦不冲掉提示（协议夹具）');
   let branchCallCount = 0;
-  const branchResponse: { finish?: (reply: GitBranchReply) => void; command?: Extract<WorkbenchCommand, { branch: string }> } = {};
+  const branchResponse: { finish?: (reply: GitBranchReply) => void; command?: Extract<WorkbenchCommand, { kind: 'switchBranch' }> } = {};
   const branches: WorkbenchBackend = { ...reads, execute(command) {
-    if (command.kind !== 'createBranch' && command.kind !== 'createWorktree' && command.kind !== 'switchBranch') return reads.execute(command);
+    if (command.kind !== 'switchBranch') return reads.execute(command);
     branchCallCount++; branchResponse.command = command;
     return new Promise<GitBranchReply>((resolve) => { branchResponse.finish = resolve; });
   } };
@@ -276,41 +309,41 @@ export async function verifyWorkbench(root: Root) {
   textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
   type(textarea, '分支操作时的人工草稿'); await tick();
   await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
-  await click('新建分支（带走当前改动）');
-  type(document.querySelector<HTMLInputElement>('[aria-label="新分支名"]')!, 'feat/new'); await tick();
-  await act(async () => { const form = document.querySelector<HTMLFormElement>('.branch-form')!; form.requestSubmit(); form.requestSubmit(); });
-  assert(branchCallCount === 1 && branchResponse.command?.branchToken, '创建分支重复请求或没有携带 Rust 版本');
-  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/pay'), 'Git 未返回就伪造分支成功');
+  assert(!text().includes('新建分支') && !text().includes('新建 Worktree'), '分支菜单不应包含新建分支或新建 Worktree 入口');
+  await act(async () => {
+    const targetBtn = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')].find((btn) => btn.textContent?.includes('feat/invoice'))!;
+    targetBtn.click(); targetBtn.click();
+  });
+  assert(branchCallCount === 1 && branchResponse.command?.branch === 'feat/invoice' && branchResponse.command.branchToken, '切换分支重复请求或没有携带 Rust 版本');
+  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/pay'), 'Git 未返回就伪造分支切换成功');
   type(textarea, '等待 Git 时继续写的新草稿'); await tick();
   const branchSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
-  branchSnapshot.worktrees[0].branch = 'feat/new'; branchSnapshot.worktrees[0].branchToken = 'updated-branch-token';
-  await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'createBranch', outcome: 'completed', snapshot: branchSnapshot }); });
-  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/new'), '成功后未采用 Git 分支或未关闭菜单');
-  assert(textarea.value === '等待 Git 时继续写的新草稿' && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '分支回执覆盖了最新草稿或选择');
-  checks.push('分支创建只采用 Git 回执、重复点击保护、请求中继续输入与选择保全（协议夹具）');
+  branchSnapshot.worktrees[0].branch = 'feat/invoice'; branchSnapshot.worktrees[0].branchToken = 'updated-branch-token';
+  await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'switchBranch', outcome: 'completed', snapshot: branchSnapshot }); });
+  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/invoice'), '成功后未采用 Git 分支或未关闭菜单');
+  assert(textarea.value === '等待 Git 时继续写的新草稿' && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '分支切换回执覆盖了最新草稿或选择');
+  // Clicking a branch occupied by another worktree jumps directly to that worktree:
+  await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click();
+  });
+  assert(branchCallCount === 1 && document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), '点击已占用分支未跳转到对应工作树');
+  checks.push('切换已有分支只采用 Git 回执、重复点击保护、草稿选择保全与已占用工作树跳转（协议夹具）');
 
-  await mount(fixture('empty'), { ...reads, async execute(command) {
-    if (command.kind === 'createWorktree') return { protocolVersion: 1, kind: 'branch', requestId: command.requestId, target: command.target, action: command.kind, outcome: 'cancelled', snapshot: null };
-    return reads.execute(command);
-  } });
-  await click('打开本机仓库…');
-  await act(async () => { document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click(); });
-  await click('新建 Worktree'); type(document.querySelector<HTMLInputElement>('[aria-label="Worktree 新分支名"]')!, 'feat/cancelled'); await tick(); await click('创建');
-  assert(text().includes('已取消创建 Worktree') && document.querySelector<HTMLInputElement>('[aria-label="Worktree 新分支名"]')?.value === 'feat/cancelled', '取消目录选择丢失分支名或伪造完成');
-  assert(document.querySelectorAll('.worktree-menu > button').length === 2, '取消后伪造了新工作树');
-  checks.push('Worktree 取消目录选择后保留表单、原分支和工作树列表（协议夹具）');
-
+  branchCallCount = 0;
   await mount(fixture('empty'), branches); await click('打开本机仓库…');
-  await act(async () => { document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click(); });
-  await click('新建 Worktree'); type(document.querySelector<HTMLInputElement>('[aria-label="Worktree 新分支名"]')!, 'feat/later'); await tick(); await click('创建');
+  await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')].find((btn) => btn.textContent?.includes('feat/invoice'))!.click();
+  });
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   await act(async () => { document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click(); });
-  await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((button) => button.textContent?.includes('fix/npe'))!.click(); });
-  const worktreeSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
-  worktreeSnapshot.worktrees.push({ ...worktreeSnapshot.worktrees[0], worktreeId: 'new-tree', branch: 'feat/later', label: 'new', files: [] }); worktreeSnapshot.activeWorktreeId = 'new-tree';
-  await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'createWorktree', outcome: 'completed', snapshot: worktreeSnapshot }); });
-  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), 'Worktree 晚结果切走了用户当前视图');
-  checks.push('创建 Worktree 中切换视图，晚回执只更新原仓库而不抢回界面（协议夹具）');
+  await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click(); });
+  const lateBranchSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
+  lateBranchSnapshot.worktrees[0].branch = 'feat/invoice';
+  await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'switchBranch', outcome: 'completed', snapshot: lateBranchSnapshot }); });
+  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), '分支切换晚回执切走了用户当前视图');
+  checks.push('切换分支期间切换工作树视图，晚回执只更新原工作树而不抢回界面（协议夹具）');
 
   let commitCalls = 0, failCommitWithMutation = false;
   const commitPending: { finish?: (reply: GitCommitReply) => void; command?: Extract<WorkbenchCommand, { kind: 'commit' }> } = {};
@@ -324,7 +357,6 @@ export async function verifyWorkbench(root: Root) {
         return reply;
       }
       if (command.kind !== 'commit') return reads.execute(command);
-      if (command.push) throw new Error('远端推送将在 M5 接入；本次未执行提交或推送，草稿与选择已保留。');
       commitCalls++; commitPending.command = command;
       if (failCommitWithMutation) throw new Error('Git pre-commit 钩子修改了仓库内容，不能继续沿用旧范围；未创建提交。');
       return new Promise<GitCommitReply>((resolve) => { commitPending.finish = resolve; });
@@ -341,8 +373,6 @@ export async function verifyWorkbench(root: Root) {
   type(textarea, 'feat(order): 仅本地提交已暂存与新文件'); await tick();
   await click('提交');
   assert(text().includes('确认本次提交范围') && text().includes('仅已暂存 +28 -4'), '范围确认未显示部分暂存统计');
-  await click('提交并推送');
-  assert(text().includes('M5') && textarea.value === 'feat(order): 仅本地提交已暂存与新文件', 'M5 推送拒绝丢失草稿或伪造推送');
   failCommitWithMutation = true;
   await click('仅本地提交');
   assert(text().includes('钩子修改了仓库内容') && text().includes('范围已变化') && button('仅本地提交').disabled, '钩子改内容后未自动刷新并拦截旧范围');
@@ -378,5 +408,442 @@ export async function verifyWorkbench(root: Root) {
   await click('提交');
   assert(button('仅本地提交').disabled && text().includes('分离 HEAD'), '分离 HEAD 不应允许直接提交');
   checks.push('分离 HEAD 提交拦截与草稿保留');
+
+  const openCalls: Extract<WorkbenchCommand, { kind: 'openFile' }>[] = [];
+  let failOpen = false;
+  const ideState = fixture('review-during-question');
+  await mount(ideState, {
+    ...disconnectedBackend,
+    async execute(command) {
+      if (command.kind !== 'openFile') return disconnectedBackend.execute(command);
+      openCalls.push(command);
+      if (failOpen) throw new Error('未找到 Cursor 可执行入口（cursor）。当前草稿与选择已保留。');
+      const reply: GitOpenFileReply = {
+        protocolVersion: 1, kind: 'openFile', requestId: command.requestId, target: command.target,
+        editor: command.editor, filePath: command.line ? 'src/api/pay.ts' : 'src/service/Order.ts',
+        action: command.line ? 'goto' : 'stagedDiff', ...(command.line ? { line: command.line } : {}),
+      };
+      return reply;
+    },
+  });
+  await act(async () => {
+    document.querySelector('input[aria-label="选择 src/service/Order.ts"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-open')!.click();
+  });
+  assert(openCalls.length === 1 && openCalls[0].editor === 'idea' && !openCalls[0].line && text().includes('已在 IDEA 打开已暂存 Diff：Order.ts'), '文件行点击未触发已暂存 Diff');
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('#review-tab')!.click();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('.review-finding')!.click();
+  });
+  assert(openCalls.at(1)?.line === 46 && text().includes('已在 IDEA 定位到 pay.ts:46'), '审查意见点击未定位行号');
+  await click('设置'); await click('Cursor'); await click('关闭设置');
+  failOpen = true;
+  await act(async () => {
+    document.querySelector('input[aria-label="选择 src/service/Order.ts"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-open')!.click();
+  });
+  assert(openCalls.at(2)?.editor === 'cursor' && text().includes('未找到 Cursor 可执行入口'), '切换编辑器或 CLI 缺失报错未生效');
+  checks.push('外部编辑器文件已暂存 Diff、审查行号定位、编辑器切换与 CLI 缺失提示（协议夹具）');
+
+  const savedRequests: WorkbenchSaveRequest[] = [];
+  const restoredSnapshot = repositoryReply('restore-1', 1).snapshot!;
+  await act(async () => {
+    root.render(createElement(Workbench, {
+      key: ++key,
+      backend: {
+        ...reads,
+        async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
+          return {
+            protocolVersion: 1, editor: 'vscode', activeWorktreeId: 'pay-tree', emptyDraft: '', emptyEditing: false,
+            snapshots: [restoredSnapshot], warning: null,
+            worktrees: [{
+              repositoryId: 'orders', worktreeId: 'pay-tree', draftText: '重启后恢复的说明', draftEditing: true,
+              draftOutdated: false, selectedIds: ['order'], scopeVersion: 'stale-before-restart', tab: 'commit',
+            }],
+          };
+        },
+        async saveWorkbenchState(request) { savedRequests.push(request); },
+      },
+    }));
+  });
+  await tick();
+  textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
+  assert(textarea.value === '重启后恢复的说明' && text().includes('变更已更新，已保留当前草稿'), '跨重启恢复未还原草稿或未提示外部变化');
+  assert(document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!.checked && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '跨重启恢复未还原保存的文件勾选');
+  assert(savedRequests.length === 0, '未修改状态下不应在启动水合时重复落盘');
+  await click('设置');
+  assert(document.querySelector<HTMLButtonElement>('.editor-grid button[aria-pressed="true"]')?.textContent?.includes('VS Code'), '跨重启未还原首选编辑器');
+  await click('WebStorm'); await click('关闭设置');
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); });
+  assert(savedRequests.length >= 2 && savedRequests.at(-1)?.editor === 'webstorm' && savedRequests.at(-1)?.worktrees[0].selectedIds.includes('pay'), '修改编辑器与文件勾选未触发持久化保存');
+  checks.push('跨重启恢复编辑器、草稿、勾选、离线变化提示与变更自动保存（协议夹具）');
+
+  const cancelledIds: string[] = [];
+  let finishGen: ((reply: GenerateCommitReply) => void) | undefined;
+  const m3State = fixture('typing');
+  m3State.worktrees[0].draft = { text: '', editing: false, outdated: false, revision: 0 };
+  m3State.worktrees[0].files = m3State.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
+  await mount(m3State, {
+    ...disconnectedBackend,
+    async testModel(input) {
+      throw new Error(`上游鉴权错误：Bearer ${input.apiKey} 无效`);
+    },
+    async cancelRequest(requestId) { cancelledIds.push(requestId); },
+    execute(command) {
+      if (command.kind === 'generate') {
+        assert(command.selections?.length === command.fileIds.length && command.selections[0].commitToken === 'tok-order', '生成说明未传递每文件 commitToken');
+        return new Promise<GenerateCommitReply>((resolve) => { finishGen = resolve; });
+      }
+      if (command.kind === 'review') {
+        return new Promise<ReviewScopeReply>(() => {});
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+  await click('设置'); await click('添加模型');
+  const keyField = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
+  type(keyField, 'sk-form-secret-5566'); await tick();
+  await click('测试连接');
+  assert(text().includes('[REDACTED]') && !text().includes('sk-form-secret-5566'), '模型表单报错未脱敏 API Key');
+  await click('取消'); await click('关闭设置');
+
+  await click('生成提交说明');
+  assert(text().includes('正在生成提交说明') && !!document.querySelector('textarea'), '空态点击生成说明未进入可编辑与可取消状态');
+  await click('取消');
+  assert(cancelledIds.length === 1 && !text().includes('正在生成提交说明'), '取消生成未触发后端取消或未清理忙碌态');
+
+  await click('生成提交说明');
+  const activeGenTarget = targetOf(m3State.worktrees[0]);
+  await act(async () => {
+    finishGen!({
+      protocolVersion: 1, kind: 'generate', requestId: 'ignored', target: activeGenTarget,
+      modelId: 'test-claude', text: 'feat(pay): 自动生成幂等锁说明', skippedPaths: [],
+    });
+  });
+  // Request ID mismatch in reply must not overwrite; now run clean generation:
+  assert(!document.querySelector<HTMLTextAreaElement>('textarea')?.value, 'requestId 不匹配的生成回执不应写入草稿');
+
+  type ModelTaskCmd = Extract<WorkbenchCommand, { fileIds: string[]; modelId: string }>;
+  let capturedGenCmd: ModelTaskCmd | undefined;
+  let capturedRevCmd: ModelTaskCmd | undefined;
+  await mount(m3State, {
+    ...disconnectedBackend,
+    async cancelRequest(requestId) { cancelledIds.push(requestId); },
+    async execute(command) {
+      if (command.kind === 'generate') {
+        capturedGenCmd = command;
+        return {
+          protocolVersion: 1, kind: 'generate', requestId: command.requestId, target: command.target,
+          modelId: command.modelId, text: 'feat(order): 增加支付回调幂等锁与退避重试\n\n- 沿用 Order.ts 已暂存改动\n- 补充指数退避重试与验签错误返回', skippedPaths: [],
+        };
+      }
+      if (command.kind === 'review') {
+        capturedRevCmd = command;
+        return new Promise<ReviewScopeReply>(() => {});
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+  await click('生成提交说明');
+  assert(
+    capturedGenCmd?.modelId === 'test-claude'
+      && document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'feat(order): 增加支付回调幂等锁与退避重试\n\n- 沿用 Order.ts 已暂存改动\n- 补充指数退避重试与验签错误返回',
+    '生成提交说明未完整填入标题与正文要点',
+  );
+  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
+  await click('开始审查已选范围');
+  // While review is running, manual scope confirmation dropdown must NOT be blocked:
+  assert(!document.querySelector<HTMLButtonElement>('button[aria-label="确认提交范围或手动提交"]')!.disabled, '只读审查运行中不应阻塞手动提交入口');
+  await click('取消审查');
+  assert(cancelledIds.includes(capturedRevCmd!.requestId) && !!document.querySelector('.review-empty'), '取消审查未恢复待审查状态');
+  checks.push('M3 生成说明、范围凭证传递、表单密钥脱敏、取消生成/审查与不阻塞手动路径（协议夹具）');
+
+  const lockOnlyState = fixture('typing');
+  lockOnlyState.worktrees[0].selectedIds = ['lock'];
+  lockOnlyState.worktrees[0].files = lockOnlyState.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
+  await mount(lockOnlyState, {
+    ...disconnectedBackend,
+    async execute(command) {
+      if (command.kind === 'review') {
+        return {
+          protocolVersion: 1, kind: 'review', requestId: command.requestId, target: command.target,
+          modelId: command.modelId, findings: [], skippedPaths: ['pnpm-lock.yaml（锁文件默认忽略审查）'], reviewedFileIds: [],
+        };
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
+  await click('开始审查已选范围');
+  assert(text().includes('所选范围均未纳入审查') && !text().includes('审查通过') && text().includes('未覆盖') && text().includes('pnpm-lock.yaml（锁文件默认忽略审查）'), '仅勾选锁文件时不应伪称审查通过');
+  checks.push('M3 锁文件过滤覆盖说明与禁止伪称审查通过（协议夹具）');
+
+  const cPushSub: { receive?: (event: WorkbenchEvent) => void } = {};
+  const cPushCmds: WorkbenchCommand[] = [];
+  const cPushState = fixture('typing');
+  cPushState.worktrees[0].files = cPushState.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
+  let resolveInitialCPush: ((reply: Awaited<ReturnType<WorkbenchBackend['execute']>>) => void) | undefined;
+  let step2Paused = true;
+  await mount(cPushState, {
+    ...disconnectedBackend,
+    subscribe(receive) { cPushSub.receive = receive; return () => { cPushSub.receive = undefined; }; },
+    async execute(command) {
+      cPushCmds.push(command);
+      if (command.kind === 'cPush') {
+        return new Promise((resolve) => { resolveInitialCPush = resolve; });
+      }
+      if (command.kind === 'respond') {
+        if (step2Paused) {
+          step2Paused = false;
+          return {
+            protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+            session: {
+              runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+              frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: ['order', 'pay', 'retry'], skippedFileIds: [],
+              sessionStatus: 'needsDecision', canRetryRemaining: true,
+              timeline: [
+                { state: 'done', label: '提交 1/2：a3f91c2 feat(order): 增加幂等锁' },
+                { state: 'failed', label: '提交 2/2 暂停：docs: 更新发布说明' },
+              ],
+              qaLog: [{ questionId: command.messageId, question: '发布说明要一起提交吗？', answer: '单独提交并一起推送' }],
+              commits: [{ oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): 增加幂等锁', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] }],
+              message: {
+                id: 'err-step-2', kind: 'error', title: '已完成 1/2 个提交，提交 2 暂停', scope: '提交 2/2',
+                description: '提交钩子暂时拒绝。已完成提交保留，修复后可重试剩余步骤。',
+                commits: [{ hash: 'a3f91c2', title: 'feat(order): 增加幂等锁' }],
+                options: [{ id: 'retry-remaining', label: '重试剩余提交', recommended: true }],
+              },
+            },
+          };
+        }
+        return {
+          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          session: {
+            runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+            frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: ['order', 'pay', 'retry', 'release'], skippedFileIds: [],
+            sessionStatus: 'done', canRetryRemaining: false,
+            timeline: [
+              { state: 'done', label: '提交 1/2：a3f91c2 feat(order): 增加幂等锁' },
+              { state: 'done', label: '提交 2/2：b84d120 docs: 更新发布说明' },
+            ],
+            qaLog: [{ questionId: 'q-m4', question: '发布说明要一起提交吗？', answer: '单独提交并一起推送' }],
+            commits: [
+              { oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): 增加幂等锁', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] },
+              { oid: 'b84d120000', shortOid: 'b84d120', title: 'docs: 更新发布说明', branch: 'feat/pay', fileIds: ['release'] },
+            ],
+            message: {
+              id: 'done-m4', kind: 'done', title: '已完成 2 个本地拆分提交', scope: 'feat/pay',
+              description: '未选锁文件与未暂存草稿保留在原处。',
+              commits: [{ hash: 'a3f91c2', title: 'feat(order): 增加幂等锁' }, { hash: 'b84d120', title: 'docs: 更新发布说明' }],
+            },
+          },
+        };
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+  await click('C-Push');
+  assert(cPushCmds.length === 1 && cPushCmds[0].kind === 'cPush' && cPushCmds[0].selections?.length === 4, 'C-Push 未附带精确文件范围凭证');
+  const startedCmd = cPushCmds[0];
+  // Collapse dock, focus textarea, and toggle `pnpm-lock.yaml` mid-run (`C03` + `W03`):
+  await click('收起消息');
+  const m4Editor = document.querySelector<HTMLTextAreaElement>('textarea')!;
+  m4Editor.focus();
+  type(m4Editor, '后续提交草稿，运行中不被冲掉'); await tick();
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.click(); });
+  await act(async () => {
+    resolveInitialCPush!({
+      protocolVersion: 1, kind: 'cPush', requestId: startedCmd.requestId,
+      session: {
+        runId: startedCmd.requestId, repositoryId: startedCmd.target.repositoryId, worktreeId: startedCmd.target.worktreeId,
+        sessionId: startedCmd.target.sessionId, frozenScopeVersion: startedCmd.target.scopeVersion, modelId: 'test-claude',
+        frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: [], skippedFileIds: [],
+        sessionStatus: 'needsDecision', canRetryRemaining: false,
+        timeline: [{ state: 'done', label: '已固定 4 个已选文件范围' }, { state: 'active', label: '等待决定：发布说明要一起提交吗？' }],
+        qaLog: [], commits: [],
+        message: { ...releaseQuestion(), id: 'q-m4' },
+      },
+    });
+  });
+  assert(document.activeElement === m4Editor && !document.querySelector('.message-expanded') && m4Editor.value === '后续提交草稿，运行中不被冲掉', 'C-Push 后台提问抢走焦点或自动展开');
+  assert(button('C-Push · 待决定'), '待决定状态未同步到底栏主按钮');
+  // Clicking primary button resumes existing session instead of starting a second C-Push:
+  await click('C-Push · 待决定');
+  assert(cPushCmds.length === 1 && !!document.querySelector('.message-expanded'), '点击恢复按钮不应重复启动第二个任务');
+  await click('单独提交并一起推送');
+  const firstRespond = cPushCmds[1];
+  assert(firstRespond?.kind === 'respond' && firstRespond.runId === startedCmd.requestId && firstRespond.target.scopeVersion === startedCmd.target.scopeVersion, '运行中勾选改变了当前 C-Push 冻结目标');
+  assert(text().includes('已完成 1/2 个提交，提交 2 暂停') && !!document.querySelector('[aria-label="会话执行步骤"]'), '部分提交暂停态或执行步骤未展示');
+  await click('重试剩余提交');
+  assert(text().includes('已完成 2 个本地拆分提交') && text().includes('b84d120') && !!document.querySelector('[aria-label="会话问答记录"]'), '重试剩余步骤未完成或缺少问答记录');
+  assert(m4Editor.value === '后续提交草稿，运行中不被冲掉', 'C-Push 完成覆盖了运行期间新写的人工草稿');
+  checks.push('M4 C-Push 范围冻结、后台提问不抢焦点、分步暂停重试与问答记录（协议夹具）');
+
+  const m5Sub: { receive?: (event: WorkbenchEvent) => void } = {};
+  const m5Cmds: WorkbenchCommand[] = [];
+  let reconcileCalls = 0;
+  let pullcreatesConflict = false;
+  await mount(fixture('empty'), {
+    ...reads,
+    subscribe(receive) { m5Sub.receive = receive; return () => { m5Sub.receive = undefined; }; },
+    async reconcileSession(target) {
+      reconcileCalls++;
+      const pushedSnap = repositoryReply(`reconcile-${reconcileCalls}`, ++readSequence).snapshot!;
+      pushedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 0, behind: 0, localOnly: false };
+      m5Sub.receive?.({
+        type: 'cPushProgress',
+        progress: {
+          protocolVersion: 1,
+          repositorySnapshot: pushedSnap,
+          session: {
+            runId: 'conflict-run-1', repositoryId: target.repositoryId, worktreeId: target.worktreeId,
+            sessionId: target.sessionId, frozenScopeVersion: target.scopeVersion, modelId: '',
+            frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
+            sessionStatus: 'done', autoCollapse: true, canRetryRemaining: false,
+            timeline: [{ state: 'done', label: '检测到终端已完成合并并推送至 mirror/feat/pay' }],
+            qaLog: [], commits: [],
+            message: { id: 'reconciled-done', kind: 'done', title: '检测到终端已完成合并并推送', description: '本地与远端已一致。' },
+          },
+        },
+      });
+    },
+    async execute(command) {
+      m5Cmds.push(command);
+      if (command.kind === 'pull') {
+        const pullSnap = repositoryReply(command.requestId, ++readSequence).snapshot!;
+        if (pullcreatesConflict) {
+          return {
+            protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pullSnap,
+            session: {
+              runId: 'conflict-run-1', repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+              frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
+              sessionStatus: 'conflict', canRetryRemaining: false,
+              timeline: [{ state: 'failed', label: '变基遇到冲突：src/service/Order.ts' }],
+              qaLog: [], commits: [],
+              message: {
+                id: 'conflict-msg-1', kind: 'conflict', title: '同步远端改动遇到代码冲突', scope: 'mirror/feat/pay',
+                description: '请选择合并方式；未授权前 Agent 不会修改冲突文件。',
+                files: [{ id: 'order', label: 'src/service/Order.ts', badge: '冲突' }],
+                options: [
+                  { id: 'manual-merge', label: '我手动合并', recommended: true },
+                  { id: 'abort-rebase', label: '中止变基' },
+                ],
+              },
+            },
+          };
+        }
+        pullSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 2, behind: 0, localOnly: false };
+        return {
+          protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pullSnap,
+          session: {
+            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+            frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
+            sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+          },
+        };
+      }
+      if (command.kind === 'commit' && command.push) {
+        const localCommittedSnap = repositoryReply(command.requestId, ++readSequence).snapshot!;
+        localCommittedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 3, behind: 0, localOnly: true };
+        localCommittedSnap.worktrees[0].files = localCommittedSnap.worktrees[0].files.filter((f) => f.id !== 'retry');
+        return {
+          protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: localCommittedSnap,
+          session: {
+            runId: 'manual-push-run', repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+            frozenFileIds: command.fileIds, committedFileIds: command.fileIds, skippedFileIds: [],
+            sessionStatus: 'pushFailed', canRetryRemaining: false,
+            timeline: [
+              { state: 'done', label: '本地提交 c9012ab：feat(order): 提交并推送' },
+              { state: 'failed', label: '推送至 mirror/feat/pay 失败' },
+            ],
+            qaLog: [],
+            commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): 提交并推送', branch: 'feat/pay', fileIds: command.fileIds }],
+            message: {
+              id: 'push-err-1', kind: 'pushFailed', title: '已在本地提交，推送失败', scope: 'mirror/feat/pay',
+              description: '本地提交已保留，重连后点击重试推送仅推送已有提交。',
+              commits: [{ hash: 'c9012ab', title: 'feat(order): 提交并推送' }],
+              options: [{ id: 'retry-push', label: '重试推送', recommended: true }],
+            },
+          },
+        };
+      }
+      if (command.kind === 'respond') {
+        if (command.optionId === 'retry-push') {
+          const pushedSnap = repositoryReply(command.requestId, ++readSequence).snapshot!;
+          pushedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 0, behind: 0, localOnly: false };
+          return {
+            protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pushedSnap,
+            session: {
+              runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+              frozenFileIds: ['order', 'retry'], committedFileIds: ['order', 'retry'], skippedFileIds: [],
+              sessionStatus: 'done', canRetryRemaining: false,
+              timeline: [{ state: 'done', label: '1 个提交已推送至 mirror/feat/pay' }],
+              qaLog: [],
+              commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): 提交并推送', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
+              message: { id: 'push-done-1', kind: 'done', title: '1 个提交已推送至 mirror/feat/pay', description: '已完成远端推送。' },
+            },
+          };
+        }
+        return {
+          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          session: {
+            runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+            frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
+            sessionStatus: 'waitingManual', canRetryRemaining: false,
+            timeline: [{ state: 'active', label: '等待你在外部 IDE 完成手动合并…' }],
+            qaLog: [], commits: [],
+            message: {
+              id: 'waiting-manual-1', kind: 'waitingManual', title: '等待你在 IDE 完成手动合并',
+              description: '解决冲突后切回 Picket 将自动核对冲突与远端状态。',
+              files: [{ id: 'order', label: 'src/service/Order.ts', badge: '冲突' }],
+            },
+          },
+        };
+      }
+      return reads.execute(command);
+    },
+  });
+  await click('打开本机仓库…');
+  await click('远端详情');
+  assert(text().includes('尚未联网检查远端'), '离线跟踪状态应提示尚未联网检查');
+  await click('拉取并变基');
+  assert(text().includes('已完成拉取并变基') && text().includes('↓ 0'), '拉取并变基完成后未更新远端落后计数');
+  await click('远端详情');
+  assert(!text().includes('尚未联网检查远端'), '真实远端同步后不应再提示仅本地引用');
+  await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+
+  await act(async () => {
+    document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.click();
+  });
+  await click('手动编写');
+  type(document.querySelector<HTMLTextAreaElement>('textarea')!, 'feat(order): 提交并推送'); await tick();
+  await click('提交');
+  await click('提交并推送');
+  assert(text().includes('已在本地提交，推送失败') && text().includes('c9012ab') && button('重试推送'), '推送失败未展示本地提交保留提示或底栏重试入口');
+  const commitCmdCountBeforeRetry = m5Cmds.filter((c) => c.kind === 'commit').length;
+  await click('收起消息');
+  await click('重试推送');
+  assert(!!document.querySelector('.message-expanded') && m5Cmds.filter((c) => c.kind === 'commit').length === commitCmdCountBeforeRetry, '点击底栏重试推送恢复按钮未展开失败面板');
+  await click('重试推送');
+  assert(m5Cmds.filter((c) => c.kind === 'commit').length === commitCmdCountBeforeRetry && text().includes('1 个提交已推送至 mirror/feat/pay') && text().includes('↑ 0'), '重试推送重复执行了提交或未同步远端领先计数');
+
+  pullcreatesConflict = true;
+  await click('收起消息');
+  await click('远端详情');
+  await click('拉取并变基');
+  assert(text().includes('同步远端改动遇到代码冲突') && !!document.querySelector('.message-expanded'), '拉取遇到冲突未展开冲突卡片');
+  await click('我手动合并');
+  assert(text().includes('等待你在 IDE 完成手动合并') && button('C-Push · 待决定'), '切换手动合并未进入等待状态');
+  await act(async () => { window.dispatchEvent(new Event('focus')); });
+  assert(reconcileCalls >= 1 && !document.querySelector('.message-expanded') && text().includes('检测到终端已完成合并并推送'), '切回窗口未触发对账或终端已推送后未自动收起面板');
+  checks.push('M5 远端拉取变基、手动提交推送失败仅重试推送、冲突转手动合并与切回自动对账收起（协议夹具）');
   return { environment: 'Chrome headless · 开发样例，不是真实 Git / 模型验收', viewport: { width: innerWidth, height: innerHeight }, checks };
 }

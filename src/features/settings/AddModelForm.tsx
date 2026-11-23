@@ -3,6 +3,22 @@ import { Icon, Overlay } from '../../ui/controls';
 import { newModelInput, normalizedModel, providerFor, providers, validateModel } from './modelProviders';
 import type { ModelConfiguration, ModelInput } from './modelProviders';
 
+function sanitizeModelError(error: unknown, apiKey: string, kind: 'testing' | 'saving'): string {
+  const fallback = kind === 'testing'
+    ? '连接测试未完成，请检查接口地址、模型 ID 或网络连接；输入已保留。'
+    : '保存模型未完成，没有保存模型或密钥；输入已保留。';
+  let text = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback;
+  const candidates = [apiKey, apiKey.trim()].filter((item) => item.length > 0);
+  for (const secret of candidates) {
+    text = text.split(secret).join('[REDACTED]');
+    if (secret.length >= 4) {
+      const encoded = encodeURIComponent(secret);
+      if (encoded !== secret) text = text.split(encoded).join('[REDACTED]');
+    }
+  }
+  return text.trim() || fallback;
+}
+
 interface Props {
   onClose(): void;
   onSaved(model: ModelConfiguration): void;
@@ -42,12 +58,10 @@ export function AddModelForm({ onClose, onSaved, test, save }: Props) {
         const model = await save(normalizedModel(input));
         if (generation.current === version) onSaved(model);
       }
-    } catch {
-      // Provider errors can echo the request (including its key). Until the
-      // credential adapter supplies sanitized failures, do not render raw errors.
-      if (generation.current === version) setResult({ ok: false, text: kind === 'testing'
-        ? '连接未完成。当前版本尚未接入在线模型；未发送连接请求，输入已保留。'
-        : '保存未完成。当前版本尚未接入系统钥匙串；没有保存模型或密钥，输入已保留。' });
+    } catch (error) {
+      if (generation.current === version) {
+        setResult({ ok: false, text: sanitizeModelError(error, input.apiKey, kind) });
+      }
     } finally {
       if (inFlight.current === version) inFlight.current = null;
       if (generation.current === version) setOperation('idle');
@@ -65,7 +79,7 @@ export function AddModelForm({ onClose, onSaved, test, save }: Props) {
       {provider.needsUrl && <label>接口地址（Base URL）<input className="mono" disabled={operation === 'saving'} value={input.baseUrl} onChange={(event) => change({ ...input, baseUrl: event.target.value })} placeholder={provider.url} required /></label>}
       {provider.needsKey && <label>API Key<input className="mono" disabled={operation === 'saving'} type="password" value={input.apiKey} onChange={(event) => change({ ...input, apiKey: event.target.value })} autoComplete="off" spellCheck={false} placeholder="输入密钥" required /></label>}
       {result && <p role="status" className={`form-result ${result.ok ? 'success' : 'danger'}`}>{result.text}</p>}
-      <p className="muted help">模型连接与钥匙串保存在 M3 接入，当前请勿填写真实密钥。示例模型 ID 不保证可用。</p>
+      <p className="muted help">API Key 将存入 macOS 系统钥匙串，不写入普通配置或日志。示例模型 ID 不保证在当前账户可用。</p>
       <div className="form-actions"><button type="button" className="secondary" disabled={operation !== 'idle'} onClick={() => void submit('testing')}>
         {operation === 'testing' && <Icon name="refresh" className="spinning" />}{operation === 'testing' ? '测试中…' : '测试连接'}</button>
         <div className="row"><button type="button" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={operation !== 'idle'}>{operation === 'saving' ? '保存中…' : '保存并使用'}</button></div>

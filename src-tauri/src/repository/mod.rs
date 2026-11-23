@@ -1,3 +1,4 @@
+pub mod ai_context;
 #[cfg(test)]
 mod branch_tests;
 mod branches;
@@ -6,7 +7,14 @@ mod commit;
 mod commit_tests;
 #[cfg(test)]
 mod edge_tests;
+pub mod editor;
+#[cfg(test)]
+mod editor_tests;
 mod parse;
+pub mod persistence;
+#[cfg(test)]
+mod persistence_tests;
+pub mod remote;
 mod runner;
 pub mod smoke;
 #[cfg(test)]
@@ -38,13 +46,16 @@ struct StoreInner {
     reader: GitReader,
     sequence: AtomicU64,
     repositories: Mutex<HashMap<String, Registration>>,
+    opened_order: Mutex<Vec<String>>,
     gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     branch_requests: Mutex<HashSet<String>>,
     commit_requests: Mutex<HashSet<String>>,
+    verified_remotes: Mutex<HashSet<(String, String)>>,
 }
 #[derive(Clone)]
 struct Registration {
     sequence: u64,
+    primary_root: PathBuf,
     paths: HashMap<String, PathBuf>,
     branch_tokens: HashMap<String, String>,
     commit_states: HashMap<String, commit::CommitRegistration>,
@@ -84,20 +95,58 @@ impl RepositoryStore {
     pub async fn shutdown(&self) {
         self.inner.reader.shutdown().await;
     }
+    pub(crate) fn registered_roots(&self) -> Result<Vec<(String, PathBuf)>> {
+        let order = self
+            .inner
+            .opened_order
+            .lock()
+            .map_err(|_| "仓库顺序记录不可用")?
+            .clone();
+        let repositories = self
+            .inner
+            .repositories
+            .lock()
+            .map_err(|_| "仓库注册表不可用")?;
+        Ok(order
+            .into_iter()
+            .filter_map(|id| {
+                repositories
+                    .get(&id)
+                    .map(|reg| (id, reg.primary_root.clone()))
+            })
+            .collect())
+    }
     pub async fn open(&self, directory: &Path) -> Result<RepositorySnapshot> {
         let directory = fs::canonicalize(directory)
             .map_err(|_| "所选目录不可访问，请选择本机 Git 工作目录".to_string())?;
         if !directory.is_dir() {
             return Err("请选择目录，而不是文件".into());
         }
-        let root = self
+        let dir_name = label(&directory);
+        let root = match self
             .inner
             .reader
             .text(&directory, &["rev-parse", "--show-toplevel"])
             .await
-            .map_err(|_| {
-                "所选目录不是可读取的 Git 工作目录；裸仓库不能直接作为工作台打开".to_string()
-            })?;
+        {
+            Ok(root) => root,
+            Err(_) => {
+                let is_bare = self
+                    .inner
+                    .reader
+                    .text(&directory, &["rev-parse", "--is-bare-repository"])
+                    .await
+                    .is_ok_and(|out| out.trim() == "true");
+                if is_bare {
+                    return Err(format!(
+                        "无法打开“{dir_name}”：该目录是 Git 裸仓库（无工作区文件），请选择普通 Git 工作目录"
+                    ));
+                }
+                return Err(format!(
+                    "无法打开“{dir_name}”：该目录未受 Git 管理（未找到 .git），请先执行 git init 或选择其他 Git 仓库"
+                ));
+            }
+        };
         let root = fs::canonicalize(root).map_err(|_| "Git 工作目录不可访问".to_string())?;
         self.read_repository(&root).await
     }
@@ -271,14 +320,24 @@ impl RepositoryStore {
                 })
                 .collect();
             registered.insert(
-                repository_id,
+                repository_id.clone(),
                 Registration {
                     sequence,
+                    primary_root: root.to_path_buf(),
                     paths,
                     branch_tokens,
                     commit_states,
                 },
             );
+            drop(registered);
+            let mut order = self
+                .inner
+                .opened_order
+                .lock()
+                .map_err(|_| "仓库顺序记录不可用")?;
+            if !order.iter().any(|existing| existing == &repository_id) {
+                order.push(repository_id);
+            }
         }
         Ok(snapshot)
     }
@@ -466,25 +525,50 @@ impl RepositoryStore {
         if before != after {
             return Err("Git 状态在读取期间发生变化，请重新刷新；当前草稿与选择已保留".into());
         }
-        let detached = status.branch == "(detached)";
-        let remote = match (status.upstream, status.divergence) {
-            (Some(branch), Some((ahead, behind))) => Remote::Tracked {
-                branch,
-                ahead,
-                behind,
-                local_only: true,
-            },
+        let raw_detached = status.branch == "(detached)";
+        let rebase_branch = if raw_detached {
+            self.active_rebase_branch(root).await
+        } else {
+            None
+        };
+        let display_branch = rebase_branch
+            .clone()
+            .unwrap_or_else(|| status.branch.clone());
+        let detached = raw_detached && rebase_branch.is_none();
+        let (effective_upstream, effective_divergence) =
+            if status.upstream.is_none() && rebase_branch.is_some() {
+                self.resolve_branch_upstream_and_divergence(root, &display_branch)
+                    .await
+            } else {
+                (status.upstream, status.divergence)
+            };
+        let remote = match (effective_upstream, effective_divergence) {
+            (Some(branch), Some((ahead, behind))) => {
+                let remote_name = branch.split('/').next().unwrap_or("");
+                let verified = self.is_remote_verified(repository_id, remote_name);
+                Remote::Tracked {
+                    branch,
+                    ahead,
+                    behind,
+                    local_only: !verified,
+                }
+            }
             (Some(_), None) => Remote::Error {
                 reason: "本地找不到有效的跟踪引用，无法确认领先 / 落后；尚未联网刷新".into(),
             },
-            (None, _) => Remote::Missing {
-                reason: if detached {
-                    "当前为分离 HEAD，未确定跟踪分支"
+            (None, _) => {
+                let reason = if detached {
+                    "当前为分离 HEAD，未确定跟踪分支".to_owned()
                 } else {
-                    "尚未配置跟踪远端分支"
-                }
-                .into(),
-            },
+                    let remotes = self.list_remotes_unlocked(root).await.unwrap_or_default();
+                    if remotes.is_empty() {
+                        "尚未配置 Git 远端与跟踪分支".to_owned()
+                    } else {
+                        "尚未配置跟踪远端分支".to_owned()
+                    }
+                };
+                Remote::Missing { reason }
+            }
         };
         let branch_state = self.branch_state(root).await?;
         if branch_state.status != before {
@@ -495,14 +579,14 @@ impl RepositoryStore {
             repository_id,
             &worktree_id,
             &status.branch,
-            detached,
+            raw_detached,
             status.head.as_deref(),
             &status.entries,
             &mut files,
             &working_hashes,
             &branch_state.index,
         )?;
-        let version = serde_json::to_vec(&(status.head.as_deref(), &status.branch, &files))
+        let version = serde_json::to_vec(&(status.head.as_deref(), &display_branch, &files))
             .map_err(|error| error.to_string())?;
         Ok((
             WorktreeSnapshot {
@@ -510,7 +594,7 @@ impl RepositoryStore {
                 worktree_id,
                 label: label(root),
                 path: display(root)?,
-                branch: status.branch,
+                branch: display_branch,
                 detached,
                 head: status.head,
                 status_version: hash(version),

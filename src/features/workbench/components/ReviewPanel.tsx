@@ -8,22 +8,34 @@ interface Props {
   canReview: boolean;
   onAddModel(): void;
   onReview(changedOnly?: boolean): void;
+  onCancel?(): void;
   onOpenFile(fileId: string, line: number): void;
 }
 export function ReviewPanel(props: Props) {
   const review = props.worktree?.review;
-  if (review?.status === 'running') return <div className="empty-state muted"><Icon name="refresh" className="spinning accent" /><p>正在审查已选范围…</p></div>;
-  if (review?.status !== 'done') return <div className="empty-state review-empty">
-    <button type="button" className="primary" disabled={props.hasModel && !props.canReview} onClick={props.hasModel ? () => props.onReview() : props.onAddModel}><Icon name={props.hasModel ? 'shield' : 'plus'} />{props.hasModel ? '开始审查已选范围' : '添加模型'}</button>
-    <p className="muted help">{props.hasModel ? `将审查${scopeSummary(props.worktree)}，自动过滤锁文件` : '添加模型后即可启用提交前代码审查'}</p>
-    {review?.error && <p className="danger help" role="alert">{review.error}</p>}
-  </div>;
+  if (review?.status === 'running') return <div className="empty-state muted"><Icon name="refresh" className="spinning accent" /><p>正在审查已选范围…</p>{props.onCancel && <button type="button" className="secondary compact" onClick={props.onCancel}>取消审查</button>}</div>;
+  if (review?.status !== 'done') {
+    const emphasizePrimary = !!props.worktree;
+    const scopeHint = !props.hasModel
+      ? '添加模型后即可启用提交前代码审查'
+      : !props.worktree
+        ? '打开仓库并选择变更文件后即可开始代码审查'
+        : !props.worktree.files.length
+          ? '当前无待审查变更，修改代码后可审查已选范围'
+          : `将审查${scopeSummary(props.worktree)}，自动过滤锁文件`;
+    return <div className="empty-state review-empty">
+      <button type="button" className={emphasizePrimary ? 'primary' : 'secondary'} disabled={props.hasModel && !props.canReview} onClick={props.hasModel ? () => props.onReview() : props.onAddModel}><Icon name={props.hasModel ? 'shield' : 'plus'} />{props.hasModel ? '开始审查已选范围' : '添加模型'}</button>
+      <p className="muted help">{scopeHint}</p>
+      {review?.error && <p className="danger help" role="alert">{review.error}</p>}
+    </div>;
+  }
   const uncovered = props.worktree ? selectedFiles(props.worktree).filter((file) => !review.scopeFileIds?.includes(file.id)) : [];
+  const noFilesReviewed = review.reviewedFileIds !== undefined && review.reviewedFileIds.length === 0 && review.skippedPaths.length > 0;
   return <div className="review-panel">
     {!!uncovered.length && <div className="change-notice">当前选择有 {uncovered.length} 个文件尚未审查，请重新审查已选范围。</div>}
     {!!review.changedPaths.length && <div className="change-notice"><span>审查后有 {review.changedPaths.length} 个文件已变化</span><button type="button" disabled={!props.canReview} onClick={() => props.onReview(true)}>复审变动文件</button></div>}
     <div className="review-results scroll-area">
-      {!review.findings.length ? <div className="empty-state review-passed"><Icon name="shield" className={review.changedPaths.length ? 'warning' : 'success'} /><p>{review.changedPaths.length || uncovered.length ? '原审查范围未发现风险项' : '审查通过'}</p><span className="muted help">{review.changedPaths.length || uncovered.length ? '当前范围已有变化，需审查后才能判断最新内容' : '仅代表实际已审范围内未发现风险项'}</span></div>
+      {!review.findings.length ? <div className="empty-state review-passed"><Icon name="shield" className={review.changedPaths.length || noFilesReviewed ? 'warning' : 'success'} /><p>{noFilesReviewed ? '所选范围均未纳入审查' : review.changedPaths.length || uncovered.length ? '原审查范围未发现风险项' : '审查通过'}</p><span className="muted help">{noFilesReviewed ? '锁文件或二进制内容默认跳过审查，仍可正常勾选提交' : review.changedPaths.length || uncovered.length ? '当前范围已有变化，需审查后才能判断最新内容' : '仅代表实际已审范围内未发现风险项'}</span></div>
         : review.findings.map((finding) => <button type="button" className={`review-finding finding-${finding.severity}`} key={finding.id} onClick={() => props.onOpenFile(finding.fileId, finding.line)}>
           <span className="finding-location"><span className="mono muted">{splitPath(finding.path).name}:{finding.line}</span><span className={finding.severity === 'high' ? 'danger' : 'warning'}>{finding.severity === 'high' ? '高危' : '建议'} <Icon name="external" /></span></span>
           <strong>{finding.title}</strong><span className="muted">{finding.reason}</span>

@@ -30,9 +30,9 @@ try {
     });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(result.stderr || `Application exited with ${result.status}: ${result.stdout}`);
-    return result.stdout;
+    return result;
   };
-  const report = JSON.parse(launch('--foundation-smoke'));
+  const report = JSON.parse(launch('--foundation-smoke').stdout);
   for (const [phase, expected] of [['complete', 'completed'], ['cancelled', 'cancelled'], ['shutdown', 'cancelled']]) {
     const probe = report[phase];
     if (probe.status !== expected || probe.childExitCode !== 0 || probe.piCoreVersion !== '1.6.0') {
@@ -45,25 +45,48 @@ try {
   }
   let ui;
   if (process.argv.includes('--ui')) {
-    const events = launch('--foundation-ui-smoke').trim().split('\n').map((line) => JSON.parse(line));
+    const uiRun = launch('--foundation-ui-smoke');
+    const events = uiRun.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const exit = events.find((event) => event.type === 'uiSmokeExit');
+    if (exit?.status !== 'passed') {
+      throw new Error(`UI smoke failed: ${uiRun.stderr || JSON.stringify(events)}`);
+    }
     const children = events.filter((event) => event.type === 'uiSmokeChild');
     const branches = events.find((event) => event.type === 'uiSmokeBranchProof');
-    if (!branches?.branchCreationVerified || !branches.worktreeCreationVerified || !branches.stagingAndDraftsPreserved) {
-      throw new Error('Real Git branch/worktree creation and draft preservation did not pass');
+    if (!branches?.branchSwitchVerified || !branches.worktreeSwitchVerified || !branches.stagingAndDraftsPreserved) {
+      throw new Error('Real Git branch/worktree switching and draft preservation did not pass');
     }
     const commit = events.find((event) => event.type === 'uiSmokeCommitProof');
     if (!commit?.localCommitVerified || !commit.partialStagingCommittedOnlyStaged || !commit.unstagedAndUnselectedPreserved) {
       throw new Error('Real Git local commit and partial/unselected preservation did not pass');
     }
-    const exit = events.find((event) => event.type === 'uiSmokeExit');
-    if (children.length !== 2 || exit?.status !== 'passed') throw new Error('WebView IPC / close-window verification did not pass');
+    const ideAndPersistence = events.find((event) => event.type === 'uiSmokeIdeAndPersistenceProof');
+    if (!ideAndPersistence?.ideStagedDiffVerified || !ideAndPersistence.persistenceRestoreVerified) {
+      throw new Error('IDE staged diff export or workbench persistence cold restore did not pass');
+    }
+    const modelM3 = events.find((event) => event.type === 'uiSmokeModelProof');
+    if (!modelM3?.keychainEncryptedAndRestored || !modelM3.partialScopeGenerateVerified || !modelM3.lockfileFilteredReviewVerified) {
+      throw new Error('M3 macOS Keychain encryption, commit generation, or lockfile-filtered review did not pass');
+    }
+    const cpushM4 = events.find((event) => event.type === 'uiSmokeCPushProof');
+    if (!cpushM4?.splitCommitsVerified || !cpushM4.unselectedStagedPreserved || !cpushM4.sessionPersistedAndRestored) {
+      throw new Error('M4 C-Push split commits, unselected staged preservation, or session persistence did not pass');
+    }
+    const syncM5 = events.find((event) => event.type === 'uiSmokeM5SyncProof');
+    if (!syncM5?.remotePushVerified || !syncM5.conflictAgentMergeVerified || !syncM5.disjointDirtyPreservedAcrossRebase) {
+      throw new Error('M5 remote push, Agent conflict merge, or disjoint dirty-worktree preservation did not pass');
+    }
+    if (children.length !== 2) throw new Error('WebView IPC / close-window verification did not pass');
     for (const child of children) assertGone(child.pid);
     ui = { workbenchEmptyStateVerified: true, nativeTitlebarOverlayVerified: true,
       overlayHeadingClearanceVerified: true, windowPinVerified: true,
       realRepositoryReadVerified: true, selectionLeavesIndexUntouched: true, worktreeDraftIsolationVerified: true,
-      realBranchCreationVerified: true, realWorktreeCreationVerified: true, branchStagingAndDraftsPreserved: true,
+      realBranchSwitchVerified: true, realWorktreeSwitchVerified: true, branchStagingAndDraftsPreserved: true,
       realLocalCommitVerified: true, partialStagingCommittedOnlyStaged: true, unstagedAndUnselectedPreservedAfterCommit: true,
-      worktreeParentSelection: 'temporary-fixture',
+      ideStagedDiffExportVerified: true, workbenchPersistenceColdRestoreVerified: true,
+      keychainModelEncryptedAndRestoredVerified: true, piGenerateAndReviewVerified: true,
+      cPushSplitAndSessionVerified: true,
+      m5RemotePushAndConflictMergeVerified: true,
       webviewIpcVerified: true, windowClosedDuringStream: true, allPiProcessesReaped: true };
   }
   console.log(JSON.stringify({ packageIsolatedFromProject: true, globalNodeNotRequired: true,

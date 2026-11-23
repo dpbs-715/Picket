@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 import { PI_CORE_VERSION, PI_PROTOCOL_VERSION, decodeCommand, type PiEvent } from '../../shared/pi-protocol';
-import { createProbe } from './probe';
+import { createTaskRunner } from './tasks';
 
 const emit = (event: PiEvent) => { process.stdout.write(`${JSON.stringify(event)}\n`); };
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -33,10 +33,10 @@ input.on('line', (line) => {
     }
     if (active || seenRequests.has(command.requestId)) throw new Error('Probe is busy or requestId was already accepted');
     seenRequests.add(command.requestId);
-    const probe = createProbe(command, emit);
+    const task = createTaskRunner(command, emit);
     // Defer execution until the cancellation handle is installed.
-    const finished = Promise.resolve().then(() => probe.run()).finally(() => { active = undefined; });
-    active = { requestId: command.requestId, cancel: probe.cancel, finished };
+    const finished = Promise.resolve().then(() => task.run()).finally(() => { active = undefined; });
+    active = { requestId: command.requestId, cancel: task.cancel, finished };
   } catch (error) {
     emit({ type: 'protocolError', message: error instanceof Error ? error.message : 'Invalid command' });
   }

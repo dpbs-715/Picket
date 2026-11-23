@@ -167,7 +167,8 @@ async fn preserves_symlinks_without_reading_their_outside_targets() {
 async fn supports_unborn_branch_but_rejects_non_repository_and_bare_directory() {
     let temporary = tempfile::tempdir().unwrap();
     let store = RepositoryStore::default();
-    assert!(store.open(temporary.path()).await.is_err());
+    let non_git_err = store.open(temporary.path()).await.unwrap_err();
+    assert!(non_git_err.contains("未受 Git 管理"), "{non_git_err}");
     git(temporary.path(), &["init", "-b", "main"]).unwrap();
     fs::write(temporary.path().join("new.txt"), "hello\n").unwrap();
     let snapshot = store.open(temporary.path()).await.unwrap();
@@ -176,7 +177,8 @@ async fn supports_unborn_branch_but_rejects_non_repository_and_bare_directory() 
     assert_eq!(active(&snapshot).files.len(), 1);
     let bare = tempfile::tempdir().unwrap();
     git(bare.path(), &["init", "--bare"]).unwrap();
-    assert!(store.open(bare.path()).await.is_err());
+    let bare_err = store.open(bare.path()).await.unwrap_err();
+    assert!(bare_err.contains("裸仓库"), "{bare_err}");
 }
 #[tokio::test]
 async fn missing_worktree_is_explicitly_unavailable_not_clean() {
