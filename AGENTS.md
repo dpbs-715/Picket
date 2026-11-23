@@ -5,7 +5,7 @@
 ## 开始工作
 
 - 使用中文与用户沟通。说明实际完成、验证结果和未验证项，不把计划、配置存在或模拟结果说成已实现。
-- 先读 `README.md` 和相关模块；阶段与验收以 `docs/development-plan.md` 为准。当前 M0 / M1 / M2 / M3 / M4 / M5 的功能开发与自动化全链路验证已完成（仓库读取、工作树与本地分支切换、精确范围本地提交、四类外部 IDE 联动、跨重启草稿持久化、五类提供商模型配置、macOS 系统钥匙串、提交说明生成、结构化代码审查、一键 C-Push 自动拆分与问答恢复，以及远端拉取变基、手动提交并推送、推送失败仅重试推送、冲突受控合并与切回自动对账均已实现；真实在线模型 / 本机 Ollama 实机连接与四类真实编辑器 GUI 手工复核单独登记待补齐），下一步进入 M6（联调、打包与 MVP 发布验收）；后续进度变化时同步文档。
+- 先读 `README.md` 和相关模块；阶段与验收以 `docs/development-plan.md` 为准。当前 M0–M6 的功能开发、发布加固与 MVP 验收已完成（仓库读取、IDEA 风格本地/远程双折叠分支菜单与远程分支跟踪检出、变更一键全选、精确范围本地提交、五类外部 IDE 本机动态识别联动、跨进程冷重启草稿持久化、五类提供商模型配置、macOS 系统钥匙串、提交说明生成、结构化代码审查、一键 C-Push 自动拆分与问答恢复、远端拉取变基、手动提交并推送、推送失败仅重试推送、冲突受控合并、切回自动对账以及随包 Pi Core 实机 `kimi-k2.8` 推理验证均已完成，详见 `docs/validation/m6.md`）；后续改动时同步维护文档与回归测试。
 - 产品行为见 `docs/development.md`，页面关系见 `docs/ui-spec.md`，视觉定稿见 `docs/design/picket-mvp.tsx`。原稿右侧演练控制台、模拟修复等不是正式功能，不能直接将整份演示代码当生产界面。
 - `docs/` 按当前 `.gitignore` 仅在本地维护；缺失时说明缺少依据并询问用户，不自行补造定稿，也不擅自取消忽略。
 - 先检查 `git status`，保留用户已有修改。提交、推送、重置、清理和分支操作需有用户的明确授权；产品内的 C-Push 授权规则不等于授权编码助手操作本仓库历史。
@@ -16,7 +16,7 @@
 - `src/`：React + TypeScript 界面，按 feature 组织；`src/desktop/` 封装类型化桌面命令与事件。
 - `shared/`：界面和 Node 进程共享的协议与身份字段；Rust 对应类型必须同步，协议变更同时验证两端。
 - `agent/`：独立 Pi Core 进程，不在 WebView 中运行模型或保存密钥。
-- `src-tauri/`：Rust 桌面层，负责 Git 读取、受控写入协调、授权检查、系统能力、进程生命周期与恢复。`src-tauri/src/repository/`、`src-tauri/src/models/` 与 `src-tauri/src/cpush/` 当前开放已选择仓库的读取、使用 `branchToken` 切换已有本地分支与既有工作树跳转（2026-11-23 用户确认砍掉新建分支与新建 Worktree）、使用每文件 `commitToken` 的精确范围本地提交、四类外部 IDE 受控启动、工作树草稿 / 选择 / 模型目录与 C-Push 会话记录的本机持久化、`Security.framework` 钥匙串凭据管理、经随包 Pi Core 执行的连接测试 / 提交说明生成 / 结构化代码审查，以及一键 C-Push 自动分组拆分、手动“提交并推送”、显式“拉取并变基”、脏工作树无损备份变基、推送失败仅重试推送、用户授权后的 Agent 冲突合并与外部 IDE 手动合并返回对账。`branchToken` 不授权提交，也不能把 UI 范围版本当作写入授权。
+- `src-tauri/`：Rust 桌面层，负责 Git 读取、受控写入协调、授权检查、系统能力、进程生命周期与恢复。`src-tauri/src/repository/`、`src-tauri/src/models/` 与 `src-tauri/src/cpush/` 当前开放已选择仓库的读取、使用 `branchToken` 切换已有本地分支 / 从远程跟踪分支受控检出本地跟踪分支 / 既有工作树跳转（2026-11-23 用户确认砍掉手动输入新建分支与新建 Worktree，保留类似 IDEA 的远程分支检出）、使用每文件 `commitToken` 的精确范围本地提交、五类外部 IDE（IDEA、RustRover、WebStorm、VS Code、Cursor）本机安装动态探测与受控启动、工作树草稿 / 选择 / 模型目录与 C-Push 会话记录的本机持久化、`Security.framework` 钥匙串凭据管理、经随包 Pi Core 执行的连接测试 / 提交说明生成 / 结构化代码审查，以及一键 C-Push 自动分组拆分、手动“提交并推送”、显式“拉取并变基”、脏工作树无损备份变基、推送失败仅重试推送、用户授权后的 Agent 冲突合并与外部 IDE 手动合并返回对账。`branchToken` 不授权提交，也不能把 UI 范围版本当作写入授权。
 - `scripts/`：开发、打包与验证入口，不在前端组件中拼接 shell 命令。
 - `src/features/foundation/` 与 `src-tauri/src/foundation/` 是 M0 验证实现。候选 Git 执行器仅用于临时仓库，可执行 hooks 当前明确拒绝；未通过生产验收前不得直接开放给用户仓库。
 - 代码按职责拆分，测试跟随所属模块；不为了未来假设添加共享层或提前铺空目录。不直接修改依赖、生成文件、缓存或构建产物。
@@ -56,8 +56,8 @@ pnpm package:verify --ui   # 验证最新应用包、真实临时 Git 读取、I
 
 ## Serena 与仓库维护
 
-- 项目配置为 `.serena/project.yml`，支持 TypeScript / TSX / JavaScript 与 Rust。Pi 的 MCP 入口为 `.pi/mcp-adapter.json`，Codex 为 `.codex/config.toml`；根目录不再定义 Serena 服务。以当前活动项目的真实路径为准，不硬编码开发机用户名或旧工作目录。
-- Pi 使用 Serena 的 `agent` 上下文，Codex 使用 `codex` 上下文。客户端各自启动一个 Serena 进程是正常行为；不要另加根目录重复入口，也不要把 Pi 专用的生命周期字段复制到 Codex 配置。
+- 项目配置为 `.serena/project.yml`，支持 TypeScript / TSX / JavaScript 与 Rust。Pi 的 MCP 入口为 `.pi/mcp-adapter.json`，Codex 为 `.codex/config.toml`，Antigravity 为工作区插件 `.agents/plugins/picket-serena/`（`plugin.json` + `mcp_config.json`）；根目录不再定义 Serena 服务。以当前活动项目的真实路径为准，不硬编码开发机用户名或旧工作目录。
+- Pi 使用 Serena 的 `agent` 上下文，Codex 使用 `codex` 上下文，Antigravity 使用 `antigravity` 上下文。客户端各自启动一个 Serena 进程是正常行为；不要另加根目录重复入口，也不要把 Pi 专用的生命周期字段复制到 Codex 或 Antigravity 配置。
 - 可用时优先用 Serena 定位符号与引用，再读取所需实现；工具不可用时使用 `rg` / 文件读取，不声称仅因存在配置就已连接。
 - Serena 尊重 `.gitignore`。`docs/` 和设计原稿不在代码索引中，必要时直接用文件工具阅读；不要把索引无结果当作文件不存在。
 - 缓存、日志、memories 和 `project.local.yml` 保持本地；可共享配置与本文件可以纳入后续提交，但本任务本身不授权提交。

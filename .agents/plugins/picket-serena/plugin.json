@@ -1,0 +1,6 @@
+{
+  "name": "picket-serena",
+  "displayName": "Picket Serena",
+  "version": "1.0.0",
+  "description": "Picket TypeScript/TSX/JavaScript 与 Rust 的符号检索、引用定位和受控编辑（Serena MCP）。"
+}

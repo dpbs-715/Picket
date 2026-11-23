@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "picket-serena": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}\"; if [ -n \"${PLUGIN_ROOT:-}\" ] && [ -f \"$PLUGIN_ROOT/../../../.serena/project.yml\" ]; then cd \"$PLUGIN_ROOT/../../..\"; elif [ ! -f \".serena/project.yml\" ] && [ -f \"../../../.serena/project.yml\" ]; then cd \"../../..\"; fi; exec serena start-mcp-server --project-from-cwd --context antigravity --language-backend LSP --agent-interface tools --enable-web-dashboard false --enable-gui-log-window false"
+      ],
+      "cwd": "."
+    }
+  }
+}

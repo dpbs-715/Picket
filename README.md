@@ -4,7 +4,7 @@ Picket 是基于 Pi Core 的桌面 Git Agent。你选择仓库、工作树与变
 
 ## 当前状态
 
-**M0–M5 功能开发及自动化验证已通过：真实仓库读取、已有工作树与本地分支受控切换、无模型精确范围本地提交与提交并推送、显式拉取并变基、四类外部 IDE 受控联动、跨重启草稿 / 模型 / 会话记录持久化、macOS 系统钥匙串凭据存储、提交说明生成、结构化代码审查，以及一键 C-Push 自动拆分提交、远端推送、推送失败仅重试推送、冲突受控合并与切回自动对账均已接入。** 首次打开从“无仓库、无模型”开始，之后会自动恢复上次打开的仓库、首选编辑器、已保存模型、C-Push 会话记录以及各工作树的草稿与文件勾选。桌面版可选择本机 Git 目录，点击文件在首选 IDE（IDEA、WebStorm、VS Code、Cursor）打开真实文件、Diff、已暂存 Diff、行号定位或冲突合并，在顶部切换已有工作树或本地分支，手写或通过已配置模型生成提交说明、执行代码审查，使用 C-Push 一键拆分提交并推送，或在确认范围后执行“仅本地提交” / “提交并推送”。只有明确触发分支切换、同步或提交推送操作时才执行受控 Git 写入。
+**M0–M6 功能开发、应用打包加固与 MVP 验收已完成：真实仓库读取、IDEA 风格本地 / 远程双折叠分支菜单与远程分支跟踪检出、变更一键全选、无模型精确范围本地提交与提交并推送、显式拉取并变基、五类外部 IDE 本机已安装动态探测与受控联动、跨进程冷重启草稿 / 模型 / 会话记录持久化、macOS 系统钥匙串凭据存储、提交说明生成、结构化代码审查，以及一键 C-Push 自动拆分提交、远端推送、推送失败仅重试推送、冲突受控合并与切回自动对账均已完成并通过验证。** 首次打开从“无仓库、无模型”开始，之后会自动恢复上次打开的仓库、本机可用首选编辑器、已保存模型、C-Push 会话记录以及各工作树的草稿与文件勾选。桌面版可选择本机 Git 目录，点击文件在已安装的首选 IDE（IntelliJ IDEA、RustRover、WebStorm、VS Code、Cursor）打开真实文件、Diff、已暂存 Diff、行号定位或冲突合并，在顶部单分支下拉中切换本地分支、检出远程分支或切换关联工作树，手写或通过已配置模型生成提交说明、执行代码审查，使用 C-Push 一键拆分提交并推送，或在确认范围后执行“仅本地提交” / “提交并推送”。只有明确触发分支切换 / 检出、同步或提交推送操作时才执行受控 Git 写入。
 
 - 首发 macOS，采用 Tauri 2 / Rust + React / TypeScript + 独立 Pi Core 进程。
 - 有模型时以 C-Push 为主流程；无模型也能手写说明并提交。
@@ -31,7 +31,7 @@ pnpm desktop dev
 
 点击“打开本机仓库…”选择 Git 工作目录；关联工作树与已占用分支可以跳转查看。刷新、切换工作树和窗口重新聚焦会重新读取状态；勾选只改变界面选择，不改 index。部分暂存只显示已暂存范围，远端领先 / 落后仅基于本地跟踪引用，不隐式 fetch。
 
-顶部工作树菜单展示仓库关联的已有工作树（单目录仓库自动隐藏），分支菜单展示已有本地分支（已在其他工作树检出的分支直接跳转对应工作树）；新建分支或新建 Worktree 在 IDE / 终端执行，切回 Picket 窗口后自动刷新识别。脏工作树只允许切到同一提交的已有分支；不同提交须先在 Git / IDE 中处理改动，不自动 stash。
+顶部第二行左侧仅显示当前分支入口，点击后展开类似 IntelliJ IDEA 的“本地分支”与“远程分支”双折叠菜单（多工作树仓库额外展示“工作树”折叠组）：本地分支中已在其他工作树检出的条目可直接跳转对应工作树；点击远程分支时，本地已有同名分支则直接切换或跳转，尚无同名分支则自动基于该远程引用检出本地跟踪分支。手动命名新建分支或新建 Worktree 在 IDE / 终端执行，切回 Picket 窗口后自动刷新识别。脏工作树只允许切到同一提交的分支；不同提交须先在 Git / IDE 中处理改动，不自动 stash。
 
 分支切换、本地提交与远端同步推送前后均核对 Git。分离 `HEAD` 禁止直接提交，须先切换到已有本地分支或在 IDE / 终端切好分支（`main`、`master` 展示轻量 `保护分支` 标签并允许直接提交与推送；禁止自动强推）；部分暂存默认只提交已暂存范围，未选已暂存文件和未暂存草稿留在原处。显式“拉取并变基”与 C-Push 内同步共用无损脏工作树备份变基路径（非重叠改动自动备份并恢复精确暂存 / 未暂存边界，重叠改动或已发布历史重写风险先暂停）。本地提交成功但远端推送失败时进入“已在本地提交，推送失败”，点击“重试推送”只推送已有提交；同步遇到冲突时可选择用户授权的 Agent 合并（支持自定义合并要求并严格校验冲突标记与文件边界）或去外部 IDE 手动合并，切回窗口后自动核对冲突与远端状态。中断或崩溃重启后先核对真实 Git，恢复写入须由用户确认，绝不自动重跑。
 
@@ -46,9 +46,7 @@ pnpm package:verify --ui  # 独立目录验证真实 Git 读取、IDE 快照导�
 
 应用包：`src-tauri/target/release/bundle/macos/Picket.app`。当前未做 Developer ID 签名、公证或其他 macOS 版本的发布验证。
 
-具体证据见 [M0 记录](docs/validation/m0.md)、[M1 记录](docs/validation/m1.md)、[标题栏补充](docs/validation/m1-titlebar.md)、[M2 只读接入记录](docs/validation/m2-read.md)、[M2 分支 / Worktree 记录](docs/validation/m2-branches.md)、[M2 本地提交记录](docs/validation/m2-commit.md)、[M2 IDE 联动与持久化记录](docs/validation/m2-ide-persistence.md)、[M3 模型、钥匙串与生成 / 审查记录](docs/validation/m3.md)、[M4 C-Push 自动拆分与会话执行记录](docs/validation/m4.md) 和 [M5 远端同步、冲突与恢复记录](docs/validation/m5.md)。已在 macOS 原生目录面板选中临时 Git 仓库，并在工作台看到对应分支和文件。浏览器预览使用样例数据。
-
-下一步进入 **M6 · 联调、打包与 MVP 发布验收**。真实在线提供商 / 本机 Ollama 的实机推理联调与四类真实安装编辑器 GUI 手工点检已单独登记，将在对应实机环境与 M6 发布验收补齐。
+具体证据见 [M0 记录](docs/validation/m0.md)、[M1 记录](docs/validation/m1.md)、[标题栏补充](docs/validation/m1-titlebar.md)、[M2 只读接入记录](docs/validation/m2-read.md)、[M2 分支 / Worktree 记录](docs/validation/m2-branches.md)、[M2 本地提交记录](docs/validation/m2-commit.md)、[M2 IDE 联动与持久化记录](docs/validation/m2-ide-persistence.md)、[M3 模型、钥匙串与生成 / 审查记录](docs/validation/m3.md)、[M4 C-Push 自动拆分与会话执行记录](docs/validation/m4.md)、[M5 远端同步、冲突与恢复记录](docs/validation/m5.md) 和 [M6 联调、打包与 MVP 发布验收记录](docs/validation/m6.md)。已在 macOS 原生目录面板选中临时 Git 仓库，并在工作台看到对应分支和文件。浏览器预览使用样例数据。
 
 ### 独立开发样例
 
@@ -64,10 +62,11 @@ pnpm package:verify --ui  # 独立目录验证真实 Git 读取、IDE 快照导�
 | --- | --- | --- |
 | Pi MCP Adapter | `.pi/mcp-adapter.json` | `agent`；保留按需启动后常驻及直接暴露工具的设置。 |
 | Codex | `.codex/config.toml` | `codex`；使用 Codex 内置文件 / shell 工具，Serena 提供符号能力。 |
+| Antigravity | `.agents/plugins/picket-serena/` | `antigravity`；通过工作区插件 `mcp_config.json` 暴露 `picket-serena` 服务。 |
 
-根目录不再定义 Serena 服务。两个客户端同时使用时会各自启动一个进程，不代表同一客户端重复加载配置；全局 MCP 设置未改。
+根目录不再定义 Serena 服务。多个客户端同时使用时会各自启动一个进程，不代表同一客户端重复加载配置；全局 MCP 设置未改。
 
-本机需安装 Serena CLI。Rust 语言服务组件由 `rust-toolchain.toml` 声明；Serena 管理其 TypeScript 语言服务，受信任后使用项目自己的 TypeScript 编译器。Codex 的 MCP 环境值不做变量插值，因此该入口通过固定 `/bin/sh` 命令在启动时补充用户工具 PATH，不修改 shell 配置。
+本机需安装 Serena CLI。Rust 语言服务组件由 `rust-toolchain.toml` 声明；Serena 管理其 TypeScript 语言服务，受信任后使用项目自己的 TypeScript 编译器。Codex 与 Antigravity 插件的 MCP 环境值不做系统变量插值，因此这两个入口通过固定 `/bin/sh` 命令在启动时补充用户工具 PATH（Antigravity 插件同时从插件目录回退定位仓库根目录），不修改 shell 配置，也不写死本机路径。
 
 ```bash
 # 在项目根目录重建索引与检查语言服务，不修改 shell 配置
