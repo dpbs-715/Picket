@@ -2389,6 +2389,25 @@ impl CPushCoordinator {
     ) -> Result<CPushCommandReply, String> {
         let total = session.planned_groups.len();
         if total == 0 {
+            let read_target = self.session_read_target(session);
+            if session.push_authorized
+                && let Ok((live_remote, snap)) = repo_store
+                    .inspect_live_remote_status(&read_target, false)
+                    .await
+                && live_remote.ahead > 0
+            {
+                return self
+                    .sync_and_push_commits(
+                        storage_dir,
+                        repo_store,
+                        request_id,
+                        session,
+                        None,
+                        Some(snap),
+                        on_progress,
+                    )
+                    .await;
+            }
             session.session_status = CPushSessionStatus::Done;
             session.can_retry_remaining = false;
             session.timeline = vec![CPushTimelineItem {
