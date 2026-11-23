@@ -4,23 +4,29 @@ use tauri::Manager;
 
 pub struct DesktopLifecycle {
     pub ui_smoke: bool,
+    pub restart_smoke: bool,
+    pub keep_smoke_repo: bool,
     triggered: AtomicBool,
     exiting: AtomicBool,
     pi_verified: AtomicBool,
     git_verified: AtomicBool,
     close_probe_active: AtomicBool,
+    restart_verified: AtomicBool,
     failed: AtomicBool,
 }
 
 impl DesktopLifecycle {
-    pub fn new(ui_smoke: bool) -> Self {
+    pub fn with_flags(ui_smoke: bool, restart_smoke: bool, keep_smoke_repo: bool) -> Self {
         Self {
-            ui_smoke,
+            ui_smoke: ui_smoke || restart_smoke,
+            restart_smoke,
+            keep_smoke_repo,
             triggered: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
             pi_verified: AtomicBool::new(false),
             git_verified: AtomicBool::new(false),
             close_probe_active: AtomicBool::new(false),
+            restart_verified: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         }
     }
@@ -55,7 +61,15 @@ impl DesktopLifecycle {
             self.git_verified.store(true, Ordering::SeqCst);
         }
     }
+    pub fn mark_restart_verified(&self) {
+        if self.restart_smoke {
+            self.restart_verified.store(true, Ordering::SeqCst);
+        }
+    }
     pub fn may_close_probe(&self) -> bool {
+        if self.restart_smoke {
+            return self.restart_verified.load(Ordering::SeqCst);
+        }
         self.ui_smoke
             && self.pi_verified.load(Ordering::SeqCst)
             && self.git_verified.load(Ordering::SeqCst)
@@ -89,7 +103,16 @@ pub fn exit_after_cleanup(app: &tauri::AppHandle) {
             eprintln!("Temporary editor snapshot cleanup failed: {error}");
             app.state::<DesktopLifecycle>().fail();
         }
-        if let Err(error) = app
+        let preserve_repo = app.state::<DesktopLifecycle>().keep_smoke_repo
+            && !app
+                .state::<DesktopLifecycle>()
+                .failed
+                .load(Ordering::SeqCst);
+        if preserve_repo {
+            let _ = app
+                .state::<crate::repository::smoke::SmokeState>()
+                .preserve_for_restart();
+        } else if let Err(error) = app
             .state::<crate::repository::smoke::SmokeState>()
             .cleanup()
         {

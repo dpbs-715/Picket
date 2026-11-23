@@ -15,7 +15,7 @@ function waitForUi(check: () => boolean, label = 'state'): Promise<void> {
 async function checkDefaultWorkbench() {
   await waitForUi(() => !!document.querySelector('.workbench'));
   const text = document.querySelector('.workbench')!.textContent ?? '';
-  if (!text.includes('打开本机仓库') || !text.includes('手动编写') || text.includes('my-order-service')) {
+  if (!text.includes('打开你的 Git 仓库') || !text.includes('打开本机仓库') || !text.includes('手动编写') || !!document.querySelector('.file-row')) {
     throw new Error('Packaged workbench is not the real empty state');
   }
   const window = getCurrentWindow();
@@ -58,8 +58,17 @@ async function checkReadOnlyRepository() {
   const partial = document.querySelector('input[aria-label="选择 part.txt"]')!.closest('.file-row')!;
   if (!partial.textContent?.includes('部分暂存') || !partial.textContent.includes('+1') || !partial.textContent.includes('-1')) throw new Error('Real Git partial stats did not reach the workbench');
   const extra = document.querySelector<HTMLInputElement>('input[aria-label="选择 新 文件.ts"]')!;
-  extra.click(); await waitForUi(() => !extra.checked);
   if (document.querySelector<HTMLInputElement>('input[aria-label="选择 pnpm-lock.yaml"]')!.checked) throw new Error('Lock file should start unselected');
+  const selectAllBox = document.querySelector<HTMLInputElement>('.changes-heading input[type="checkbox"]');
+  if (!selectAllBox || selectAllBox.getAttribute('aria-label') !== '全选变更' || !selectAllBox.indeterminate) {
+    throw new Error('Expected indeterminate tri-state select-all checkbox in ChangesPanel');
+  }
+  selectAllBox.click();
+  await waitForUi(() => selectAllBox.checked && !selectAllBox.indeterminate && selectAllBox.getAttribute('aria-label') === '取消全选变更', 'select-all-checked');
+  selectAllBox.click();
+  await waitForUi(() => !selectAllBox.checked && !selectAllBox.indeterminate && !extra.checked, 'select-all-cleared');
+  document.querySelector<HTMLInputElement>('input[aria-label="选择 part.txt"]')!.click();
+  await waitForUi(() => document.querySelector<HTMLInputElement>('input[aria-label="选择 part.txt"]')!.checked, 'reselect-part-txt');
   [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '手动编写')!.click();
   await waitForUi(() => !!document.querySelector('textarea'));
   const draft = document.querySelector<HTMLTextAreaElement>('textarea')!;
@@ -69,14 +78,14 @@ async function checkReadOnlyRepository() {
   await waitForUi(() => document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled);
   await waitForUi(() => !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled);
   if (document.querySelector<HTMLTextAreaElement>('textarea')?.value !== 'read-proof: keep manual draft' || extra.checked) throw new Error('Refresh replaced draft or selection');
-  document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click();
-  await waitForUi(() => !!document.querySelector('.worktree-menu'));
-  [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((button) => button.textContent?.includes('feat/linked'))!.click();
+  document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
+  await waitForUi(() => !!document.querySelector('.branch-menu'));
+  [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((button) => button.textContent?.includes('feat/linked'))!.click();
   await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/linked') === true);
   if (document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft') throw new Error('Draft crossed worktrees');
-  document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click();
-  await waitForUi(() => !!document.querySelector('.worktree-menu'));
-  [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((button) => button.textContent?.includes('feat/read-proof'))!.click();
+  document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
+  await waitForUi(() => !!document.querySelector('.branch-menu'));
+  [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((button) => button.textContent?.includes('feat/read-proof'))!.click();
   await waitForUi(() => document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft');
   await waitForUi(() => !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled, 'read-switch-refresh-settled');
   document.querySelector('input[aria-label="选择 part.txt"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-open')!.click();
@@ -92,7 +101,28 @@ async function checkBranchOperations() {
   if (menuText.includes('新建分支') || menuText.includes('新建 Worktree')) {
     throw new Error('Branch menu still renders removed branch/worktree creation items');
   }
-  const targetBranchBtn = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')]
+  const remoteToggle = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')]
+    .find((button) => button.textContent?.includes('远程分支'));
+  if (!remoteToggle) throw new Error('Missing 远程分支 collapsible header');
+  remoteToggle.click();
+  await waitForUi(() => !!document.querySelector('[data-branch-group="remote"]'), 'remote-group-expanded');
+  const remoteGroupText = document.querySelector('[data-branch-group="remote"]')!.textContent ?? '';
+  if (remoteGroupText.includes('/HEAD')) {
+    throw new Error(`Remote branch list leaked symbolic HEAD: ${remoteGroupText}`);
+  }
+  const remoteCheckoutBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="remote"] button')]
+    .find((button) => button.textContent?.includes('origin/feat/remote-checkout'));
+  if (!remoteCheckoutBtn) throw new Error('Missing origin/feat/remote-checkout in remote branch list');
+  remoteCheckoutBtn.click();
+  await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/remote-checkout') === true, 'remote-branch-checked-out');
+  if (document.querySelector<HTMLTextAreaElement>('textarea')?.value !== 'read-proof: keep manual draft'
+    || document.querySelector<HTMLInputElement>('input[aria-label="选择 新 文件.ts"]')?.checked) {
+    throw new Error('Checking out remote branch lost draft or selection');
+  }
+
+  document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
+  await waitForUi(() => !!document.querySelector('.branch-menu'), 'branch-menu-open-local');
+  const targetBranchBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')]
     .find((button) => button.textContent?.includes('feat/branch-proof'));
   if (!targetBranchBtn) throw new Error('Missing existing branch feat/branch-proof in branch menu');
   targetBranchBtn.click();
@@ -105,16 +135,16 @@ async function checkBranchOperations() {
   // Click occupied branch `feat/linked` in branch menu -> jumps to existing linked worktree:
   document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
   await waitForUi(() => !!document.querySelector('.branch-menu'), 'branch-menu-reopen');
-  [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')]
+  [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')]
     .find((button) => button.textContent?.includes('feat/linked'))!.click();
   await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/linked') === true, 'occupied-worktree-jumped');
   if (document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft'
     || document.querySelector('input[aria-label="选择 part.txt"]')) {
     throw new Error('Jumping to linked worktree leaked source changes or draft');
   }
-  document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click();
-  await waitForUi(() => !!document.querySelector('.worktree-menu'), 'worktree-menu-open');
-  [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')]
+  document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click();
+  await waitForUi(() => !!document.querySelector('.branch-menu'), 'worktree-menu-open');
+  [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')]
     .find((button) => button.textContent?.includes('feat/branch-proof'))!.click();
   await waitForUi(() => document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'read-proof: keep manual draft', 'worktree-switched-back');
   await waitForUi(() => !document.querySelector<HTMLButtonElement>('button[aria-label="刷新变更"]')!.disabled, 'worktree-switch-refresh-settled');
@@ -177,7 +207,7 @@ async function checkPersistenceOperations() {
 }
 
 async function checkModelM3Operations() {
-  const secret = 'sk-ui-smoke-keychain-secret-8899';
+  const secret = `smoke-token-${crypto.randomUUID()}`;
   const baseUrl = await invoke<string>('start_model_smoke_server');
   const setInput = (el: HTMLInputElement, value: string) => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, value);
@@ -286,5 +316,31 @@ export function registerUiSmoke() {
         }
       });
     })().catch((error: unknown) => { if (!closing) void fail(error); });
+  }, { once: true });
+
+  window.addEventListener('picket:foundation-restart-smoke', () => {
+    const fail = (error: unknown) => invoke('fail_ui_smoke', { message: String(error) });
+    void (async () => {
+      const findButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label || item.getAttribute('aria-label') === label);
+      await waitForUi(() => document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/branch-proof') === true, 'restart-repo-hydrated');
+      await waitForUi(() => (document.querySelector('.model-button')?.textContent ?? '').includes('Smoke Coder'), 'restart-model-hydrated');
+      await waitForUi(() => !!document.querySelector('input[aria-label="选择 pnpm-lock.yaml"]'), 'restart-files-hydrated');
+
+      findButton('设置')!.click();
+      await waitForUi(() => !!document.querySelector('.editor-grid'), 'restart-settings-open');
+      const editorGridText = document.querySelector('.editor-grid')!.textContent ?? '';
+      if (!editorGridText.includes('RustRover')
+        || !document.querySelector<HTMLButtonElement>('.editor-grid button[aria-pressed="true"]')?.textContent?.includes('VS Code')) {
+        throw new Error(`Cold restart did not restore saved editor or detected editors: ${editorGridText}`);
+      }
+      findButton('关闭设置')!.click();
+      await waitForUi(() => !document.querySelector('.overlay'), 'restart-settings-closed');
+
+      findButton('C-Push 会话记录')!.click();
+      await waitForUi(() => (document.querySelector('.workbench')?.textContent ?? '').includes('1 个提交已推送至 origin/feat/branch-proof'), 'restart-cpush-history-hydrated');
+
+      await invoke('verify_restart_smoke');
+      await invoke('close_smoke_window');
+    })().catch((error: unknown) => { void fail(error); });
   }, { once: true });
 }

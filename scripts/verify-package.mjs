@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'picket-package-')));
 const destination = join(temporary, '独立 路径', 'Picket.app');
 const home = join(temporary, 'empty-home');
 mkdirSync(home);
+
 const assertGone = (pid) => {
   try { process.kill(pid, 0); } catch (error) {
     if (error.code === 'ESRCH') return;
@@ -18,13 +19,59 @@ const assertGone = (pid) => {
   }
   throw new Error(`Pi process ${pid} remains alive after the application finished`);
 };
+
+function collectFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...collectFiles(full));
+    else if (entry.isFile()) out.push(full);
+  }
+  return out;
+}
+
+function verifyBundleNoDemoOrSecretLeaks(bundleDir, distDir) {
+  const forbidden = ['my-order-service', '演练控制台', '模拟修复', 'sk-ui-smoke', 'sk-ant-api03-', 'sk-proj-'];
+  const targets = [
+    ...collectFiles(distDir),
+    ...collectFiles(join(bundleDir, 'Contents', 'Resources')),
+    join(bundleDir, 'Contents', 'Info.plist'),
+  ];
+  for (const file of targets) {
+    if (file.endsWith('.icns') || file.endsWith('.png') || file.endsWith('picket-node')) continue;
+    const content = readFileSync(file, 'utf8');
+    for (const pattern of forbidden) {
+      if (content.includes(pattern)) {
+        throw new Error(`Packaged artifact ${file} leaked forbidden demo/secret marker: ${pattern}`);
+      }
+    }
+  }
+}
+
+function verifyAppDataSecurity(appDataDir) {
+  for (const filename of ['workbench-state.json', 'models.json', 'cpush-sessions.json']) {
+    const full = join(appDataDir, filename);
+    if (!existsSync(full)) throw new Error(`Expected persisted file missing after UI smoke: ${filename}`);
+    const mode = statSync(full).mode & 0o777;
+    if (mode !== 0o600) throw new Error(`Persisted file ${filename} does not have strict 0600 mode (got ${mode.toString(8)})`);
+    const raw = readFileSync(full, 'utf8');
+    for (const forbidden of ['apiKey', 'smoke-token-', 'commitToken', 'branchToken']) {
+      if (raw.includes(forbidden)) {
+        throw new Error(`Persisted file ${filename} leaked sensitive token/secret marker: ${forbidden}`);
+      }
+    }
+  }
+}
+
 try {
   const copied = spawnSync('/usr/bin/ditto', [join(root, 'src-tauri/target/release/bundle/macos/Picket.app'), destination], { encoding: 'utf8' });
   if (copied.status !== 0) throw new Error(copied.stderr || 'Build the application with pnpm desktop build first');
+  verifyBundleNoDemoOrSecretLeaks(destination, join(root, 'dist'));
+
   const binary = join(destination, 'Contents/MacOS/Picket');
   const executable = existsSync(binary) ? binary : join(destination, 'Contents/MacOS/picket');
-  const launch = (flag) => {
-    const result = spawnSync(executable, [flag], {
+  const launch = (...flags) => {
+    const result = spawnSync(executable, flags, {
       cwd: temporary, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, TMPDIR: temporary },
       encoding: 'utf8', timeout: 45_000,
     });
@@ -45,7 +92,7 @@ try {
   }
   let ui;
   if (process.argv.includes('--ui')) {
-    const uiRun = launch('--foundation-ui-smoke');
+    const uiRun = launch('--foundation-ui-smoke', '--keep-smoke-repo-once');
     const events = uiRun.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const exit = events.find((event) => event.type === 'uiSmokeExit');
     if (exit?.status !== 'passed') {
@@ -78,19 +125,55 @@ try {
     }
     if (children.length !== 2) throw new Error('WebView IPC / close-window verification did not pass');
     for (const child of children) assertGone(child.pid);
-    ui = { workbenchEmptyStateVerified: true, nativeTitlebarOverlayVerified: true,
-      overlayHeadingClearanceVerified: true, windowPinVerified: true,
-      realRepositoryReadVerified: true, selectionLeavesIndexUntouched: true, worktreeDraftIsolationVerified: true,
-      realBranchSwitchVerified: true, realWorktreeSwitchVerified: true, branchStagingAndDraftsPreserved: true,
-      realLocalCommitVerified: true, partialStagingCommittedOnlyStaged: true, unstagedAndUnselectedPreservedAfterCommit: true,
-      ideStagedDiffExportVerified: true, workbenchPersistenceColdRestoreVerified: true,
-      keychainModelEncryptedAndRestoredVerified: true, piGenerateAndReviewVerified: true,
+
+    verifyAppDataSecurity(join(home, 'Library/Application Support/dev.picket.desktop'));
+
+    // Launch 2: Brand-new OS process against the same HOME verifying real cross-process cold restart:
+    const restartRun = launch('--foundation-restart-smoke');
+    const restartEvents = restartRun.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const restartExit = restartEvents.find((event) => event.type === 'uiSmokeExit');
+    const restartProof = restartEvents.find((event) => event.type === 'uiSmokeRestartProof');
+    if (restartExit?.status !== 'passed'
+      || !restartProof?.coldProcessRepositoryHydrated
+      || !restartProof.coldProcessKeychainModelHydrated
+      || !restartProof.coldProcessSessionHistoryHydrated) {
+      throw new Error(`Cold OS process restart verification failed: ${restartRun.stderr || JSON.stringify(restartEvents)}`);
+    }
+
+    ui = {
+      workbenchEmptyStateVerified: true,
+      nativeTitlebarOverlayVerified: true,
+      overlayHeadingClearanceVerified: true,
+      windowPinVerified: true,
+      realRepositoryReadVerified: true,
+      selectionLeavesIndexUntouched: true,
+      worktreeDraftIsolationVerified: true,
+      realBranchSwitchVerified: true,
+      realWorktreeSwitchVerified: true,
+      branchStagingAndDraftsPreserved: true,
+      realLocalCommitVerified: true,
+      partialStagingCommittedOnlyStaged: true,
+      unstagedAndUnselectedPreservedAfterCommit: true,
+      ideStagedDiffExportVerified: true,
+      workbenchPersistenceColdRestoreVerified: true,
+      keychainModelEncryptedAndRestoredVerified: true,
+      piGenerateAndReviewVerified: true,
       cPushSplitAndSessionVerified: true,
       m5RemotePushAndConflictMergeVerified: true,
-      webviewIpcVerified: true, windowClosedDuringStream: true, allPiProcessesReaped: true };
+      coldProcessRestartAndLeakScanVerified: true,
+      webviewIpcVerified: true,
+      windowClosedDuringStream: true,
+      allPiProcessesReaped: true,
+    };
   }
-  console.log(JSON.stringify({ packageIsolatedFromProject: true, globalNodeNotRequired: true,
-    allPiProcessesReaped: true, report, ui }, null, 2));
+  console.log(JSON.stringify({
+    packageIsolatedFromProject: true,
+    bundleFreeOfDemoAndSecrets: true,
+    globalNodeNotRequired: true,
+    allPiProcessesReaped: true,
+    report,
+    ui,
+  }, null, 2));
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

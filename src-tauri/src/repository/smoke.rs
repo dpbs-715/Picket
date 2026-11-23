@@ -68,6 +68,15 @@ impl Fixture {
         git(&root, &["push", "-u", "origin", "feat/read-proof"])?;
         git(&root, &["checkout", "feat/branch-proof"])?;
         git(&root, &["push", "-u", "origin", "feat/branch-proof"])?;
+        git(
+            &root,
+            &["push", "origin", "HEAD:refs/heads/feat/remote-checkout"],
+        )?;
+        git(
+            &bare_remote,
+            &["symbolic-ref", "HEAD", "refs/heads/feat/read-proof"],
+        )?;
+        git(&root, &["remote", "set-head", "origin", "-a"])?;
         git(&root, &["checkout", "feat/read-proof"])?;
 
         let linked = directory.path().join("linked worktree");
@@ -96,7 +105,7 @@ impl Fixture {
         let editor_bin = directory.path().join("editor-bin");
         fs::create_dir(&editor_bin).map_err(|error| error.to_string())?;
         let log_dir = directory.path();
-        for cli in ["idea", "webstorm", "code", "cursor"] {
+        for cli in ["idea", "rustrover", "webstorm", "code", "cursor"] {
             let script_path = editor_bin.join(cli);
             let script = format!(
                 concat!(
@@ -137,6 +146,14 @@ impl Fixture {
             .ok_or("Missing fixture parent")?
             .join("linked worktree");
         if git(&self.root, &["symbolic-ref", "--short", "HEAD"])? != b"feat/branch-proof\n"
+            || git(
+                &self.root,
+                &["config", "--get", "branch.feat/remote-checkout.remote"],
+            )? != b"origin\n"
+            || git(
+                &self.root,
+                &["config", "--get", "branch.feat/remote-checkout.merge"],
+            )? != b"refs/heads/feat/remote-checkout\n"
             || git(&self.root, &["rev-parse", "HEAD"])? != self.head
             || git(&self.root, &["ls-files", "--stage", "-z"])? != self.staged_entries
             || fs::read(self.root.join("part.txt")).map_err(|error| error.to_string())?
@@ -372,6 +389,17 @@ impl SmokeState {
                 ._directory
                 .close()
                 .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+    pub fn preserve_for_restart(&self) -> Result<(), String> {
+        let fixture = self
+            .0
+            .lock()
+            .map_err(|_| "Read proof is unavailable")?
+            .take();
+        if let Some(fixture) = fixture {
+            let _ = fixture._directory.keep();
         }
         Ok(())
     }

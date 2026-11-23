@@ -54,6 +54,9 @@ async fn run_pi_probe(
     request_id: String,
     on_event: Channel<PiEvent>,
 ) -> Result<ProbeReport, String> {
+    if !cfg!(debug_assertions) && !app.state::<DesktopLifecycle>().ui_smoke {
+        return Err("Diagnostic probes are disabled in production launches".into());
+    }
     let paths = runtime_paths(&app)?;
     let event_request_id = request_id.clone();
     let report = supervisor
@@ -70,12 +73,22 @@ async fn run_pi_probe(
 }
 
 #[tauri::command]
-fn cancel_pi_probe(supervisor: State<'_, PiSupervisor>, request_id: String) -> Result<(), String> {
+fn cancel_pi_probe(
+    app: tauri::AppHandle,
+    supervisor: State<'_, PiSupervisor>,
+    request_id: String,
+) -> Result<(), String> {
+    if !cfg!(debug_assertions) && !app.state::<DesktopLifecycle>().ui_smoke {
+        return Err("Diagnostic probes are disabled in production launches".into());
+    }
     supervisor.cancel(&request_id)
 }
 
 #[tauri::command]
 async fn run_git_probe(app: tauri::AppHandle) -> Result<foundation::git::GitProbeReport, String> {
+    if !cfg!(debug_assertions) && !app.state::<DesktopLifecycle>().ui_smoke {
+        return Err("Diagnostic probes are disabled in production launches".into());
+    }
     // The frontend never supplies a filesystem path or a Git command.
     let report = tauri::async_runtime::spawn_blocking(foundation::git::run_probe)
         .await
@@ -205,18 +218,39 @@ async fn open_in_editor(
 async fn load_workbench_state(
     app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
+    launcher: State<'_, EditorLauncher>,
     persistence: State<'_, WorkbenchPersistence>,
     models: State<'_, ModelStore>,
     cpush: State<'_, CPushCoordinator>,
 ) -> Result<WorkbenchRestoreReply, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if app.state::<DesktopLifecycle>().ui_smoke {
+    let lifecycle = app.state::<DesktopLifecycle>();
+    if lifecycle.ui_smoke {
         models.use_isolated_keychain(
             data_dir.join("picket-ui-smoke.keychain-db"),
             "picket-ui-smoke-pw",
         )?;
+        if !lifecycle.restart_smoke {
+            let (_, editor_bin) = app
+                .state::<repository::smoke::SmokeState>()
+                .path_and_editor_bin()?;
+            launcher.set_search_dirs(Some(vec![editor_bin]))?;
+        }
     }
     let mut restored = persistence.restore(&data_dir, &store).await?;
+    if lifecycle.restart_smoke
+        && let Some(first_snap) = restored.snapshots.first()
+        && let Some(first_wt) = first_snap.worktrees.first()
+        && let Some(parent) = std::path::Path::new(&first_wt.path).parent()
+    {
+        launcher.set_search_dirs(Some(vec![parent.join("editor-bin")]))?;
+    }
+    let installed = launcher.detect_installed_editors();
+    if !installed.is_empty() && !installed.contains(&restored.editor) {
+        restored.editor = installed[0];
+    }
+    restored.installed_editors = Some(installed);
+
     let (saved_models, active_model_id, model_warning) = models.restore(&data_dir).await?;
     restored.models = Some(saved_models);
     restored.active_model_id = Some(active_model_id);
@@ -244,8 +278,17 @@ async fn test_model_connection(
     supervisor: State<'_, PiSupervisor>,
     input: ModelInput,
 ) -> Result<ModelTestReply, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if app.state::<DesktopLifecycle>().ui_smoke {
+        models.use_isolated_keychain(
+            data_dir.join("picket-ui-smoke.keychain-db"),
+            "picket-ui-smoke-pw",
+        )?;
+    }
     let paths = runtime_paths(&app)?;
-    models.test_connection(&paths, &supervisor, &input).await
+    models
+        .test_connection_with_storage(Some(&data_dir), &paths, &supervisor, &input)
+        .await
 }
 
 #[tauri::command]
@@ -701,6 +744,37 @@ async fn verify_repository_persistence_smoke(app: tauri::AppHandle) -> Result<()
 }
 
 #[tauri::command]
+async fn verify_restart_smoke(
+    app: tauri::AppHandle,
+    models: State<'_, ModelStore>,
+) -> Result<(), String> {
+    if !app.state::<DesktopLifecycle>().restart_smoke {
+        return Err("Not running restart smoke mode".into());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let (restored_models, active_id, warn) = models.restore(&data_dir).await?;
+    let active_id = active_id.ok_or("Restart smoke lost activeModelId")?;
+    if restored_models.len() != 1 || warn.is_some() {
+        return Err("Restart smoke failed to restore saved model catalog".into());
+    }
+    let resolved = models.resolve_runtime_spec(&data_dir, &active_id).await?;
+    if !resolved.api_key.starts_with("smoke-token-") {
+        return Err("Restart smoke Keychain lookup did not recover expected secret".into());
+    }
+    app.state::<DesktopLifecycle>().mark_restart_verified();
+    println!(
+        "{}",
+        serde_json::json!({
+            "type": "uiSmokeRestartProof",
+            "coldProcessRepositoryHydrated": true,
+            "coldProcessKeychainModelHydrated": true,
+            "coldProcessSessionHistoryHydrated": true
+        })
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn close_smoke_window(app: tauri::AppHandle) -> Result<(), String> {
     if !app.state::<DesktopLifecycle>().may_close_probe() {
         return Err("UI smoke prerequisites are not satisfied".into());
@@ -759,8 +833,10 @@ fn main() {
         .manage(repository::smoke::SmokeState::default())
         .manage(PiSupervisor::default())
         .manage(CPushCoordinator::default())
-        .manage(DesktopLifecycle::new(
+        .manage(DesktopLifecycle::with_flags(
             std::env::args().any(|arg| arg == "--foundation-ui-smoke"),
+            std::env::args().any(|arg| arg == "--foundation-restart-smoke"),
+            std::env::args().any(|arg| arg == "--keep-smoke-repo-once"),
         ))
         .invoke_handler(tauri::generate_handler![
             run_pi_probe,
@@ -793,6 +869,7 @@ fn main() {
             verify_cpush_m4_smoke,
             prepare_m5_conflict_smoke,
             verify_m5_conflict_smoke,
+            verify_restart_smoke,
             verify_repository_read_smoke,
             verify_repository_branch_smoke,
             verify_repository_commit_smoke,
@@ -802,12 +879,19 @@ fn main() {
         .on_page_load(|window, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished
                 && window.state::<DesktopLifecycle>().start_ui_smoke()
-                && let Err(error) =
-                    window.eval("window.dispatchEvent(new Event('picket:foundation-smoke'))")
             {
-                eprintln!("Cannot start UI smoke: {error}");
-                window.state::<DesktopLifecycle>().fail();
-                exit_after_cleanup(window.app_handle());
+                let event_name = if window.state::<DesktopLifecycle>().restart_smoke {
+                    "picket:foundation-restart-smoke"
+                } else {
+                    "picket:foundation-smoke"
+                };
+                if let Err(error) =
+                    window.eval(format!("window.dispatchEvent(new Event('{event_name}'))"))
+                {
+                    eprintln!("Cannot start UI smoke: {error}");
+                    window.state::<DesktopLifecycle>().fail();
+                    exit_after_cleanup(window.app_handle());
+                }
             }
         })
         .on_window_event(|window, event| {
