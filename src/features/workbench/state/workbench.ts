@@ -2,7 +2,7 @@ import type { ModelConfiguration } from '../../settings/modelProviders';
 import type { CPushCommandReply, CPushLandedCommit, CPushProgressEvent, CPushQaItem, CPushTimelineItem } from '../../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitCommitReply } from '../../../../shared/git-commit-protocol';
-import type { GitReadReply, GitReadTarget } from '../../../../shared/git-read-protocol';
+import type { GitReadReply, GitReadTarget, GitRemoteBranch } from '../../../../shared/git-read-protocol';
 import type { WorkbenchRestoreReply } from '../../../../shared/workbench-persistence-protocol';
 import { finishCPushCommand, finishRepositoryRead, finishRepositoryBranch, finishRepositoryCommit, hydrateWorkbench, readScopeVersion, receiveCPushProgress } from './repositories';
 
@@ -90,6 +90,7 @@ export interface Repository {
   id: string;
   name: string;
   branches: { name: string; worktreeId?: string }[];
+  remoteBranches?: GitRemoteBranch[];
   readSequence?: number;
 }
 
@@ -102,6 +103,7 @@ export interface WorkbenchState {
   models: ModelConfiguration[];
   activeModelId: string | null;
   editor: EditorId;
+  installedEditors?: EditorId[];
   editorModified?: boolean;
   navigationRevision: number;
   repositoryBranches: Record<string, { requestId: string; navigationRevision: number }>;
@@ -111,6 +113,7 @@ export interface WorkbenchState {
 
 export const editors = [
   { id: 'idea', name: 'IntelliJ IDEA', cli: 'idea', short: 'IDEA' },
+  { id: 'rustrover', name: 'RustRover', cli: 'rustrover', short: 'RustRover' },
   { id: 'webstorm', name: 'WebStorm', cli: 'webstorm', short: 'WebStorm' },
   { id: 'vscode', name: 'VS Code', cli: 'code', short: 'VS Code' },
   { id: 'cursor', name: 'Cursor', cli: 'cursor', short: 'Cursor' },
@@ -196,6 +199,8 @@ export type WorkbenchAction =
   | { type: 'repositoryReadFailed'; key: string; requestId: string; worktreeId?: string; error?: string }
   | { type: 'switch'; worktreeId: string; expand?: boolean }
   | { type: 'select'; worktreeId: string; fileId: string }
+  | { type: 'selectAll'; worktreeId: string }
+  | { type: 'selectFiles'; worktreeId: string; fileIds: string[] }
   | { type: 'draft'; worktreeId: string | null; text: string }
   | { type: 'edit' | 'clear'; worktreeId: string | null }
   | { type: 'tab'; worktreeId: string; tab: Worktree['tab'] }
@@ -209,6 +214,20 @@ export type WorkbenchAction =
   | { type: 'modelDeleted'; modelId: string }
   | { type: 'modelsSynced'; models: ModelConfiguration[]; activeModelId: string | null }
   | { type: 'event'; event: WorkbenchEvent };
+
+function updateWorktreeSelection(worktree: Worktree, selectedIds: string[]): Worktree {
+  return {
+    ...worktree,
+    selectedIds,
+    scopeVersion: readScopeVersion({ ...worktree, selectedIds }),
+    draft: { ...worktree.draft, outdated: worktree.draft.outdated || !!worktree.draft.text },
+    requests: {},
+    review: {
+      ...worktree.review,
+      status: worktree.review.status === 'running' ? worktree.requests.review?.previousReviewStatus ?? 'idle' : worktree.review.status,
+    },
+  };
+}
 
 function matchesTarget(worktree: Worktree, target: Target) {
   return worktree.repositoryId === target.repositoryId && worktree.worktreeId === target.worktreeId
@@ -356,7 +375,20 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   }
   if (action.type === 'editor') return { ...state, editor: action.editor, editorModified: true };
   if (action.type === 'modelsSynced') return { ...state, models: action.models, activeModelId: action.activeModelId };
-  if (action.type === 'modelSaved') return { ...state, models: [...state.models.filter((model) => model.id !== action.model.id), action.model], activeModelId: action.model.id };
+  if (action.type === 'modelSaved') {
+    const exists = state.models.some((model) => model.id === action.model.id);
+    return exists
+      ? {
+          ...state,
+          models: state.models.map((model) => (model.id === action.model.id ? action.model : model)),
+          activeModelId: state.activeModelId ?? action.model.id,
+        }
+      : {
+          ...state,
+          models: [...state.models, action.model],
+          activeModelId: action.model.id,
+        };
+  }
   if (action.type === 'modelSelected') return state.models.some((model) => model.id === action.modelId) ? { ...state, activeModelId: action.modelId } : state;
   if (action.type === 'modelDeleted') {
     const models = state.models.filter((model) => model.id !== action.modelId);
@@ -389,9 +421,24 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       case 'select': {
         if (!worktree.files.some((file) => file.id === action.fileId)) return worktree;
         const selectedIds = worktree.selectedIds.includes(action.fileId) ? worktree.selectedIds.filter((id) => id !== action.fileId) : [...worktree.selectedIds, action.fileId];
-        return { ...worktree, selectedIds, scopeVersion: readScopeVersion({ ...worktree, selectedIds }),
-          draft: { ...worktree.draft, outdated: worktree.draft.outdated || !!worktree.draft.text }, requests: {},
-          review: { ...worktree.review, status: worktree.review.status === 'running' ? worktree.requests.review?.previousReviewStatus ?? 'idle' : worktree.review.status } };
+        return updateWorktreeSelection(worktree, selectedIds);
+      }
+      case 'selectAll': {
+        if (!worktree.files.length) return worktree;
+        const allSelected = worktree.files.every((file) => worktree.selectedIds.includes(file.id));
+        const selectedIds = allSelected ? [] : worktree.files.map((file) => file.id);
+        return updateWorktreeSelection(worktree, selectedIds);
+      }
+      case 'selectFiles': {
+        const liveIds = new Set(worktree.files.map((file) => file.id));
+        const targetIds = [...new Set(action.fileIds)].filter((id) => liveIds.has(id));
+        if (!targetIds.length) return worktree;
+        const targetSet = new Set(targetIds);
+        const allTargetSelected = targetIds.every((id) => worktree.selectedIds.includes(id));
+        const selectedIds = allTargetSelected
+          ? worktree.selectedIds.filter((id) => !targetSet.has(id))
+          : [...worktree.selectedIds, ...targetIds.filter((id) => !worktree.selectedIds.includes(id))];
+        return updateWorktreeSelection(worktree, selectedIds);
       }
       case 'draft': return { ...worktree, draft: { ...worktree.draft, text: action.text, editing: true, revision: worktree.draft.revision + 1 } };
       case 'edit': return { ...worktree, draft: { ...worktree.draft, editing: true } };

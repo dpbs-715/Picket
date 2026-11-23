@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixture, releaseQuestion, sampleFindings } from '../testing/fixtures';
+import { readScopeVersion } from './repositories';
 import { emptyWorkbench, groupFiles, orderedMessages, primaryAction, scopeSummary, selectedFiles, targetOf, workbenchReducer } from './workbench';
 import type { WorkbenchAction, WorkbenchState } from './workbench';
 
@@ -10,7 +11,7 @@ describe('工作台选择与上下文', () => {
     expect(emptyWorkbench()).toMatchObject({ repositories: [], worktrees: [], models: [], activeWorktreeId: null, activeModelId: null });
     expect(primaryAction(undefined, false)).toEqual({ label: '提交', resume: false, disabled: true });
   });
-  it('勾选只改变选择，不改文件元数据；锁文件仍可选择', () => {
+  it('勾选只改变选择，不改文件元数据；标准全选与目录级勾选包含锁文件、隔离其他目录并标记草稿过期与请求失效', () => {
     const state = fixture();
     const beforeFiles = structuredClone(state.worktrees[0].files);
     const next = apply(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
@@ -18,6 +19,39 @@ describe('工作台选择与上下文', () => {
     expect(state.worktrees[0].selectedIds).not.toContain('lock');
     expect(next.worktrees[0].selectedIds).toContain('lock');
     expect(next.worktrees[1]).toEqual(state.worktrees[1]);
+
+    // Top-level standard selectAll: partial selection -> selects all (including lockfile), then clears all
+    const liveState = structuredClone(state);
+    liveState.worktrees[0].head = 'head-1';
+    liveState.worktrees[0].statusVersion = 'status-1';
+    liveState.worktrees[0].scopeVersion = readScopeVersion(liveState.worktrees[0]);
+    const beforeScope = liveState.worktrees[0].scopeVersion;
+    const withReq = apply(liveState, { type: 'request', target: targetOf(liveState.worktrees[0]), kind: 'generate', requestId: 'gen-select-all' });
+    const allSelected = apply(withReq, { type: 'selectAll', worktreeId: 'pay-tree' });
+    expect(allSelected.worktrees[0].selectedIds).toEqual(beforeFiles.map((file) => file.id));
+    expect(allSelected.worktrees[0].scopeVersion).not.toBe(beforeScope);
+    expect(allSelected.worktrees[0].draft.outdated).toBe(true);
+    expect(allSelected.worktrees[0].requests.generate).toBeUndefined();
+
+    const clearedAll = apply(allSelected, { type: 'selectAll', worktreeId: 'pay-tree' });
+    expect(clearedAll.worktrees[0].selectedIds).toEqual([]);
+    expect(clearedAll.worktrees[0].scopeVersion).not.toBe(allSelected.worktrees[0].scopeVersion);
+
+    // Directory-level selectFiles: (根目录) has ['release', 'lock'] where 'release' is selected and 'lock' is unselected
+    let dirState = structuredClone(liveState);
+    dirState.worktrees[0].draft.outdated = false;
+    dirState = apply(dirState, { type: 'request', target: targetOf(dirState.worktrees[0]), kind: 'review', requestId: 'rev-dir-select' });
+    const rootSelected = apply(dirState, { type: 'selectFiles', worktreeId: 'pay-tree', fileIds: ['release', 'lock'] });
+    expect(rootSelected.worktrees[0].selectedIds).toEqual(['order', 'pay', 'retry', 'release', 'lock']);
+    expect(rootSelected.worktrees[0].scopeVersion).not.toBe(beforeScope);
+    expect(rootSelected.worktrees[0].draft.outdated).toBe(true);
+    expect(rootSelected.worktrees[0].requests.review).toBeUndefined();
+    expect(rootSelected.worktrees[0].review.status).toBe('idle');
+
+    // Clicking the fully selected (根目录) group removes only ['release', 'lock'], keeping other directories intact
+    const rootCleared = apply(rootSelected, { type: 'selectFiles', worktreeId: 'pay-tree', fileIds: ['release', 'lock'] });
+    expect(rootCleared.worktrees[0].selectedIds).toEqual(['order', 'pay', 'retry']);
+    expect(rootCleared.worktrees[0].scopeVersion).not.toBe(rootSelected.worktrees[0].scopeVersion);
   });
   it('部分暂存的列表与确认范围只使用 +28 -4，不混入未暂存统计', () => {
     const tree = fixture().worktrees[0];

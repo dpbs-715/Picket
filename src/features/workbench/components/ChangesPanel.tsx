@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Icon, IconButton } from '../../../ui/controls';
-import { groupFiles, scopeSummary, splitPath } from '../state/workbench';
+import { groupFiles, scopeSummary, selectedFiles, splitPath } from '../state/workbench';
 import type { Change, Worktree } from '../state/workbench';
 
 interface Props {
@@ -10,14 +10,36 @@ interface Props {
   repositoryReadsAvailable: boolean;
   onOpenRepository(): void;
   onSelect(fileId: string): void;
+  onSelectAll(): void;
+  onSelectFiles(fileIds: string[]): void;
   onOpenFile(fileId: string): void;
   onReview(): void;
   onRefresh(): void;
   refreshing: boolean;
 }
+
+function TriStateCheckbox(props: {
+  checked: boolean;
+  indeterminate: boolean;
+  label: string;
+  onChange(): void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => {
+    if (ref.current) {
+      ref.current.indeterminate = props.indeterminate;
+    }
+  }, [props.indeterminate, props.checked]);
+  return <input ref={ref} type="checkbox" className="file-checkbox" checked={props.checked} aria-checked={props.indeterminate ? 'mixed' : props.checked} aria-label={props.label} onChange={props.onChange} />;
+}
+
 export function ChangesPanel(props: Props) {
   const [view, setView] = useState<'list' | 'tree'>('list');
   const worktree = props.worktree;
+  const hasChanges = !!worktree && !worktree.readError && worktree.files.length > 0;
+  const selectedCount = worktree ? selectedFiles(worktree).length : 0;
+  const allSelected = hasChanges && selectedCount === worktree.files.length;
+  const partiallySelected = hasChanges && selectedCount > 0 && selectedCount < worktree.files.length;
   function fileRow(file: Change, grouped = false) {
     const { name, directory } = splitPath(file.path);
     const findings = worktree!.review.findings.filter((finding) => finding.fileId === file.id);
@@ -39,9 +61,12 @@ export function ChangesPanel(props: Props) {
   }
   return <section className="changes-panel" aria-label="变更文件">
     {worktree && <div className="changes-heading">
-      <div className="row min-width-zero"><h2>变更</h2><span className="muted truncate">{scopeSummary(worktree)}</span></div>
+      <div className="changes-summary min-width-zero">
+        {hasChanges && <TriStateCheckbox checked={allSelected} indeterminate={partiallySelected} label={allSelected ? '取消全选变更' : '全选变更'} onChange={props.onSelectAll} />}
+        <span className="muted truncate">{scopeSummary(worktree)}</span>
+      </div>
       <div className="row">
-        {worktree.files.length > 0 && <IconButton icon={view === 'list' ? 'tree' : 'list'} label={view === 'list' ? '切换目录树视图' : '切换列表视图'} onClick={() => setView(view === 'list' ? 'tree' : 'list')} />}
+        {hasChanges && <IconButton icon={view === 'list' ? 'tree' : 'list'} label={view === 'list' ? '切换目录树视图' : '切换列表视图'} onClick={() => setView(view === 'list' ? 'tree' : 'list')} />}
         <IconButton icon="refresh" label="刷新变更" disabled={props.refreshing} className={props.refreshing ? 'spinning' : ''} onClick={props.onRefresh} />
       </div>
     </div>}
@@ -64,7 +89,18 @@ export function ChangesPanel(props: Props) {
           <div className="empty-copy"><p className="empty-title">工作区干净</p><p className="muted help">可在顶部切换工作树或继续编写代码</p></div>
         </div>
         : view === 'list' ? worktree.files.map((file) => fileRow(file))
-        : groupFiles(worktree.files).map((group) => <div key={group.directory}><div className="directory-heading mono"><Icon name="folder" /><span className="truncate">{group.directory}</span></div>{group.files.map((file) => fileRow(file, true))}</div>)}
+        : groupFiles(worktree.files).map((group) => {
+          const groupSelectedCount = group.files.filter((file) => worktree.selectedIds.includes(file.id)).length;
+          const groupAllSelected = group.files.length > 0 && groupSelectedCount === group.files.length;
+          const groupIndeterminate = groupSelectedCount > 0 && groupSelectedCount < group.files.length;
+          return <div key={group.directory}>
+            <div className="directory-heading mono">
+              <TriStateCheckbox checked={groupAllSelected} indeterminate={groupIndeterminate} label={groupAllSelected ? `取消选择目录 ${group.directory}` : `选择目录 ${group.directory}`} onChange={() => props.onSelectFiles(group.files.map((file) => file.id))} />
+              <span className="directory-label min-width-zero"><Icon name="folder" /><span className="truncate">{group.directory}</span></span>
+            </div>
+            {group.files.map((file) => fileRow(file, true))}
+          </div>;
+        })}
     </div>
   </section>;
 }

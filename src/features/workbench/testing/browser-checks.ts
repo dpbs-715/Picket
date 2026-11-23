@@ -60,7 +60,7 @@ export async function verifyWorkbench(root: Root) {
   await click('关闭设置');
   assert(textarea.value === '尚未选择仓库时写的草稿', '打开设置不能丢失草稿');
   await mount(fixture('clean'));
-  assert(text().includes('工作区干净') && !!document.querySelector('[aria-label="刷新变更"]') && !document.querySelector('[aria-label="切换目录树视图"]'), '干净工作区应保留刷新并隐藏无意义的目录树切换');
+  assert(text().includes('工作区干净') && !!document.querySelector('[aria-label="刷新变更"]') && !document.querySelector('[aria-label="切换目录树视图"]') && !document.querySelector('.changes-heading input[type="checkbox"]'), '干净工作区应保留刷新并隐藏全选框与目录树切换');
   checks.push('真实默认空态、干净工作区层级、手动输入、共用模型入口与取消返回');
 
   const subscription: { receive?: (event: WorkbenchEvent) => void } = {};
@@ -93,14 +93,55 @@ export async function verifyWorkbench(root: Root) {
   checks.push('输入焦点、光标范围、文字保全、消息优先级与局部覆盖');
 
   await mount(fixture('changed'));
+  assert(!document.querySelector('.changes-heading h2') && !document.querySelector('.changes-select-all'), '顶栏不应保留冗余变更标题或文字全选按钮');
   const checkbox = document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!;
+  const topCheckbox = document.querySelector<HTMLInputElement>('.changes-heading input[type="checkbox"]')!;
   assert(checkbox.checked, '样例选择错误');
-  await act(async () => { checkbox.click(); });
-  assert(!checkbox.checked && !document.querySelector('[role="alert"]'), '勾选不能触发 IDE 或 Git 命令');
+  assert(
+    topCheckbox && topCheckbox.getAttribute('aria-label') === '全选变更' && !topCheckbox.checked && topCheckbox.indeterminate
+      && Math.abs(topCheckbox.getBoundingClientRect().left - checkbox.getBoundingClientRect().left) < 0.5,
+    '顶栏三态全选框应与文件复选框左列对齐且初始呈半选状态',
+  );
+  await act(async () => { topCheckbox.click(); });
+  assert(
+    topCheckbox.checked && !topCheckbox.indeterminate && topCheckbox.getAttribute('aria-label') === '取消全选变更'
+      && document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked,
+    '点击半选顶栏全选框应选中包含锁文件在内的全部变更',
+  );
+  await act(async () => { topCheckbox.click(); });
+  assert(!topCheckbox.checked && !topCheckbox.indeterminate && topCheckbox.getAttribute('aria-label') === '全选变更' && !checkbox.checked && text().includes('未选择变更'), '再次点击全选框应清空全部勾选');
   await click('切换目录树视图');
   assert(text().includes('(根目录)'), '目录分组缺少根目录');
+  await act(async () => {
+    document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.click();
+  });
+  const rootDirCheckbox = document.querySelector<HTMLInputElement>('[aria-label="选择目录 (根目录)"]')!;
+  const groupedCheckbox = document.querySelector<HTMLInputElement>('.file-row.grouped .file-checkbox')!;
+  assert(
+    rootDirCheckbox && !rootDirCheckbox.checked && rootDirCheckbox.indeterminate
+      && Math.abs(rootDirCheckbox.getBoundingClientRect().left - topCheckbox.getBoundingClientRect().left) < 0.5
+      && groupedCheckbox.getBoundingClientRect().left > rootDirCheckbox.getBoundingClientRect().right,
+    '目录分组复选框应与顶栏全选框同列对齐、半选准确且子文件缩进清晰',
+  );
+  await act(async () => { rootDirCheckbox.click(); });
+  assert(
+    rootDirCheckbox.checked && !rootDirCheckbox.indeterminate && rootDirCheckbox.getAttribute('aria-label') === '取消选择目录 (根目录)'
+      && document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked
+      && document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked
+      && !document.querySelector('[role="alert"]'),
+    '点击半选目录复选框应全选该目录文件且不触发外部 IDE 命令',
+  );
+  await act(async () => { rootDirCheckbox.click(); });
+  assert(
+    !rootDirCheckbox.checked && !rootDirCheckbox.indeterminate
+      && !document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.checked
+      && !document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked
+      && document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked,
+    '取消全选某目录不应清除其他目录已选文件',
+  );
   await click('切换列表视图');
-  assert(document.querySelector('.file-stats')?.textContent?.includes('+28'), '部分暂存统计错误');
+  assert(!document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!.checked && document.querySelector('.file-stats')?.textContent?.includes('+28'), '部分暂存统计错误');
   await click('C-Push 会话记录');
   const historyEntry = [...document.querySelectorAll<HTMLButtonElement>('.history-entry')].find((entry) => entry.textContent?.includes('fix/npe'))!;
   await act(async () => { historyEntry.click(); });
@@ -133,22 +174,51 @@ export async function verifyWorkbench(root: Root) {
   checks.push('无模型手动范围、失效范围拦截与失败草稿保留');
 
   const single = fixture('single'); single.models = []; single.activeModelId = null;
+  single.repositories[1].remoteBranches!.push({
+    name: 'origin/103-shan-dao-bug-xiu-gai-very-long-branch-name',
+    remote: 'origin',
+    localName: '103-shan-dao-bug-xiu-gai-very-long-branch-name',
+  });
   await mount(single);
-  assert(!document.querySelector('.worktree-anchor'), '单目录仓库应隐藏工作树选择器');
+  const outerBranchLabel = document.querySelector<HTMLElement>('.branch-anchor > button .truncate')!;
+  assert(!document.querySelector('.worktree-anchor') && outerBranchLabel.scrollWidth <= outerBranchLabel.clientWidth, '外部头部应只展示当前分支入口且短分支名不得被截断出省略号');
   await click('main');
+  const groupToggles = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')];
   assert(
-    document.querySelector('.branch-menu .branch-tag')?.textContent === '保护分支'
+    groupToggles.length === 2
+      && groupToggles[0].textContent?.includes('本地分支') && groupToggles[0].getAttribute('aria-expanded') === 'true'
+      && groupToggles[1].textContent?.includes('远程分支') && groupToggles[1].getAttribute('aria-expanded') === 'false'
+      && document.querySelector('.branch-menu .branch-tag')?.textContent === '保护分支'
       && !text().includes('新建分支')
       && !text().includes('新建 Worktree'),
-    '单目录分支菜单应仅展示已有分支与保护分支短标签，不再展示新建分支或 Worktree 入口',
+    '单目录分支菜单应展示 IDEA 风格的本地分支 / 远程分支双折叠结构与保护分支短标签',
+  );
+  await act(async () => { groupToggles[1].click(); });
+  const branchMenuRect = document.querySelector('.branch-menu')!.getBoundingClientRect();
+  const remoteItems = [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="remote"] .branch-item')];
+  assert(
+    groupToggles[1].getAttribute('aria-expanded') === 'true'
+      && (document.querySelector('[data-branch-group="remote"]')?.textContent ?? '').includes('origin/release/v1')
+      && branchMenuRect.left >= 0 && branchMenuRect.right <= innerWidth
+      && remoteItems.every((item) => item.getBoundingClientRect().height <= 32),
+    '展开远程分支折叠组应展示远程分支、不越界且右侧标签不纵向折行撑高条目',
   );
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   await click('提交');
   assert(!button('仅本地提交').disabled && !button('提交并推送').disabled && document.querySelector('.scope-menu .branch-tag')?.textContent === '保护分支', '保护分支应仅展示紧凑标签并允许直接提交');
-  checks.push('单目录隐藏工作树选择器、精简分支菜单与保护分支短标签直接提交');
+  checks.push('外部单一分支入口、IDEA 风格本地/远程双折叠菜单与保护分支直接提交');
 
   await mount(fixture('no-model'));
   await click('设置'); await click('添加第一个模型');
+  const formatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
+  assert(formatSelect && formatSelect.value === 'anthropic-messages', 'Anthropic 默认接口格式应为 anthropic-messages');
+  await click('自定义兼容');
+  assert((formatSelect.value as string) === 'openai-completions', '自定义兼容默认接口格式应为 openai-completions');
+  await act(async () => {
+    formatSelect.value = 'openai-responses';
+    formatSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  assert((formatSelect.value as string) === 'openai-responses', '接口格式下拉框应支持自由切换协议');
   await click('Ollama（本地）');
   assert(!document.querySelector('input[type="password"]'), 'Ollama 不应要求 Key');
   assert(document.querySelector('input[value="http://127.0.0.1:11434/v1"]'), 'Ollama 地址默认值错误');
@@ -158,16 +228,42 @@ export async function verifyWorkbench(root: Root) {
   assert(text().includes('没有保存模型或密钥'), '不能伪造模型保存成功');
   await click('Anthropic');
   assert(document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', '切换提供商残留 Key');
-  checks.push('提供商字段、真实零模型边界、未接入连接不伪报成功');
+  checks.push('提供商字段、接口格式下拉框、真实零模型边界、未接入连接不伪报成功');
 
   const modelCalls: WorkbenchCommand[] = [];
-  await mount(fixture('typing'), { ...disconnectedBackend, async execute(command) { modelCalls.push(command); } });
+  let editedPayload: unknown;
+  await mount(fixture('typing'), {
+    ...disconnectedBackend,
+    async execute(command) { modelCalls.push(command); },
+    async saveModel(input) {
+      editedPayload = input;
+      return { id: input.id ?? 'new-id', name: input.name, provider: input.provider, apiFormat: input.apiFormat, modelId: input.modelId, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}) };
+    },
+  });
   await click('设置');
   const activeSelect = document.querySelector<HTMLButtonElement>('.model-row.is-active .model-select')!;
   assert(activeSelect && getComputedStyle(activeSelect).backgroundColor === 'rgba(0, 0, 0, 0)', '选中模型背景应由整张卡片承载而非局部内嵌块');
+  await click('编辑模型 GPT-4.1');
+  assert(text().includes('编辑模型') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', '打开编辑模型不应回填明文密钥');
+  const editModelIdInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')].find((el) => el.value === 'gpt-4.1')!;
+  type(editModelIdInput, 'gpt-4.1-mini'); await tick();
+  const editFormatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
+  await act(async () => {
+    editFormatSelect.value = 'openai-completions';
+    editFormatSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await click('保存修改');
+  assert(
+    !!editedPayload && (editedPayload as { id?: string; apiKey: string; apiFormat?: string }).id === 'test-gpt'
+      && (editedPayload as { apiKey: string }).apiKey === ''
+      && (editedPayload as { apiFormat?: string }).apiFormat === 'openai-completions'
+      && !!document.querySelector('[aria-label="关闭设置"]')
+      && text().includes('gpt-4.1-mini'),
+    '编辑模型留空密钥应就地保存更新并回到设置列表，同时不切走当前使用模型',
+  );
   await click('删除模型 Claude Sonnet 4');
   assert(text().includes('GPT-4.1') && !text().includes('Claude Sonnet 4'), '删除当前模型没有回退');
-  assert(modelCalls.length === 1 && modelCalls[0].kind === 'deleteModel', '删除误触发模型选择');
+  assert(modelCalls.length === 1 && modelCalls[0].kind === 'deleteModel', '删除或编辑误触发模型选择');
   await click('关闭设置');
   assert(button('GPT-4.1'), '设置与底栏没有共享选中模型');
   await click('设置'); await click('删除模型 GPT-4.1');
@@ -252,7 +348,7 @@ export async function verifyWorkbench(root: Root) {
   assert(textarea.value === '打开前先写好的说明' && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '刷新覆盖草稿或勾选');
   checks.push('打开仓库回执、首次草稿迁移、锁文件选择与窗口聚焦刷新（协议夹具）');
   failRefresh = true; await click('刷新变更');
-  assert(text().includes('工作树状态不可用') && button('提交').disabled && textarea.value === '打开前先写好的说明', '读取失败未保留草稿或仍允许使用旧状态');
+  assert(text().includes('工作树状态不可用') && !document.querySelector('.changes-heading input[type="checkbox"]') && button('提交').disabled && textarea.value === '打开前先写好的说明', '读取失败未隐藏顶栏全选框、未保留草稿或仍允许使用旧状态');
   failRefresh = false; await click('重试读取');
   assert(!text().includes('工作树状态不可用') && document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]'), '重新读取未恢复文件区');
   checks.push('读取错误不冒充干净工作区，保留草稿并支持重试（协议夹具）');
@@ -264,8 +360,13 @@ export async function verifyWorkbench(root: Root) {
   } });
   await click('打开本机仓库…');
   await click('刷新变更');
-  await act(async () => { document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click(); });
-  await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((button) => button.textContent?.includes('fix/npe'))!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')].find((btn) => btn.textContent?.includes('工作树'))!.click();
+  });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="worktree"] button')].find((button) => button.textContent?.includes('fix/npe'))!.click();
+  });
   assert(document.querySelector('.branch-anchor')!.textContent?.includes('fix/npe'), '工作树切换没有生效');
   assert(delayed.requestId && delayed.target && delayed.finish, '没有开始受控刷新');
   const lateReply = repositoryReply(delayed.requestId, ++readSequence); lateReply.target = delayed.target;
@@ -298,10 +399,10 @@ export async function verifyWorkbench(root: Root) {
     '切换非 Git 目录时窗口聚焦自动刷新不应冲掉错误提示',
   );
   checks.push('打开目录取消、切换非 Git 目录报错保留与窗口聚焦不冲掉提示（协议夹具）');
-  let branchCallCount = 0;
-  const branchResponse: { finish?: (reply: GitBranchReply) => void; command?: Extract<WorkbenchCommand, { kind: 'switchBranch' }> } = {};
+  let branchCallCount: number = 0;
+  const branchResponse: { finish?: (reply: GitBranchReply) => void; command?: Extract<WorkbenchCommand, { kind: 'switchBranch' | 'checkoutRemoteBranch' }> } = {};
   const branches: WorkbenchBackend = { ...reads, execute(command) {
-    if (command.kind !== 'switchBranch') return reads.execute(command);
+    if (command.kind !== 'switchBranch' && command.kind !== 'checkoutRemoteBranch') return reads.execute(command);
     branchCallCount++; branchResponse.command = command;
     return new Promise<GitBranchReply>((resolve) => { branchResponse.finish = resolve; });
   } };
@@ -311,10 +412,10 @@ export async function verifyWorkbench(root: Root) {
   await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   assert(!text().includes('新建分支') && !text().includes('新建 Worktree'), '分支菜单不应包含新建分支或新建 Worktree 入口');
   await act(async () => {
-    const targetBtn = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')].find((btn) => btn.textContent?.includes('feat/invoice'))!;
+    const targetBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('feat/invoice'))!;
     targetBtn.click(); targetBtn.click();
   });
-  assert(branchCallCount === 1 && branchResponse.command?.branch === 'feat/invoice' && branchResponse.command.branchToken, '切换分支重复请求或没有携带 Rust 版本');
+  assert(branchCallCount === 1 && branchResponse.command?.kind === 'switchBranch' && branchResponse.command.branch === 'feat/invoice' && branchResponse.command.branchToken, '切换分支重复请求或没有携带 Rust 版本');
   assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/pay'), 'Git 未返回就伪造分支切换成功');
   type(textarea, '等待 Git 时继续写的新草稿'); await tick();
   const branchSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
@@ -322,23 +423,39 @@ export async function verifyWorkbench(root: Root) {
   await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'switchBranch', outcome: 'completed', snapshot: branchSnapshot }); });
   assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/invoice'), '成功后未采用 Git 分支或未关闭菜单');
   assert(textarea.value === '等待 Git 时继续写的新草稿' && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '分支切换回执覆盖了最新草稿或选择');
+  // Expanding remote branches and checking out a remote branch without a local counterpart:
+  await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')].find((btn) => btn.textContent?.includes('远程分支'))!.click();
+  });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="remote"] button')].find((btn) => btn.textContent?.includes('mirror/feat/reconcile'))!.click();
+  });
+  const remoteCmd = branchResponse.command as Extract<WorkbenchCommand, { kind: 'switchBranch' | 'checkoutRemoteBranch' }> | undefined;
+  assert((branchCallCount as number) === 2 && remoteCmd?.kind === 'checkoutRemoteBranch' && remoteCmd.branch === 'mirror/feat/reconcile', '点击远程分支未发起受控检出请求');
+  const remoteCheckoutSnapshot = repositoryReply(remoteCmd.requestId, ++readSequence).snapshot!;
+  remoteCheckoutSnapshot.worktrees[0].branch = 'feat/reconcile';
+  remoteCheckoutSnapshot.worktrees[0].branchToken = 'remote-checkout-token';
+  remoteCheckoutSnapshot.repository.branches.push({ name: 'feat/reconcile', worktreeId: 'pay-tree' });
+  await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: remoteCmd.requestId, target: remoteCmd.target, action: 'checkoutRemoteBranch', outcome: 'completed', snapshot: remoteCheckoutSnapshot }); });
+  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/reconcile'), '远程分支检出后未更新为本地跟踪分支');
   // Clicking a branch occupied by another worktree jumps directly to that worktree:
   await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click();
+    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click();
   });
-  assert(branchCallCount === 1 && document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), '点击已占用分支未跳转到对应工作树');
-  checks.push('切换已有分支只采用 Git 回执、重复点击保护、草稿选择保全与已占用工作树跳转（协议夹具）');
+  assert((branchCallCount as number) === 2 && document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), '点击已占用分支未跳转到对应工作树');
+  checks.push('切换已有本地分支、远程分支检出本地跟踪分支、草稿选择保全与已占用工作树跳转（协议夹具）');
 
   branchCallCount = 0;
   await mount(fixture('empty'), branches); await click('打开本机仓库…');
   await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu > button')].find((btn) => btn.textContent?.includes('feat/invoice'))!.click();
+    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('feat/invoice'))!.click();
   });
-  await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-  await act(async () => { document.querySelector<HTMLButtonElement>('.worktree-anchor > button')!.click(); });
-  await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('.worktree-menu > button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click(); });
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click();
+  });
   const lateBranchSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
   lateBranchSnapshot.worktrees[0].branch = 'feat/invoice';
   await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'switchBranch', outcome: 'completed', snapshot: lateBranchSnapshot }); });
@@ -477,6 +594,48 @@ export async function verifyWorkbench(root: Root) {
   await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); });
   assert(savedRequests.length >= 2 && savedRequests.at(-1)?.editor === 'webstorm' && savedRequests.at(-1)?.worktrees[0].selectedIds.includes('pay'), '修改编辑器与文件勾选未触发持久化保存');
   checks.push('跨重启恢复编辑器、草稿、勾选、离线变化提示与变更自动保存（协议夹具）');
+
+  await act(async () => {
+    root.render(createElement(Workbench, {
+      key: ++key,
+      backend: {
+        ...reads,
+        async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
+          return {
+            protocolVersion: 1, editor: 'cursor', installedEditors: ['idea', 'rustrover', 'webstorm'],
+            activeWorktreeId: null, emptyDraft: '', emptyEditing: false, snapshots: [], worktrees: [], warning: null,
+          };
+        },
+      },
+    }));
+  });
+  await tick();
+  await click('设置');
+  const gridText = document.querySelector('.editor-grid')?.textContent ?? '';
+  assert(
+    gridText.includes('IntelliJ IDEA') && gridText.includes('RustRover') && gridText.includes('WebStorm')
+      && !gridText.includes('VS Code') && !gridText.includes('Cursor')
+      && document.querySelector<HTMLButtonElement>('.editor-grid button[aria-pressed="true"]')?.textContent?.includes('IntelliJ IDEA'),
+    '本机已安装编辑器过滤未隐藏未安装项或未自动回退已卸载的首选项',
+  );
+  await act(async () => {
+    root.render(createElement(Workbench, {
+      key: ++key,
+      backend: {
+        ...reads,
+        async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
+          return {
+            protocolVersion: 1, editor: 'idea', installedEditors: [],
+            activeWorktreeId: null, emptyDraft: '', emptyEditing: false, snapshots: [], worktrees: [], warning: null,
+          };
+        },
+      },
+    }));
+  });
+  await tick();
+  await click('设置');
+  assert(!document.querySelector('.editor-grid') && text().includes('未检测到已安装的受支持编辑器'), '零已安装编辑器时未展示明确空态');
+  checks.push('本机已安装 IDE 动态识别过滤、未安装项隐藏与零编辑器空态（协议夹具）');
 
   const cancelledIds: string[] = [];
   let finishGen: ((reply: GenerateCommitReply) => void) | undefined;

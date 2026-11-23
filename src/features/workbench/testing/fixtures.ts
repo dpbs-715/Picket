@@ -43,8 +43,25 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
   const state: WorkbenchState = {
     ...emptyWorkbench(),
     repositories: [
-      { id: 'orders', name: 'my-order-service', branches: [{ name: 'feat/pay', worktreeId: 'pay-tree' }, { name: 'fix/npe', worktreeId: 'fix-tree' }, { name: 'main', worktreeId: 'main-tree' }, { name: 'feat/invoice' }] },
-      { id: 'cli', name: 'picket-cli', branches: [{ name: 'main', worktreeId: 'cli-tree' }] },
+      {
+        id: 'orders',
+        name: 'my-order-service',
+        branches: [{ name: 'feat/pay', worktreeId: 'pay-tree' }, { name: 'fix/npe', worktreeId: 'fix-tree' }, { name: 'main', worktreeId: 'main-tree' }, { name: 'feat/invoice' }],
+        remoteBranches: [
+          { name: 'upstream/main', remote: 'upstream', localName: 'main' },
+          { name: 'upstream/feat/pay', remote: 'upstream', localName: 'feat/pay' },
+          { name: 'upstream/feat/reconcile', remote: 'upstream', localName: 'feat/reconcile' },
+        ],
+      },
+      {
+        id: 'cli',
+        name: 'picket-cli',
+        branches: [{ name: 'main', worktreeId: 'cli-tree' }],
+        remoteBranches: [
+          { name: 'origin/main', remote: 'origin', localName: 'main' },
+          { name: 'origin/release/v1', remote: 'origin', localName: 'release/v1' },
+        ],
+      },
     ],
     worktrees: [tree,
       { ...sampleWorktree(), worktreeId: 'fix-tree', sessionId: 'fix-session', label: 'wt/fix-npe', branch: 'fix/npe', path: '/test-only/order-fix', files: [], selectedIds: [], draft: { text: 'fix(refund): 校验订单号非空', editing: true, outdated: false, revision: 0 } },
