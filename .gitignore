@@ -1,0 +1,21 @@
+# Local development documents
+/docs/
+
+# IDE and macOS
+.idea/
+.DS_Store
+
+# Dependencies and build output
+node_modules/
+/dist/
+/src-tauri/target/
+/target/
+/src-tauri/binaries/
+/src-tauri/resources/generated/
+/src-tauri/gen/
+/coverage/
+*.tsbuildinfo
+
+# Serena: share project.yml; keep machine state and memories local
+/.serena/*
+!/.serena/project.yml

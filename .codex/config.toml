@@ -1,0 +1,12 @@
+# Project-scoped Codex MCP configuration. No user-global settings are changed.
+# Codex passes MCP env values literally, so use a fixed POSIX shell command to
+# expand HOME/PATH at launch rather than hard-coding a developer's directory.
+[mcp_servers.serena]
+command = "/bin/sh"
+args = [
+  "-c",
+  'export PATH="$HOME/.cargo/bin:$HOME/.local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"; exec serena start-mcp-server --project-from-cwd --context codex --language-backend LSP --agent-interface tools --enable-web-dashboard false --enable-gui-log-window false'
+]
+env_vars = ["HOME", "PATH"]
+startup_timeout_sec = 120
+tool_timeout_sec = 120

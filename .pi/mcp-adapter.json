@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "serena",
+      "args": [
+        "start-mcp-server",
+        "--project-from-cwd",
+        "--context", "agent",
+        "--language-backend", "LSP",
+        "--agent-interface", "tools",
+        "--enable-web-dashboard", "false",
+        "--enable-gui-log-window", "false"
+      ],
+      "cwd": ".",
+      "env": {
+        "PATH": "${HOME}/.cargo/bin:${HOME}/.local/bin:${PATH}"
+      },
+      "description": "Picket TypeScript/TSX/JavaScript 与 Rust 的符号检索、引用定位和受控编辑。先阅读 AGENTS.md。",
+      "lifecycle": "lazy-keep-alive",
+      "requestTimeoutMs": 120000,
+      "directTools": true
+    }
+  }
+}
