@@ -1,0 +1,37 @@
+{
+  "name": "picket",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.1",
+  "engines": { "node": "24.17.0" },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "pnpm typecheck && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm sidecar:prepare && vitest run",
+    "sidecar:prepare": "node scripts/prepare-sidecar.mjs",
+    "desktop": "node scripts/desktop.mjs",
+    "package:verify": "node scripts/verify-package.mjs",
+    "ui:verify": "node scripts/verify-workbench.mjs",
+    "check": "pnpm typecheck && pnpm test && pnpm desktop check"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@tauri-apps/api": "2.12.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.6",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vite": "8.3.8",
+    "vitest": "5.1.1"
+  }
+}

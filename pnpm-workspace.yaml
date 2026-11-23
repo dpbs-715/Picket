@@ -1,0 +1,7 @@
+onlyBuiltDependencies:
+  - esbuild
+# These tarballs already contain their runtime artifacts. Their install hooks
+# only echo a no-op (@google/genai) or check dependency ranges (protobufjs).
+ignoredBuiltDependencies:
+  - '@google/genai'
+  - protobufjs
