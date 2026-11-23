@@ -101,4 +101,23 @@ describe('工作台跨重启持久化投影与水合', () => {
     expect(payload.editor).toBe('vscode');
     expect(serialized).not.toMatch(/commitToken|branchToken|path|apiKey/);
   });
+
+  it('根据本机已安装编辑器列表过滤可用项，并在原保存编辑器未安装时自动回退至首个已安装项', () => {
+    const hydrated = workbenchReducer(emptyWorkbench(), {
+      type: 'workbenchHydrated',
+      restored: {
+        protocolVersion: 1,
+        editor: 'cursor',
+        installedEditors: ['idea', 'rustrover', 'webstorm'],
+        activeWorktreeId: null,
+        emptyDraft: '',
+        emptyEditing: false,
+        snapshots: [],
+        worktrees: [],
+        warning: null,
+      },
+    });
+    expect(hydrated.installedEditors).toEqual(['idea', 'rustrover', 'webstorm']);
+    expect(hydrated.editor).toBe('idea');
+  });
 });

@@ -176,13 +176,17 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
       }
       return reply;
     }
-    if (command.kind === 'switchBranch') {
+    if (command.kind === 'switchBranch' || command.kind === 'checkoutRemoteBranch') {
       const request = { requestId: command.requestId, target: command.target, action: command.kind, branch: command.branch, branchToken: command.branchToken };
       const reply = decodeGitBranchReply(await invoke('change_repository_branch', { request }));
+      const activeBranch = reply.snapshot.worktrees.find((tree) => tree.worktreeId === reply.snapshot.activeWorktreeId)?.branch;
+      const expectedMatches = command.kind === 'switchBranch'
+        ? activeBranch === command.branch
+        : !!activeBranch && (command.branch === activeBranch || command.branch.endsWith(`/${activeBranch}`));
       if (reply.requestId !== command.requestId || reply.action !== command.kind
         || (['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const).some((key) => reply.target[key] !== command.target[key])
         || reply.snapshot.repository.id !== command.target.repositoryId
-        || reply.snapshot.worktrees.find((tree) => tree.worktreeId === reply.snapshot.activeWorktreeId)?.branch !== command.branch) {
+        || !expectedMatches) {
         throw new Error('分支操作结果的目标或请求身份不匹配，请刷新核对实际 Git 状态。');
       }
       return reply;

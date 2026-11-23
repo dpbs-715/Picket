@@ -40,6 +40,7 @@ fn empty_restore_reply(warning: Option<String>) -> WorkbenchRestoreReply {
     WorkbenchRestoreReply {
         protocol_version: 1,
         editor: EditorKind::Idea,
+        installed_editors: None,
         active_worktree_id: None,
         empty_draft: String::new(),
         empty_editing: false,
@@ -103,6 +104,7 @@ impl WorkbenchPersistence {
         Ok(WorkbenchRestoreReply {
             protocol_version: 1,
             editor: stored.editor,
+            installed_editors: None,
             active_worktree_id: stored.active_worktree_id,
             empty_draft: stored.empty_draft,
             empty_editing: stored.empty_editing,

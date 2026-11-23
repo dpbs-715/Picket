@@ -36,6 +36,11 @@ fn editor_metadata(editor: EditorKind) -> (&'static str, &'static str, &'static 
                 "IntelliJ IDEA CE.app/Contents/MacOS/idea",
             ],
         ),
+        EditorKind::Rustrover => (
+            "rustrover",
+            "RustRover",
+            &["RustRover.app/Contents/MacOS/rustrover"],
+        ),
         EditorKind::Webstorm => (
             "webstorm",
             "WebStorm",
@@ -188,7 +193,10 @@ impl EditorLauncher {
             list.push(PathBuf::from("/usr/local/bin").join(cli));
             if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
                 list.push(home.join(".local/bin").join(cli));
-                if matches!(editor, EditorKind::Idea | EditorKind::Webstorm) {
+                if matches!(
+                    editor,
+                    EditorKind::Idea | EditorKind::Rustrover | EditorKind::Webstorm
+                ) {
                     list.push(
                         home.join("Library/Application Support/JetBrains/Toolbox/scripts")
                             .join(cli),
@@ -211,6 +219,13 @@ impl EditorLauncher {
                     "未找到 {display_name} 可执行入口（{cli}）。请确认已安装 {display_name} 或启用其命令行工具，也可在设置中切换其他编辑器；当前草稿与选择已保留。"
                 )
             })
+    }
+
+    pub fn detect_installed_editors(&self) -> Vec<EditorKind> {
+        EditorKind::ALL
+            .into_iter()
+            .filter(|kind| self.resolve_executable(*kind).is_ok())
+            .collect()
     }
 
     fn write_snapshot(&self, role: &str, repo_path: &str, bytes: &[u8]) -> Result<PathBuf> {
@@ -302,7 +317,7 @@ impl EditorLauncher {
 
 fn build_diff_args(editor: EditorKind, left: &Path, right: &Path) -> Vec<OsString> {
     match editor {
-        EditorKind::Idea | EditorKind::Webstorm => {
+        EditorKind::Idea | EditorKind::Rustrover | EditorKind::Webstorm => {
             vec![
                 "diff".into(),
                 left.as_os_str().to_owned(),
@@ -321,7 +336,7 @@ fn build_diff_args(editor: EditorKind, left: &Path, right: &Path) -> Vec<OsStrin
 
 fn build_goto_args(editor: EditorKind, file: &Path, line: u32) -> Result<Vec<OsString>> {
     match editor {
-        EditorKind::Idea | EditorKind::Webstorm => Ok(vec![
+        EditorKind::Idea | EditorKind::Rustrover | EditorKind::Webstorm => Ok(vec![
             "--line".into(),
             line.to_string().into(),
             file.as_os_str().to_owned(),
@@ -466,7 +481,7 @@ impl RepositoryStore {
                 EditorKind::Vscode | EditorKind::Cursor => {
                     vec![working_file.as_os_str().to_owned()]
                 }
-                EditorKind::Idea | EditorKind::Webstorm => {
+                EditorKind::Idea | EditorKind::Rustrover | EditorKind::Webstorm => {
                     let ours = self
                         .read_git_blob(&worktree_reader, &root, &format!(":2:{path}"))
                         .await?;

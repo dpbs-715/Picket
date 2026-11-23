@@ -23,6 +23,7 @@ pub struct RefreshRequest {
 #[serde(rename_all = "camelCase")]
 pub enum BranchAction {
     SwitchBranch,
+    CheckoutRemoteBranch,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -82,9 +83,19 @@ pub struct CommitReply {
 #[serde(rename_all = "camelCase")]
 pub enum EditorKind {
     Idea,
+    Rustrover,
     Webstorm,
     Vscode,
     Cursor,
+}
+impl EditorKind {
+    pub const ALL: [Self; 5] = [
+        Self::Idea,
+        Self::Rustrover,
+        Self::Webstorm,
+        Self::Vscode,
+        Self::Cursor,
+    ];
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -150,6 +161,8 @@ pub struct WorkbenchSaveRequest {
 pub struct WorkbenchRestoreReply {
     pub protocol_version: u8,
     pub editor: EditorKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed_editors: Option<Vec<EditorKind>>,
     pub active_worktree_id: Option<String>,
     pub empty_draft: String,
     pub empty_editing: bool,
@@ -186,6 +199,7 @@ pub struct RepositoryInfo {
     pub id: String,
     pub name: String,
     pub branches: Vec<Branch>,
+    pub remote_branches: Vec<RemoteBranch>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,6 +207,13 @@ pub struct Branch {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBranch {
+    pub name: String,
+    pub remote: String,
+    pub local_name: String,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

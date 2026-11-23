@@ -286,6 +286,44 @@ impl RepositoryStore {
                 });
             }
         }
+        let configured_remotes = self.list_remotes_unlocked(root).await.unwrap_or_default();
+        let remote_output = reader
+            .bytes(
+                root,
+                &[
+                    "for-each-ref",
+                    "--format=%(symref)%09%(refname)%00",
+                    "refs/remotes/",
+                ],
+            )
+            .await?;
+        let mut remote_branches = Vec::new();
+        for record in remote_output.split(|byte| *byte == 0) {
+            let record = parse::utf8(record)?;
+            let record = record.trim_start_matches('\n');
+            if record.is_empty() {
+                continue;
+            }
+            let Some((symref, full_ref)) = record.split_once('\t') else {
+                continue;
+            };
+            if !symref.is_empty() {
+                continue;
+            }
+            let Some(short_name) = full_ref.strip_prefix("refs/remotes/") else {
+                continue;
+            };
+            let Some((remote_name, local_name)) =
+                branches::split_remote_branch(short_name, &configured_remotes)
+            else {
+                continue;
+            };
+            remote_branches.push(RemoteBranch {
+                name: short_name.to_owned(),
+                remote: remote_name,
+                local_name,
+            });
+        }
         let name = if common.file_name().is_some_and(|name| name == ".git") {
             label(common.parent().unwrap_or(root))
         } else {
@@ -296,6 +334,7 @@ impl RepositoryStore {
                 id: repository_id.clone(),
                 name,
                 branches,
+                remote_branches,
             },
             worktrees,
             active_worktree_id: active_id,

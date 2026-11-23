@@ -106,6 +106,45 @@ describe('桌面 Git 适配器与共享协议', () => {
       outcome: 'completed',
       snapshot: { activeWorktreeId: 'fix-tree' },
     });
+
+    const checkedOutRemote = branchReply();
+    checkedOutRemote.action = 'checkoutRemoteBranch';
+    checkedOutRemote.snapshot.worktrees[0].branch = 'feat/reconcile';
+    mockIPC((command, args) => {
+      expect(command).toBe('change_repository_branch');
+      expect(args).toEqual({
+        request: {
+          requestId: 'branch-remote-1',
+          target,
+          action: 'checkoutRemoteBranch',
+          branch: 'mirror/feat/reconcile',
+          branchToken: 'rust-token',
+        },
+      });
+      return { ...checkedOutRemote, requestId: 'branch-remote-1' };
+    });
+    await expect(desktopWorkbenchBackend.execute({
+      kind: 'checkoutRemoteBranch',
+      requestId: 'branch-remote-1',
+      target,
+      branch: 'mirror/feat/reconcile',
+      branchToken: 'rust-token',
+    })).resolves.toMatchObject({
+      action: 'checkoutRemoteBranch',
+      outcome: 'completed',
+    });
+
+    const wrongRemoteResult = branchReply();
+    wrongRemoteResult.action = 'checkoutRemoteBranch';
+    wrongRemoteResult.snapshot.worktrees[0].branch = 'unrelated/branch';
+    mockIPC(() => ({ ...wrongRemoteResult, requestId: 'branch-remote-bad' }));
+    await expect(desktopWorkbenchBackend.execute({
+      kind: 'checkoutRemoteBranch',
+      requestId: 'branch-remote-bad',
+      target,
+      branch: 'mirror/feat/reconcile',
+      branchToken: 'rust-token',
+    })).rejects.toThrow('身份不匹配');
   });
   it.each(['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const)('分支回执拒绝不匹配的 %s', async (key) => {
     mockIPC(() => ({ ...branchReply(), target: { ...target, [key]: 'wrong' } }));

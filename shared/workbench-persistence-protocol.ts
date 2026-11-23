@@ -32,6 +32,7 @@ export interface WorkbenchSaveRequest {
 export interface WorkbenchRestoreReply {
   protocolVersion: typeof WORKBENCH_PERSISTENCE_PROTOCOL_VERSION;
   editor: GitEditorId;
+  installedEditors?: GitEditorId[];
   activeWorktreeId: string | null;
   emptyDraft: string;
   emptyEditing: boolean;
@@ -90,9 +91,14 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
     if (!Array.isArray(value.cPushSessions)) return fail();
     return value.cPushSessions.map(decodeCPushSessionSnapshot);
   })();
+  const installedEditors = value.installedEditors === undefined ? undefined : (() => {
+    if (!Array.isArray(value.installedEditors) || !value.installedEditors.every(isGitEditorId)) return fail();
+    return [...new Set(value.installedEditors)];
+  })();
   return {
     protocolVersion: WORKBENCH_PERSISTENCE_PROTOCOL_VERSION,
     editor: value.editor,
+    ...(installedEditors !== undefined ? { installedEditors } : {}),
     activeWorktreeId: value.activeWorktreeId,
     emptyDraft: value.emptyDraft,
     emptyEditing: value.emptyEditing,

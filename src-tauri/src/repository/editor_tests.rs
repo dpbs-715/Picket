@@ -48,7 +48,7 @@ fn open_request(
 fn install_recording_clis(bin_dir: &Path, capture_dir: &Path) {
     fs::create_dir_all(bin_dir).unwrap();
     fs::create_dir_all(capture_dir).unwrap();
-    for cli in ["idea", "webstorm", "code", "cursor"] {
+    for cli in ["idea", "rustrover", "webstorm", "code", "cursor"] {
         let script_path = bin_dir.join(cli);
         let script = format!(
             concat!(
@@ -384,10 +384,14 @@ async fn handles_conflicts_renames_newlines_symlinks_linked_worktrees_and_cli_er
         .is_err()
     );
 
-    // 5. macOS .app bundle fallback paths resolve for all 4 supported IDEs when flat CLI is absent:
+    // 5. macOS .app bundle fallback paths resolve for all 5 supported IDEs and detect_installed_editors filters accurately:
     let apps_dir = harness.path().join("Applications");
     for (editor, rel_bundle) in [
         (EditorKind::Idea, "IntelliJ IDEA CE.app/Contents/MacOS/idea"),
+        (
+            EditorKind::Rustrover,
+            "RustRover.app/Contents/MacOS/rustrover",
+        ),
         (EditorKind::Webstorm, "WebStorm.app/Contents/MacOS/webstorm"),
         (
             EditorKind::Vscode,
@@ -408,6 +412,22 @@ async fn handles_conflicts_renames_newlines_symlinks_linked_worktrees_and_cli_er
             bundle_exec
         );
     }
+    let partial_apps = harness.path().join("PartialApps");
+    for rel in [
+        "IntelliJ IDEA.app/Contents/MacOS/idea",
+        "RustRover.app/Contents/MacOS/rustrover",
+    ] {
+        let exec = partial_apps.join(rel);
+        fs::create_dir_all(exec.parent().unwrap()).unwrap();
+        fs::write(&exec, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&exec, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let partial_launcher = EditorLauncher::with_search_dirs(vec![partial_apps]);
+    assert_eq!(
+        partial_launcher.detect_installed_editors(),
+        vec![EditorKind::Idea, EditorKind::Rustrover]
+    );
+    assert!(empty_launcher.detect_installed_editors().is_empty());
 
     launcher.cleanup().unwrap();
 }

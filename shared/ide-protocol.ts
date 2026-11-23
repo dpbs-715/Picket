@@ -2,7 +2,7 @@ import type { GitReadTarget } from './git-read-protocol';
 
 export const IDE_PROTOCOL_VERSION = 1;
 
-export type GitEditorId = 'idea' | 'webstorm' | 'vscode' | 'cursor';
+export type GitEditorId = 'idea' | 'rustrover' | 'webstorm' | 'vscode' | 'cursor';
 export type GitOpenFileAction = 'open' | 'goto' | 'diff' | 'stagedDiff' | 'merge';
 
 export interface GitOpenFileRequest {
@@ -32,7 +32,7 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 export function isGitEditorId(value: unknown): value is GitEditorId {
-  return value === 'idea' || value === 'webstorm' || value === 'vscode' || value === 'cursor';
+  return value === 'idea' || value === 'rustrover' || value === 'webstorm' || value === 'vscode' || value === 'cursor';
 }
 
 export function decodeGitOpenFileReply(value: unknown): GitOpenFileReply {
