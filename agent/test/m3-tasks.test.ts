@@ -257,8 +257,8 @@ describe('M3 Pi Core tasks and provider adapters', () => {
       text: 'feat(order): 补充支付回调幂等校验\n\n- 沿用 Order.ts 已暂存范围更新状态校验\n- 记录锁文件同步范围',
     });
     expect(requests[0].headers['x-api-key']).toBe('sk-ant-explicit-key-01');
-    expect(requests[0].body).toContain('ALWAYS include BOTH the first-line title AND a blank line followed by 1 to 4 concise');
-    expect(requests[0].body).toContain('you MUST still include the blank line and `- ` bullet body below the title');
+    expect(requests[0].body).toContain('<commit_skill_spec>');
+    expect(requests[0].body).toContain('Use a body only when the reason, migration impact, or verification context would');
     await anthropicSidecar.close();
 
     // 2. OpenAI testConnection (/v1/responses):

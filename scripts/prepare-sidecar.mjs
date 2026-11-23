@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
 import { access, chmod, copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,10 +27,24 @@ await chmod(runtimeTarget, 0o755);
 const license = resolve(dirname(runtimeSource), '../LICENSE');
 await access(license);
 await copyFile(license, join(generated, 'NODE-LICENSE.txt'));
+const rawMarkdownPlugin = {
+  name: 'raw-markdown',
+  setup(esbuildBuild) {
+    esbuildBuild.onResolve({ filter: /\.md\?raw$/ }, (args) => ({
+      path: relative(root, resolve(args.resolveDir, args.path.slice(0, -4))),
+      namespace: 'raw-md',
+    }));
+    esbuildBuild.onLoad({ filter: /.*/, namespace: 'raw-md' }, async (args) => ({
+      contents: await readFile(resolve(root, args.path), 'utf8'),
+      loader: 'text',
+    }));
+  },
+};
 const result = await build({
   absWorkingDir: root, entryPoints: ['agent/src/main.ts'],
   outfile: join(generated, 'pi-sidecar.mjs'), bundle: true, platform: 'node',
   target: 'node24', format: 'esm', legalComments: 'external', metafile: true,
+  plugins: [rawMarkdownPlugin],
   banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
 });
 const packageRoots = new Set();

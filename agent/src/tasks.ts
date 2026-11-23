@@ -18,6 +18,7 @@ import type {
   TestConnectionRequest,
 } from '../../shared/pi-protocol';
 import { MODEL_GLOBAL_DEFAULTS } from '../../shared/model-defaults';
+import { COMMIT_SKILL_SPEC, CPUSH_SKILL_SPEC } from './git-skills';
 import { createProbe } from './probe';
 import { createIsolatedModelRuntime, sanitizeProviderError } from './providers';
 
@@ -344,25 +345,24 @@ export function parseReviewFindings(raw: string, files: PiDiffFile[]): PiReviewF
 
 function buildGeneratePrompts(command: GenerateCommitCommand): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = [
-    'You are Picket\'s Git commit message generator.',
-    'Write ONE Conventional Commits message strictly for the supplied diff scope using this exact two-part format (first-line title, one blank line, then concise bullet points):',
-    '<type>(<optional scope>): <concise summary>',
+    'You are Picket\'s Git commit message generator, governed by the repository `commit` skill specification below.',
     '',
-    '- <specific change or intent 1>',
-    '- <specific change or intent 2>',
+    '<commit_skill_spec>',
+    COMMIT_SKILL_SPEC,
+    '</commit_skill_spec>',
     '',
-    'Rules:',
-    '1. ALWAYS include BOTH the first-line title AND a blank line followed by 1 to 4 concise `- ` bullet points detailing the concrete changes and their purpose/impact, even when only one file changed or recent commit subjects are single-line. Do not repeat the title verbatim in the bullets.',
-    '2. Match the natural language (e.g. Chinese vs English) and `<type>(<scope>)` naming convention of recent commit subjects when provided; if none are provided, write the summary and bullet points in concise Chinese after the Conventional Commit prefix.',
-    '3. Describe ONLY the supplied diff changes. For partially staged files, only the staged diff is supplied; never guess or invent unstaged edits.',
-    '4. If the user already wrote draft notes, preserve their intent and key details in the generated title and bullet points.',
-    '5. Output ONLY the raw commit message text (title + blank line + `- ` bullet list) without markdown code fences, headings, or extra commentary.',
+    'Desktop Adapter Rules:',
+    '1. Write ONE concise Conventional Commits message (`<type>(<optional scope>): <subject>`, without a trailing period) strictly for the supplied diff scope.',
+    '2. Follow the `commit` skill\'s body policy: keep single-line by default, and add a blank line + concise body ONLY when the reason, migration impact, or non-obvious context would be lost from the subject alone.',
+    '3. Keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English. Match the natural language (Chinese vs English) and `<type>(<scope>)` naming convention of recent commit subjects or the user draft; if neither indicates English, write the subject after the colon in concise Chinese.',
+    '4. Describe ONLY the supplied diff changes. For partially staged files, only the staged diff is supplied; never guess or invent unstaged edits. Preserve user draft intent when provided.',
+    '5. Output ONLY the raw commit message text (no `Committed <hash>:` wrapper, no markdown code fences, no extra commentary).',
   ].join('\n');
 
   const parts: string[] = [`Target branch: ${command.branch}`];
   if (command.recentCommits.length > 0) {
     parts.push(
-      `Recent commit subjects (reference for language and <type>(<scope>) naming only — you MUST still include the blank line and \`- \` bullet body below the title):\n${command.recentCommits.map((subject) => `- ${subject}`).join('\n')}`,
+      `Recent commit subjects (language and <type>(<scope>) naming reference):\n${command.recentCommits.map((subject) => `- ${subject}`).join('\n')}`,
     );
   }
   if (command.draft.trim()) {
@@ -392,21 +392,31 @@ function buildReviewPrompts(command: ReviewScopeCommand): { systemPrompt: string
 
 function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = [
-    'You are Picket\'s C-Push commit splitting planner.',
-    'Analyze ONLY the authorized selected files and either:',
-    '(A) Return a ready execution plan (`kind: "ready"`) when grouping and commit attribution are clear — DO NOT ask unnecessary questions when the files clearly belong to 1 commit or cleanly split into logical commits;',
-    '(B) Return a concise user question (`kind: "question"`) ONLY when attribution is genuinely ambiguous (e.g. whether release notes / changelog / mixed docs should merge into a feature commit, split into a separate commit, or be skipped; OR when an existing manual user draft has ambiguous attribution across multiple split commits; OR when the user\'s latest answer is unclear or requests an unauthorized/unselected file or unsupported action).',
+    'You are Picket\'s C-Push planner, governed by the repository `cpush` and `commit` skill specifications below.',
     '',
-    'Strict Rules:',
-    '1. File-level grouping ONLY: each authorized `fileId` is an indivisible unit (partially staged files represent ONLY their staged diff). Never invent files outside the authorized list.',
-    '2. When `qaHistory` is empty, `skippedFileIds` MUST be `[]` and EVERY authorized `fileId` MUST appear in exactly one group of `groups`.',
-    '3. When `qaHistory` is non-empty, follow the user\'s answer within the authorized scope. Only place a `fileId` in `skippedFileIds` if the user explicitly chose/asked to skip it (`暂不提交`). If the user\'s free-text reply asks to include an unselected file (listed under `Unselected worktree files`), modify code, force-push, or is contradictory/unclear, MUST return `kind: "question"` explaining the boundary clearly in Chinese and offering valid choices within the authorized files.',
-    '4. Existing user draft (`draft`): use it as an intent/writing constraint for the relevant commit(s), NEVER copy the same raw manual note blindly onto multiple unrelated commits.',
-    '5. Every `group.message` MUST use two-part Conventional Commits format: `<type>(<optional scope>): <concise summary>\\n\\n- <bullet 1>\\n- <bullet 2>` (1–4 concise bullets, matching recent commit language or Chinese by default).',
-    '6. Keep any internal reasoning concise and focused on file attribution and commit summaries; do NOT restate diffs line by line.',
+    '<cpush_skill_spec>',
+    CPUSH_SKILL_SPEC,
+    '</cpush_skill_spec>',
+    '',
+    '<commit_skill_spec>',
+    COMMIT_SKILL_SPEC,
+    '</commit_skill_spec>',
+    '',
+    'Desktop C-Push Planning Rules:',
+    '1. Pre-commit Triage ("Do not include unrelated work just because it is present in the working tree"):',
+    '   Users often click "Select All" before C-Push. Before returning `kind: "ready"`, inspect every selected file. If ANY selected file has NOT yet been confirmed in `qaHistory` and looks like:',
+    '   - a local environment, secret, or credential file (`.env`, `.env.*` other than `.env.example`/`.env.sample`/`.env.template`, `*.pem`, `*.key`, `.npmrc`, `*.local.*`), or a diff introducing hardcoded credentials / local-only debug endpoints;',
+    '   - a temporary local test/debug/scratch script (e.g. ad-hoc `test-*.cjs`, `debug-*`, `scratch.*`, temporary dumps/logs) or unfinished unrelated work that should not be committed blindly;',
+    '   - or a file with genuinely ambiguous commit attribution (e.g. mixed release notes/docs or an ambiguous manual `draft` across split commits);',
+    '   you MUST return `kind: "question"` first! List those `affectedFileIds`, explain clearly in Chinese why confirmation is needed, and offer clear options (recommend `"skip"` / `"排除这些文件，仅提交其余改动"` for local env, secret, or temporary test files).',
+    '2. Intentional Clean Scope: When all selected files are clearly intentional changes (or once `qaHistory` resolves any questionable files), return `kind: "ready"` directly without asking unnecessary confirmation questions. Split unrelated intentional changes into focused logical commits.',
+    '3. File-level Authorization Boundary: Each authorized `fileId` is an indivisible unit (partially staged files represent ONLY their staged diff). Never invent or include files outside the authorized list (`Unselected worktree files` are strictly off-limits).',
+    '4. Skipping Policy: When `qaHistory` is empty, `skippedFileIds` MUST be `[]` (ask via `kind: "question"` instead of silently dropping a selected file). When `qaHistory` is non-empty, place a `fileId` in `skippedFileIds` ONLY when the user chose/asked to exclude or skip it; if ALL selected files are skipped, `groups` may be `[]` and `skippedFileIds` lists all of them. If the user\'s reply asks to include an unselected file, modify code, force-push, or is unclear, return `kind: "question"` explaining the boundary in Chinese.',
+    '5. Commit Message Style (follow `<commit_skill_spec>`): Keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English; match the subject language of `recentCommits` (or concise Chinese by default when recent commits are Chinese or absent). Write a concise `<type>(<optional scope>): <subject>` without a trailing period; include a blank line and brief body ONLY when the reason, migration impact, or non-obvious context would be lost from the subject alone. Preserve existing user `draft` intent on the relevant commit without duplicating it verbatim across unrelated commits.',
+    '6. Keep internal reasoning brief and focused on file triage, grouping, and commit subjects; do NOT restate diffs line by line.',
     '7. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas:',
-    'Schema Ready: {"kind":"ready","summary":"简短规划说明","groups":[{"id":"group-1","fileIds":["<exact fileId>"],"message":"feat(scope): 标题\\n\\n- 要点 1\\n- 要点 2"}],"skippedFileIds":[]}',
-    'Schema Question: {"kind":"question","title":"简短问题标题","scope":"影响提交 2/2「docs」","description":"说明归属分歧及影响文件","affectedFileIds":["<exact fileId>"],"options":[{"id":"merge","label":"合并进提交 1"},{"id":"split","label":"单独提交并一起推送","recommended":true},{"id":"skip","label":"暂不提交"}]}',
+    'Schema Ready: {"kind":"ready","summary":"简短规划说明","groups":[{"id":"group-1","fileIds":["<exact fileId>"],"message":"feat(scope): 简明提交标题"}],"skippedFileIds":[]}',
+    'Schema Question: {"kind":"question","title":"简短问题标题","scope":"涉及本地配置 .env 等","description":"说明为何建议排除或需确认归属","affectedFileIds":["<exact fileId>"],"options":[{"id":"skip","label":"排除这些文件，仅提交其余改动","recommended":true},{"id":"split","label":"确认安全，单独提交并推送"},{"id":"merge","label":"合并进主提交"}]}',
   ].join('\n');
 
   const parts: string[] = [`Target branch: ${command.branch}`];

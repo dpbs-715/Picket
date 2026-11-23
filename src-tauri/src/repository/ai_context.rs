@@ -92,6 +92,94 @@ fn format_untracked_patch(path: &str, content: &str) -> String {
     out
 }
 
+pub fn is_sensitive_local_file(path: &str) -> bool {
+    let Some(raw_name) = Path::new(path).file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = raw_name.to_ascii_lowercase();
+    if lower == ".env" {
+        return true;
+    }
+    if let Some(suffix) = lower.strip_prefix(".env.") {
+        return !matches!(
+            suffix,
+            "example" | "sample" | "template" | "dist" | "schema" | "defaults"
+        ) && !suffix.ends_with(".example")
+            && !suffix.ends_with(".sample")
+            && !suffix.ends_with(".template");
+    }
+    if matches!(
+        lower.as_str(),
+        ".npmrc"
+            | ".pypirc"
+            | ".netrc"
+            | "id_rsa"
+            | "id_ed25519"
+            | "id_ecdsa"
+            | "id_dsa"
+            | "credentials.json"
+            | "client_secret.json"
+    ) {
+        return true;
+    }
+    matches!(
+        Path::new(&lower).extension().and_then(|e| e.to_str()),
+        Some("pem" | "key" | "p12" | "pfx" | "keystore" | "jks")
+    )
+}
+
+fn redact_sensitive_patch(path: &str, raw_patch: &str) -> Option<String> {
+    let lower = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !(lower == ".env" || lower.starts_with(".env.") || lower == ".npmrc") {
+        return None;
+    }
+    let mut out = String::with_capacity(raw_patch.len());
+    for line in raw_patch.lines() {
+        if line.starts_with("diff --git")
+            || line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("@@ ")
+            || line.starts_with("new file mode")
+            || line.starts_with("deleted file mode")
+            || line.starts_with("\\ ")
+        {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if let Some(first) = line.chars().next()
+            && matches!(first, '+' | '-' | ' ')
+        {
+            let body = &line[first.len_utf8()..];
+            let trimmed = body.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                out.push_str(line);
+            } else if let Some((key_part, val_part)) = body.split_once('=') {
+                if val_part.trim().is_empty() {
+                    out.push_str(line);
+                } else {
+                    out.push(first);
+                    out.push_str(key_part);
+                    out.push_str("=[REDACTED_LOCAL_VALUE]");
+                }
+            } else {
+                out.push(first);
+                out.push_str("[REDACTED_SENSITIVE_LINE]");
+            }
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Some(out)
+}
+
 pub(crate) fn truncate_patch_head_tail(raw_patch: &str, max_bytes: usize) -> String {
     if raw_patch.len() <= max_bytes {
         return raw_patch.to_owned();
@@ -318,6 +406,16 @@ impl RepositoryStore {
                         continue;
                     }
                 }
+            };
+
+            let raw_patch = if is_sensitive_local_file(&change.path) {
+                skipped_paths.push(format!("{}（本地环境或敏感凭据值已本地脱敏）", change.path));
+                match redact_sensitive_patch(&change.path, &raw_patch) {
+                    Some(redacted) => redacted,
+                    None => continue,
+                }
+            } else {
+                raw_patch
             };
 
             let (file_patch_cap, total_patch_cap) = match mode {
@@ -556,6 +654,14 @@ impl RepositoryStore {
                 }
             }
 
+            if is_sensitive_local_file(&change.path) {
+                raw_patch_opt =
+                    raw_patch_opt.and_then(|patch| redact_sensitive_patch(&change.path, &patch));
+                skip_reason = Some(
+                    "疑似本地环境或敏感凭据文件（值已本地脱敏，提交前需向用户确认是否排除）".into(),
+                );
+            }
+
             raw_entries.push((raw_patch_opt, skip_reason));
         }
 
@@ -581,9 +687,13 @@ impl RepositoryStore {
                 let slimmed = truncate_patch_head_tail(&raw_patch, fair_share);
                 remaining_budget = remaining_budget.saturating_sub(slimmed.len());
                 raw_entries[idx].0 = Some(slimmed);
-                raw_entries[idx].1 = Some("大文件改动较大，补丁已精简".into());
+                raw_entries[idx]
+                    .1
+                    .get_or_insert_with(|| "大文件改动较大，补丁已精简".into());
             } else {
-                raw_entries[idx].1 = Some("所选总改动较大，省略内联补丁".into());
+                raw_entries[idx]
+                    .1
+                    .get_or_insert_with(|| "所选总改动较大，省略内联补丁".into());
             }
         }
 

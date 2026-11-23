@@ -376,6 +376,53 @@ fn validate_plan_in_rust(
             if seen.len() != authorized_ids.len() {
                 return Err("C-Push 规划未完整覆盖全部已勾选文件".into());
             }
+            if !allow_skips {
+                let sensitive: Vec<&FrozenCPushFile> = frozen_files
+                    .iter()
+                    .filter(|f| crate::repository::ai_context::is_sensitive_local_file(&f.path))
+                    .collect();
+                if !sensitive.is_empty() {
+                    let affected_file_ids: Vec<String> =
+                        sensitive.iter().map(|f| f.file_id.clone()).collect();
+                    let names: Vec<String> =
+                        sensitive.iter().map(|f| file_basename(&f.path)).collect();
+                    let has_other_files = sensitive.len() < frozen_files.len();
+                    let options = if has_other_files {
+                        vec![
+                            crate::foundation::pi::PiCPushQuestionOption {
+                                id: "skip".into(),
+                                label: "排除这些文件，仅提交其余改动".into(),
+                                recommended: Some(true),
+                            },
+                            crate::foundation::pi::PiCPushQuestionOption {
+                                id: "include".into(),
+                                label: "确认安全，一并提交并推送".into(),
+                                recommended: None,
+                            },
+                        ]
+                    } else {
+                        vec![
+                            crate::foundation::pi::PiCPushQuestionOption {
+                                id: "skip".into(),
+                                label: "暂不提交，保留在本地".into(),
+                                recommended: Some(true),
+                            },
+                            crate::foundation::pi::PiCPushQuestionOption {
+                                id: "include".into(),
+                                label: "确认安全，继续提交并推送".into(),
+                                recommended: None,
+                            },
+                        ]
+                    };
+                    return Ok(PiCPushPlan::Question {
+                        title: "检测到本地环境或敏感配置文件，是否排除？".into(),
+                        scope: format!("涉及 {}", names.join("、")),
+                        description: "已选范围包含本地环境或敏感凭据文件（如 .env / 密钥文件），通常不应入库推送。请确认处理方式：".into(),
+                        affected_file_ids,
+                        options,
+                    });
+                }
+            }
             let trimmed_draft = raw_draft.trim();
             if groups.len() > 1
                 && !trimmed_draft.is_empty()

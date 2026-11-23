@@ -461,3 +461,156 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
     assert_eq!(restored_sessions[0].commits.len(), 2);
     assert_eq!(restored_sessions[0].qa_log.len(), 2);
 }
+
+#[tokio::test]
+async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips_dotenv_on_confirm()
+{
+    assert!(crate::repository::ai_context::is_sensitive_local_file(
+        ".env"
+    ));
+    assert!(crate::repository::ai_context::is_sensitive_local_file(
+        "apps/web/.env.development.local"
+    ));
+    assert!(!crate::repository::ai_context::is_sensitive_local_file(
+        ".env.example"
+    ));
+    assert!(!crate::repository::ai_context::is_sensitive_local_file(
+        ".env.template"
+    ));
+
+    let temp = tempfile::tempdir().unwrap();
+    let models = make_models(temp.path());
+    let server = LocalModelSseServer::start().unwrap();
+    let saved = models
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: None,
+                provider: ProviderKind::Custom,
+                api_format: None,
+                name: "CPush Planner".into(),
+                model_id: "planner-v1".into(),
+                base_url: format!("{}/v1", server.base_url),
+                api_key: "sk-dotenv-test-key".into(),
+                context_window: None,
+                max_output_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let fixture = Fixture::new().unwrap();
+    let bare = attach_bare_remote(&fixture.root);
+    let local_db_secret = "postgres://dev:local_super_secret_98765@127.0.0.1:5432/app";
+    fs::write(
+        fixture.root.join(".env.local"),
+        format!("# local test env\nDATABASE_URL={local_db_secret}\nEMPTY_VAR=\n"),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join(".env.example"),
+        "DATABASE_URL=postgres://localhost/example\n",
+    )
+    .unwrap();
+
+    let repo_store = RepositoryStore::default();
+    let snapshot = repo_store.open(&fixture.root).await.unwrap();
+    let tree = &snapshot.worktrees[0];
+    let target = ReadTarget {
+        repository_id: tree.repository_id.clone(),
+        worktree_id: tree.worktree_id.clone(),
+        session_id: "sess-dotenv".into(),
+        scope_version: tree.status_version.clone(),
+    };
+
+    // Simulate clicking "Select All" (selecting `part.txt`, `.env.local`, and `.env.example`):
+    let selections: Vec<CommitSelection> = tree
+        .files
+        .iter()
+        .filter(|f| matches!(f.path.as_str(), "part.txt" | ".env.local" | ".env.example"))
+        .map(|f| CommitSelection {
+            file_id: f.id.clone(),
+            commit_token: f.commit_token.clone(),
+        })
+        .collect();
+    assert_eq!(selections.len(), 3);
+
+    let coordinator = CPushCoordinator::default();
+    let paths = PiPaths::development();
+    let supervisor = PiSupervisor::default();
+
+    let paused = coordinator
+        .start_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &StartCPushRequest {
+                request_id: "cpush-dotenv-1".into(),
+                target: target.clone(),
+                model_id: saved.model.id.clone(),
+                selections,
+                draft: String::new(),
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+    // 1. Must pause in NeedsDecision before committing `.env.local`, and NEVER send raw secret to LLM:
+    assert_eq!(
+        paused.session.session_status,
+        CPushSessionStatus::NeedsDecision
+    );
+    assert!(paused.session.commits.is_empty());
+    let reqs = server.requests();
+    assert!(!reqs.is_empty());
+    for req in &reqs {
+        assert!(
+            !req.body.contains("local_super_secret_98765"),
+            "plaintext .env secret must never be sent to external LLM"
+        );
+        assert!(req.body.contains("DATABASE_URL=[REDACTED_LOCAL_VALUE]"));
+    }
+
+    // 2. Confirm recommended `skip` option -> `.env.local` stays local, `part.txt` & `.env.example` commit and push!
+    let msg = paused.session.message.as_ref().unwrap();
+    let finished = coordinator
+        .respond_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &RespondCPushRequest {
+                request_id: "cpush-dotenv-2".into(),
+                target: target.clone(),
+                run_id: paused.session.run_id.clone(),
+                message_id: msg.id.clone(),
+                option_id: Some("skip".into()),
+                text: None,
+                model_id: Some(saved.model.id.clone()),
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(finished.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(finished.session.commits.len(), 1);
+    assert_eq!(finished.session.skipped_file_ids.len(), 1);
+    assert!(text_git(&fixture.root, &["status", "--porcelain"]).contains(".env.local"));
+    assert!(
+        git(&bare, &["show", "refs/heads/feat/read-proof:.env.local"]).is_err(),
+        ".env.local must not be committed or pushed to remote"
+    );
+    assert_eq!(
+        String::from_utf8(
+            git(&bare, &["show", "refs/heads/feat/read-proof:.env.example"]).unwrap()
+        )
+        .unwrap()
+        .trim(),
+        "DATABASE_URL=postgres://localhost/example"
+    );
+}

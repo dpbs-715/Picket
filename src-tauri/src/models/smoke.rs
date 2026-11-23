@@ -169,7 +169,9 @@ fn handle_connection(
 
     let response_text = if body.contains("authorized Git conflict merge resolver") {
         build_conflict_smoke_resolution(&body)
-    } else if body.contains("C-Push commit splitting planner") {
+    } else if body.contains("C-Push commit splitting planner")
+        || body.contains("<cpush_skill_spec>")
+    {
         build_cpush_smoke_plan(&body)
     } else if body.contains("pre-commit code reviewer") {
         let file_id = extract_marker(&body, "fileId: ").unwrap_or_else(|| "unknown".into());
@@ -511,6 +513,39 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
                     { "id": "split", "label": "单独提交并一起推送", "recommended": true },
                     { "id": "skip", "label": "暂不提交" }
                 ]
+            })
+            .to_string();
+        }
+
+        let sensitive_ids: Vec<String> = files
+            .iter()
+            .filter(|(_, path)| crate::repository::ai_context::is_sensitive_local_file(path))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if !sensitive_ids.is_empty()
+            && (last_answer.contains("optionId=skip")
+                || last_answer.contains("排除")
+                || last_answer.contains("暂不提交"))
+        {
+            let keep_ids: Vec<String> = files
+                .iter()
+                .filter(|(id, _)| !sensitive_ids.contains(id))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let groups = if keep_ids.is_empty() {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({
+                    "id": "group-1",
+                    "fileIds": keep_ids,
+                    "message": "feat(scope): 提交已确认的业务改动"
+                })]
+            };
+            return serde_json::json!({
+                "kind": "ready",
+                "summary": "已按确认排除本地敏感配置，仅提交其余改动",
+                "groups": groups,
+                "skippedFileIds": sensitive_ids
             })
             .to_string();
         }
