@@ -23,6 +23,7 @@ fn request(snapshot: &RepositorySnapshot, branch: &str) -> BranchRequest {
         action: BranchAction::SwitchBranch,
         branch: branch.into(),
         branch_token: tree.branch_token.clone().unwrap(),
+        locale: crate::i18n::LanguageKind::En,
     }
 }
 fn index(root: &Path) -> Vec<u8> {
@@ -45,7 +46,7 @@ fn assert_drafts(fixture: &Fixture, expected_index: &[u8]) {
         b"first=2\nsecond=1\n"
     );
     assert_eq!(
-        fs::read(fixture.root.join("新 文件.ts")).unwrap(),
+        fs::read(fixture.root.join("\u{65b0} \u{6587}\u{4ef6}.ts")).unwrap(),
         b"export const proof = true;\n"
     );
     assert_eq!(
@@ -83,7 +84,13 @@ async fn clean_worktree_can_switch_to_a_different_commit() {
     git(&fixture.root, &["branch", "feat/old"]).unwrap();
     git(
         &fixture.root,
-        &["add", "--", "part.txt", "pnpm-lock.yaml", "新 文件.ts"],
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
     )
     .unwrap();
     git(&fixture.root, &["commit", "-m", "test: clean newer head"]).unwrap();
@@ -117,7 +124,7 @@ async fn refuses_dirty_cross_commit_checkout_without_stash_or_reset() {
         .change_branch(&request(&snapshot, "feat/different"))
         .await
         .unwrap_err();
-    assert!(error.contains("不同提交"), "{error}");
+    assert!(error.contains("different commit"), "{error}");
     assert_eq!(branch(&fixture.root), "feat/read-proof");
     assert_drafts(&fixture, &before_index);
     assert!(git(&fixture.root, &["stash", "list"]).unwrap().is_empty());
@@ -150,7 +157,7 @@ async fn rejects_stale_head_branch_index_and_unstaged_half_of_a_partial_file() {
         let before_index = index(&fixture.root);
         let before_draft = fs::read(fixture.root.join("part.txt")).unwrap();
         let error = store.change_branch(&operation).await.unwrap_err();
-        assert!(error.contains("变化"), "{change}: {error}");
+        assert!(error.contains("outdated"), "{change}: {error}");
         assert_eq!(index(&fixture.root), before_index);
         assert_eq!(
             fs::read(fixture.root.join("part.txt")).unwrap(),
@@ -286,7 +293,7 @@ async fn repeated_and_concurrent_requests_never_write_twice() {
             .change_branch(&operation)
             .await
             .unwrap_err()
-            .contains("不会重复")
+            .contains("will not run twice")
     );
     let current = store.open(&fixture.root).await.unwrap();
     let one = request(&current, "feat/one");
@@ -323,7 +330,12 @@ async fn branch_switch_preserves_renames_binary_files_and_symlinks() {
     git(&fixture.root, &["branch", "feat/mixed"]).unwrap();
     git(
         &fixture.root,
-        &["mv", "--", "pnpm-lock.yaml", "新 名\n字.lock"],
+        &[
+            "mv",
+            "--",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{540d}\n\u{5b57}.lock",
+        ],
     )
     .unwrap();
     fs::write(fixture.root.join("binary.dat"), [0, 1, 2]).unwrap();
@@ -347,7 +359,7 @@ async fn branch_switch_preserves_renames_binary_files_and_symlinks() {
         b"first=2\nsecond=3\n"
     );
     assert_eq!(
-        fs::read(fixture.root.join("新 名\n字.lock")).unwrap(),
+        fs::read(fixture.root.join("\u{65b0} \u{540d}\n\u{5b57}.lock")).unwrap(),
         b"lock: updated\n"
     );
     assert_eq!(
@@ -385,7 +397,7 @@ async fn refuses_filter_needed_only_by_the_target_branch_but_allows_unused_filte
             "--",
             "part.txt",
             "pnpm-lock.yaml",
-            "新 文件.ts",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
             ".gitattributes",
         ],
     )
@@ -407,7 +419,7 @@ async fn refuses_filter_needed_only_by_the_target_branch_but_allows_unused_filte
         .change_branch(&request(&snapshot, "feat/filtered"))
         .await
         .unwrap_err();
-    assert!(error.contains("过滤器"), "{error}");
+    assert!(error.contains("external Git filter"), "{error}");
     assert_eq!(branch(&linked), "feat/linked");
     assert!(!marker.exists());
     // This worktree has no filter attributes at HEAD, index or in its files.
@@ -431,7 +443,7 @@ async fn checkout_never_overwrites_an_ignored_user_file() {
             "--",
             "part.txt",
             "pnpm-lock.yaml",
-            "新 文件.ts",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
             "cache.txt",
         ],
     )
@@ -483,7 +495,7 @@ async fn can_switch_existing_branch_from_detached_head_and_explicitly_refuses_un
         .change_branch(&request(&snapshot, "main"))
         .await
         .unwrap_err();
-    assert!(error.contains("首次提交"), "{error}");
+    assert!(error.contains("initial commit"), "{error}");
     assert_eq!(branch(unborn.path()), "main");
     assert_eq!(
         fs::read(unborn.path().join("draft.txt")).unwrap(),
@@ -512,7 +524,7 @@ async fn refuses_custom_hooks_even_when_executable_hook_exists_only_in_target_tr
             ".custom-hooks/post-checkout",
             "part.txt",
             "pnpm-lock.yaml",
-            "新 文件.ts",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
         ],
     )
     .unwrap();
@@ -615,7 +627,7 @@ async fn lists_remote_branches_without_head_symref_and_checks_out_tracking_branc
     let mut dirty_remote_req = request(&refreshed, "origin/feat/remote-different");
     dirty_remote_req.action = BranchAction::CheckoutRemoteBranch;
     let error = store.change_branch(&dirty_remote_req).await.unwrap_err();
-    assert!(error.contains("不同提交"), "{error}");
+    assert!(error.contains("different commit"), "{error}");
     assert_eq!(branch(&fixture.root), "feat/branch-proof");
     assert_drafts(&fixture, &before_index);
 }

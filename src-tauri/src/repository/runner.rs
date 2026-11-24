@@ -1,3 +1,4 @@
+use crate::i18n::{self, LanguageKind};
 use std::{
     path::Path,
     process::Stdio,
@@ -25,6 +26,7 @@ const OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
 pub struct GitReader {
     inner: Arc<Inner>,
     filter_settings: Vec<(String, &'static str)>,
+    locale: LanguageKind,
 }
 struct Inner {
     cancelled: watch::Sender<bool>,
@@ -35,6 +37,7 @@ impl Default for GitReader {
     fn default() -> Self {
         Self {
             filter_settings: Vec::new(),
+            locale: LanguageKind::En,
             inner: Arc::new(Inner {
                 cancelled: watch::channel(false).0,
                 active: AtomicUsize::new(0),
@@ -57,6 +60,11 @@ pub struct GitOutput {
     pub stderr: Vec<u8>,
 }
 impl GitReader {
+    pub fn with_locale(&self, locale: LanguageKind) -> Self {
+        let mut cloned = self.clone();
+        cloned.locale = locale;
+        cloned
+    }
     pub fn cancelled(&self) -> bool {
         *self.inner.cancelled.borrow()
     }
@@ -103,7 +111,7 @@ impl GitReader {
             return Ok(self.clone());
         }
         if !output.success {
-            return Err("无法核对 Git 过滤器配置，已停止读取".into());
+            return Err("Cannot inspect Git filter configuration; stopped reading".into());
         }
         let mut drivers = std::collections::BTreeSet::new();
         for key in output
@@ -111,8 +119,11 @@ impl GitReader {
             .split(|byte| *byte == 0)
             .filter(|key| !key.is_empty())
         {
-            let key = std::str::from_utf8(key).map_err(|_| "Git 过滤器名称不是 UTF-8")?;
-            let (driver, _) = key.rsplit_once('.').ok_or("无法解析 Git 过滤器名称")?;
+            let key =
+                std::str::from_utf8(key).map_err(|_| "Git filter driver name is not UTF-8")?;
+            let (driver, _) = key
+                .rsplit_once('.')
+                .ok_or("Cannot parse Git filter driver name")?;
             drivers.insert(driver);
         }
         let mut reader = self.clone();
@@ -181,11 +192,12 @@ impl GitReader {
         index: Option<&Path>,
         input: Option<&[u8]>,
     ) -> Result<GitOutput, String> {
+        let locale = self.locale;
         self.inner.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(self.inner.clone());
         let mut cancelled = self.inner.cancelled.subscribe();
         if *cancelled.borrow() {
-            return Err("应用正在退出，已停止 Git 读取".into());
+            return Err(i18n::repo_shutting_down_error(locale).into());
         }
         let mut command = Command::new("/usr/bin/git");
         command
@@ -247,10 +259,11 @@ impl GitReader {
             .env("GIT_EDITOR", ":");
         command.args(args);
         let mut child = command.spawn().map_err(|_| {
-            "无法启动 /usr/bin/git，请检查 Xcode Command Line Tools 是否可用".to_string()
+            "Cannot start /usr/bin/git; verify that Xcode Command Line Tools are installed"
+                .to_string()
         })?;
         let writer = if let Some(input) = input {
-            let mut stdin = child.stdin.take().ok_or("Git 输入不可用")?;
+            let mut stdin = child.stdin.take().ok_or("Git stdin is unavailable")?;
             let payload = input.to_vec();
             Some(tokio::spawn(async move {
                 stdin.write_all(&payload).await?;
@@ -259,8 +272,8 @@ impl GitReader {
         } else {
             None
         };
-        let stdout = child.stdout.take().ok_or("Git 输出不可用")?;
-        let stderr = child.stderr.take().ok_or("Git 错误输出不可用")?;
+        let stdout = child.stdout.take().ok_or("Git stdout is unavailable")?;
+        let stderr = child.stderr.take().ok_or("Git stderr is unavailable")?;
         let output = tokio::spawn(async move {
             let mut bytes = Vec::new();
             stdout
@@ -278,36 +291,38 @@ impl GitReader {
                 .map(|_| bytes)
         });
         let result = tokio::select! {
-            status = child.wait() => status.map_err(|_| "Git 进程异常退出，请刷新核对实际状态".to_string()),
-            _ = cancelled.changed() => { let _ = child.kill().await; Err("应用正在退出，已停止 Git 读取".into()) },
-            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => { let _ = child.kill().await; Err("Git 操作超时，请刷新核对实际状态；不会自动重试写入".into()) },
+            status = child.wait() => status.map_err(|_| "Git process exited unexpectedly; refresh to verify live status".to_string()),
+            _ = cancelled.changed() => { let _ = child.kill().await; Err(i18n::repo_shutting_down_error(locale).into()) },
+            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => { let _ = child.kill().await; Err("Git command timed out; refresh to verify live status (writes are never retried automatically)".into()) },
         };
         let stdin_result = match writer {
-            Some(writer) => Some(writer.await.map_err(|_| "无法回收 Git 输入任务")?),
+            Some(writer) => Some(writer.await.map_err(|_| "Cannot join Git stdin writer")?),
             None => None,
         };
         let bytes = output
             .await
-            .map_err(|_| "无法回收 Git 输出")?
-            .map_err(|_| "无法读取 Git 输出")?;
+            .map_err(|_| "Cannot join Git stdout task")?
+            .map_err(|_| "Cannot read Git stdout")?;
         let stderr = errors
             .await
-            .map_err(|_| "无法回收 Git 错误输出")?
-            .map_err(|_| "无法读取 Git 错误输出")?;
+            .map_err(|_| "Cannot join Git stderr task")?
+            .map_err(|_| "Cannot read Git stderr")?;
         let status = result?;
         if status.success()
             && let Some(Err(_)) = stdin_result
         {
-            return Err("无法完整写入 Git 标准输入，操作未完成".into());
+            return Err("Failed to write complete Git stdin; operation did not complete".into());
         }
         if bytes.len() as u64 > OUTPUT_LIMIT || stderr.len() as u64 > OUTPUT_LIMIT {
-            return Err("仓库状态输出过大，未载入不完整结果".into());
+            return Err(
+                "Repository status output is too large; incomplete results were not loaded".into(),
+            );
         }
         if !status.success() && stderr.windows(12).any(|part| part == b"clean filter") {
             return Err(if mode == ExecutionMode::Read {
-                "文件需要 Git 外部过滤器，只读模式已停止读取；请在 Git 或 IDE 中查看".into()
+                i18n::runner_external_filter_read_error(locale).into()
             } else {
-                "所选文件需要外部 Git 过滤器转换，当前版本不能保证安全写入，请在 Git / IDE 中操作；草稿与选择已保留".into()
+                i18n::runner_external_filter_write_error(locale).into()
             });
         }
         Ok(GitOutput {
@@ -321,8 +336,8 @@ impl GitReader {
         let output = self.run(root, args).await?;
         if !output.success {
             return Err(format!(
-                "Git {} 读取失败，请检查仓库是否可访问；当前草稿与选择已保留",
-                args.first().unwrap_or(&"状态")
+                "Git {} read failed; check that the repository is accessible (draft and selection were preserved)",
+                args.first().unwrap_or(&"status")
             ));
         }
         Ok(output.bytes)
@@ -330,7 +345,7 @@ impl GitReader {
     pub async fn text(&self, root: &Path, args: &[&str]) -> Result<String, String> {
         let bytes = self.bytes(root, args).await?;
         let mut text = String::from_utf8(bytes)
-            .map_err(|_| "Git 返回了非 UTF-8 路径，当前版本不能安全显示该仓库".to_string())?;
+            .map_err(|_| i18n::parse_non_utf8_path_error(self.locale).to_string())?;
         if text.ends_with('\n') {
             text.pop();
         }

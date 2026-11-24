@@ -95,8 +95,11 @@ impl Fixture {
         git(&root, &["add", "--", "part.txt"])?;
         let contents = b"first=2\nsecond=3\n".to_vec();
         fs::write(root.join("part.txt"), &contents).map_err(|error| error.to_string())?;
-        fs::write(root.join("新 文件.ts"), "export const proof = true;\n")
-            .map_err(|error| error.to_string())?;
+        fs::write(
+            root.join("\u{65b0} \u{6587}\u{4ef6}.ts"),
+            "export const proof = true;\n",
+        )
+        .map_err(|error| error.to_string())?;
         fs::write(root.join("pnpm-lock.yaml"), "lock: updated\n")
             .map_err(|error| error.to_string())?;
         let index = fs::read(root.join(".git/index")).map_err(|error| error.to_string())?;
@@ -160,7 +163,8 @@ impl Fixture {
                 != self.contents
             || fs::read(self.root.join("pnpm-lock.yaml")).map_err(|error| error.to_string())?
                 != b"lock: updated\n"
-            || fs::read(self.root.join("新 文件.ts")).map_err(|error| error.to_string())?
+            || fs::read(self.root.join("\u{65b0} \u{6587}\u{4ef6}.ts"))
+                .map_err(|error| error.to_string())?
                 != b"export const proof = true;\n"
             || git(&linked, &["symbolic-ref", "--short", "HEAD"])? != b"feat/linked\n"
             || git(&linked, &["rev-parse", "HEAD"])? != self.head
@@ -181,11 +185,19 @@ impl Fixture {
             .parent()
             .ok_or("Missing fixture parent")?
             .join("linked worktree");
+        let head_body = String::from_utf8(git(&self.root, &["show", "-s", "--format=%B", "HEAD"])?)
+            .map_err(|error| error.to_string())?;
+        let local_head = git(&self.root, &["rev-parse", "HEAD"])?;
+        let remote_head = git(
+            &self.bare_remote,
+            &["rev-parse", "refs/heads/feat/branch-proof"],
+        )?;
         if git(&self.root, &["symbolic-ref", "--short", "HEAD"])? != b"feat/branch-proof\n"
             || git(&self.root, &["rev-parse", "HEAD^1"])? != self.head
             || git(&self.root, &["rev-list", "--count", "HEAD"])? != b"2\n"
-            || git(&self.root, &["show", "-s", "--format=%s", "HEAD"])?
-                != b"read-proof: keep manual draft\n"
+            || local_head != remote_head
+            || head_body.trim()
+                != "feat(smoke): commit edited plan verbatim\n\n- commit only staged part"
             || git(&self.root, &["show", "HEAD:part.txt"])? != b"first=2\nsecond=1\n"
             || git(&self.root, &["show", ":part.txt"])? != b"first=2\nsecond=1\n"
             || fs::read(self.root.join("part.txt")).map_err(|error| error.to_string())?
@@ -193,8 +205,9 @@ impl Fixture {
             || git(&self.root, &["show", "HEAD:pnpm-lock.yaml"])? != b"lock: old\n"
             || fs::read(self.root.join("pnpm-lock.yaml")).map_err(|error| error.to_string())?
                 != b"lock: updated\n"
-            || git(&self.root, &["show", "HEAD:新 文件.ts"]).is_ok()
-            || fs::read(self.root.join("新 文件.ts")).map_err(|error| error.to_string())?
+            || git(&self.root, &["show", "HEAD:\u{65b0} \u{6587}\u{4ef6}.ts"]).is_ok()
+            || fs::read(self.root.join("\u{65b0} \u{6587}\u{4ef6}.ts"))
+                .map_err(|error| error.to_string())?
                 != b"export const proof = true;\n"
             || git(&linked, &["symbolic-ref", "--short", "HEAD"])? != b"feat/linked\n"
             || git(&linked, &["rev-parse", "HEAD"])? != self.head

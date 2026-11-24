@@ -101,7 +101,7 @@ struct CfOwned(CFTypeRef);
 impl CfOwned {
     fn from_raw(ptr: CFTypeRef, label: &str) -> Result<Self, String> {
         if ptr.is_null() {
-            Err(format!("无法分配系统钥匙串对象（{label}）"))
+            Err(format!("Failed to allocate Keychain object ({label})"))
         } else {
             Ok(Self(ptr))
         }
@@ -194,10 +194,14 @@ impl CredentialVault {
         path: PathBuf,
         password: impl Into<String>,
     ) -> Result<(), String> {
-        *self.custom.lock().map_err(|_| "系统钥匙串配置锁不可用")? = Some(CustomKeychainConfig {
-            path,
-            password: password.into(),
-        });
+        *self
+            .custom
+            .lock()
+            .map_err(|_| "Keychain configuration lock is unavailable")? =
+            Some(CustomKeychainConfig {
+                path,
+                password: password.into(),
+            });
         Ok(())
     }
 
@@ -205,25 +209,28 @@ impl CredentialVault {
         let Some(config) = self
             .custom
             .lock()
-            .map_err(|_| "系统钥匙串配置锁不可用")?
+            .map_err(|_| "Keychain configuration lock is unavailable")?
             .clone()
         else {
             return Ok(None);
         };
         if let Some(parent) = config.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_| "无法创建测试钥匙串目录".to_string())?;
+            std::fs::create_dir_all(parent)
+                .map_err(|_| "Cannot create isolated Keychain directory".to_string())?;
         }
         let path_str = config
             .path
             .to_str()
-            .ok_or("钥匙串路径包含无效 UTF-8 字符")?;
-        let c_path = CString::new(path_str).map_err(|_| "钥匙串路径包含空字节")?;
+            .ok_or("Keychain path contains invalid UTF-8")?;
+        let c_path = CString::new(path_str).map_err(|_| "Keychain path contains NUL bytes")?;
         let pw_bytes = config.password.as_bytes();
         let mut kc: CFTypeRef = ptr::null();
         if Path::new(&config.path).exists() {
             let open_status = unsafe { SecKeychainOpen(c_path.as_ptr(), &mut kc) };
             if open_status != ERR_SEC_SUCCESS || kc.is_null() {
-                return Err(format!("无法打开 macOS 钥匙串文件（状态码 {open_status}）"));
+                return Err(format!(
+                    "Cannot open macOS Keychain file (status {open_status})"
+                ));
             }
             let owned = CfOwned(kc);
             let unlock_status = unsafe {
@@ -235,7 +242,9 @@ impl CredentialVault {
                 )
             };
             if unlock_status != ERR_SEC_SUCCESS {
-                return Err(format!("无法解锁 macOS 钥匙串（状态码 {unlock_status}）"));
+                return Err(format!(
+                    "Cannot unlock macOS Keychain (status {unlock_status})"
+                ));
             }
             Ok(Some(owned))
         } else {
@@ -251,7 +260,7 @@ impl CredentialVault {
             };
             if create_status != ERR_SEC_SUCCESS || kc.is_null() {
                 return Err(format!(
-                    "无法初始化 macOS 钥匙串文件（状态码 {create_status}）"
+                    "Cannot initialize macOS Keychain file (status {create_status})"
                 ));
             }
             Ok(Some(CfOwned(kc)))
@@ -259,7 +268,10 @@ impl CredentialVault {
     }
 
     pub fn put(&self, account: &str, secret: &str) -> Result<(), String> {
-        let _guard = self.io_lock.lock().map_err(|_| "系统钥匙串互斥锁不可用")?;
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| "Keychain mutex is unavailable")?;
         let custom_kc = self.open_custom_keychain()?;
         let service_cf = cf_string(KEYCHAIN_SERVICE)?;
         let account_cf = cf_string(account)?;
@@ -299,16 +311,19 @@ impl CredentialVault {
                 return Ok(());
             }
             return Err(format!(
-                "无法更新 macOS 系统钥匙串中的模型密钥（状态码 {update_status}）；没有保存模型配置。"
+                "Cannot update model API key in macOS Keychain (status {update_status}); model configuration was not saved."
             ));
         }
         Err(format!(
-            "无法将模型密钥写入 macOS 系统钥匙串（状态码 {status}）；没有保存模型或密钥。"
+            "Cannot store model API key in macOS Keychain (status {status}); model and key were not saved."
         ))
     }
 
     pub fn get(&self, account: &str) -> Result<Option<String>, String> {
-        let _guard = self.io_lock.lock().map_err(|_| "系统钥匙串互斥锁不可用")?;
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| "Keychain mutex is unavailable")?;
         let custom_kc = self.open_custom_keychain()?;
         let search_list = custom_kc
             .as_ref()
@@ -334,13 +349,15 @@ impl CredentialVault {
             return Ok(None);
         }
         if status != ERR_SEC_SUCCESS || result.is_null() {
-            return Err(format!("读取 macOS 系统钥匙串凭据失败（状态码 {status}）"));
+            return Err(format!(
+                "Failed to read credential from macOS Keychain (status {status})"
+            ));
         }
         let data = CfOwned(result);
         let len = unsafe { CFDataGetLength(data.as_ptr()) };
         let ptr_bytes = unsafe { CFDataGetBytePtr(data.as_ptr()) };
         if len < 0 || (len > 0 && ptr_bytes.is_null()) {
-            return Err("系统钥匙串返回的凭据数据损坏".into());
+            return Err("Credential data returned by macOS Keychain is corrupted".into());
         }
         let slice = if len == 0 {
             &[]
@@ -348,12 +365,15 @@ impl CredentialVault {
             unsafe { std::slice::from_raw_parts(ptr_bytes, len as usize) }
         };
         let text = String::from_utf8(slice.to_vec())
-            .map_err(|_| "系统钥匙串中的凭据不是有效的 UTF-8 字符串".to_string())?;
+            .map_err(|_| "Credential stored in macOS Keychain is not valid UTF-8".to_string())?;
         Ok(Some(text))
     }
 
     pub fn delete(&self, account: &str) -> Result<(), String> {
-        let _guard = self.io_lock.lock().map_err(|_| "系统钥匙串互斥锁不可用")?;
+        let _guard = self
+            .io_lock
+            .lock()
+            .map_err(|_| "Keychain mutex is unavailable")?;
         let custom_kc = self.open_custom_keychain()?;
         let search_list = custom_kc
             .as_ref()
@@ -376,7 +396,7 @@ impl CredentialVault {
             Ok(())
         } else {
             Err(format!(
-                "无法从 macOS 系统钥匙串移除模型凭据（状态码 {status}）"
+                "Cannot delete model credential from macOS Keychain (status {status})"
             ))
         }
     }

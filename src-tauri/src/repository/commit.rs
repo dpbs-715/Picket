@@ -1,8 +1,9 @@
-//! Controlled local commit coordinator for M2.
+//! Controlled local commit coordinator.
 //! Freezes and re-verifies selected per-file scopes in Rust, runs real Git hooks without
 //! `--no-verify` or `hooksPath` overrides, aborts before writing if hooks mutate content,
 //! reconciles only selected paths in `.git/index`, and keeps unstaged/unselected changes intact.
 use super::{branches::BranchState, parse::StatusEntry, runner::GitOutput, *};
+use crate::i18n::{self, LanguageKind};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -52,16 +53,13 @@ struct IndexLock {
 }
 
 impl IndexLock {
-    fn acquire(index: &Path) -> Result<Self> {
+    fn acquire(index: &Path, locale: LanguageKind) -> Result<Self> {
         let path = index.with_file_name("index.lock");
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
-            .map_err(|_| {
-                "存在 Git 索引锁（index.lock），可能有其他 Git 进程正在操作；未执行提交，草稿与选择已保留"
-                    .to_string()
-            })?;
+            .map_err(|_| i18n::commit_lock_file_error(locale, "index.lock"))?;
         Ok(Self {
             path,
             file,
@@ -72,11 +70,12 @@ impl IndexLock {
     fn replace(&mut self, index: &Path, bytes: &[u8]) -> Result<()> {
         self.file
             .write_all(bytes)
-            .map_err(|_| "写入更新后的暂存区失败".to_string())?;
+            .map_err(|_| "Failed to write updated staging index".to_string())?;
         self.file
             .sync_all()
-            .map_err(|_| "同步暂存区文件失败".to_string())?;
-        fs::rename(&self.path, index).map_err(|_| "原子替换暂存区索引失败".to_string())?;
+            .map_err(|_| "Failed to sync staging index file".to_string())?;
+        fs::rename(&self.path, index)
+            .map_err(|_| "Failed to atomically replace staging index".to_string())?;
         self.replaced = true;
         Ok(())
     }
@@ -96,7 +95,7 @@ fn ensure_safe_repo_path(path: &str) -> Result<()> {
         .split('/')
         .any(|segment| segment.eq_ignore_ascii_case(".git"))
     {
-        return Err("提交范围包含不安全的 .git 路径".into());
+        return Err("Commit scope contains an unsafe .git path".into());
     }
     Ok(())
 }
@@ -108,11 +107,11 @@ pub(super) fn stage_entries_by_path(index_bytes: &[u8]) -> Result<BTreeMap<Strin
         .filter(|record| !record.is_empty())
     {
         let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
-            return Err("Git 暂存区条目格式不匹配".into());
+            return Err("Git index entry format mismatch".into());
         };
         let header = parse::utf8(&record[..tab])?;
         if header.split_whitespace().count() != 3 {
-            return Err("Git 暂存区头部格式不匹配".into());
+            return Err("Git index header format mismatch".into());
         }
         let path = parse::utf8(&record[tab + 1..])?;
         parse::relative(&path)?;
@@ -180,7 +179,7 @@ impl CommitRegistration {
                     working_hashes
                         .get(&entry.path)
                         .cloned()
-                        .ok_or("缺少未暂存文件的内容指纹")?,
+                        .ok_or("Missing content hash for unstaged file")?,
                 )
             };
             let payload = serde_json::to_vec(&(
@@ -196,6 +195,7 @@ impl CommitRegistration {
                 is_staged,
                 &change.range.kind,
                 entry.conflicted,
+                change.local_keep,
                 &stage_entries,
                 &working_hash,
             ))
@@ -229,16 +229,16 @@ fn output_detail(output: &GitOutput) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.bytes);
     let combined = match (stderr.trim(), stdout.trim()) {
-        ("", "") => format!("退出码 {:?}", output.code),
+        ("", "") => format!("exit code {:?}", output.code),
         (err, "") => err.to_owned(),
         ("", out) => out.to_owned(),
-        (err, out) => format!("{err}；{out}"),
+        (err, out) => format!("{err}; {out}"),
     };
     let single_line = combined.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = single_line.chars();
     let truncated: String = chars.by_ref().take(320).collect();
     if chars.next().is_some() {
-        format!("{truncated}…")
+        format!("{truncated}...")
     } else {
         truncated
     }
@@ -255,7 +255,7 @@ async fn run_index_checked(
     let output = reader.run_with_index(root, args, index, input).await?;
     if !output.success {
         return Err(format!(
-            "{context}（{}）；未创建提交，草稿与选择已保留",
+            "{context} ({}); no commit was created, and draft and selection were preserved",
             output_detail(&output)
         ));
     }
@@ -263,11 +263,18 @@ async fn run_index_checked(
 }
 
 async fn write_tree(reader: &GitReader, root: &Path, index: &Path) -> Result<String> {
-    let bytes =
-        run_index_checked(reader, root, &["write-tree"], index, None, "生成提交树失败").await?;
+    let bytes = run_index_checked(
+        reader,
+        root,
+        &["write-tree"],
+        index,
+        None,
+        "Failed to build commit tree",
+    )
+    .await?;
     let tree = parse::utf8(&bytes)?.trim().to_owned();
     if tree.is_empty() {
-        return Err("Git 未返回有效的提交树哈希".into());
+        return Err("Git did not return a valid tree hash".into());
     }
     Ok(tree)
 }
@@ -276,44 +283,50 @@ impl RepositoryStore {
     pub(super) async fn registered_worktree_root(
         &self,
         target: &ReadTarget,
+        locale: LanguageKind,
     ) -> Result<(Registration, PathBuf)> {
         let registered = self
             .inner
             .repositories
             .lock()
-            .map_err(|_| "仓库注册表不可用")?
+            .map_err(|_| "Repository registry is unavailable")?
             .get(&target.repository_id)
             .cloned()
-            .ok_or("仓库未在当前窗口打开，请重新选择目录；草稿与选择已保留")?;
+            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
         let root = registered
             .paths
             .get(&target.worktree_id)
             .cloned()
-            .ok_or("工作树未在当前窗口打开，请刷新后重试；草稿与选择已保留")?;
-        if fs::canonicalize(&root).map_err(|_| "工作树目录不可访问")? != root {
-            return Err("工作树路径已变化，请重新打开目录；草稿与选择已保留".into());
+            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
+        if fs::canonicalize(&root).map_err(|_| "Worktree directory is inaccessible")? != root {
+            return Err(
+                "Worktree path changed; reopen the directory (draft and selection were preserved)"
+                    .into(),
+            );
         }
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
         let common = reader
             .text(
                 &root,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )
             .await?;
-        let common = fs::canonicalize(common).map_err(|_| "Git 公共目录不可访问")?;
+        let common =
+            fs::canonicalize(common).map_err(|_| "Git common directory is inaccessible")?;
         let toplevel = reader
             .text(&root, &["rev-parse", "--show-toplevel"])
             .await?;
         if identity("repo", &common) != target.repository_id
-            || fs::canonicalize(toplevel).map_err(|_| "Git 工作目录不可访问")? != root
+            || fs::canonicalize(toplevel).map_err(|_| "Git working directory is inaccessible")?
+                != root
         {
-            return Err("工作树所属仓库已变化，请重新打开；草稿与选择已保留".into());
+            return Err(i18n::repo_identity_changed_error(locale).into());
         }
         Ok((registered, root))
     }
 
-    async fn ensure_commit_write_allowed(&self, root: &Path) -> Result<()> {
-        let reader = &self.inner.reader;
+    async fn ensure_commit_write_allowed(&self, root: &Path, locale: LanguageKind) -> Result<()> {
+        let reader = self.inner.reader.with_locale(locale);
         for lock in ["index.lock", "HEAD.lock"] {
             let path = reader
                 .text(
@@ -322,9 +335,7 @@ impl RepositoryStore {
                 )
                 .await?;
             if fs::symlink_metadata(&path).is_ok() {
-                return Err(format!(
-                    "存在 Git 锁文件（{lock}），可能有其他 Git 进程正在操作；未执行提交，草稿与选择已保留"
-                ));
+                return Err(i18n::commit_lock_file_error(locale, lock));
             }
         }
         for marker in [
@@ -343,9 +354,7 @@ impl RepositoryStore {
                 )
                 .await?;
             if fs::symlink_metadata(&path).is_ok() {
-                return Err(format!(
-                    "存在未完成的 Git 操作（{marker}），请先在 Git / IDE 中处理；未执行提交，草稿与选择已保留"
-                ));
+                return Err(i18n::commit_ongoing_op_error(locale, marker));
             }
         }
         if !reader
@@ -353,20 +362,14 @@ impl RepositoryStore {
             .await?
             .is_empty()
         {
-            return Err(
-                "存在未解决的合并冲突，请先在 Git / IDE 中处理；未执行提交，草稿与选择已保留"
-                    .into(),
-            );
+            return Err(i18n::commit_unresolved_conflict_error(locale).into());
         }
         let flags = reader.bytes(root, &["ls-files", "-v", "-z"]).await?;
         if flags
             .split(|byte| *byte == 0)
             .any(|entry| !entry.is_empty() && entry[0] != b'H')
         {
-            return Err(
-                "当前暂存区含稀疏检出或隐藏变更标记，暂不执行提交写入；请先在 Git / IDE 中处理"
-                    .into(),
-            );
+            return Err(i18n::commit_sparse_or_hidden_flag_error(locale).into());
         }
         if reader
             .bytes(root, &["ls-files", "--stage", "-z"])
@@ -374,7 +377,7 @@ impl RepositoryStore {
             .split(|byte| *byte == 0)
             .any(|entry| entry.starts_with(b"160000 "))
         {
-            return Err("含子模块的仓库尚未通过提交写入验证，请在 Git / IDE 中操作".into());
+            return Err(i18n::commit_submodule_error(locale).into());
         }
         Ok(())
     }
@@ -383,11 +386,12 @@ impl RepositoryStore {
         &self,
         root: &Path,
         unstaged_paths: &[String],
+        locale: LanguageKind,
     ) -> Result<()> {
         if unstaged_paths.is_empty() {
             return Ok(());
         }
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
         let filters = reader
             .run(
                 root,
@@ -405,7 +409,10 @@ impl RepositoryStore {
             return Ok(());
         }
         if !filters.success {
-            return Err("无法核对 Git 文件过滤器配置，未执行提交；草稿与选择已保留".into());
+            return Err(
+                "Cannot inspect Git file filter configuration; no commit was created (draft and selection were preserved)"
+                    .into(),
+            );
         }
         let mut drivers = BTreeSet::new();
         for key in filters
@@ -413,12 +420,12 @@ impl RepositoryStore {
             .split(|byte| *byte == 0)
             .filter(|key| !key.is_empty())
         {
-            let key = parse::utf8(key)?;
+            let key = parse::utf8_with_locale(key, locale)?;
             let (driver, _) = key
                 .strip_prefix("filter.")
-                .ok_or("无法解析 Git 过滤器名称")?
+                .ok_or("Cannot parse Git filter driver name")?
                 .rsplit_once('.')
-                .ok_or("无法解析 Git 过滤器名称")?;
+                .ok_or("Cannot parse Git filter driver name")?;
             drivers.insert(driver.to_owned());
         }
         for batch in unstaged_paths.chunks(128) {
@@ -427,8 +434,8 @@ impl RepositoryStore {
             let attributes = reader.bytes(root, &args).await?;
             let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
             for record in fields.chunks(3).filter(|record| record.len() == 3) {
-                if drivers.contains(&parse::utf8(record[2])?) {
-                    return Err("所选未暂存文件需要外部 Git 过滤器转换，当前版本不能保证安全写入，请在 Git / IDE 中提交；草稿与选择已保留".into());
+                if drivers.contains(&parse::utf8_with_locale(record[2], locale)?) {
+                    return Err(i18n::runner_external_filter_write_error(locale).into());
                 }
             }
         }
@@ -440,31 +447,24 @@ impl RepositoryStore {
         commit_state: &CommitRegistration,
         selected_files: &[AuthorizedFile],
         live_state: &BranchState,
+        locale: LanguageKind,
     ) -> Result<BTreeMap<String, Vec<u8>>> {
-        let live_status = parse::status(&live_state.status)?;
+        let live_status = parse::status_with_locale(&live_state.status, locale)?;
         if live_status.branch == "(detached)" {
-            return Err(
-                "当前处于分离 HEAD，请先在顶部切换已有分支，或在 IDE / 终端切好分支后再提交；草稿与选择已保留".into(),
-            );
+            return Err(i18n::commit_detached_head_error(locale).into());
         }
         if live_status.branch != commit_state.branch || live_status.head != commit_state.head {
-            return Err(
-                "分支或 HEAD 已在外部发生变化，已暂停提交；当前草稿与选择已保留，请刷新后重新确认范围"
-                    .into(),
-            );
+            return Err(i18n::commit_scope_changed_error(locale).into());
         }
         if live_status.entries.iter().any(|entry| entry.conflicted) {
-            return Err(
-                "存在未解决的合并冲突，请先在 Git / IDE 中处理；未执行提交，草稿与选择已保留"
-                    .into(),
-            );
+            return Err(i18n::commit_unresolved_conflict_error(locale).into());
         }
         if live_status
             .entries
             .iter()
             .any(|entry| entry.mode == "160000")
         {
-            return Err("存在子模块变更，当前版本尚不支持提交；请在 Git / IDE 中操作".into());
+            return Err(i18n::commit_submodule_error(locale).into());
         }
         let live_stage_map = stage_entries_by_path(&live_state.index)?;
         let selected_paths: HashSet<&str> = selected_files
@@ -478,7 +478,7 @@ impl RepositoryStore {
                 && let Some(previous) = entry.previous.as_deref()
                 && selected_paths.contains(previous)
             {
-                return Err("所选文件与未勾选的重命名原路径共用暂存位置，请将对应重命名文件一并勾选或先在 Git / IDE 中调整暂存；草稿与选择已保留".into());
+                return Err(i18n::commit_rename_slot_collision_error(locale).into());
             }
         }
         let working_map: HashMap<&str, &str> = live_state
@@ -492,10 +492,7 @@ impl RepositoryStore {
                 .iter()
                 .find(|entry| entry.path == authorized.path)
             else {
-                return Err(
-                    "所选文件的变更状态已在外部变化，已暂停提交；当前草稿与选择已保留，请刷新后重新确认范围"
-                        .into(),
-                );
+                return Err(i18n::commit_scope_changed_error(locale).into());
             };
             let live_staged = staged(live_entry);
             let live_kind = if live_staged {
@@ -522,19 +519,13 @@ impl RepositoryStore {
                 || live_previous != authorized.previous_path
                 || live_stage_entries != authorized.stage_entries
             {
-                return Err(
-                    "所选文件的暂存范围已在外部变化，已暂停提交；当前草稿与选择已保留，请刷新后重新确认范围"
-                        .into(),
-                );
+                return Err(i18n::commit_scope_changed_error(locale).into());
             }
             if !authorized.staged
                 && working_map.get(authorized.path.as_str()).copied()
                     != authorized.working_hash.as_deref()
             {
-                return Err(
-                    "所选未暂存文件的内容已在外部变化，已暂停提交；当前草稿与选择已保留，请刷新后重新确认范围"
-                        .into(),
-                );
+                return Err(i18n::commit_scope_changed_error(locale).into());
             }
         }
         Ok(live_stage_map)
@@ -546,9 +537,10 @@ impl RepositoryStore {
         hook_name: &str,
         output: &GitOutput,
         pre_hook_state: &BranchState,
+        locale: LanguageKind,
     ) -> Result<(RepositorySnapshot, CommitResult)> {
         let detail = output_detail(output);
-        let mutated = match self.branch_state(root).await {
+        let mutated = match self.branch_state(root, locale).await {
             Ok(current) => {
                 current.status != pre_hook_state.status
                     || current.index != pre_hook_state.index
@@ -556,15 +548,9 @@ impl RepositoryStore {
             }
             Err(_) => true,
         };
-        if mutated {
-            Err(format!(
-                "Git {hook_name} 钩子未通过且修改了仓库内容：{detail}。未创建提交，当前草稿与选择已保留；请核对更新后的变更并重新确认范围。"
-            ))
-        } else {
-            Err(format!(
-                "Git {hook_name} 钩子拒绝了本次提交：{detail}。未创建提交，当前草稿与选择已保留。"
-            ))
-        }
+        Err(i18n::commit_hook_failed_error(
+            locale, hook_name, &detail, mutated,
+        ))
     }
 
     async fn verify_recorded_commit(
@@ -580,7 +566,8 @@ impl RepositoryStore {
             .success
         {
             return Err(
-                "记录的提交已不在当前分支历史中，请刷新核对实际状态；不会自动重复提交".into(),
+                "Recorded commit is no longer in current branch history; refresh to verify live status (it will not repeat automatically)"
+                    .into(),
             );
         }
         if reader
@@ -588,7 +575,9 @@ impl RepositoryStore {
             .await?
             != record.tree
         {
-            return Err("已记录提交的内容树与授权范围不一致，请停止并在 Git 中核对".into());
+            return Err(
+                "Recorded commit tree does not match authorized scope; stop and inspect Git".into(),
+            );
         }
         match &record.parent {
             Some(expected_parent) => {
@@ -597,7 +586,10 @@ impl RepositoryStore {
                     .await?
                     != *expected_parent
                 {
-                    return Err("已记录提交的父提交与授权起点不一致，请停止并在 Git 中核对".into());
+                    return Err(
+                        "Recorded commit parent does not match authorized base; stop and inspect Git"
+                            .into(),
+                    );
                 }
             }
             None => {
@@ -614,35 +606,42 @@ impl RepositoryStore {
                     .await?
                     .success
                 {
-                    return Err("已记录的初始提交存在意外父提交，请停止并在 Git 中核对".into());
+                    return Err(
+                        "Recorded initial commit unexpectedly has a parent; stop and inspect Git"
+                            .into(),
+                    );
                 }
             }
         }
         Ok(())
     }
 
-    pub async fn commit(
+    pub(crate) async fn commit(
         &self,
         request: &CommitRequest,
     ) -> Result<(RepositorySnapshot, CommitResult)> {
-        validate_request_id(&request.request_id)?;
+        let locale = request.locale;
+        validate_request_id_with_locale(&request.request_id, locale)?;
         if request.push {
+            return Err(i18n::commit_local_only_no_push_error(locale).into());
+        }
+        if request.message.trim().is_empty() {
+            return Err(i18n::commit_message_required_error(locale).into());
+        }
+        if request.message.contains('\0') {
             return Err(
-                "仅本地提交入口不执行推送；需要提交并推送时请通过受控同步与推送命令执行，本次未执行提交或推送。"
+                "Commit message cannot contain NUL bytes; current draft and selection were preserved"
                     .into(),
             );
         }
-        if request.message.trim().is_empty() {
-            return Err("请先填写提交说明，当前草稿与选择已保留".into());
-        }
-        if request.message.contains('\0') {
-            return Err("提交说明不能包含空字节，当前草稿与选择已保留".into());
-        }
         if request.message.len() > 1024 * 1024 {
-            return Err("提交说明过长，请精简后重试；当前草稿与选择已保留".into());
+            return Err(
+                "Commit message exceeds the maximum length; current draft and selection were preserved"
+                    .into(),
+            );
         }
         if request.selections.is_empty() {
-            return Err("请至少选择一项要提交的变更；当前草稿已保留".into());
+            return Err(i18n::commit_selection_required_error(locale).into());
         }
         let mut seen_ids = HashSet::with_capacity(request.selections.len());
         for selection in &request.selections {
@@ -651,7 +650,8 @@ impl RepositoryStore {
                 || !seen_ids.insert(selection.file_id.as_str())
             {
                 return Err(
-                    "提交范围包含无效或重复的文件项，请刷新后重试；草稿与选择已保留".into(),
+                    "Commit scope contains invalid or duplicate file entries; refresh and try again (draft and selection were preserved)"
+                        .into(),
                 );
             }
         }
@@ -660,78 +660,71 @@ impl RepositoryStore {
             .repository_gate(&request.target.repository_id)?
             .lock_owned()
             .await;
-        let (registered, root) = self.registered_worktree_root(&request.target).await?;
-        let reader = &self.inner.reader;
+        let (registered, root) = self
+            .registered_worktree_root(&request.target, locale)
+            .await?;
+        let reader = self.inner.reader.with_locale(locale);
         let git_dir = fs::canonicalize(
             reader
                 .text(&root, &["rev-parse", "--path-format=absolute", "--git-dir"])
                 .await?,
         )
-        .map_err(|_| "无法访问工作树 Git 元数据目录")?;
+        .map_err(|_| "Cannot access worktree Git metadata directory")?;
         let journal_dir = git_dir.join("picket").join("commits");
         let record_path = journal_dir.join(format!("{}.json", request.request_id));
         if record_path.exists() {
             let previous: ExecutionRecord = serde_json::from_slice(
-                &fs::read(&record_path).map_err(|_| "无法读取提交执行记录")?,
+                &fs::read(&record_path).map_err(|_| "Cannot read commit execution record")?,
             )
-            .map_err(|_| "提交执行记录格式损坏，请先在 Git 中核对实际历史")?;
+            .map_err(
+                |_| "Commit execution record is corrupted; inspect actual Git history first",
+            )?;
             if previous.repository_id != request.target.repository_id
                 || previous.worktree_id != request.target.worktree_id
                 || previous.selections != request.selections
                 || previous.raw_message != request.message
             {
-                return Err(
-                    "提交请求身份已被其他范围或说明占用，不会重复写入；请刷新核对 Git 状态".into(),
-                );
+                return Err(i18n::commit_request_id_reused_error(locale).into());
             }
-            let commit = previous.commit.clone().ok_or(
-                "检测到上次提交写入中断，请先刷新并在 Git / IDE 中核对实际状态；不会自动重复提交",
-            )?;
+            let commit = previous
+                .commit
+                .clone()
+                .ok_or_else(|| i18n::commit_interrupted_record_error(locale))?;
             self.verify_recorded_commit(&root, &previous, &commit)
                 .await?;
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok((snapshot, commit));
         }
         if !self
             .inner
             .commit_requests
             .lock()
-            .map_err(|_| "提交请求记录不可用")?
+            .map_err(|_| "Commit request registry is unavailable")?
             .insert(request.request_id.clone())
         {
             return Err(
-                "此提交请求已接收且未完成，不会重复执行；请刷新核对实际状态后重新发起".into(),
+                "This commit request was already accepted and has not finished; refresh to verify live status instead of repeating"
+                    .into(),
             );
         }
 
         let commit_state = registered
             .commit_states
             .get(&request.target.worktree_id)
-            .ok_or("当前工作树缺少有效提交授权，请刷新后重新确认范围；草稿与选择已保留")?;
+            .ok_or_else(|| i18n::commit_token_invalid_error(locale))?;
         if commit_state.detached {
-            return Err(
-                "当前处于分离 HEAD，请先在顶部切换已有分支，或在 IDE / 终端切好分支后再提交；草稿与选择已保留".into(),
-            );
+            return Err(i18n::commit_detached_head_error(locale).into());
         }
         let mut selected_files = Vec::with_capacity(request.selections.len());
         for selection in &request.selections {
             let Some(authorized) = commit_state.files.get(&selection.file_id) else {
-                return Err(
-                    "所选提交范围已过期或不属于当前工作树，请刷新并重新确认；草稿与选择已保留"
-                        .into(),
-                );
+                return Err(i18n::commit_scope_changed_error(locale).into());
             };
             if authorized.token != selection.commit_token {
-                return Err(
-                    "所选提交范围凭证已过期或无效，不能使用旧范围写入；请刷新并重新确认，草稿与选择已保留"
-                        .into(),
-                );
+                return Err(i18n::commit_token_invalid_error(locale).into());
             }
             if authorized.conflicted {
-                return Err(
-                    "所选范围包含未解决冲突文件，请先在 Git / IDE 中解决冲突；草稿与选择已保留"
-                        .into(),
-                );
+                return Err(i18n::commit_unresolved_conflict_error(locale).into());
             }
             ensure_safe_repo_path(&authorized.path)?;
             if let Some(previous) = &authorized.previous_path {
@@ -740,7 +733,7 @@ impl RepositoryStore {
             selected_files.push(authorized.clone());
         }
 
-        self.ensure_commit_write_allowed(&root).await?;
+        self.ensure_commit_write_allowed(&root, locale).await?;
         let unstaged_paths: Vec<String> = selected_files
             .iter()
             .filter(|file| !file.staged)
@@ -748,14 +741,20 @@ impl RepositoryStore {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        self.ensure_commit_filters_allowed(&root, &unstaged_paths)
+        self.ensure_commit_filters_allowed(&root, &unstaged_paths, locale)
             .await?;
 
-        let initial_live_state = self.branch_state(&root).await?;
-        self.verify_live_selected_scope(commit_state, &selected_files, &initial_live_state)?;
+        let initial_live_state = self.branch_state(&root, locale).await?;
+        self.verify_live_selected_scope(
+            commit_state,
+            &selected_files,
+            &initial_live_state,
+            locale,
+        )?;
 
         let worktree_reader = reader.for_worktree(&root).await?;
-        let temp = tempfile::tempdir().map_err(|_| "无法创建受控提交临时目录")?;
+        let temp =
+            tempfile::tempdir().map_err(|_| "Cannot create temporary directory for commit")?;
         let selected_index = temp.path().join("selected.index");
         if let Some(parent) = commit_state.head.as_deref() {
             run_index_checked(
@@ -764,7 +763,7 @@ impl RepositoryStore {
                 &["read-tree", parent],
                 &selected_index,
                 None,
-                "初始化待提交索引失败",
+                "Failed to initialize temporary commit index",
             )
             .await?;
         } else {
@@ -774,7 +773,7 @@ impl RepositoryStore {
                 &["read-tree", "--empty"],
                 &selected_index,
                 None,
-                "初始化首次提交索引失败",
+                "Failed to initialize initial commit index",
             )
             .await?;
         }
@@ -787,7 +786,7 @@ impl RepositoryStore {
                 &args,
                 &selected_index,
                 None,
-                "构建所选未暂存范围失败",
+                "Failed to stage selected unstaged paths in temporary index",
             )
             .await?;
         }
@@ -815,7 +814,7 @@ impl RepositoryStore {
                 &["update-index", "--force-remove", "-z", "--stdin"],
                 &selected_index,
                 Some(&remove_stdin),
-                "移除临时索引旧路径失败",
+                "Failed to clear old paths in temporary index",
             )
             .await?;
             for records in staged_by_unit_path.values() {
@@ -828,7 +827,7 @@ impl RepositoryStore {
                     &["update-index", "-z", "--index-info"],
                     &selected_index,
                     Some(&staged_index_info),
-                    "写入所选已暂存条目失败",
+                    "Failed to apply selected staged entries",
                 )
                 .await?;
             }
@@ -839,14 +838,14 @@ impl RepositoryStore {
             &["ls-files", "--stage", "-z"],
             &selected_index,
             None,
-            "核对待提交索引失败",
+            "Failed to inspect temporary commit index",
         )
         .await?;
         if selected_stage
             .split(|byte| *byte == 0)
             .any(|entry| entry.starts_with(b"160000 "))
         {
-            return Err("所选内容包含子模块条目，当前版本尚不支持提交；草稿与选择已保留".into());
+            return Err(i18n::commit_submodule_error(locale).into());
         }
         let tree = write_tree(&worktree_reader, &root, &selected_index).await?;
         if let Some(parent) = commit_state.head.as_deref() {
@@ -855,11 +854,15 @@ impl RepositoryStore {
                 .await?;
             if tree == base_tree {
                 return Err(
-                    "所选范围相对当前分支没有实际变更，未创建空提交；草稿与选择已保留".into(),
+                    "Selected scope has no effective changes relative to current branch; skipped empty commit (draft and selection were preserved)"
+                        .into(),
                 );
             }
         } else if selected_stage.is_empty() {
-            return Err("所选范围没有可写入首次提交的文件，未创建空提交；草稿与选择已保留".into());
+            return Err(
+                "Selected scope has no files for initial commit; skipped empty commit (draft and selection were preserved)"
+                    .into(),
+            );
         }
 
         let index_path = PathBuf::from(
@@ -870,11 +873,15 @@ impl RepositoryStore {
                 )
                 .await?,
         );
-        self.ensure_commit_write_allowed(&root).await?;
-        let mut index_lock = IndexLock::acquire(&index_path)?;
-        let pre_hook_state = self.branch_state(&root).await?;
-        let pre_stage_map =
-            self.verify_live_selected_scope(commit_state, &selected_files, &pre_hook_state)?;
+        self.ensure_commit_write_allowed(&root, locale).await?;
+        let mut index_lock = IndexLock::acquire(&index_path, locale)?;
+        let pre_hook_state = self.branch_state(&root, locale).await?;
+        let pre_stage_map = self.verify_live_selected_scope(
+            commit_state,
+            &selected_files,
+            &pre_hook_state,
+            locale,
+        )?;
 
         let pre_commit = reader
             .run_hook(
@@ -885,7 +892,7 @@ impl RepositoryStore {
             .await?;
         if !pre_commit.success {
             return self
-                .hook_failure_error(&root, "pre-commit", &pre_commit, &pre_hook_state)
+                .hook_failure_error(&root, "pre-commit", &pre_commit, &pre_hook_state, locale)
                 .await;
         }
         let cleaned = reader
@@ -897,11 +904,15 @@ impl RepositoryStore {
             )
             .await?;
         if !cleaned.success {
-            return Err("规范化提交说明失败，未创建提交；当前草稿与选择已保留".into());
+            return Err(
+                "Failed to normalize commit message; no commit was created (draft and selection were preserved)"
+                    .into(),
+            );
         }
         let msg_path = temp.path().join("COMMIT_EDITMSG");
-        fs::write(&msg_path, &cleaned.bytes).map_err(|_| "无法准备提交说明临时文件")?;
-        let msg_arg = display(&msg_path)?;
+        fs::write(&msg_path, &cleaned.bytes)
+            .map_err(|_| "Cannot write temporary commit message file")?;
+        let msg_arg = display_with_locale(&msg_path, locale)?;
         let prepare_msg = reader
             .run_hook(
                 &root,
@@ -919,7 +930,13 @@ impl RepositoryStore {
             .await?;
         if !prepare_msg.success {
             return self
-                .hook_failure_error(&root, "prepare-commit-msg", &prepare_msg, &pre_hook_state)
+                .hook_failure_error(
+                    &root,
+                    "prepare-commit-msg",
+                    &prepare_msg,
+                    &pre_hook_state,
+                    locale,
+                )
                 .await;
         }
         let commit_msg = reader
@@ -938,29 +955,35 @@ impl RepositoryStore {
             .await?;
         if !commit_msg.success {
             return self
-                .hook_failure_error(&root, "commit-msg", &commit_msg, &pre_hook_state)
+                .hook_failure_error(&root, "commit-msg", &commit_msg, &pre_hook_state, locale)
                 .await;
         }
-        let hook_msg_bytes = fs::read(&msg_path).map_err(|_| "无法读取钩子校验后的提交说明")?;
+        let hook_msg_bytes =
+            fs::read(&msg_path).map_err(|_| "Cannot read commit message after hook validation")?;
         let final_cleaned = reader
             .write_with(&root, &["stripspace"], None, Some(&hook_msg_bytes))
             .await?;
-        if !final_cleaned.success || parse::utf8(&final_cleaned.bytes)?.trim().is_empty() {
-            return Err("提交说明经钩子处理后为空，未创建提交；当前草稿与选择已保留".into());
+        if !final_cleaned.success
+            || parse::utf8_with_locale(&final_cleaned.bytes, locale)?
+                .trim()
+                .is_empty()
+        {
+            return Err(
+                "Commit message became empty after Git hooks; no commit was created (draft and selection were preserved)"
+                    .into(),
+            );
         }
-        fs::write(&msg_path, &final_cleaned.bytes).map_err(|_| "无法更新提交说明临时文件")?;
+        fs::write(&msg_path, &final_cleaned.bytes)
+            .map_err(|_| "Cannot update temporary commit message file")?;
 
         let post_hook_tree = write_tree(&worktree_reader, &root, &selected_index).await?;
-        let post_hook_state = self.branch_state(&root).await?;
+        let post_hook_state = self.branch_state(&root, locale).await?;
         if post_hook_tree != tree
             || post_hook_state.status != pre_hook_state.status
             || post_hook_state.index != pre_hook_state.index
             || post_hook_state.working != pre_hook_state.working
         {
-            return Err(
-                "Git 钩子修改了待提交或工作区内容，不能继续沿用旧范围；未创建提交，当前草稿与选择已保留，请核对更新后的变更后重试。"
-                    .into(),
-            );
+            return Err(i18n::commit_hook_mutated_content_error(locale).into());
         }
         let head_lock = reader
             .text(
@@ -974,16 +997,16 @@ impl RepositoryStore {
             )
             .await?;
         if fs::symlink_metadata(&head_lock).is_ok() {
-            return Err("存在 Git 锁文件（HEAD.lock），未执行提交；当前草稿与选择已保留".into());
+            return Err(i18n::commit_lock_file_error(locale, "HEAD.lock"));
         }
         let symbolic_head = reader
             .write(&root, &["symbolic-ref", "--quiet", "HEAD"])
             .await?;
         let expected_ref = format!("refs/heads/{}", commit_state.branch);
-        if !symbolic_head.success || parse::utf8(&symbolic_head.bytes)?.trim() != expected_ref {
-            return Err(
-                "当前分支引用已在外部变化，未执行提交；请刷新后重试，草稿与选择已保留".into(),
-            );
+        if !symbolic_head.success
+            || parse::utf8_with_locale(&symbolic_head.bytes, locale)?.trim() != expected_ref
+        {
+            return Err(i18n::commit_scope_changed_error(locale).into());
         }
 
         let all_unit_paths_set: BTreeSet<String> = selected_files
@@ -991,7 +1014,8 @@ impl RepositoryStore {
             .flat_map(AuthorizedFile::unit_paths)
             .collect();
         let all_unit_paths: Vec<String> = all_unit_paths_set.iter().cloned().collect();
-        fs::create_dir_all(&journal_dir).map_err(|_| "无法初始化提交协调记录目录")?;
+        fs::create_dir_all(&journal_dir)
+            .map_err(|_| "Cannot initialize commit coordination journal directory")?;
         let mut record = ExecutionRecord {
             repository_id: request.target.repository_id.clone(),
             worktree_id: request.target.worktree_id.clone(),
@@ -1007,17 +1031,22 @@ impl RepositoryStore {
             .write(true)
             .create_new(true)
             .open(&record_path)
-            .map_err(|_| "提交执行记录已存在，不会重复提交；请刷新核对实际状态")?;
+            .map_err(|_| {
+                "Commit execution record already exists and will not repeat; refresh to verify live status"
+            })?;
         record_file
             .write_all(&serde_json::to_vec(&record).map_err(|error| error.to_string())?)
-            .map_err(|_| "无法写入提交执行记录")?;
-        record_file.sync_all().map_err(|_| "无法同步提交执行记录")?;
+            .map_err(|_| "Cannot write commit execution record")?;
+        record_file
+            .sync_all()
+            .map_err(|_| "Cannot sync commit execution record")?;
         drop(record_file);
 
         let sign_config = reader
             .write(&root, &["config", "--type=bool", "--get", "commit.gpgSign"])
             .await?;
-        let gpg_sign = sign_config.success && parse::utf8(&sign_config.bytes)?.trim() == "true";
+        let gpg_sign = sign_config.success
+            && parse::utf8_with_locale(&sign_config.bytes, locale)?.trim() == "true";
         let mut commit_args = vec!["commit-tree", tree.as_str()];
         if let Some(parent) = commit_state.head.as_deref() {
             commit_args.extend(["-p", parent]);
@@ -1042,15 +1071,13 @@ impl RepositoryStore {
                 || lower.contains("user.email")
                 || lower.contains("email address")
             {
-                return Err(format!(
-                    "Git 尚未配置提交者身份（user.name / user.email）：{detail}。请先在 Git 中配置后再提交；未创建提交，草稿与选择已保留。"
-                ));
+                return Err(i18n::commit_missing_identity_error(locale, &detail));
             }
-            return Err(format!(
-                "创建提交对象未成功：{detail}。未修改当前分支，草稿与选择已保留。"
-            ));
+            return Err(i18n::commit_object_failed_error(locale, &detail));
         }
-        let commit_oid = parse::utf8(&created.bytes)?.trim().to_owned();
+        let commit_oid = parse::utf8_with_locale(&created.bytes, locale)?
+            .trim()
+            .to_owned();
         if commit_oid.is_empty()
             || reader
                 .text(&root, &["rev-parse", &format!("{commit_oid}^{{tree}}")])
@@ -1059,7 +1086,8 @@ impl RepositoryStore {
         {
             let _ = fs::remove_file(&record_path);
             return Err(
-                "生成的提交对象内容树与授权范围不符，已中止更新分支；草稿与选择已保留".into(),
+                "Created commit object tree did not match authorized scope; aborted updating branch ref (draft and selection were preserved)"
+                    .into(),
             );
         }
         let short_oid = reader
@@ -1093,15 +1121,15 @@ impl RepositoryStore {
                 .await?
                 .bytes;
             let unchanged = match commit_state.head.as_deref() {
-                Some(parent) => parse::utf8(&current_head)?.trim() == parent,
+                Some(parent) => parse::utf8_with_locale(&current_head, locale)?.trim() == parent,
                 None => current_head.is_empty(),
             };
             if unchanged {
                 let _ = fs::remove_file(&record_path);
             }
-            return Err(format!(
-                "更新分支引用未完成：{}。请刷新核对实际状态，不要盲目重复提交；草稿与选择已保留。",
-                output_detail(&updated)
+            return Err(i18n::commit_update_ref_failed_error(
+                locale,
+                &output_detail(&updated),
             ));
         }
 
@@ -1115,7 +1143,8 @@ impl RepositoryStore {
         let reconcile = async {
             let remaining_index = temp.path().join("remaining.index");
             if index_path.exists() {
-                fs::copy(&index_path, &remaining_index).map_err(|_| "无法复制当前暂存区索引")?;
+                fs::copy(&index_path, &remaining_index)
+                    .map_err(|_| "Cannot copy current staging index")?;
             } else {
                 run_index_checked(
                     &worktree_reader,
@@ -1123,7 +1152,7 @@ impl RepositoryStore {
                     &["read-tree", "--empty"],
                     &remaining_index,
                     None,
-                    "初始化剩余暂存区索引失败",
+                    "Failed to initialize remaining staging index",
                 )
                 .await?;
             }
@@ -1136,46 +1165,44 @@ impl RepositoryStore {
                     &reset_args,
                     &remaining_index,
                     None,
-                    "同步已提交路径到暂存区失败",
+                    "Failed to reconcile committed paths in staging index",
                 )
                 .await?;
             }
             let remaining_bytes =
-                fs::read(&remaining_index).map_err(|_| "无法读取更新后的暂存区索引")?;
+                fs::read(&remaining_index).map_err(|_| "Cannot read updated staging index")?;
             index_lock.replace(&index_path, &remaining_bytes)?;
             record.commit = Some(commit_result.clone());
-            let mut completed =
-                NamedTempFile::new_in(&journal_dir).map_err(|_| "无法创建提交完成记录")?;
+            let mut completed = NamedTempFile::new_in(&journal_dir)
+                .map_err(|_| "Cannot create completed commit journal file")?;
             completed
                 .write_all(&serde_json::to_vec(&record).map_err(|error| error.to_string())?)
-                .map_err(|_| "无法写入提交完成记录")?;
+                .map_err(|_| "Cannot write completed commit journal file")?;
             completed
                 .as_file()
                 .sync_all()
-                .map_err(|_| "无法同步提交完成记录")?;
+                .map_err(|_| "Cannot sync completed commit journal file")?;
             completed
                 .persist(&record_path)
-                .map_err(|_| "无法保存提交完成记录")?;
+                .map_err(|_| "Cannot persist completed commit journal file")?;
             Ok::<(), String>(())
         }
         .await;
         if let Err(error) = reconcile {
-            return Err(format!(
-                "本地提交 {short_oid} 已写入分支历史，但同步暂存区或记录未完成：{error}。请刷新并在 Git / IDE 中核对，不要重复提交。"
+            return Err(i18n::commit_reconcile_failed_error(
+                locale, &short_oid, &error,
             ));
         }
 
         if reader.text(&root, &["rev-parse", "HEAD"]).await? != commit_oid
             || reader.text(&root, &["rev-parse", "HEAD^{tree}"]).await? != tree
         {
-            return Err(format!(
-                "提交 {short_oid} 已存在，但分支指向或内容树与预期不符；已停止后续动作，请在 Git 中核对。"
-            ));
+            return Err(i18n::commit_post_verify_tree_error(locale, &short_oid));
         }
         for (path, expected_hash) in &pre_hook_state.working {
             if &self.working_file(&root, path)? != expected_hash {
-                return Err(format!(
-                    "提交 {short_oid} 已完成，但检测到工作区文件 {path} 发生变化；已停止后续动作，请刷新并在 IDE 中核对。"
+                return Err(i18n::commit_post_verify_working_error(
+                    locale, &short_oid, path,
                 ));
             }
         }
@@ -1190,8 +1217,8 @@ impl RepositoryStore {
             .filter(|(path, _)| !all_unit_paths_set.contains(*path))
             .collect();
         if pre_unselected != after_unselected {
-            return Err(format!(
-                "提交 {short_oid} 已完成，但未选文件的暂存状态与预期不符；请刷新并在 Git / IDE 中核对。"
+            return Err(i18n::commit_post_verify_unselected_error(
+                locale, &short_oid,
             ));
         }
 
@@ -1203,11 +1230,10 @@ impl RepositoryStore {
             )
             .await;
 
-        let snapshot = self.read_repository_locked(&root).await.map_err(|error| {
-            format!(
-                "本地提交 {short_oid} 已写入，但读取最新状态失败：{error}。请手动刷新核对，不要重复提交。"
-            )
-        })?;
+        let snapshot = self
+            .read_repository_locked(&root, locale)
+            .await
+            .map_err(|error| i18n::commit_post_read_failed_error(locale, &short_oid, &error))?;
         Ok((snapshot, commit_result))
     }
 }

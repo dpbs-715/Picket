@@ -1,7 +1,10 @@
-use crate::foundation::pi::PiCPushCommitGroup;
-use crate::repository::{
-    ai_context::FrozenCPushFile,
-    types::{CommitSelection, ReadTarget, RepositorySnapshot},
+use crate::{
+    foundation::pi::PiCPushCommitGroup,
+    i18n::{LanguageKind, deserialize_language_or_default},
+    repository::{
+        ai_context::FrozenCPushFile,
+        types::{CommitSelection, ReadTarget, RepositorySnapshot},
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +138,8 @@ pub(crate) struct StoredCPushSession {
     pub model_id: String,
     pub branch: String,
     pub initial_head: Option<String>,
-    pub draft: String,
+    #[serde(default, alias = "draft")]
+    pub prompt: String,
     pub recent_commits: Vec<String>,
     pub unselected_paths: Vec<String>,
     pub frozen_files: Vec<FrozenCPushFile>,
@@ -152,7 +156,13 @@ pub(crate) struct StoredCPushSession {
     #[serde(default = "default_true")]
     pub push_authorized: bool,
     #[serde(default)]
+    pub plan_only: bool,
+    #[serde(default)]
     pub auto_collapse: bool,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub commit_language: LanguageKind,
 }
 
 impl StoredCPushSession {
@@ -192,6 +202,22 @@ impl StoredCPushSession {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CPushConfirmedPlan {
+    pub groups: Vec<PiCPushCommitGroup>,
+    #[serde(default)]
+    pub skipped_file_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CPushPreparedPlan {
+    pub summary: String,
+    pub groups: Vec<PiCPushCommitGroup>,
+    pub skipped_file_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartCPushRequest {
@@ -199,18 +225,27 @@ pub struct StartCPushRequest {
     pub target: ReadTarget,
     pub model_id: String,
     pub selections: Vec<CommitSelection>,
-    pub draft: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub confirmed_plan: Option<CPushConfirmedPlan>,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub commit_language: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CommitAndPushRequest {
+pub struct PlanCPushRequest {
     pub request_id: String,
     pub target: ReadTarget,
+    pub model_id: String,
     pub selections: Vec<CommitSelection>,
-    pub message: String,
-    #[serde(default)]
-    pub model_id: Option<String>,
+    pub prompt: String,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub commit_language: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -220,6 +255,8 @@ pub struct PullRebaseRequest {
     pub target: ReadTarget,
     #[serde(default)]
     pub model_id: Option<String>,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -227,6 +264,8 @@ pub struct PullRebaseRequest {
 pub struct ReconcileCPushRequest {
     pub request_id: String,
     pub target: ReadTarget,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -242,6 +281,8 @@ pub struct RespondCPushRequest {
     pub text: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -260,6 +301,8 @@ pub struct CPushCommandReply {
     pub kind: &'static str,
     pub request_id: String,
     pub session: CPushSessionSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepared_plan: Option<CPushPreparedPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository_snapshot: Option<RepositorySnapshot>,
 }

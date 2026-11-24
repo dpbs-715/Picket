@@ -1,9 +1,12 @@
 //! Persistent non-secret model catalog (`models.json`) paired with macOS Keychain
-//! (`CredentialVault`) and Pi Core task execution for M3.
+//! (`CredentialVault`) and Pi Core task execution.
 use super::{defaults::resolve_default_token_limits, keychain::CredentialVault, types::*};
 use crate::{
-    foundation::pi::{PiEvent, PiPaths, PiSupervisor, PiTaskOutcome, RequestContext},
-    repository::{self, RepositoryStore, ai_context::AiScopeMode},
+    foundation::pi::{
+        PiCommand, PiEvent, PiPaths, PiProviderSpec, PiSupervisor, PiTaskOutcome, RequestContext,
+    },
+    i18n::{self, LanguageKind},
+    repository::{self, RepositoryStore},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,6 +99,20 @@ pub struct ResolvedRuntimeSpec {
     pub max_output_tokens: u32,
 }
 
+impl ResolvedRuntimeSpec {
+    pub fn to_pi_spec(&self) -> PiProviderSpec {
+        PiProviderSpec {
+            provider: self.provider.as_id(),
+            api_format: Some(self.api_format.as_id()),
+            model_id: self.model_id.clone(),
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+            context_window: Some(self.context_window),
+            max_output_tokens: Some(self.max_output_tokens),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ModelStore {
     vault: CredentialVault,
@@ -118,7 +135,10 @@ fn short_token(prefix: &str, counter: u64, hint: &str) -> String {
     format!("{prefix}-{}", &hex[..16])
 }
 
-fn read_models_file(storage_dir: &Path) -> Result<(StoredModelsFile, Option<String>), String> {
+fn read_models_file(
+    storage_dir: &Path,
+    locale: LanguageKind,
+) -> Result<(StoredModelsFile, Option<String>), String> {
     let path = storage_dir.join(MODELS_FILE);
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
@@ -139,7 +159,7 @@ fn read_models_file(storage_dir: &Path) -> Result<(StoredModelsFile, Option<Stri
                     active_model_id: None,
                     models: Vec::new(),
                 },
-                Some("无法读取本地模型配置，已回退为零模型状态；原有文件未被覆盖。".into()),
+                Some(i18n::models_file_unreadable_warning(locale).into()),
             ));
         }
     };
@@ -160,30 +180,29 @@ fn read_models_file(storage_dir: &Path) -> Result<(StoredModelsFile, Option<Stri
                 active_model_id: None,
                 models: Vec::new(),
             },
-            Some(
-                "本地模型配置文件已损坏或版本不兼容，已回退为零模型状态；原有文件未被覆盖。".into(),
-            ),
+            Some(i18n::models_file_corrupted_warning(locale).into()),
         )),
     }
 }
 
 fn write_models_file_atomic(storage_dir: &Path, payload: &StoredModelsFile) -> Result<(), String> {
-    fs::create_dir_all(storage_dir).map_err(|_| "无法创建本地配置目录".to_string())?;
+    fs::create_dir_all(storage_dir)
+        .map_err(|_| "Cannot create local configuration directory".to_string())?;
     fs::set_permissions(storage_dir, fs::Permissions::from_mode(0o700))
-        .map_err(|_| "无法设置本地配置目录权限".to_string())?;
-    let serialized =
-        serde_json::to_vec_pretty(payload).map_err(|_| "无法序列化模型配置".to_string())?;
-    let mut temp =
-        NamedTempFile::new_in(storage_dir).map_err(|_| "无法创建模型配置临时文件".to_string())?;
+        .map_err(|_| "Cannot set local configuration directory permissions".to_string())?;
+    let serialized = serde_json::to_vec_pretty(payload)
+        .map_err(|_| "Cannot serialize model configuration".to_string())?;
+    let mut temp = NamedTempFile::new_in(storage_dir)
+        .map_err(|_| "Cannot create temporary model configuration file".to_string())?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600))
-        .map_err(|_| "无法设置模型配置文件权限".to_string())?;
+        .map_err(|_| "Cannot set model configuration file permissions".to_string())?;
     temp.write_all(&serialized)
-        .map_err(|_| "无法写入模型配置文件".to_string())?;
+        .map_err(|_| "Cannot write model configuration file".to_string())?;
     temp.as_file()
         .sync_all()
-        .map_err(|_| "无法同步模型配置文件".to_string())?;
+        .map_err(|_| "Cannot sync model configuration file".to_string())?;
     temp.persist(storage_dir.join(MODELS_FILE))
-        .map_err(|_| "无法原子保存模型配置文件".to_string())?;
+        .map_err(|_| "Cannot atomically persist model configuration file".to_string())?;
     Ok(())
 }
 
@@ -229,8 +248,17 @@ impl ModelStore {
         &self,
         storage_dir: &Path,
     ) -> Result<(Vec<SavedModelConfiguration>, Option<String>, Option<String>), String> {
+        self.restore_with_locale(storage_dir, LanguageKind::En)
+            .await
+    }
+
+    pub async fn restore_with_locale(
+        &self,
+        storage_dir: &Path,
+        locale: LanguageKind,
+    ) -> Result<(Vec<SavedModelConfiguration>, Option<String>, Option<String>), String> {
         let _guard = self.gate.lock().await;
-        let (stored, warning) = read_models_file(storage_dir)?;
+        let (stored, warning) = read_models_file(storage_dir, locale)?;
         let public_models = stored
             .models
             .iter()
@@ -244,13 +272,14 @@ impl ModelStore {
         storage_dir: &Path,
         input: &ModelInput,
     ) -> Result<ModelSaveReply, String> {
+        let locale = input.locale;
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir)?;
+        let (mut stored, _) = read_models_file(storage_dir, locale)?;
         let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
 
         if let Some(target_id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let Some(index) = stored.models.iter().position(|m| m.id == target_id) else {
-                return Err("要编辑的模型不存在或已被删除。".into());
+                return Err(i18n::model_not_found_edit_error(locale).into());
             };
             let existing = stored.models[index].clone();
             let normalized = validate_and_normalize_model_input_with_options(
@@ -268,12 +297,12 @@ impl ModelStore {
                     obsolete_cred = existing.credential_ref.clone();
                     Some(new_account)
                 } else {
-                    let old_account = existing.credential_ref.as_deref().ok_or("请填写 API Key")?;
+                    let old_account = existing
+                        .credential_ref
+                        .as_deref()
+                        .ok_or_else(|| i18n::model_api_key_required_error(locale))?;
                     if self.vault.get(old_account)?.is_none() {
-                        return Err(
-                            "该模型在 macOS 系统钥匙串中的原密钥已不存在，请重新填写 API Key。"
-                                .into(),
-                        );
+                        return Err(i18n::model_keychain_secret_missing_edit_error(locale).into());
                     }
                     existing.credential_ref.clone()
                 }
@@ -303,7 +332,7 @@ impl ModelStore {
                 if let Some(account) = newly_written_cred {
                     let _ = self.vault.delete(&account);
                 }
-                return Err(format!("{error}；没有保存模型修改，输入已保留。"));
+                return Err(i18n::model_save_aborted_error(locale, &error, true));
             }
             if let Some(old_account) = obsolete_cred
                 && next_credential_ref.as_deref() != Some(old_account.as_str())
@@ -324,7 +353,7 @@ impl ModelStore {
 
         let normalized = validate_and_normalize_model_input(input)?;
         if stored.models.len() >= MAX_STORED_MODELS {
-            return Err("已保存的模型数量已达上限，请先删除不再使用的模型。".into());
+            return Err(i18n::model_limit_reached_error(locale).into());
         }
 
         let id = short_token("model", seq, &normalized.model_id);
@@ -355,7 +384,7 @@ impl ModelStore {
             if let Some(account) = credential_ref {
                 let _ = self.vault.delete(&account);
             }
-            return Err(format!("{error}；没有保存模型配置，输入已保留。"));
+            return Err(i18n::model_save_aborted_error(locale, &error, false));
         }
 
         Ok(ModelSaveReply {
@@ -365,19 +394,30 @@ impl ModelStore {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn select_model(
         &self,
         storage_dir: &Path,
         model_id: &str,
     ) -> Result<ModelMutateReply, String> {
+        self.select_model_with_locale(storage_dir, model_id, LanguageKind::En)
+            .await
+    }
+
+    pub async fn select_model_with_locale(
+        &self,
+        storage_dir: &Path,
+        model_id: &str,
+        locale: LanguageKind,
+    ) -> Result<ModelMutateReply, String> {
         let trimmed = model_id.trim();
         if trimmed.is_empty() {
-            return Err("未指定要切换的模型".into());
+            return Err(i18n::model_select_missing_id_error(locale).into());
         }
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir)?;
+        let (mut stored, _) = read_models_file(storage_dir, locale)?;
         if !stored.models.iter().any(|model| model.id == trimmed) {
-            return Err("所选模型不存在或已被删除".into());
+            return Err(i18n::model_selected_not_found_error(locale).into());
         }
         stored.active_model_id = Some(trimmed.to_owned());
         write_models_file_atomic(storage_dir, &stored)?;
@@ -392,19 +432,30 @@ impl ModelStore {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn delete_model(
         &self,
         storage_dir: &Path,
         model_id: &str,
     ) -> Result<ModelMutateReply, String> {
+        self.delete_model_with_locale(storage_dir, model_id, LanguageKind::En)
+            .await
+    }
+
+    pub async fn delete_model_with_locale(
+        &self,
+        storage_dir: &Path,
+        model_id: &str,
+        locale: LanguageKind,
+    ) -> Result<ModelMutateReply, String> {
         let trimmed = model_id.trim();
         if trimmed.is_empty() {
-            return Err("未指定要删除的模型".into());
+            return Err(i18n::model_delete_missing_id_error(locale).into());
         }
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir)?;
+        let (mut stored, _) = read_models_file(storage_dir, locale)?;
         let Some(index) = stored.models.iter().position(|model| model.id == trimmed) else {
-            return Err("要删除的模型不存在".into());
+            return Err(i18n::model_delete_not_found_error(locale).into());
         };
         let removed = stored.models.remove(index);
         if stored.active_model_id.as_deref() == Some(trimmed) {
@@ -430,20 +481,31 @@ impl ModelStore {
         storage_dir: &Path,
         model_id: &str,
     ) -> Result<ResolvedRuntimeSpec, String> {
+        self.resolve_runtime_spec_with_locale(storage_dir, model_id, LanguageKind::En)
+            .await
+    }
+
+    pub async fn resolve_runtime_spec_with_locale(
+        &self,
+        storage_dir: &Path,
+        model_id: &str,
+        locale: LanguageKind,
+    ) -> Result<ResolvedRuntimeSpec, String> {
         let _guard = self.gate.lock().await;
-        let (stored, _) = read_models_file(storage_dir)?;
+        let (stored, _) = read_models_file(storage_dir, locale)?;
         let record = stored
             .models
             .iter()
             .find(|model| model.id == model_id)
-            .ok_or("当前选中的模型已不存在，请在底栏或设置中重新选择模型；草稿与选择已保留。")?;
+            .ok_or_else(|| i18n::model_active_missing_runtime_error(locale))?;
         let api_key = if record.provider.needs_key() {
-            let account = record.credential_ref.as_deref().ok_or(
-                "该模型缺少系统钥匙串凭据引用，请在设置中删除后重新添加；草稿与选择已保留。",
-            )?;
-            self.vault.get(account)?.ok_or(
-                "该模型在 macOS 系统钥匙串中的 API Key 已缺失，请在设置中删除后重新添加模型；草稿与选择已保留。",
-            )?
+            let account = record
+                .credential_ref
+                .as_deref()
+                .ok_or_else(|| i18n::model_missing_cred_ref_error(locale))?;
+            self.vault
+                .get(account)?
+                .ok_or_else(|| i18n::model_missing_keychain_key_error(locale))?
         } else {
             String::new()
         };
@@ -478,6 +540,7 @@ impl ModelStore {
         supervisor: &PiSupervisor,
         input: &ModelInput,
     ) -> Result<ModelTestReply, String> {
+        let locale = input.locale;
         let mut stored_api_key: Option<String> = None;
         if input.api_key.trim().is_empty()
             && input.provider.needs_key()
@@ -487,7 +550,7 @@ impl ModelStore {
             )
         {
             let _guard = self.gate.lock().await;
-            let (stored, _) = read_models_file(dir)?;
+            let (stored, _) = read_models_file(dir, locale)?;
             if let Some(existing) = stored.models.iter().find(|m| m.id == target_id)
                 && let Some(account) = existing.credential_ref.as_deref()
             {
@@ -510,27 +573,27 @@ impl ModelStore {
             session_id: request_id.clone(),
             scope_version: "connection-test-v1".into(),
         };
-        let command = serde_json::json!({
-            "type": "testConnection",
-            "requestId": request_id,
-            "context": context,
-            "model": {
-                "provider": normalized.provider.as_id(),
-                "apiFormat": normalized.api_format.as_id(),
-                "modelId": normalized.model_id,
-                "baseUrl": base_url,
-                "apiKey": effective_key,
-                "contextWindow": normalized.context_window,
-                "maxOutputTokens": normalized.max_output_tokens,
-            }
-        });
+        let command = PiCommand::TestConnection {
+            request_id: request_id.clone(),
+            context: context.clone(),
+            model: PiProviderSpec {
+                provider: normalized.provider.as_id(),
+                api_format: Some(normalized.api_format.as_id()),
+                model_id: normalized.model_id.clone(),
+                base_url,
+                api_key: effective_key.clone(),
+                context_window: Some(normalized.context_window),
+                max_output_tokens: Some(normalized.max_output_tokens),
+            },
+            locale,
+        };
         let started_at = Instant::now();
         let outcome = supervisor
             .run_task(
                 paths,
                 request_id,
                 context,
-                command,
+                &command,
                 TEST_CONNECTION_IDLE_TIMEOUT,
                 Some(&effective_key),
                 |_| Ok(()),
@@ -538,114 +601,26 @@ impl ModelStore {
             .await?;
         let latency_ms = started_at.elapsed().as_millis() as u64;
         match outcome {
-            PiTaskOutcome::Completed { .. } => Ok(ModelTestReply {
-                protocol_version: MODEL_PROTOCOL_VERSION,
-                provider: normalized.provider,
-                model_id: normalized.model_id.clone(),
-                summary: format!(
-                    "连接成功：{} · {}（{} ms）",
-                    normalized.provider.label(),
-                    normalized.model_id,
-                    latency_ms
-                ),
-                latency_ms,
-            }),
-            PiTaskOutcome::Cancelled => Err("连接测试已取消；当前输入已保留。".into()),
-            PiTaskOutcome::ReviewCompleted { .. }
-            | PiTaskOutcome::CPushPlanCompleted { .. }
-            | PiTaskOutcome::ConflictResolved { .. } => {
-                Err("连接测试返回了未预期的事件类型".into())
+            PiTaskOutcome::Completed { text } => {
+                let _ = text.len();
+                Ok(ModelTestReply {
+                    protocol_version: MODEL_PROTOCOL_VERSION,
+                    provider: normalized.provider,
+                    model_id: normalized.model_id.clone(),
+                    summary: i18n::model_connection_summary(
+                        locale,
+                        normalized.provider,
+                        &normalized.model_id,
+                        latency_ms,
+                    ),
+                    latency_ms,
+                })
             }
-        }
-    }
-
-    pub async fn generate_commit(
-        &self,
-        storage_dir: &Path,
-        paths: &PiPaths,
-        supervisor: &PiSupervisor,
-        repo_store: &RepositoryStore,
-        request: &GenerateCommitRequest,
-        mut on_stream: impl FnMut(ModelStreamEvent) -> Result<(), String> + Send,
-    ) -> Result<GenerateCommitReply, String> {
-        repository::validate_request_id(&request.request_id)?;
-        let spec = self
-            .resolve_runtime_spec(storage_dir, &request.model_id)
-            .await?;
-        let scope = repo_store
-            .extract_ai_scope(&request.target, &request.selections, AiScopeMode::Generate)
-            .await?;
-        if scope.files.is_empty() && scope.skipped_paths.is_empty() {
-            return Err("所选范围内没有可用于生成提交说明的内容；当前草稿与选择已保留。".into());
-        }
-        let context = RequestContext {
-            repository_id: request.target.repository_id.clone(),
-            worktree_id: request.target.worktree_id.clone(),
-            session_id: request.target.session_id.clone(),
-            scope_version: request.target.scope_version.clone(),
-        };
-        let command = serde_json::json!({
-            "type": "generateCommit",
-            "requestId": request.request_id,
-            "context": context,
-            "model": {
-                "provider": spec.provider.as_id(),
-                "apiFormat": spec.api_format.as_id(),
-                "modelId": spec.model_id,
-                "baseUrl": spec.base_url,
-                "apiKey": spec.api_key,
-                "contextWindow": spec.context_window,
-                "maxOutputTokens": spec.max_output_tokens,
-            },
-            "branch": scope.branch,
-            "recentCommits": scope.recent_commits,
-            "draft": request.draft,
-            "files": scope.files,
-            "skippedPaths": scope.skipped_paths,
-        });
-        let stream_target = request.target.clone();
-        let outcome = supervisor
-            .run_task(
-                paths,
-                request.request_id.clone(),
-                context,
-                command,
-                AI_TASK_IDLE_TIMEOUT,
-                Some(&spec.api_key),
-                |event| match event {
-                    PiEvent::Started { request_id, .. } => on_stream(ModelStreamEvent::Started {
-                        request_id: request_id.clone(),
-                        kind: "generate",
-                        target: stream_target.clone(),
-                    }),
-                    PiEvent::TextDelta {
-                        request_id, delta, ..
-                    } => on_stream(ModelStreamEvent::Delta {
-                        request_id: request_id.clone(),
-                        kind: "generate",
-                        target: stream_target.clone(),
-                        delta: delta.clone(),
-                    }),
-                    _ => Ok(()),
-                },
-            )
-            .await?;
-
-        match outcome {
-            PiTaskOutcome::Completed { text } => Ok(GenerateCommitReply {
-                protocol_version: MODEL_PROTOCOL_VERSION,
-                kind: "generate",
-                request_id: request.request_id.clone(),
-                target: request.target.clone(),
-                model_id: request.model_id.clone(),
-                text,
-                skipped_paths: scope.skipped_paths,
-            }),
-            PiTaskOutcome::Cancelled => Err("已取消生成提交说明；当前草稿与选择已保留。".into()),
+            PiTaskOutcome::Cancelled => Err(i18n::model_test_cancelled_error(locale).into()),
             PiTaskOutcome::ReviewCompleted { .. }
             | PiTaskOutcome::CPushPlanCompleted { .. }
             | PiTaskOutcome::ConflictResolved { .. } => {
-                Err("提交说明生成返回了未预期的响应类型；当前草稿与选择已保留。".into())
+                Err("Connection test returned an unexpected event type".into())
             }
         }
     }
@@ -659,17 +634,18 @@ impl ModelStore {
         request: &ReviewScopeRequest,
         mut on_stream: impl FnMut(ModelStreamEvent) -> Result<(), String> + Send,
     ) -> Result<ReviewScopeReply, String> {
-        repository::validate_request_id(&request.request_id)?;
+        let locale = request.locale;
+        repository::validate_request_id_with_locale(&request.request_id, locale)?;
         if let Some(changed) = &request.changed_paths
             && changed.iter().any(|path| path.trim().is_empty())
         {
-            return Err("复审变动文件列表包含空路径".into());
+            return Err("Changed paths list for re-review contains an empty path".into());
         }
         let spec = self
-            .resolve_runtime_spec(storage_dir, &request.model_id)
+            .resolve_runtime_spec_with_locale(storage_dir, &request.model_id, locale)
             .await?;
         let scope = repo_store
-            .extract_ai_scope(&request.target, &request.selections, AiScopeMode::Review)
+            .extract_ai_scope(&request.target, &request.selections, locale)
             .await?;
         if scope.files.is_empty() {
             return Ok(ReviewScopeReply {
@@ -689,31 +665,24 @@ impl ModelStore {
             session_id: request.target.session_id.clone(),
             scope_version: request.target.scope_version.clone(),
         };
-        let command = serde_json::json!({
-            "type": "reviewScope",
-            "requestId": request.request_id,
-            "context": context,
-            "model": {
-                "provider": spec.provider.as_id(),
-                "apiFormat": spec.api_format.as_id(),
-                "modelId": spec.model_id,
-                "baseUrl": spec.base_url,
-                "apiKey": spec.api_key,
-                "contextWindow": spec.context_window,
-                "maxOutputTokens": spec.max_output_tokens,
-            },
-            "branch": scope.branch,
-            "draft": request.draft,
-            "files": scope.files,
-            "skippedPaths": scope.skipped_paths,
-        });
+        let skipped_paths = scope.skipped_paths.clone();
+        let command = PiCommand::ReviewScope {
+            request_id: request.request_id.clone(),
+            context: context.clone(),
+            model: spec.to_pi_spec(),
+            branch: scope.branch,
+            prompt: request.prompt.clone(),
+            files: scope.files,
+            skipped_paths: skipped_paths.clone(),
+            locale,
+        };
         let stream_target = request.target.clone();
         let outcome = supervisor
             .run_task(
                 paths,
                 request.request_id.clone(),
                 context,
-                command,
+                &command,
                 AI_TASK_IDLE_TIMEOUT,
                 Some(&spec.api_key),
                 |event| match event {
@@ -757,16 +726,17 @@ impl ModelStore {
                     target: request.target.clone(),
                     model_id: request.model_id.clone(),
                     findings: mapped,
-                    skipped_paths: scope.skipped_paths,
+                    skipped_paths,
                     reviewed_file_ids: scope.reviewed_file_ids,
                 })
             }
-            PiTaskOutcome::Cancelled => Err("已取消代码审查；当前草稿与选择已保留。".into()),
+            PiTaskOutcome::Cancelled => Err(i18n::model_review_cancelled_error(locale).into()),
             PiTaskOutcome::Completed { .. }
             | PiTaskOutcome::CPushPlanCompleted { .. }
-            | PiTaskOutcome::ConflictResolved { .. } => {
-                Err("代码审查返回了未预期的响应类型；当前草稿与选择已保留。".into())
-            }
+            | PiTaskOutcome::ConflictResolved { .. } => Err(
+                "Code review returned an unexpected event type; draft and selection were preserved."
+                    .into(),
+            ),
         }
     }
 }

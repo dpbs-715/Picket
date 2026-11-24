@@ -1,26 +1,19 @@
-//! Read-only Git scope verification and unified diff extraction for M3 AI tasks
-//! (`generate_commit_message` and `review_selected_scope`).
+//! Read-only Git scope verification and unified diff extraction for AI tasks
+//! (`review_selected_scope`, `plan_cpush`, and `start_cpush`).
 //! Holds the repository gate only while reading a consistent Git snapshot; releases it
 //! before any external model request starts.
 use super::*;
+use crate::i18n::{self, LanguageKind};
 use serde::Serialize;
 
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const MAX_FILE_PATCH_BYTES: usize = 48 * 1024;
 const MAX_TOTAL_PATCH_BYTES: usize = 192 * 1024;
-const GENERATE_MAX_FILE_PATCH_BYTES: usize = 12 * 1024;
-const GENERATE_MAX_TOTAL_PATCH_BYTES: usize = 48 * 1024;
 const MIN_PARTIAL_PATCH_BUDGET: usize = 2 * 1024;
 const CPUSH_MAX_FILE_PATCH_BYTES: usize = 8 * 1024;
-const CPUSH_MAX_TOTAL_PATCH_BYTES: usize = 36 * 1024;
-const CPUSH_MIN_PARTIAL_PATCH_BUDGET: usize = 1536;
+const CPUSH_MAX_TOTAL_PATCH_BYTES: usize = 64 * 1024;
+const CPUSH_MIN_PARTIAL_PATCH_BUDGET: usize = 512;
 const MAX_UNTRACKED_READ_BYTES: usize = 256 * 1024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AiScopeMode {
-    Generate,
-    Review,
-}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +32,6 @@ pub struct ExtractedDiffFile {
 #[derive(Clone, Debug)]
 pub struct ExtractedAiScope {
     pub branch: String,
-    pub recent_commits: Vec<String>,
     pub files: Vec<ExtractedDiffFile>,
     pub skipped_paths: Vec<String>,
     pub reviewed_file_ids: Vec<String>,
@@ -180,7 +172,11 @@ fn redact_sensitive_patch(path: &str, raw_patch: &str) -> Option<String> {
     Some(out)
 }
 
-pub(crate) fn truncate_patch_head_tail(raw_patch: &str, max_bytes: usize) -> String {
+pub(crate) fn truncate_patch_head_tail(
+    raw_patch: &str,
+    max_bytes: usize,
+    locale: LanguageKind,
+) -> String {
     if raw_patch.len() <= max_bytes {
         return raw_patch.to_owned();
     }
@@ -211,9 +207,9 @@ pub(crate) fn truncate_patch_head_tail(raw_patch: &str, max_bytes: usize) -> Str
     let head = raw_patch[..head_end].trim_end_matches('\n');
     let tail = raw_patch[tail_start..].trim_start_matches('\n');
     if tail.is_empty() {
-        format!("{head}\n... [省略后续 {omitted_lines} 行改动] ...")
+        i18n::patch_omitted_trailing(locale, head, omitted_lines)
     } else {
-        format!("{head}\n... [省略中间 {omitted_lines} 行改动] ...\n{tail}")
+        i18n::patch_omitted_middle(locale, head, omitted_lines, tail)
     }
 }
 
@@ -222,10 +218,10 @@ impl RepositoryStore {
         &self,
         target: &ReadTarget,
         selections: &[CommitSelection],
-        mode: AiScopeMode,
+        locale: LanguageKind,
     ) -> Result<ExtractedAiScope> {
         if selections.is_empty() {
-            return Err("请先选择至少一个变更文件；当前草稿已保留。".into());
+            return Err(i18n::ai_selection_required_error(locale, false).into());
         }
         let mut seen = HashSet::with_capacity(selections.len());
         for item in selections {
@@ -233,7 +229,7 @@ impl RepositoryStore {
                 || item.commit_token.is_empty()
                 || !seen.insert(&item.file_id)
             {
-                return Err("模型请求包含无效或重复的文件范围凭证，请刷新后重试。".into());
+                return Err(i18n::ai_invalid_token_error(locale, false).into());
             }
         }
 
@@ -241,15 +237,17 @@ impl RepositoryStore {
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let (_, root) = self.registered_worktree_root(target).await?;
+        let (registered, root) = self.registered_worktree_root(target, locale).await?;
+        let keep_set = self.resolve_keep_set_for_common(&registered.common_dir)?;
         let entry = WorktreeEntry {
             path: root.clone(),
             head: None,
             branch: String::new(),
             bare: false,
         };
-        let (live_tree, live_commit_state) =
-            self.read_worktree(&target.repository_id, &entry).await?;
+        let (live_tree, live_commit_state) = self
+            .read_worktree(&target.repository_id, &entry, &keep_set, locale)
+            .await?;
 
         let change_by_id: HashMap<&str, &Change> = live_tree
             .files
@@ -259,45 +257,22 @@ impl RepositoryStore {
 
         for item in selections {
             let Some(authorized) = live_commit_state.files.get(&item.file_id) else {
-                return Err(
-                    "所选文件已不在当前工作树变更列表中，请刷新确认后再执行模型任务；当前草稿与选择已保留。"
-                        .into(),
-                );
+                return Err(i18n::ai_file_missing_error(locale, false).into());
             };
             if authorized.conflicted {
-                return Err(
-                    "所选范围包含未解决的合并冲突文件，请先处理冲突后再生成说明或审查；草稿与选择已保留。"
-                        .into(),
-                );
+                return Err(i18n::ai_conflict_in_scope_error(locale, false).into());
             }
             if authorized.token != item.commit_token {
-                return Err(
-                    "所选文件范围、暂存内容或分支已变化，已暂停本次模型请求；请刷新核对最新变更，当前草稿与选择已保留。"
-                        .into(),
-                );
+                return Err(i18n::ai_scope_stale_error(locale, false).into());
             }
         }
 
-        let worktree_reader = self.inner.reader.for_worktree(&root).await?;
-        let recent_commits = if mode == AiScopeMode::Generate && live_tree.head.is_some() {
-            let output = worktree_reader
-                .run(&root, &["log", "-n", "8", "--format=%s%x00", "HEAD"])
-                .await?;
-            if output.success {
-                output
-                    .bytes
-                    .split(|byte| *byte == 0)
-                    .filter_map(|raw| std::str::from_utf8(raw).ok())
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        let worktree_reader = self
+            .inner
+            .reader
+            .with_locale(locale)
+            .for_worktree(&root)
+            .await?;
 
         let mut files = Vec::new();
         let mut skipped_paths = Vec::new();
@@ -307,18 +282,11 @@ impl RepositoryStore {
         for item in selections {
             let change = change_by_id[item.file_id.as_str()];
             if change.ignored_for_review {
-                let note = match mode {
-                    AiScopeMode::Review => format!("{}（锁文件默认忽略审查）", change.path),
-                    AiScopeMode::Generate => format!(
-                        "{}（锁文件，+{} -{}）",
-                        change.path, change.range.added, change.range.removed
-                    ),
-                };
-                skipped_paths.push(note);
+                skipped_paths.push(i18n::ai_skipped_lockfile_review(locale, &change.path));
                 continue;
             }
             if change.binary {
-                skipped_paths.push(format!("{}（二进制文件）", change.path));
+                skipped_paths.push(i18n::ai_skipped_binary(locale, &change.path));
                 continue;
             }
 
@@ -341,40 +309,41 @@ impl RepositoryStore {
                 args.push(&change.path);
                 let bytes = worktree_reader.bytes(&root, &args).await?;
                 if bytes.contains(&0) {
-                    skipped_paths.push(format!("{}（二进制文件）", change.path));
+                    skipped_paths.push(i18n::ai_skipped_binary(locale, &change.path));
                     continue;
                 }
                 match String::from_utf8(bytes) {
                     Ok(text) => text,
                     Err(_) => {
-                        skipped_paths
-                            .push(format!("{}（非 UTF-8 文本编码，未完整覆盖）", change.path));
+                        skipped_paths.push(i18n::ai_skipped_non_utf8(locale, &change.path));
                         continue;
                     }
                 }
             } else if change.git_status == "??" {
                 let full_path = root.join(&change.path);
-                let metadata = fs::symlink_metadata(&full_path)
-                    .map_err(|_| "无法读取未跟踪变更文件；当前草稿与选择已保留")?;
+                let metadata = fs::symlink_metadata(&full_path).map_err(|_| {
+                    "Cannot read untracked file metadata; current draft and selection were preserved"
+                })?;
                 if metadata.file_type().is_symlink() {
-                    let link = fs::read_link(&full_path).map_err(|_| "无法读取符号链接目标")?;
+                    let link = fs::read_link(&full_path)
+                        .map_err(|_| "Cannot read symbolic link target")?;
                     format_untracked_patch(&change.path, &format!("symlink -> {}", link.display()))
                 } else {
                     if metadata.len() as usize > MAX_FILE_PATCH_BYTES {
-                        skipped_paths.push(format!("{}（大文件超出单文件审查上限）", change.path));
+                        skipped_paths.push(i18n::ai_skipped_diff_too_large(locale, &change.path));
                         continue;
                     }
-                    let bytes = fs::read(&full_path)
-                        .map_err(|_| "无法读取未跟踪文件内容；当前草稿与选择已保留")?;
+                    let bytes = fs::read(&full_path).map_err(|_| {
+                        "Cannot read untracked file content; current draft and selection were preserved"
+                    })?;
                     if bytes.contains(&0) {
-                        skipped_paths.push(format!("{}（二进制文件）", change.path));
+                        skipped_paths.push(i18n::ai_skipped_binary(locale, &change.path));
                         continue;
                     }
                     match String::from_utf8(bytes) {
                         Ok(text) => format_untracked_patch(&change.path, &text),
                         Err(_) => {
-                            skipped_paths
-                                .push(format!("{}（非 UTF-8 文本编码，未完整覆盖）", change.path));
+                            skipped_paths.push(i18n::ai_skipped_non_utf8(locale, &change.path));
                             continue;
                         }
                     }
@@ -395,21 +364,20 @@ impl RepositoryStore {
                     )
                     .await?;
                 if bytes.contains(&0) {
-                    skipped_paths.push(format!("{}（二进制文件）", change.path));
+                    skipped_paths.push(i18n::ai_skipped_binary(locale, &change.path));
                     continue;
                 }
                 match String::from_utf8(bytes) {
                     Ok(text) => text,
                     Err(_) => {
-                        skipped_paths
-                            .push(format!("{}（非 UTF-8 文本编码，未完整覆盖）", change.path));
+                        skipped_paths.push(i18n::ai_skipped_non_utf8(locale, &change.path));
                         continue;
                     }
                 }
             };
 
             let raw_patch = if is_sensitive_local_file(&change.path) {
-                skipped_paths.push(format!("{}（本地环境或敏感凭据值已本地脱敏）", change.path));
+                skipped_paths.push(i18n::ai_skipped_sensitive_redacted(locale, &change.path));
                 match redact_sensitive_patch(&change.path, &raw_patch) {
                     Some(redacted) => redacted,
                     None => continue,
@@ -418,25 +386,15 @@ impl RepositoryStore {
                 raw_patch
             };
 
-            let (file_patch_cap, total_patch_cap) = match mode {
-                AiScopeMode::Generate => (
-                    GENERATE_MAX_FILE_PATCH_BYTES,
-                    GENERATE_MAX_TOTAL_PATCH_BYTES,
-                ),
-                AiScopeMode::Review => (MAX_FILE_PATCH_BYTES, MAX_TOTAL_PATCH_BYTES),
-            };
-            let remaining = total_patch_cap.saturating_sub(total_patch_bytes);
+            let remaining = MAX_TOTAL_PATCH_BYTES.saturating_sub(total_patch_bytes);
             if remaining < MIN_PARTIAL_PATCH_BUDGET {
-                skipped_paths.push(format!(
-                    "{}（所选总改动较大，超出单次上下文上限）",
-                    change.path
-                ));
+                skipped_paths.push(i18n::ai_skipped_total_too_large(locale, &change.path));
                 continue;
             }
-            let allowed = file_patch_cap.min(remaining);
+            let allowed = MAX_FILE_PATCH_BYTES.min(remaining);
             let final_patch = if raw_patch.len() > allowed {
-                skipped_paths.push(format!("{}（大文件改动较大，仅部分覆盖）", change.path));
-                truncate_patch_head_tail(&raw_patch, allowed)
+                skipped_paths.push(i18n::ai_skipped_large_partial(locale, &change.path));
+                truncate_patch_head_tail(&raw_patch, allowed, locale)
             } else {
                 raw_patch
             };
@@ -462,7 +420,6 @@ impl RepositoryStore {
         };
         Ok(ExtractedAiScope {
             branch,
-            recent_commits,
             files,
             skipped_paths,
             reviewed_file_ids,
@@ -473,9 +430,10 @@ impl RepositoryStore {
         &self,
         target: &ReadTarget,
         selections: &[CommitSelection],
+        locale: LanguageKind,
     ) -> Result<ExtractedCPushScope> {
         if selections.is_empty() {
-            return Err("请先选择至少一个变更文件后再发起 C-Push；当前草稿已保留。".into());
+            return Err(i18n::ai_selection_required_error(locale, true).into());
         }
         let mut seen = HashSet::with_capacity(selections.len());
         for item in selections {
@@ -483,7 +441,7 @@ impl RepositoryStore {
                 || item.commit_token.is_empty()
                 || !seen.insert(item.file_id.as_str())
             {
-                return Err("C-Push 请求包含无效或重复的文件范围凭证，请刷新后重试。".into());
+                return Err(i18n::ai_invalid_token_error(locale, true).into());
             }
         }
 
@@ -491,20 +449,19 @@ impl RepositoryStore {
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let (_, root) = self.registered_worktree_root(target).await?;
+        let (registered, root) = self.registered_worktree_root(target, locale).await?;
+        let keep_set = self.resolve_keep_set_for_common(&registered.common_dir)?;
         let entry = WorktreeEntry {
             path: root.clone(),
             head: None,
             branch: String::new(),
             bare: false,
         };
-        let (live_tree, live_commit_state) =
-            self.read_worktree(&target.repository_id, &entry).await?;
+        let (live_tree, live_commit_state) = self
+            .read_worktree(&target.repository_id, &entry, &keep_set, locale)
+            .await?;
         if live_tree.detached {
-            return Err(
-                "当前处于分离 HEAD，请先在顶部新建或切换分支后再使用 C-Push；草稿与选择已保留。"
-                    .into(),
-            );
+            return Err(i18n::cpush_detached_head_error(locale).into());
         }
 
         let change_by_id: HashMap<&str, &Change> = live_tree
@@ -515,22 +472,13 @@ impl RepositoryStore {
 
         for item in selections {
             let Some(authorized) = live_commit_state.files.get(&item.file_id) else {
-                return Err(
-                    "所选文件已不在当前工作树变更列表中，请刷新确认后再发起 C-Push；草稿与选择已保留。"
-                        .into(),
-                );
+                return Err(i18n::ai_file_missing_error(locale, true).into());
             };
             if authorized.conflicted {
-                return Err(
-                    "所选范围包含未解决的合并冲突文件，请先处理冲突后再执行 C-Push；草稿与选择已保留。"
-                        .into(),
-                );
+                return Err(i18n::ai_conflict_in_scope_error(locale, true).into());
             }
             if authorized.token != item.commit_token {
-                return Err(
-                    "所选文件范围、暂存内容或分支已变化，已暂停本次 C-Push；请刷新核对最新变更，草稿与选择已保留。"
-                        .into(),
-                );
+                return Err(i18n::ai_scope_stale_error(locale, true).into());
             }
         }
 
@@ -541,7 +489,12 @@ impl RepositoryStore {
             .map(|change| change.path.clone())
             .collect();
 
-        let worktree_reader = self.inner.reader.for_worktree(&root).await?;
+        let worktree_reader = self
+            .inner
+            .reader
+            .with_locale(locale)
+            .for_worktree(&root)
+            .await?;
         let recent_commits = if live_tree.head.is_some() {
             let output = worktree_reader
                 .run(&root, &["log", "-n", "8", "--format=%s%x00", "HEAD"])
@@ -571,12 +524,13 @@ impl RepositoryStore {
             let mut skip_reason = None;
 
             if change.ignored_for_review {
-                skip_reason = Some(format!(
-                    "锁文件（+{} -{}，按关联依赖变更归组）",
-                    change.range.added, change.range.removed
+                skip_reason = Some(i18n::cpush_skip_lockfile(
+                    locale,
+                    change.range.added,
+                    change.range.removed,
                 ));
             } else if change.binary {
-                skip_reason = Some("二进制文件（不展开文本补丁）".into());
+                skip_reason = Some(i18n::cpush_skip_binary_patch(locale).into());
             } else if change.range.kind == "partial" || change.range.kind == "staged" {
                 let base_tree = live_tree.head.as_deref().unwrap_or(EMPTY_TREE_OID);
                 let mut args = vec![
@@ -596,36 +550,39 @@ impl RepositoryStore {
                 args.push(&change.path);
                 let bytes = worktree_reader.bytes(&root, &args).await?;
                 if bytes.contains(&0) {
-                    skip_reason = Some("二进制文件".into());
+                    skip_reason = Some(i18n::cpush_skip_binary(locale).into());
                 } else {
                     match String::from_utf8(bytes) {
                         Ok(text) => raw_patch_opt = Some(text),
-                        Err(_) => skip_reason = Some("非 UTF-8 编码文本".into()),
+                        Err(_) => skip_reason = Some(i18n::cpush_skip_non_utf8(locale).into()),
                     }
                 }
             } else if change.git_status == "??" {
                 let full_path = root.join(&change.path);
-                let metadata = fs::symlink_metadata(&full_path)
-                    .map_err(|_| "无法读取未跟踪变更文件；当前草稿与选择已保留")?;
+                let metadata = fs::symlink_metadata(&full_path).map_err(|_| {
+                    "Cannot read untracked file metadata; current draft and selection were preserved"
+                })?;
                 if metadata.file_type().is_symlink() {
-                    let link = fs::read_link(&full_path).map_err(|_| "无法读取符号链接目标")?;
+                    let link = fs::read_link(&full_path)
+                        .map_err(|_| "Cannot read symbolic link target")?;
                     raw_patch_opt = Some(format_untracked_patch(
                         &change.path,
                         &format!("symlink -> {}", link.display()),
                     ));
                 } else if metadata.len() as usize > MAX_UNTRACKED_READ_BYTES {
-                    skip_reason = Some("大文件（超出单文件内联上限）".into());
+                    skip_reason = Some(i18n::cpush_skip_large_untracked(locale).into());
                 } else {
-                    let bytes = fs::read(&full_path)
-                        .map_err(|_| "无法读取未跟踪文件内容；当前草稿与选择已保留")?;
+                    let bytes = fs::read(&full_path).map_err(|_| {
+                        "Cannot read untracked file content; current draft and selection were preserved"
+                    })?;
                     if bytes.contains(&0) {
-                        skip_reason = Some("二进制文件".into());
+                        skip_reason = Some(i18n::cpush_skip_binary(locale).into());
                     } else {
                         match String::from_utf8(bytes) {
                             Ok(text) => {
                                 raw_patch_opt = Some(format_untracked_patch(&change.path, &text))
                             }
-                            Err(_) => skip_reason = Some("非 UTF-8 编码文本".into()),
+                            Err(_) => skip_reason = Some(i18n::cpush_skip_non_utf8(locale).into()),
                         }
                     }
                 }
@@ -645,11 +602,11 @@ impl RepositoryStore {
                     )
                     .await?;
                 if bytes.contains(&0) {
-                    skip_reason = Some("二进制文件".into());
+                    skip_reason = Some(i18n::cpush_skip_binary(locale).into());
                 } else {
                     match String::from_utf8(bytes) {
                         Ok(text) => raw_patch_opt = Some(text),
-                        Err(_) => skip_reason = Some("非 UTF-8 编码文本".into()),
+                        Err(_) => skip_reason = Some(i18n::cpush_skip_non_utf8(locale).into()),
                     }
                 }
             }
@@ -657,9 +614,7 @@ impl RepositoryStore {
             if is_sensitive_local_file(&change.path) {
                 raw_patch_opt =
                     raw_patch_opt.and_then(|patch| redact_sensitive_patch(&change.path, &patch));
-                skip_reason = Some(
-                    "疑似本地环境或敏感凭据文件（值已本地脱敏，提交前需向用户确认是否排除）".into(),
-                );
+                skip_reason = Some(i18n::cpush_skip_sensitive(locale).into());
             }
 
             raw_entries.push((raw_patch_opt, skip_reason));
@@ -684,16 +639,16 @@ impl RepositoryStore {
                 remaining_budget = remaining_budget.saturating_sub(raw_patch.len());
                 raw_entries[idx].0 = Some(raw_patch);
             } else if fair_share >= CPUSH_MIN_PARTIAL_PATCH_BUDGET {
-                let slimmed = truncate_patch_head_tail(&raw_patch, fair_share);
+                let slimmed = truncate_patch_head_tail(&raw_patch, fair_share, locale);
                 remaining_budget = remaining_budget.saturating_sub(slimmed.len());
                 raw_entries[idx].0 = Some(slimmed);
                 raw_entries[idx]
                     .1
-                    .get_or_insert_with(|| "大文件改动较大，补丁已精简".into());
+                    .get_or_insert_with(|| i18n::cpush_skip_slimmed_patch(locale).into());
             } else {
                 raw_entries[idx]
                     .1
-                    .get_or_insert_with(|| "所选总改动较大，省略内联补丁".into());
+                    .get_or_insert_with(|| i18n::cpush_skip_omitted_budget(locale).into());
             }
         }
 
@@ -734,29 +689,29 @@ impl RepositoryStore {
         expected_branch: &str,
         expected_head: Option<&str>,
         step_files: &[FrozenCPushFile],
+        locale: LanguageKind,
     ) -> Result<(RepositorySnapshot, Vec<CommitSelection>)> {
-        let snapshot = self.refresh(target).await?;
+        let snapshot = self.refresh_with_locale(target, locale).await?;
         let live_tree = snapshot
             .worktrees
             .iter()
             .find(|tree| tree.worktree_id == target.worktree_id)
-            .ok_or("当前工作树不在最新 Git 快照中，请重新打开核对")?;
+            .ok_or("Current worktree is missing from latest Git snapshot; please reopen")?;
         if let Some(err) = &live_tree.read_error {
-            return Err(format!("工作树状态不可用：{err}"));
+            return Err(format!("Worktree status is unavailable: {err}"));
         }
         if live_tree.detached || live_tree.branch != expected_branch {
-            return Err(format!(
-                "工作树当前分支已变为“{}”（原计划分支为“{expected_branch}”），已暂停写入以保护改动",
-                if live_tree.detached {
-                    "分离 HEAD"
-                } else {
-                    &live_tree.branch
-                }
+            return Err(i18n::cpush_step_branch_changed_error(
+                locale,
+                &live_tree.branch,
+                live_tree.detached,
+                expected_branch,
             ));
         }
         if live_tree.head.as_deref() != expected_head {
             return Err(
-                "仓库 HEAD 已在当前会话之外发生变化，已暂停继续提交；请核对最新 Git 历史".into(),
+                "Repository HEAD changed outside the current session; paused subsequent commits. Verify latest Git history"
+                    .into(),
             );
         }
 
@@ -767,18 +722,12 @@ impl RepositoryStore {
                 .iter()
                 .find(|change| change.id == frozen.file_id)
             else {
-                return Err(format!(
-                    "待提交文件“{}”已不在当前变更列表中，已暂停当前步骤",
-                    frozen.path
-                ));
+                return Err(i18n::cpush_step_missing_file_error(locale, &frozen.path));
             };
             if live_file.content_version != frozen.content_version
                 || live_file.range.kind != frozen.range_kind
             {
-                return Err(format!(
-                    "待提交文件“{}”的内容或暂存范围已在外部发生变化，已暂停当前步骤以防止误提交",
-                    frozen.path
-                ));
+                return Err(i18n::cpush_step_stale_file_error(locale, &frozen.path));
             }
             selections.push(CommitSelection {
                 file_id: live_file.id.clone(),
@@ -800,16 +749,20 @@ mod tests {
             String::from("--- a/src/views/sofDialog.vue\n+++ b/src/views/sofDialog.vue\n");
         for idx in 0..300 {
             raw.push_str(&format!(
-                "+  <div>表单字段 {idx}：泊位与装卸作业时间校验</div>\n"
+                "+  <div>field {idx}: \u{4e2d}\u{6587}-utf8-boundary-validation</div>\n"
             ));
         }
         raw.push_str("+export function submitSofDialog() { return true; }\n");
 
-        let slimmed = truncate_patch_head_tail(&raw, 1024);
+        let slimmed = truncate_patch_head_tail(&raw, 1024, LanguageKind::En);
         assert!(slimmed.len() <= 1024);
         assert!(slimmed.starts_with("--- a/src/views/sofDialog.vue"));
-        assert!(slimmed.contains("[省略中间"));
+        assert!(slimmed.contains("middle changed lines omitted"));
         assert!(slimmed.contains("+export function submitSofDialog()"));
+
+        let slimmed_zh = truncate_patch_head_tail(&raw, 1024, LanguageKind::Zh);
+        assert!(slimmed_zh.len() <= 1024);
+        assert!(slimmed_zh.contains("\u{7701}\u{7565}\u{4e2d}\u{95f4}"));
     }
 
     #[tokio::test]
@@ -819,7 +772,7 @@ mod tests {
             let mut content = format!("<template><section id=\"view-{idx}\">\n");
             for line in 0..320 {
                 content.push_str(&format!(
-                    "  <p>业务字段 {idx}-{line}：装卸港作业节点记录</p>\n"
+                    "  <p>domain-field {idx}-{line}: port operation node record</p>\n"
                 ));
             }
             content.push_str(&format!(
@@ -849,7 +802,7 @@ mod tests {
             scope_version: tree.status_version.clone(),
         };
         let extracted = store
-            .extract_cpush_scope(&target, &selections)
+            .extract_cpush_scope(&target, &selections, LanguageKind::En)
             .await
             .unwrap();
         assert_eq!(extracted.files.len(), 7);
@@ -870,8 +823,55 @@ mod tests {
             assert!(patch.contains("<script setup>"));
             assert_eq!(
                 file.skip_reason.as_deref(),
-                Some("大文件改动较大，补丁已精简")
+                Some("Large diff, patch truncated")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn cpush_scope_preserves_patch_context_across_ninety_five_files_within_budget() {
+        let fixture = Fixture::new().unwrap();
+        for idx in 0..95 {
+            let content = format!(
+                "export const moduleIndex = {idx};\nexport function runFeature{idx}() {{\n  return 'value-{idx}';\n}}\n"
+            );
+            fs::write(fixture.root.join(format!("mod-{idx:02}.ts")), content).unwrap();
+        }
+
+        let store = RepositoryStore::default();
+        let snapshot = store.open(&fixture.root).await.unwrap();
+        let tree = &snapshot.worktrees[0];
+        let selections: Vec<CommitSelection> = tree
+            .files
+            .iter()
+            .filter(|f| f.path.starts_with("mod-"))
+            .map(|f| CommitSelection {
+                file_id: f.id.clone(),
+                commit_token: f.commit_token.clone(),
+            })
+            .collect();
+        assert_eq!(selections.len(), 95);
+
+        let target = ReadTarget {
+            repository_id: tree.repository_id.clone(),
+            worktree_id: tree.worktree_id.clone(),
+            session_id: "sess-95".into(),
+            scope_version: tree.status_version.clone(),
+        };
+        let extracted = store
+            .extract_cpush_scope(&target, &selections, LanguageKind::En)
+            .await
+            .unwrap();
+        assert_eq!(extracted.files.len(), 95);
+        let total_bytes: usize = extracted
+            .files
+            .iter()
+            .map(|f| f.patch.as_ref().map_or(0, String::len))
+            .sum();
+        assert!(total_bytes <= CPUSH_MAX_TOTAL_PATCH_BYTES);
+        assert!(
+            extracted.files.iter().all(|f| f.patch.is_some()),
+            "Every file in a 95-file scope should retain patch context without tail starvation"
+        );
     }
 }

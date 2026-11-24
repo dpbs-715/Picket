@@ -460,7 +460,7 @@ impl Fixture {
         self.write("Order.ts", "first = 2\nsecond = 3\n")?;
         self.write("notes.md", "staged notes\n")?;
         self.repository.git(&["add", "--", "notes.md"])?;
-        self.write("新 文件.ts", "export const retry = 3;\n")
+        self.write("\u{65b0} \u{6587}\u{4ef6}.ts", "export const retry = 3;\n")
     }
 }
 
@@ -478,7 +478,7 @@ pub fn run_probe() -> Result<GitProbeReport> {
     let root = fixture.directory.path().to_path_buf();
     let scope = fixture
         .repository
-        .prepare(&[vec!["Order.ts"], vec!["新 文件.ts"]])?;
+        .prepare(&[vec!["Order.ts"], vec!["\u{65b0} \u{6587}\u{4ef6}.ts"]])?;
     let first = fixture
         .repository
         .commit(&scope, "scope-one", "feat: selected fixture changes")?;
@@ -560,11 +560,22 @@ mod tests {
         fs::remove_file(fixture.directory.path().join("remove.txt")).unwrap();
         fixture
             .repository
-            .git(&["mv", "--", "rename.txt", "重命名 文件.txt"])
+            .git(&[
+                "mv",
+                "--",
+                "rename.txt",
+                "\u{91cd}\u{547d}\u{540d} \u{6587}\u{4ef6}.txt",
+            ])
             .unwrap();
         let scope = fixture
             .repository
-            .prepare(&[vec!["remove.txt"], vec!["rename.txt", "重命名 文件.txt"]])
+            .prepare(&[
+                vec!["remove.txt"],
+                vec![
+                    "rename.txt",
+                    "\u{91cd}\u{547d}\u{540d} \u{6587}\u{4ef6}.txt",
+                ],
+            ])
             .unwrap();
         fixture
             .repository
@@ -585,7 +596,7 @@ mod tests {
         assert_eq!(
             fixture
                 .repository
-                .text(&["show", "HEAD:重命名 文件.txt"])
+                .text(&["show", "HEAD:\u{91cd}\u{547d}\u{540d} \u{6587}\u{4ef6}.txt"])
                 .unwrap(),
             "rename me"
         );

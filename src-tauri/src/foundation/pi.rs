@@ -1,3 +1,7 @@
+use crate::{
+    i18n::{self, LanguageKind},
+    repository::ai_context::ExtractedDiffFile,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -61,6 +65,132 @@ pub struct RequestContext {
     pub scope_version: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiProviderSpec {
+    pub provider: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_format: Option<&'static str>,
+    pub model_id: String,
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiPlanFileEntry {
+    pub file_id: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    pub status: String,
+    pub range_kind: String,
+    pub added: u64,
+    pub removed: u64,
+    pub ignored_for_review: bool,
+    pub binary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiCPushQaTurn {
+    pub question_id: String,
+    pub question: String,
+    pub answer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiConflictFile {
+    pub file_id: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_content: Option<String>,
+    pub upstream_content: String,
+    pub local_content: String,
+    pub conflicted_content: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PiCommand {
+    Probe {
+        request_id: String,
+        context: RequestContext,
+    },
+    TestConnection {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        locale: LanguageKind,
+    },
+    ReviewScope {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        branch: String,
+        prompt: String,
+        files: Vec<ExtractedDiffFile>,
+        skipped_paths: Vec<String>,
+        locale: LanguageKind,
+    },
+    #[serde(rename = "planCPush")]
+    PlanCPush {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        branch: String,
+        recent_commits: Vec<String>,
+        prompt: String,
+        files: Vec<PiPlanFileEntry>,
+        unselected_paths: Vec<String>,
+        qa_history: Vec<PiCPushQaTurn>,
+        locale: LanguageKind,
+        commit_language: LanguageKind,
+    },
+    ResolveConflict {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        branch: String,
+        upstream: String,
+        user_instruction: String,
+        commits: Vec<String>,
+        files: Vec<PiConflictFile>,
+        locale: LanguageKind,
+    },
+    Cancel {
+        request_id: String,
+    },
+    Shutdown,
+}
+
+impl PiCommand {
+    pub const fn locale(&self) -> LanguageKind {
+        match self {
+            Self::TestConnection { locale, .. }
+            | Self::ReviewScope { locale, .. }
+            | Self::PlanCPush { locale, .. }
+            | Self::ResolveConflict { locale, .. } => *locale,
+            Self::Probe { .. } | Self::Cancel { .. } | Self::Shutdown => LanguageKind::En,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PiReviewFinding {
@@ -72,7 +202,7 @@ pub struct PiReviewFinding {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PiCPushCommitGroup {
     pub id: String,
@@ -393,28 +523,55 @@ impl PiSupervisor {
         });
         let mut lines = BufReader::new(stdout).lines();
         let exchange = timeout(PROBE_TIMEOUT, async {
-            let ready = timeout(START_TIMEOUT, next_event(&mut lines)).await
+            let ready = timeout(START_TIMEOUT, next_event(&mut lines))
+                .await
                 .map_err(|_| "Pi startup handshake timed out")??;
-            let PiEvent::Ready { protocol_version, pi_core_version, node_version, pid: reported_pid } = &ready else {
+            let PiEvent::Ready {
+                protocol_version,
+                pi_core_version,
+                node_version,
+                pid: reported_pid,
+            } = &ready
+            else {
                 return Err("Expected Pi readiness handshake".into());
             };
-            if *protocol_version != PROTOCOL_VERSION || *reported_pid != pid || pi_core_version != "1.6.0" {
+            if *protocol_version != PROTOCOL_VERSION
+                || *reported_pid != pid
+                || pi_core_version != "1.6.0"
+            {
                 return Err("Incompatible Pi runtime handshake".into());
             }
-            let mut report = ProbeReport { request_id: request_id.clone(), status: String::new(),
-                child_pid: pid, node_version: node_version.clone(), pi_core_version: pi_core_version.clone(),
-                delta_count: 0, child_exit_code: -1 };
+            let mut report = ProbeReport {
+                request_id: request_id.clone(),
+                status: String::new(),
+                child_pid: pid,
+                node_version: node_version.clone(),
+                pi_core_version: pi_core_version.clone(),
+                delta_count: 0,
+                child_exit_code: -1,
+            };
             on_event(&ready)?;
-            let context = RequestContext { repository_id: "foundation".into(), worktree_id: "temporary".into(),
-                session_id: request_id.clone(), scope_version: "foundation-v1".into() };
-            write_command(&mut stdin, &serde_json::json!({ "type": "probe", "requestId": request_id, "context": context })).await?;
+            let context = RequestContext {
+                repository_id: "foundation".into(),
+                worktree_id: "temporary".into(),
+                session_id: request_id.clone(),
+                scope_version: "foundation-v1".into(),
+            };
+            write_command(
+                &mut stdin,
+                &PiCommand::Probe {
+                    request_id: request_id.clone(),
+                    context: context.clone(),
+                },
+            )
+            .await?;
             let mut cancel_sent = false;
             loop {
                 let event = tokio::select! {
                     biased;
                     change = cancelled.changed(), if !cancel_sent => {
                         change.map_err(|_| "Cancellation channel closed")?;
-                        write_command(&mut stdin, &serde_json::json!({ "type": "cancel", "requestId": request_id })).await?;
+                        write_command(&mut stdin, &PiCommand::Cancel { request_id: request_id.clone() }).await?;
                         cancel_sent = true;
                         continue;
                     }
@@ -423,19 +580,30 @@ impl PiSupervisor {
                 let Some((id, event_context)) = event.envelope() else {
                     return Err(format!("Unexpected Pi control event: {event:?}"));
                 };
-                if id != request_id || event_context != &context { return Err("Pi response belongs to a different request or scope".into()); }
+                if id != request_id || event_context != &context {
+                    return Err("Pi response belongs to a different request or scope".into());
+                }
                 on_event(&event)?;
                 match event {
                     PiEvent::TextDelta { .. } => report.delta_count += 1,
-                    PiEvent::Completed { .. } => { report.status = "completed".into(); return Ok(report); }
-                    PiEvent::Cancelled { .. } => { report.status = "cancelled".into(); return Ok(report); }
+                    PiEvent::Completed { .. } => {
+                        report.status = "completed".into();
+                        return Ok(report);
+                    }
+                    PiEvent::Cancelled { .. } => {
+                        report.status = "cancelled".into();
+                        return Ok(report);
+                    }
                     PiEvent::Failed { message, .. } => return Err(message),
                     _ => {}
                 }
             }
-        }).await.map_err(|_| "Pi probe timed out".to_string()).and_then(|r| r);
+        })
+        .await
+        .map_err(|_| "Pi probe timed out".to_string())
+        .and_then(|r| r);
         // Always close and reap the child, including timeout, UI disconnect and protocol errors.
-        let _ = write_command(&mut stdin, &serde_json::json!({ "type": "shutdown" })).await;
+        let _ = write_command(&mut stdin, &PiCommand::Shutdown).await;
         drop(stdin);
         let exit = match timeout(EXIT_TIMEOUT, child.wait()).await {
             Ok(status) => status.map_err(|e| e.to_string()),
@@ -467,11 +635,12 @@ impl PiSupervisor {
         paths: &PiPaths,
         request_id: String,
         expected_context: RequestContext,
-        command: serde_json::Value,
+        command: &PiCommand,
         idle_timeout: Duration,
         secret_to_redact: Option<&str>,
         mut on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
     ) -> Result<PiTaskOutcome, String> {
+        let locale = command.locale();
         let scrub = |raw: String| -> String {
             let Some(secret) = secret_to_redact.map(str::trim).filter(|s| !s.is_empty()) else {
                 return raw;
@@ -484,16 +653,20 @@ impl PiSupervisor {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-')
         {
-            return Err("无效的模型请求身份".into());
+            return Err(i18n::pi_invalid_request_id(locale).into());
         }
         let (cancel, mut cancelled) = watch::channel(false);
         let _registration = {
-            let mut active = self.0.active.lock().map_err(|_| "模型请求协调器不可用")?;
+            let mut active = self
+                .0
+                .active
+                .lock()
+                .map_err(|_| i18n::pi_registry_unavailable(locale))?;
             if self.0.closing.load(Ordering::SeqCst) {
-                return Err("应用正在退出，已停止模型请求".into());
+                return Err(i18n::pi_shutting_down(locale).into());
             }
             if active.contains_key(&request_id) {
-                return Err("相同的模型请求已在运行中".into());
+                return Err(i18n::pi_duplicate_request(locale).into());
             }
             active.insert(request_id.clone(), cancel);
             ActiveRequest {
@@ -502,7 +675,7 @@ impl PiSupervisor {
             }
         };
         if !paths.node.is_file() || !paths.script.is_file() {
-            return Err("随包 Pi Core 运行时缺失，请先准备桌面运行时".into());
+            return Err(i18n::pi_runtime_missing(locale).into());
         }
         let working_directory = tempfile::tempdir().map_err(|e| e.to_string())?;
         let mut child = Command::new(&paths.node)
@@ -515,11 +688,20 @@ impl PiSupervisor {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| scrub(format!("无法启动随包 Pi 运行时：{e}")))?;
-        let pid = child.id().ok_or("Pi 进程缺少 PID")?;
-        let mut stdin = child.stdin.take().ok_or("缺少 Pi 标准输入")?;
-        let stdout = child.stdout.take().ok_or("缺少 Pi 标准输出")?;
-        let mut stderr = child.stderr.take().ok_or("缺少 Pi 错误输出")?;
+            .map_err(|e| scrub(i18n::pi_cannot_start_runtime(locale, &e)))?;
+        let pid = child.id().ok_or_else(|| i18n::pi_missing_pid(locale))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| i18n::pi_missing_stdin(locale))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| i18n::pi_missing_stdout(locale))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| i18n::pi_missing_stderr(locale))?;
         let stderr_task = tokio::spawn(async move {
             let mut retained = Vec::new();
             let mut chunk = [0_u8; 1024];
@@ -543,7 +725,7 @@ impl PiSupervisor {
             let ready = match timeout(START_TIMEOUT.min(total_ceiling), next_event(&mut lines)).await
             {
                 Ok(result) => result?,
-                Err(_) => return Err("Pi Core 启动握手超时".to_string()),
+                Err(_) => return Err(i18n::pi_handshake_timeout(locale).to_string()),
             };
             let PiEvent::Ready {
                 protocol_version,
@@ -552,16 +734,16 @@ impl PiSupervisor {
                 ..
             } = &ready
             else {
-                return Err("Pi Core 未返回有效就绪握手".into());
+                return Err(i18n::pi_invalid_handshake(locale).into());
             };
             if *protocol_version != PROTOCOL_VERSION
                 || *reported_pid != pid
                 || pi_core_version != "1.6.0"
             {
-                return Err("Pi Core 协议或版本不兼容".into());
+                return Err(i18n::pi_incompatible_version(locale).into());
             }
             on_event(&ready)?;
-            write_command(&mut stdin, &command).await?;
+            write_command(&mut stdin, command).await?;
             let mut cancel_sent = false;
             loop {
                 let step_timeout = if cancel_sent {
@@ -572,8 +754,8 @@ impl PiSupervisor {
                 let event = tokio::select! {
                     biased;
                     change = cancelled.changed(), if !cancel_sent => {
-                        change.map_err(|_| "取消通道已关闭".to_string())?;
-                        write_command(&mut stdin, &serde_json::json!({ "type": "cancel", "requestId": request_id })).await?;
+                        change.map_err(|_| i18n::pi_cancel_channel_closed(locale).to_string())?;
+                        write_command(&mut stdin, &PiCommand::Cancel { request_id: request_id.clone() }).await?;
                         cancel_sent = true;
                         continue;
                     }
@@ -582,19 +764,19 @@ impl PiSupervisor {
                             Ok(result) => result?,
                             Err(_) => {
                                 timed_out = true;
-                                return Err("模型请求超时，当前草稿与选择已保留".to_string());
+                                return Err(i18n::pi_request_timed_out(locale).to_string());
                             }
                         }
                     }
                 };
                 if let PiEvent::ProtocolError { message } = event {
-                    return Err(format!("Pi 协议拒绝请求：{message}"));
+                    return Err(i18n::pi_protocol_rejected(locale, &message));
                 }
                 let Some((id, event_context)) = event.envelope() else {
-                    return Err("收到未预期的 Pi 控制事件".into());
+                    return Err(i18n::pi_unexpected_control_event(locale).into());
                 };
                 if id != request_id || event_context != &expected_context {
-                    return Err("Pi 响应的目标工作树或请求身份不匹配".into());
+                    return Err(i18n::pi_mismatched_target(locale).into());
                 }
                 on_event(&event)?;
                 match event {
@@ -619,48 +801,41 @@ impl PiSupervisor {
             Ok(result) => result,
             Err(_) => {
                 timed_out = true;
-                Err("模型请求超时，当前草稿与选择已保留".to_string())
+                Err(i18n::pi_request_timed_out(locale).to_string())
             }
         };
 
-        let _ = write_command(&mut stdin, &serde_json::json!({ "type": "shutdown" })).await;
+        let _ = write_command(&mut stdin, &PiCommand::Shutdown).await;
         drop(stdin);
         let exit = match timeout(EXIT_TIMEOUT, child.wait()).await {
             Ok(status) => status.map_err(|e| e.to_string()),
             Err(_) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                Err("Pi 进程未按时退出，已被终止".into())
+                Err(i18n::pi_terminated_on_exit_timeout(locale).into())
             }
         };
         let diagnostic = scrub(stderr_task.await.map_err(|e| e.to_string())?);
         if !timed_out {
             let status = exit.map_err(&scrub)?;
             if !status.success() {
-                return Err(scrub(format!(
-                    "Pi 进程异常退出（{status}）{}",
-                    if diagnostic.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!("：{}", diagnostic.trim())
-                    }
+                return Err(scrub(i18n::pi_exited_abnormally(
+                    locale,
+                    &status,
+                    &diagnostic,
                 )));
             }
         }
         exchange.map_err(|e| {
             let sanitized = scrub(e);
-            if diagnostic.trim().is_empty() {
-                sanitized
-            } else {
-                format!("{sanitized}（{}）", diagnostic.trim())
-            }
+            i18n::pi_append_diagnostic(locale, &sanitized, &diagnostic)
         })
     }
 }
 
-async fn write_command(
+async fn write_command<T: Serialize>(
     stdin: &mut tokio::process::ChildStdin,
-    command: &serde_json::Value,
+    command: &T,
 ) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(command).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
@@ -684,6 +859,86 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_model() -> PiProviderSpec {
+        PiProviderSpec {
+            provider: "openai",
+            api_format: Some("openai-responses"),
+            model_id: "gpt-4.1".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: "sk-test".into(),
+            context_window: Some(200_000),
+            max_output_tokens: Some(32_768),
+        }
+    }
+
+    #[test]
+    fn pi_command_serializes_locale_and_commit_language_in_camel_case() {
+        let context = RequestContext {
+            repository_id: "repo-1".into(),
+            worktree_id: "wt-1".into(),
+            session_id: "sess-1".into(),
+            scope_version: "scope-1".into(),
+        };
+        let test_conn = serde_json::to_value(PiCommand::TestConnection {
+            request_id: "req-conn".into(),
+            context: context.clone(),
+            model: sample_model(),
+            locale: LanguageKind::Zh,
+        })
+        .unwrap();
+        assert_eq!(test_conn["type"], "testConnection");
+        assert_eq!(test_conn["locale"], "zh");
+
+        let review = serde_json::to_value(PiCommand::ReviewScope {
+            request_id: "req-rev".into(),
+            context: context.clone(),
+            model: sample_model(),
+            branch: "feat/i18n".into(),
+            prompt: "focus on auth".into(),
+            files: Vec::new(),
+            skipped_paths: Vec::new(),
+            locale: LanguageKind::Zh,
+        })
+        .unwrap();
+        assert_eq!(review["type"], "reviewScope");
+        assert_eq!(review["prompt"], "focus on auth");
+        assert_eq!(review["locale"], "zh");
+
+        let plan = serde_json::to_value(PiCommand::PlanCPush {
+            request_id: "req-plan".into(),
+            context: context.clone(),
+            model: sample_model(),
+            branch: "feat/i18n".into(),
+            recent_commits: Vec::new(),
+            prompt: "split lockfile".into(),
+            files: Vec::new(),
+            unselected_paths: Vec::new(),
+            qa_history: Vec::new(),
+            locale: LanguageKind::Zh,
+            commit_language: LanguageKind::En,
+        })
+        .unwrap();
+        assert_eq!(plan["type"], "planCPush");
+        assert_eq!(plan["prompt"], "split lockfile");
+        assert_eq!(plan["locale"], "zh");
+        assert_eq!(plan["commitLanguage"], "en");
+
+        let resolve = serde_json::to_value(PiCommand::ResolveConflict {
+            request_id: "req-conflict".into(),
+            context,
+            model: sample_model(),
+            branch: "feat/i18n".into(),
+            upstream: "origin/feat/i18n".into(),
+            user_instruction: "keep both".into(),
+            commits: vec!["abc1234 feat: local".into()],
+            files: Vec::new(),
+            locale: LanguageKind::En,
+        })
+        .unwrap();
+        assert_eq!(resolve["type"], "resolveConflict");
+        assert_eq!(resolve["locale"], "en");
+    }
 
     #[tokio::test]
     async fn real_sdk_streams_and_child_is_reaped() {
@@ -837,12 +1092,18 @@ mod tests {
             node: PiPaths::development().node,
             script: active_script,
         };
+        let active_cmd = PiCommand::TestConnection {
+            request_id: "req-active".into(),
+            context: context.clone(),
+            model: sample_model(),
+            locale: LanguageKind::En,
+        };
         let outcome = supervisor
             .run_task(
                 &active_paths,
                 "req-active".into(),
                 context.clone(),
-                serde_json::json!({ "type": "testConnection", "requestId": "req-active", "context": context }),
+                &active_cmd,
                 Duration::from_millis(180),
                 None,
                 |_| Ok(()),
@@ -875,18 +1136,27 @@ mod tests {
             node: PiPaths::development().node,
             script: silent_script,
         };
+        let silent_cmd = PiCommand::TestConnection {
+            request_id: "req-silent".into(),
+            context: context.clone(),
+            model: sample_model(),
+            locale: LanguageKind::En,
+        };
         let err = supervisor
             .run_task(
                 &silent_paths,
                 "req-silent".into(),
-                context.clone(),
-                serde_json::json!({ "type": "testConnection", "requestId": "req-silent", "context": context }),
+                context,
+                &silent_cmd,
                 Duration::from_millis(180),
                 None,
                 |_| Ok(()),
             )
             .await
             .unwrap_err();
-        assert_eq!(err, "模型请求超时，当前草稿与选择已保留");
+        assert_eq!(
+            err,
+            "Model request timed out; current draft and selection were preserved"
+        );
     }
 }

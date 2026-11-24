@@ -42,6 +42,7 @@ fn open_request(
         file_id: file_id(snapshot, path),
         editor,
         line,
+        locale: crate::i18n::LanguageKind::En,
     }
 }
 
@@ -139,11 +140,16 @@ async fn launches_all_four_editors_for_staged_diff_open_diff_goto_and_cleanup() 
         );
     }
 
-    // 2. Untracked new file with spaces and Chinese -> Open real file in worktree:
+    // 2. Untracked new file with spaces and Unicode -> Open real file in worktree:
     let open_outcome = store
         .open_in_editor(
             &launcher,
-            &open_request(&snapshot, "新 文件.ts", EditorKind::Cursor, None),
+            &open_request(
+                &snapshot,
+                "\u{65b0} \u{6587}\u{4ef6}.ts",
+                EditorKind::Cursor,
+                None,
+            ),
         )
         .await
         .unwrap();
@@ -151,7 +157,12 @@ async fn launches_all_four_editors_for_staged_diff_open_diff_goto_and_cleanup() 
     let open_args = recorded_args(&capture_dir);
     assert_eq!(
         open_args,
-        vec![canonical_root.join("新 文件.ts").to_str().unwrap()]
+        vec![
+            canonical_root
+                .join("\u{65b0} \u{6587}\u{4ef6}.ts")
+                .to_str()
+                .unwrap()
+        ]
     );
 
     // 3. Unstaged modification -> Diff (BASE snapshot vs live worktree file):
@@ -200,7 +211,12 @@ async fn launches_all_four_editors_for_staged_diff_open_diff_goto_and_cleanup() 
     let code_goto = store
         .open_in_editor(
             &launcher,
-            &open_request(&snapshot, "新 文件.ts", EditorKind::Vscode, Some(1)),
+            &open_request(
+                &snapshot,
+                "\u{65b0} \u{6587}\u{4ef6}.ts",
+                EditorKind::Vscode,
+                Some(1),
+            ),
         )
         .await
         .unwrap();
@@ -209,7 +225,12 @@ async fn launches_all_four_editors_for_staged_diff_open_diff_goto_and_cleanup() 
         recorded_args(&capture_dir),
         vec![
             "--goto".to_string(),
-            format!("{}:1:1", canonical_root.join("新 文件.ts").display())
+            format!(
+                "{}:1:1",
+                canonical_root
+                    .join("\u{65b0} \u{6587}\u{4ef6}.ts")
+                    .display()
+            )
         ]
     );
 
@@ -222,7 +243,7 @@ async fn launches_all_four_editors_for_staged_diff_open_diff_goto_and_cleanup() 
 async fn handles_conflicts_renames_newlines_symlinks_linked_worktrees_and_cli_errors() {
     // 1. Rename with newline/Unicode + symlink pointing outside worktree:
     let fixture = Fixture::new().unwrap();
-    let renamed = "新 名\n字.lock";
+    let renamed = "\u{65b0} \u{540d}\n\u{5b57}.lock";
     git(&fixture.root, &["checkout", "--", "pnpm-lock.yaml"]).unwrap();
     git(&fixture.root, &["mv", "--", "pnpm-lock.yaml", renamed]).unwrap();
     std::os::unix::fs::symlink(
@@ -294,7 +315,13 @@ async fn handles_conflicts_renames_newlines_symlinks_linked_worktrees_and_cli_er
     let conflict_fixture = Fixture::new().unwrap();
     git(
         &conflict_fixture.root,
-        &["add", "--", "part.txt", "pnpm-lock.yaml", "新 文件.ts"],
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
     )
     .unwrap();
     git(&conflict_fixture.root, &["commit", "-m", "test: base"]).unwrap();
@@ -371,7 +398,7 @@ async fn handles_conflicts_renames_newlines_symlinks_linked_worktrees_and_cli_er
         )
         .await
         .unwrap_err();
-    assert!(zero_line_err.contains("行号"), "{zero_line_err}");
+    assert!(zero_line_err.contains("line number"), "{zero_line_err}");
 
     assert!(
         serde_json::from_value::<OpenFileRequest>(serde_json::json!({

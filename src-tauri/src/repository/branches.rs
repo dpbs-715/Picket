@@ -1,6 +1,7 @@
 //! Branch writes are separate from commit authorization and never stage, stash,
 //! reset, force checkout, fetch, or retry a partially completed operation.
 use super::*;
+use crate::i18n::{self, LanguageKind};
 use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
 
 pub(super) fn split_remote_branch(
@@ -47,8 +48,17 @@ impl BranchState {
 }
 
 impl RepositoryStore {
-    pub(super) async fn branch_state(&self, root: &Path) -> Result<BranchState> {
-        let reader = self.inner.reader.for_worktree(root).await?;
+    pub(super) async fn branch_state(
+        &self,
+        root: &Path,
+        locale: LanguageKind,
+    ) -> Result<BranchState> {
+        let reader = self
+            .inner
+            .reader
+            .with_locale(locale)
+            .for_worktree(root)
+            .await?;
         let args = [
             "status",
             "--porcelain=v2",
@@ -57,7 +67,7 @@ impl RepositoryStore {
             "--untracked-files=all",
         ];
         let status = reader.bytes(root, &args).await?;
-        let parsed = parse::status(&status)?;
+        let parsed = parse::status_with_locale(&status, locale)?;
         let index = reader.bytes(root, &["ls-files", "--stage", "-z"]).await?;
         let paths: BTreeSet<_> = parsed
             .entries
@@ -69,7 +79,7 @@ impl RepositoryStore {
             working.push((path.clone(), self.working_file(root, &path)?));
         }
         if reader.bytes(root, &args).await? != status {
-            return Err("Git 状态正在变化，请刷新后重试；草稿与选择已保留".into());
+            return Err(i18n::repo_changed_during_read_error(locale).into());
         }
         Ok(BranchState {
             status,
@@ -81,41 +91,44 @@ impl RepositoryStore {
     }
 
     async fn registered_branch_path(&self, request: &BranchRequest) -> Result<PathBuf> {
+        let locale = request.locale;
         let registered = self
             .inner
             .repositories
             .lock()
-            .map_err(|_| "仓库注册表不可用")?
+            .map_err(|_| "Repository registry is unavailable")?
             .get(&request.target.repository_id)
             .cloned()
-            .ok_or("仓库未在当前窗口打开")?;
+            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
         if registered.branch_tokens.get(&request.target.worktree_id) != Some(&request.branch_token)
         {
-            return Err("分支操作依据已过期，请刷新后重试；草稿与选择已保留".into());
+            return Err(i18n::branch_token_stale_error(locale).into());
         }
         let root = registered
             .paths
             .get(&request.target.worktree_id)
             .cloned()
-            .ok_or("工作树未在当前窗口打开")?;
-        if fs::canonicalize(&root).map_err(|_| "工作树目录不可访问")? != root {
-            return Err("工作树路径已变化，请重新打开目录".into());
+            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
+        if fs::canonicalize(&root).map_err(|_| "Worktree directory is inaccessible")? != root {
+            return Err("Worktree path changed; please reopen the directory".into());
         }
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
         let common = reader
             .text(
                 &root,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )
             .await?;
-        let common = fs::canonicalize(common).map_err(|_| "Git 公共目录不可访问")?;
+        let common =
+            fs::canonicalize(common).map_err(|_| "Git common directory is inaccessible")?;
         let toplevel = reader
             .text(&root, &["rev-parse", "--show-toplevel"])
             .await?;
         if identity("repo", &common) != request.target.repository_id
-            || fs::canonicalize(toplevel).map_err(|_| "Git 工作目录不可访问")? != root
+            || fs::canonicalize(toplevel).map_err(|_| "Git working directory is inaccessible")?
+                != root
         {
-            return Err("工作树所属仓库已变化，请重新打开；草稿与选择已保留".into());
+            return Err(i18n::repo_identity_changed_error(locale).into());
         }
         Ok(root)
     }
@@ -126,7 +139,7 @@ impl RepositoryStore {
             || branch.trim() != branch
             || branch.chars().any(char::is_control)
         {
-            return Err("分支名无效，请使用 Git 接受的完整本地分支名".into());
+            return Err("Invalid branch name; enter a valid local Git branch name".into());
         }
         let checked = self
             .inner
@@ -134,13 +147,15 @@ impl RepositoryStore {
             .run(root, &["check-ref-format", "--branch", branch])
             .await?;
         if !checked.success || checked.bytes != format!("{branch}\n").as_bytes() {
-            return Err("分支名无效，请检查空格、特殊字符或路径格式".into());
+            return Err(
+                "Invalid branch name; check for spaces, special characters, or path syntax".into(),
+            );
         }
         Ok(())
     }
 
-    async fn ensure_branch_write_allowed(&self, root: &Path) -> Result<()> {
-        let reader = &self.inner.reader;
+    async fn ensure_branch_write_allowed(&self, root: &Path, locale: LanguageKind) -> Result<()> {
+        let reader = self.inner.reader.with_locale(locale);
         for marker in [
             "MERGE_HEAD",
             "CHERRY_PICK_HEAD",
@@ -159,9 +174,7 @@ impl RepositoryStore {
                 )
                 .await?;
             if fs::symlink_metadata(&path).is_ok() {
-                return Err(format!(
-                    "存在 Git 进行中操作或锁（{marker}），请先在 Git / IDE 中处理；未执行分支写入"
-                ));
+                return Err(i18n::branch_in_progress_or_lock_error(locale, marker));
             }
         }
         if !reader
@@ -169,17 +182,14 @@ impl RepositoryStore {
             .await?
             .is_empty()
         {
-            return Err("存在未解决冲突，请先在 Git / IDE 中处理；未执行分支写入".into());
+            return Err(i18n::commit_unresolved_conflict_error(locale).into());
         }
         let flags = reader.bytes(root, &["ls-files", "-v", "-z"]).await?;
         if flags
             .split(|byte| *byte == 0)
             .any(|entry| !entry.is_empty() && entry[0] != b'H')
         {
-            return Err(
-                "当前暂存区含稀疏检出或隐藏变更标记，暂不执行分支写入；请先在 Git / IDE 中处理"
-                    .into(),
-            );
+            return Err(i18n::commit_sparse_or_hidden_flag_error(locale).into());
         }
         if reader
             .bytes(root, &["ls-files", "--stage", "-z"])
@@ -187,7 +197,7 @@ impl RepositoryStore {
             .split(|byte| *byte == 0)
             .any(|entry| entry.starts_with(b"160000 "))
         {
-            return Err("含子模块的仓库尚未通过分支写入验证，请在 Git / IDE 中操作".into());
+            return Err(i18n::commit_submodule_error(locale).into());
         }
         // Query without the read runner's hooksPath override. The write runner
         // preserves this configuration too; executable hooks are refused, not skipped.
@@ -198,7 +208,7 @@ impl RepositoryStore {
             )
             .await?;
         if !hooks.success {
-            return Err("无法核对 Git hooks 目录，未执行分支写入".into());
+            return Err("Cannot verify Git hooks directory; no branch write was performed".into());
         }
         let configured_hooks = reader
             .write(root, &["config", "--path", "--get", "core.hooksPath"])
@@ -206,34 +216,43 @@ impl RepositoryStore {
         if configured_hooks.success {
             // A custom path can become executable only after checkout (for
             // example .husky). Checking the source directory alone is unsafe.
-            return Err("仓库配置了自定义 hooksPath，当前版本尚未验证其安全检出，未执行分支写入；请在 Git / IDE 中操作".into());
+            return Err(i18n::branch_custom_hooks_path_error(locale).into());
         } else if configured_hooks.code != Some(1) {
-            return Err("无法核对 Git hooksPath，未执行分支写入".into());
+            return Err("Cannot verify Git core.hooksPath; no branch write was performed".into());
         }
-        let hooks = parse::utf8(&hooks.bytes)?;
+        let hooks = parse::utf8_with_locale(&hooks.bytes, locale)?;
         let hooks = PathBuf::from(hooks.strip_suffix('\n').unwrap_or(&hooks));
         match fs::read_dir(&hooks) {
             Ok(entries) => {
                 for entry in entries {
-                    let path = entry.map_err(|_| "无法检查 Git hook")?.path();
+                    let path = entry.map_err(|_| "Cannot inspect Git hook")?.path();
                     if path.extension().is_some_and(|ext| ext == "sample") {
                         continue;
                     }
-                    let metadata =
-                        fs::metadata(&path).map_err(|_| "无法检查 Git hook，未执行分支写入")?;
+                    let metadata = fs::metadata(&path)
+                        .map_err(|_| "Cannot inspect Git hook; no branch write was performed")?;
                     if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
-                        return Err("检测到可执行 Git hook，当前版本不支持安全执行，未创建或切换分支；请在 Git / IDE 中操作".into());
+                        return Err(i18n::branch_executable_hook_error(locale).into());
                     }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err("无法检查 Git hooks 目录，未执行分支写入".into()),
+            Err(_) => {
+                return Err(
+                    "Cannot inspect Git hooks directory; no branch write was performed".into(),
+                );
+            }
         }
         Ok(())
     }
 
-    async fn ensure_checkout_filters_allowed(&self, root: &Path, target_head: &str) -> Result<()> {
-        let reader = &self.inner.reader;
+    async fn ensure_checkout_filters_allowed(
+        &self,
+        root: &Path,
+        target_head: &str,
+        locale: LanguageKind,
+    ) -> Result<()> {
+        let reader = self.inner.reader.with_locale(locale);
         let filters = reader
             .run(
                 root,
@@ -251,7 +270,7 @@ impl RepositoryStore {
             return Ok(());
         }
         if !filters.success {
-            return Err("无法检查 Git 文件过滤器，未执行分支写入".into());
+            return Err("Cannot inspect Git file filters; no branch write was performed".into());
         }
         let mut drivers = BTreeSet::new();
         for key in filters
@@ -259,12 +278,12 @@ impl RepositoryStore {
             .split(|byte| *byte == 0)
             .filter(|key| !key.is_empty())
         {
-            let key = parse::utf8(key)?;
+            let key = parse::utf8_with_locale(key, locale)?;
             let (driver, _) = key
                 .strip_prefix("filter.")
-                .ok_or("无法解析 Git 过滤器名称")?
+                .ok_or("Cannot parse Git filter driver name")?
                 .rsplit_once('.')
-                .ok_or("无法解析 Git 过滤器名称")?;
+                .ok_or("Cannot parse Git filter driver name")?;
             drivers.insert(driver.to_owned());
         }
         // Check working attributes, index attributes and target-tree attributes.
@@ -289,7 +308,7 @@ impl RepositoryStore {
         let paths: Vec<_> = paths
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(parse::utf8)
+            .map(|p| parse::utf8_with_locale(p, locale))
             .collect::<Result<BTreeSet<_>>>()?
             .into_iter()
             .collect();
@@ -309,8 +328,8 @@ impl RepositoryStore {
                 let attributes = reader.bytes(root, &args).await?;
                 let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
                 for record in fields.chunks(3).filter(|record| record.len() == 3) {
-                    if drivers.contains(&parse::utf8(record[2])?) {
-                        return Err("当前或目标分支的文件需要外部 Git 过滤器，当前版本不能保证安全检出，请在 Git / IDE 中操作".into());
+                    if drivers.contains(&parse::utf8_with_locale(record[2], locale)?) {
+                        return Err(i18n::branch_external_filter_error(locale).into());
                     }
                 }
             }
@@ -319,33 +338,32 @@ impl RepositoryStore {
     }
 
     pub async fn change_branch(&self, request: &BranchRequest) -> Result<RepositorySnapshot> {
-        validate_request_id(&request.request_id)?;
+        let locale = request.locale;
+        validate_request_id_with_locale(&request.request_id, locale)?;
         if !self
             .inner
             .branch_requests
             .lock()
-            .map_err(|_| "分支请求记录不可用")?
+            .map_err(|_| "Branch request registry is unavailable")?
             .insert(request.request_id.clone())
         {
-            return Err("此分支请求已经接收，不会重复执行；请刷新核对 Git 实际状态".into());
+            return Err(i18n::branch_duplicate_request_error(locale).into());
         }
         let _guard = self
             .repository_gate(&request.target.repository_id)?
             .lock_owned()
             .await;
         let root = self.registered_branch_path(request).await?;
-        self.ensure_branch_write_allowed(&root).await?;
-        let before = self.branch_state(&root).await?;
+        self.ensure_branch_write_allowed(&root, locale).await?;
+        let before = self.branch_state(&root, locale).await?;
         if before.token()? != request.branch_token {
-            return Err(
-                "分支、HEAD、暂存区或工作区内容已变化，请刷新后重试；草稿与选择已保留".into(),
-            );
+            return Err(i18n::branch_token_stale_error(locale).into());
         }
         let head = before
             .head
             .as_deref()
-            .ok_or("仓库尚无首次提交，请先在 Git / IDE 中完成首次提交后再切换分支")?;
-        let reader = &self.inner.reader;
+            .ok_or_else(|| i18n::branch_unborn_head_error(locale))?;
+        let reader = self.inner.reader.with_locale(locale);
         let entries = parse::worktrees(
             &reader
                 .bytes(&root, &["worktree", "list", "--porcelain", "-z"])
@@ -357,10 +375,11 @@ impl RepositoryStore {
                     self.validate_branch_name(&root, &request.branch).await?;
                     if let Some(entry) = entries.iter().find(|entry| entry.branch == request.branch)
                     {
-                        let destination = fs::canonicalize(&entry.path)
-                            .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
+                        let destination = fs::canonicalize(&entry.path).map_err(|_| {
+                            "Worktree occupied by target branch is inaccessible; repair that worktree first"
+                        })?;
                         // An occupied branch is a navigation result, never a forced checkout.
-                        return self.read_repository_locked(&destination).await;
+                        return self.read_repository_locked(&destination, locale).await;
                     }
                     let oid = reader
                         .text(
@@ -372,7 +391,9 @@ impl RepositoryStore {
                             ],
                         )
                         .await
-                        .map_err(|_| "所选本地分支已不存在，请刷新分支列表")?;
+                        .map_err(
+                            |_| "Selected local branch no longer exists; refresh branch list",
+                        )?;
                     (
                         request.branch.clone(),
                         oid,
@@ -390,12 +411,14 @@ impl RepositoryStore {
                         || request.branch.trim() != request.branch
                         || request.branch.chars().any(char::is_control)
                     {
-                        return Err("远程分支名称无效，请选择具体的远程分支".into());
+                        return Err(
+                            "Invalid remote branch name; select a specific remote branch".into(),
+                        );
                     }
                     let remotes = self.list_remotes_unlocked(&root).await.unwrap_or_default();
                     let (remote_name, local_branch) =
                         split_remote_branch(&request.branch, &remotes)
-                            .ok_or("远程分支名称无效，请选择具体的远程分支")?;
+                            .ok_or("Invalid remote branch name; select a specific remote branch")?;
                     self.validate_branch_name(&root, &local_branch).await?;
                     let remote_ref = format!("refs/remotes/{}", request.branch);
                     if reader
@@ -403,7 +426,10 @@ impl RepositoryStore {
                         .await?
                         .success
                     {
-                        return Err("不能直接检出远端 HEAD 符号引用，请选择具体的远程分支".into());
+                        return Err(
+                            "Cannot check out symbolic remote HEAD directly; select a specific remote branch"
+                                .into(),
+                        );
                     }
                     let remote_head = reader
                         .text(
@@ -411,11 +437,14 @@ impl RepositoryStore {
                             &["rev-parse", "--verify", &format!("{remote_ref}^{{commit}}")],
                         )
                         .await
-                        .map_err(|_| "所选远程分支在本地跟踪引用中不存在，请先同步或刷新后重试")?;
+                        .map_err(|_| {
+                            "Selected remote branch does not exist in local tracking refs; sync or refresh first"
+                        })?;
                     if let Some(entry) = entries.iter().find(|entry| entry.branch == local_branch) {
-                        let destination = fs::canonicalize(&entry.path)
-                            .map_err(|_| "分支占用的工作树不可访问，请先修复该工作树")?;
-                        return self.read_repository_locked(&destination).await;
+                        let destination = fs::canonicalize(&entry.path).map_err(|_| {
+                            "Worktree occupied by target branch is inaccessible; repair that worktree first"
+                        })?;
+                        return self.read_repository_locked(&destination, locale).await;
                     }
                     if let Ok(local_head) = reader
                         .text(
@@ -465,36 +494,42 @@ impl RepositoryStore {
                 }
             };
         if !before.working.is_empty() && checkout_head != head {
-            return Err("当前有暂存或未暂存改动，不能安全切换到不同提交；请先在 Git / IDE 中处理当前改动后再切换分支".into());
+            return Err(i18n::branch_dirty_cross_commit_error(locale).into());
         }
         // Recheck after all validation and any slow filesystem inspection.
-        self.ensure_branch_write_allowed(&root).await?;
-        self.ensure_checkout_filters_allowed(&root, &checkout_head)
+        self.ensure_branch_write_allowed(&root, locale).await?;
+        self.ensure_checkout_filters_allowed(&root, &checkout_head, locale)
             .await?;
-        if self.branch_state(&root).await?.token()? != request.branch_token {
-            return Err("Git 内容在校验期间变化，请刷新后重新操作；未执行写入".into());
+        if self.branch_state(&root, locale).await?.token()? != request.branch_token {
+            return Err(i18n::branch_token_stale_error(locale).into());
         }
         let writer = reader.for_checkout(&root).await?;
         let args_ref: Vec<&str> = switch_args.iter().map(String::as_str).collect();
         let output = writer
             .write(&root, &args_ref)
             .await
-            .map_err(|error| format!("{error}。请刷新核对实际分支状态；不会自动重试或回滚。"))?;
+            .map_err(|error| i18n::branch_switch_failed_error(locale, &error))?;
         if !output.success {
-            return Err(format!(
-                "Git 操作未完成：{}。请刷新核对实际状态；不会自动重试或回滚。",
-                String::from_utf8_lossy(&output.stderr).trim()
+            return Err(i18n::branch_switch_failed_error(
+                locale,
+                String::from_utf8_lossy(&output.stderr).trim(),
             ));
         }
-        let after = self.branch_state(&root).await?;
+        let after = self.branch_state(&root, locale).await?;
         if !before.working.is_empty() && !before.preserves_changes(&after) {
-            return Err("Git 操作后暂存区或工作草稿与预期不符，已停止后续动作；请刷新并在 Git / IDE 中核对，不会自动回滚".into());
+            return Err(
+                "Staging area or working draft after Git branch operation did not match expectation; stopped without automatic rollback. Refresh and verify in Git / IDE"
+                    .into(),
+            );
         }
         if after.branch != target_branch || after.head.as_deref() != Some(checkout_head.as_str()) {
-            return Err("Git 操作后的分支或 HEAD 与预期不符，请刷新核对；不会自动重试".into());
+            return Err(
+                "Branch or HEAD after Git operation did not match expectation; refresh to verify (no automatic retry)"
+                    .into(),
+            );
         }
-        self.read_repository_locked(&root).await.map_err(|error| {
-            format!("Git 已切换分支，但读取结果失败：{error}。请刷新核对实际状态。")
-        })
+        self.read_repository_locked(&root, locale)
+            .await
+            .map_err(|error| i18n::branch_switched_read_failed_error(locale, &error))
     }
 }

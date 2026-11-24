@@ -1,4 +1,5 @@
 use super::types::{ApiFormatKind, ProviderKind};
+use crate::i18n::{self, LanguageKind};
 use serde::{Deserialize, de::IgnoredAny};
 use std::{collections::HashMap, sync::OnceLock};
 
@@ -95,24 +96,30 @@ pub fn resolve_default_token_limits(
     )
 }
 
-pub fn validate_token_limits(context_window: u32, max_output_tokens: u32) -> Result<(), String> {
+pub fn validate_token_limits(
+    context_window: u32,
+    max_output_tokens: u32,
+    locale: LanguageKind,
+) -> Result<(), String> {
     let limits = &model_defaults().limits;
     if context_window < limits.min_context_window || context_window > limits.max_context_window {
-        return Err(format!(
-            "上下文长度须为 {} 至 {} 之间的整数",
-            limits.min_context_window, limits.max_context_window
+        return Err(i18n::token_context_range_error(
+            locale,
+            limits.min_context_window,
+            limits.max_context_window,
         ));
     }
     if max_output_tokens < limits.min_max_output_tokens
         || max_output_tokens > limits.max_max_output_tokens
     {
-        return Err(format!(
-            "最大输出 Token 须为 {} 至 {} 之间的整数",
-            limits.min_max_output_tokens, limits.max_max_output_tokens
+        return Err(i18n::token_output_range_error(
+            locale,
+            limits.min_max_output_tokens,
+            limits.max_max_output_tokens,
         ));
     }
     if max_output_tokens > context_window {
-        return Err("最大输出 Token 不能超过上下文长度".into());
+        return Err(i18n::token_output_exceeds_context_error(locale).into());
     }
     Ok(())
 }

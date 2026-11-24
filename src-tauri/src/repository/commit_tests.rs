@@ -42,6 +42,7 @@ fn commit_request(snapshot: &RepositorySnapshot, paths: &[&str], message: &str) 
         selections: select(snapshot, paths),
         message: message.into(),
         push: false,
+        locale: crate::i18n::LanguageKind::En,
     }
 }
 
@@ -100,14 +101,17 @@ async fn commits_selected_partial_and_untracked_scope_while_preserving_unselecte
     let parent = active(&before).head.clone();
     let req = commit_request(
         &before,
-        &["part.txt", "新 文件.ts"],
-        "feat(proof): 提交已暂存部分与新文件\n\n保留未选已暂存锁文件和未暂存草稿",
+        &["part.txt", "\u{65b0} \u{6587}\u{4ef6}.ts"],
+        "feat(proof): commit staged partial changes and new file\n\nPreserve unselected staged lockfile and unstaged draft",
     );
     let (after, commit) = store.commit(&req).await.unwrap();
 
     assert_eq!(commit.parent, parent);
     assert_eq!(commit.branch, "feat/read-proof");
-    assert_eq!(commit.title, "feat(proof): 提交已暂存部分与新文件");
+    assert_eq!(
+        commit.title,
+        "feat(proof): commit staged partial changes and new file"
+    );
     assert_eq!(commit.oid, text(&fixture.root, &["rev-parse", "HEAD"]));
     assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "2");
     assert_eq!(
@@ -123,7 +127,10 @@ async fn commits_selected_partial_and_untracked_scope_while_preserving_unselecte
         b"first=2\nsecond=3\n"
     );
     assert_eq!(
-        text(&fixture.root, &["show", "HEAD:新 文件.ts"]),
+        text(
+            &fixture.root,
+            &["show", "HEAD:\u{65b0} \u{6587}\u{4ef6}.ts"]
+        ),
         "export const proof = true;"
     );
     assert_eq!(
@@ -136,7 +143,7 @@ async fn commits_selected_partial_and_untracked_scope_while_preserving_unselecte
     );
     assert!(
         text(&fixture.root, &["log", "-g", "-1", "--oneline", "HEAD"])
-            .contains("commit: feat(proof): 提交已暂存部分与新文件")
+            .contains("commit: feat(proof): commit staged partial changes and new file")
     );
 
     let updated_tree = active(&after);
@@ -165,7 +172,7 @@ async fn commits_selected_partial_and_untracked_scope_while_preserving_unselecte
         !updated_tree
             .files
             .iter()
-            .any(|file| file.path == "新 文件.ts")
+            .any(|file| file.path == "\u{65b0} \u{6587}\u{4ef6}.ts")
     );
 }
 
@@ -179,7 +186,7 @@ async fn commits_mixed_deletions_renames_symlinks_executables_binary_and_glob_pa
     fs::remove_file(fixture.root.join("delete-unstaged.txt")).unwrap();
     git(&fixture.root, &["rm", "-f", "--", "part.txt"]).unwrap();
     fs::write(fixture.root.join("part.txt"), "recreated draft\n").unwrap();
-    let renamed = "新 名\n字.lock";
+    let renamed = "\u{65b0} \u{540d}\n\u{5b57}.lock";
     git(&fixture.root, &["mv", "--", "pnpm-lock.yaml", renamed]).unwrap();
     let script = fixture.root.join("run [glob].sh");
     fs::write(&script, "#!/bin/sh\necho ok\n").unwrap();
@@ -200,14 +207,14 @@ async fn commits_mixed_deletions_renames_symlinks_executables_binary_and_glob_pa
                 "payload.bin",
                 "script-link",
             ],
-            "#42 feat: 支持混合增删重命名与特殊路径",
+            "#42 feat: support mixed additions deletions renames and special paths",
         ))
         .await
         .unwrap();
 
     assert_eq!(
         text(&fixture.root, &["show", "-s", "--format=%s", "HEAD"]),
-        "#42 feat: 支持混合增删重命名与特殊路径"
+        "#42 feat: support mixed additions deletions renames and special paths"
     );
     assert!(git(&fixture.root, &["show", "HEAD:delete-unstaged.txt"]).is_err());
     assert!(git(&fixture.root, &["show", "HEAD:part.txt"]).is_err());
@@ -245,7 +252,11 @@ async fn commits_mixed_deletions_renames_symlinks_executables_binary_and_glob_pa
         .collect();
     assert_eq!(
         remaining_paths,
-        vec![("part.txt", "??"), (renamed, ".M"), ("新 文件.ts", "??")]
+        vec![
+            ("part.txt", "??"),
+            (renamed, ".M"),
+            ("\u{65b0} \u{6587}\u{4ef6}.ts", "??")
+        ]
     );
 }
 
@@ -284,7 +295,7 @@ async fn allows_direct_commit_on_main_and_master_while_refusing_detached_head_un
         .commit(&commit_request(&snapshot, &["part.txt"], "feat: detached"))
         .await
         .unwrap_err();
-    assert!(error.contains("分离 HEAD"), "{error}");
+    assert!(error.contains("detached HEAD"), "{error}");
     assert_eq!(
         text(&detached_fixture.root, &["rev-list", "--count", "HEAD"]),
         "1"
@@ -355,7 +366,7 @@ async fn unrelated_changes_and_partial_draft_edits_succeed_while_stale_selected_
         let target_path = if stale_case == "missing-literal" {
             "literal-missing.txt"
         } else if stale_case == "unstaged-edit" || stale_case == "chmod" {
-            "新 文件.ts"
+            "\u{65b0} \u{6587}\u{4ef6}.ts"
         } else {
             "part.txt"
         };
@@ -363,7 +374,7 @@ async fn unrelated_changes_and_partial_draft_edits_succeed_while_stale_selected_
         match stale_case {
             "unstaged-edit" => {
                 fs::write(
-                    fixture.root.join("新 文件.ts"),
+                    fixture.root.join("\u{65b0} \u{6587}\u{4ef6}.ts"),
                     "export const proof = false;\n",
                 )
                 .unwrap();
@@ -373,7 +384,7 @@ async fn unrelated_changes_and_partial_draft_edits_succeed_while_stale_selected_
             }
             "chmod" => {
                 fs::set_permissions(
-                    fixture.root.join("新 文件.ts"),
+                    fixture.root.join("\u{65b0} \u{6587}\u{4ef6}.ts"),
                     fs::Permissions::from_mode(0o755),
                 )
                 .unwrap();
@@ -395,7 +406,7 @@ async fn unrelated_changes_and_partial_draft_edits_succeed_while_stale_selected_
         let expected_commits = text(&fixture.root, &["rev-list", "--count", "HEAD"]);
         let error = store.commit(&operation).await.unwrap_err();
         assert!(
-            error.contains("变化") || error.contains("暂停"),
+            error.contains("changed") || error.contains("paused"),
             "{stale_case}: {error}"
         );
         assert_eq!(
@@ -482,13 +493,16 @@ async fn executes_real_hooks_including_custom_hooks_path_and_aborts_on_rejection
     husky_store
         .commit(&commit_request(
             &husky_snap,
-            &["新 文件.ts"],
+            &["\u{65b0} \u{6587}\u{4ef6}.ts"],
             "feat: husky pass",
         ))
         .await
         .unwrap();
     assert_eq!(
-        text(&husky_fixture.root, &["show", "HEAD:新 文件.ts"]),
+        text(
+            &husky_fixture.root,
+            &["show", "HEAD:\u{65b0} \u{6587}\u{4ef6}.ts"]
+        ),
         "export const proof = true;"
     );
 
@@ -549,7 +563,7 @@ async fn executes_real_hooks_including_custom_hooks_path_and_aborts_on_rejection
             .await
             .unwrap_err();
         assert!(
-            error.contains("钩子") && error.contains("修改"),
+            error.contains("hook") && error.contains("modified"),
             "{exit_code}: {error}"
         );
         assert_eq!(
@@ -589,7 +603,13 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
     let conflict_fixture = Fixture::new().unwrap();
     git(
         &conflict_fixture.root,
-        &["add", "--", "part.txt", "pnpm-lock.yaml", "新 文件.ts"],
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
     )
     .unwrap();
     git(&conflict_fixture.root, &["commit", "-m", "test: base"]).unwrap();
@@ -612,7 +632,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .await
         .unwrap_err();
     assert!(
-        conflict_err.contains("冲突") || conflict_err.contains("MERGE_HEAD"),
+        conflict_err.contains("conflict") || conflict_err.contains("MERGE_HEAD"),
         "{conflict_err}"
     );
 
@@ -638,7 +658,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         ))
         .await
         .unwrap_err();
-    assert!(slot_err.contains("重命名"), "{slot_err}");
+    assert!(slot_err.contains("rename"), "{slot_err}");
 
     // Unused global-like filter config is allowed, but selected unstaged file needing clean filter is refused:
     let filter_fixture = Fixture::new().unwrap();
@@ -653,12 +673,12 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
     let filter_err = filter_store
         .commit(&commit_request(
             &filter_snap,
-            &["新 文件.ts"],
+            &["\u{65b0} \u{6587}\u{4ef6}.ts"],
             "feat: filter blocked",
         ))
         .await
         .unwrap_err();
-    assert!(filter_err.contains("过滤器"), "{filter_err}");
+    assert!(filter_err.contains("external Git filter"), "{filter_err}");
 
     // Sparse / skip-worktree flag and tracked submodule entry are refused:
     let sparse_fixture = Fixture::new().unwrap();
@@ -673,7 +693,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .commit(&commit_request(&sparse_snap, &["part.txt"], "feat: sparse"))
         .await
         .unwrap_err();
-    assert!(sparse_err.contains("隐藏变更标记"), "{sparse_err}");
+    assert!(sparse_err.contains("skip-worktree"), "{sparse_err}");
 
     let sub_fixture = Fixture::new().unwrap();
     let sub_store = RepositoryStore::default();
@@ -693,7 +713,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .commit(&commit_request(&sub_snap, &["part.txt"], "feat: submodule"))
         .await
         .unwrap_err();
-    assert!(sub_err.contains("子模块"), "{sub_err}");
+    assert!(sub_err.contains("submodule"), "{sub_err}");
 }
 
 #[tokio::test]
@@ -714,11 +734,21 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
     // Reusing same request_id with a different message must fail:
     let mut reused = operation.clone();
     reused.message = "feat: different message".into();
-    assert!(store.commit(&reused).await.unwrap_err().contains("占用"));
+    assert!(
+        store
+            .commit(&reused)
+            .await
+            .unwrap_err()
+            .contains("already bound")
+    );
 
     // Interrupted journal record must never auto-repeat:
     let next_snap = store.open(&fixture.root).await.unwrap();
-    let mut interrupted = commit_request(&next_snap, &["新 文件.ts"], "feat: interrupted");
+    let mut interrupted = commit_request(
+        &next_snap,
+        &["\u{65b0} \u{6587}\u{4ef6}.ts"],
+        "feat: interrupted",
+    );
     interrupted.request_id = "interrupted-req-1".into();
     let journal = fixture.root.join(".git/picket/commits");
     fs::create_dir_all(&journal).unwrap();
@@ -730,7 +760,7 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
             "parent": active(&next_snap).head,
             "branch": active(&next_snap).branch,
             "tree": "deadbeef",
-            "paths": ["新 文件.ts"],
+            "paths": ["\u{65b0} \u{6587}\u{4ef6}.ts"],
             "selections": interrupted.selections,
             "rawMessage": interrupted.message,
             "commit": null
@@ -739,32 +769,46 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
     )
     .unwrap();
     let interrupted_err = store.commit(&interrupted).await.unwrap_err();
-    assert!(interrupted_err.contains("中断"), "{interrupted_err}");
+    assert!(interrupted_err.contains("interrupted"), "{interrupted_err}");
     assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "2");
 
     // Forged tokens, branchToken, UI scopeVersion, empty message, and push=true on local-only endpoint are rejected:
-    let mut bad_token = commit_request(&next_snap, &["新 文件.ts"], "feat: forged");
+    let mut bad_token = commit_request(
+        &next_snap,
+        &["\u{65b0} \u{6587}\u{4ef6}.ts"],
+        "feat: forged",
+    );
     bad_token.selections[0].commit_token = active(&next_snap).branch_token.clone().unwrap();
-    assert!(store.commit(&bad_token).await.unwrap_err().contains("凭证"));
+    assert!(
+        store
+            .commit(&bad_token)
+            .await
+            .unwrap_err()
+            .contains("scope token")
+    );
 
-    let mut push_req = commit_request(&next_snap, &["新 文件.ts"], "feat: push on local endpoint");
+    let mut push_req = commit_request(
+        &next_snap,
+        &["\u{65b0} \u{6587}\u{4ef6}.ts"],
+        "feat: push on local endpoint",
+    );
     push_req.push = true;
     assert!(
         store
             .commit(&push_req)
             .await
             .unwrap_err()
-            .contains("仅本地提交入口")
+            .contains("Local-only commit endpoint")
     );
 
-    let mut empty_msg = commit_request(&next_snap, &["新 文件.ts"], "   \n\t  ");
+    let mut empty_msg = commit_request(&next_snap, &["\u{65b0} \u{6587}\u{4ef6}.ts"], "   \n\t  ");
     empty_msg.request_id = "empty-msg-1".into();
     assert!(
         store
             .commit(&empty_msg)
             .await
             .unwrap_err()
-            .contains("提交说明")
+            .contains("commit message")
     );
 
     // Wire format rejects arbitrary paths, flags, or shell fields:
@@ -863,4 +907,131 @@ async fn supports_unborn_branch_initial_commit_linked_worktrees_and_missing_git_
         "export const linked = 1;"
     );
     fixture.verify_unchanged().unwrap();
+}
+
+#[tokio::test]
+async fn local_keep_invalidates_stale_tokens_excludes_by_default_preserves_staged_and_allows_explicit_commit()
+ {
+    let fixture = Fixture::new().unwrap();
+    fs::write(
+        fixture.root.join("normal.ts"),
+        "export const feature = true;\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("local-script.sh"),
+        "#!/bin/sh\necho local\n",
+    )
+    .unwrap();
+    git(&fixture.root, &["add", "--", "pnpm-lock.yaml"]).unwrap();
+
+    let store = RepositoryStore::default();
+    let before_keep = store.open(&fixture.root).await.unwrap();
+    let stale_part_req = commit_request(&before_keep, &["part.txt"], "feat: stale before keep");
+
+    let target = ReadTarget {
+        repository_id: active(&before_keep).repository_id.clone(),
+        worktree_id: active(&before_keep).worktree_id.clone(),
+        session_id: "commit-local-keep".into(),
+        scope_version: active(&before_keep).status_version.clone(),
+    };
+
+    // Mark partially-staged `part.txt`, staged `pnpm-lock.yaml`, and untracked `local-script.sh` as Local Keep:
+    let after_keep = store
+        .set_local_keep(
+            &target,
+            &[
+                "part.txt".into(),
+                "pnpm-lock.yaml".into(),
+                "local-script.sh".into(),
+            ],
+            true,
+            crate::i18n::LanguageKind::En,
+        )
+        .await
+        .unwrap();
+
+    // 1. Stale commitToken minted BEFORE `set_local_keep` must be rejected by Rust:
+    let stale_err = store.commit(&stale_part_req).await.unwrap_err();
+    assert!(
+        stale_err.contains("expired") || stale_err.contains("token") || stale_err.contains("scope"),
+        "expected token invalidation error, got: {stale_err}"
+    );
+    assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "1");
+
+    // 2. Default non-Local-Keep scope commits `normal.ts` while preserving staged & unstaged drafts of kept files:
+    let default_paths: Vec<&str> = active(&after_keep)
+        .files
+        .iter()
+        .filter(|f| !f.local_keep && !f.ignored_for_review && f.path == "normal.ts")
+        .map(|f| f.path.as_str())
+        .collect();
+    assert_eq!(default_paths, vec!["normal.ts"]);
+    let (after_normal_commit, _) = store
+        .commit(&commit_request(
+            &after_keep,
+            &default_paths,
+            "feat: commit only normal changes",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "2");
+    assert_eq!(
+        text(&fixture.root, &["show", "HEAD:normal.ts"]),
+        "export const feature = true;"
+    );
+    assert!(git(&fixture.root, &["show", "HEAD:local-script.sh"]).is_err());
+    // Kept `part.txt` still has its staged change (`first=2\nsecond=1`) AND unstaged draft (`first=2\nsecond=3\n`):
+    let kept_part = active(&after_normal_commit)
+        .files
+        .iter()
+        .find(|f| f.path == "part.txt")
+        .unwrap();
+    assert!(kept_part.local_keep);
+    assert_eq!(kept_part.range.kind, "partial");
+    assert_eq!(
+        fs::read(fixture.root.join("part.txt")).unwrap(),
+        b"first=2\nsecond=3\n"
+    );
+    // Kept staged `pnpm-lock.yaml` was NOT leaked into the commit and stays staged:
+    let kept_lock = active(&after_normal_commit)
+        .files
+        .iter()
+        .find(|f| f.path == "pnpm-lock.yaml")
+        .unwrap();
+    assert!(kept_lock.local_keep);
+    assert_eq!(kept_lock.range.kind, "staged");
+
+    // 3. Explicitly selecting a Local Keep file (`part.txt`) with its current commitToken commits only its staged range and preserves unstaged draft:
+    let (after_explicit_keep_commit, _) = store
+        .commit(&commit_request(
+            &after_normal_commit,
+            &["part.txt"],
+            "chore: explicitly include local keep staged part",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "3");
+    assert_eq!(
+        text(&fixture.root, &["show", "HEAD:part.txt"]),
+        "first=2\nsecond=1"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("part.txt")).unwrap(),
+        b"first=2\nsecond=3\n"
+    );
+    let remaining_part = active(&after_explicit_keep_commit)
+        .files
+        .iter()
+        .find(|f| f.path == "part.txt")
+        .unwrap();
+    assert!(remaining_part.local_keep);
+    assert_eq!(remaining_part.range.kind, "unstaged");
+    assert!(
+        active(&after_explicit_keep_commit)
+            .files
+            .iter()
+            .any(|f| f.path == "local-script.sh" && f.local_keep)
+    );
 }

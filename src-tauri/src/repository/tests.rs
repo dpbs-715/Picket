@@ -31,7 +31,7 @@ async fn reads_real_partial_range_without_changing_index_or_draft() {
     assert_eq!(
         tree.files
             .iter()
-            .find(|file| file.path == "新 文件.ts")
+            .find(|file| file.path == "\u{65b0} \u{6587}\u{4ef6}.ts")
             .unwrap()
             .range
             .added,
@@ -109,7 +109,12 @@ async fn staged_rename_keeps_both_paths_with_unicode_spaces_and_newlines() {
     let fixture = Fixture::new().unwrap();
     git(
         &fixture.root,
-        &["mv", "--", "pnpm-lock.yaml", "新 名\n字.lock"],
+        &[
+            "mv",
+            "--",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{540d}\n\u{5b57}.lock",
+        ],
     )
     .unwrap();
     let snapshot = RepositoryStore::default()
@@ -121,7 +126,7 @@ async fn staged_rename_keeps_both_paths_with_unicode_spaces_and_newlines() {
         .iter()
         .find(|file| file.status == "R")
         .unwrap();
-    assert_eq!(renamed.path, "新 名\n字.lock");
+    assert_eq!(renamed.path, "\u{65b0} \u{540d}\n\u{5b57}.lock");
     assert_eq!(renamed.previous_path.as_deref(), Some("pnpm-lock.yaml"));
 }
 #[tokio::test]
@@ -168,7 +173,7 @@ async fn supports_unborn_branch_but_rejects_non_repository_and_bare_directory() 
     let temporary = tempfile::tempdir().unwrap();
     let store = RepositoryStore::default();
     let non_git_err = store.open(temporary.path()).await.unwrap_err();
-    assert!(non_git_err.contains("未受 Git 管理"), "{non_git_err}");
+    assert!(non_git_err.contains("not managed by Git"), "{non_git_err}");
     git(temporary.path(), &["init", "-b", "main"]).unwrap();
     fs::write(temporary.path().join("new.txt"), "hello\n").unwrap();
     let snapshot = store.open(temporary.path()).await.unwrap();
@@ -178,7 +183,7 @@ async fn supports_unborn_branch_but_rejects_non_repository_and_bare_directory() 
     let bare = tempfile::tempdir().unwrap();
     git(bare.path(), &["init", "--bare"]).unwrap();
     let bare_err = store.open(bare.path()).await.unwrap_err();
-    assert!(bare_err.contains("裸仓库"), "{bare_err}");
+    assert!(bare_err.contains("bare Git repository"), "{bare_err}");
 }
 #[tokio::test]
 async fn missing_worktree_is_explicitly_unavailable_not_clean() {
@@ -310,7 +315,13 @@ async fn detects_real_conflict_records() {
     let fixture = Fixture::new().unwrap();
     git(
         &fixture.root,
-        &["add", "--", "part.txt", "pnpm-lock.yaml", "新 文件.ts"],
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
     )
     .unwrap();
     git(

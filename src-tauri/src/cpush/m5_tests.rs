@@ -2,7 +2,8 @@
 //! (`clone_a` and `clone_b`) + bundled Pi Core, verifying R02–R06, C04, and W04.
 use super::{CPushCoordinator, types::*};
 use crate::{
-    foundation::pi::{PiPaths, PiSupervisor},
+    foundation::pi::{PiCPushCommitGroup, PiPaths, PiSupervisor},
+    i18n::LanguageKind,
     models::{
         keychain::CredentialVault,
         smoke::LocalModelSseServer,
@@ -114,15 +115,33 @@ fn make_models(dir: &Path) -> ModelStore {
 }
 
 #[tokio::test]
-async fn manual_commit_and_push_handles_missing_upstream_push_failure_and_retry_without_recommit() {
+async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_without_recommit() {
     let temp = tempfile::tempdir().unwrap();
     let models = make_models(temp.path());
+    let saved = models
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: None,
+                provider: ProviderKind::Ollama,
+                api_format: None,
+                name: "Local Planner".into(),
+                model_id: "qwen2.5-coder:14b".into(),
+                base_url: "http://127.0.0.1:11434/v1".into(),
+                api_key: String::new(),
+                context_window: None,
+                max_output_tokens: None,
+                locale: LanguageKind::En,
+            },
+        )
+        .await
+        .unwrap();
     let paths = PiPaths::development();
     let supervisor = PiSupervisor::default();
     let repo_store = RepositoryStore::default();
     let coordinator = CPushCoordinator::default();
 
-    // 1. R05 + A01: Zero-model manual `commit_and_push` on a branch without upstream and non-`origin` remote (`corp`):
+    // 1. R05: C-Push with confirmed plan on a branch without upstream and non-`origin` remote (`corp`):
     let pair = BareRemotePair::new("corp", "feat/pay");
     git(&pair.clone_a, &["switch", "-c", "feat/no-upstream"]).unwrap();
     fs::write(pair.clone_a.join("part.txt"), "first=2\nsecond=1\n").unwrap();
@@ -139,18 +158,31 @@ async fn manual_commit_and_push_handles_missing_upstream_push_failure_and_retry_
     };
 
     let asked = coordinator
-        .commit_and_push(
+        .start_cpush(
             temp.path(),
+            &paths,
+            &supervisor,
+            &models,
             &repo_store,
-            &CommitAndPushRequest {
+            &StartCPushRequest {
                 request_id: "cp-no-upstream-1".into(),
                 target: target.clone(),
+                model_id: saved.model.id.clone(),
                 selections: vec![CommitSelection {
                     file_id: part.id.clone(),
                     commit_token: part.commit_token.clone(),
                 }],
-                message: "feat(part): update first key".into(),
-                model_id: None,
+                prompt: String::new(),
+                confirmed_plan: Some(CPushConfirmedPlan {
+                    groups: vec![PiCPushCommitGroup {
+                        id: "g1".into(),
+                        file_ids: vec![part.id.clone()],
+                        message: "feat(part): update first key\n\n- set first=2".into(),
+                    }],
+                    skipped_file_ids: vec![],
+                }),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
             },
             |_| Ok(()),
         )
@@ -196,6 +228,7 @@ async fn manual_commit_and_push_handles_missing_upstream_push_failure_and_retry_
                 option_id: Some("push-set-upstream:corp".into()),
                 text: None,
                 model_id: None,
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -226,18 +259,31 @@ async fn manual_commit_and_push_handles_missing_upstream_push_failure_and_retry_
     };
 
     let failed = coordinator
-        .commit_and_push(
+        .start_cpush(
             temp.path(),
+            &paths,
+            &supervisor,
+            &models,
             &repo_store,
-            &CommitAndPushRequest {
+            &StartCPushRequest {
                 request_id: "cp-push-fail-1".into(),
                 target: target2.clone(),
+                model_id: saved.model.id.clone(),
                 selections: vec![CommitSelection {
                     file_id: part2.id.clone(),
                     commit_token: part2.commit_token.clone(),
                 }],
-                message: "feat(part): bump first to 3".into(),
-                model_id: None,
+                prompt: String::new(),
+                confirmed_plan: Some(CPushConfirmedPlan {
+                    groups: vec![PiCPushCommitGroup {
+                        id: "g1".into(),
+                        file_ids: vec![part2.id.clone()],
+                        message: "feat(part): bump first to 3\n\n- set first=3".into(),
+                    }],
+                    skipped_file_ids: vec![],
+                }),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
             },
             |_| Ok(()),
         )
@@ -250,7 +296,7 @@ async fn manual_commit_and_push_handles_missing_upstream_push_failure_and_retry_
     );
     assert_eq!(
         failed.session.message.as_ref().unwrap().title,
-        "已在本地提交，推送失败"
+        "Committed locally, push failed"
     );
     let committed_oid = failed.session.commits[0].oid.clone();
     assert_eq!(
@@ -275,6 +321,7 @@ async fn manual_commit_and_push_handles_missing_upstream_push_failure_and_retry_
                 option_id: Some("retry-push".into()),
                 text: None,
                 model_id: None,
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -347,6 +394,7 @@ async fn dirty_worktree_pull_rebase_preserves_partial_staging_pauses_on_overlap_
                 request_id: "pull-disjoint-1".into(),
                 target: target.clone(),
                 model_id: None,
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -411,6 +459,7 @@ async fn dirty_worktree_pull_rebase_preserves_partial_staging_pauses_on_overlap_
                 request_id: "pull-overlap-1".into(),
                 target: target.clone(),
                 model_id: None,
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -463,6 +512,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                 api_key: "sk-m5-secret-7788".into(),
                 context_window: None,
                 max_output_tokens: None,
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -525,7 +575,10 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                     file_id: order_file.id.clone(),
                     commit_token: order_file.commit_token.clone(),
                 }],
-                draft: String::new(),
+                prompt: String::new(),
+                confirmed_plan: None,
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
             },
             |_| Ok(()),
         )
@@ -557,8 +610,9 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                 run_id: conflicted.session.run_id.clone(),
                 message_id: c_msg.id.clone(),
                 option_id: None,
-                text: Some("模拟残留冲突标记".into()),
+                text: Some("simulate leftover conflict markers".into()),
                 model_id: Some(saved.model.id.clone()),
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -574,7 +628,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .as_ref()
         .unwrap()
         .description;
-    assert!(rej_desc.contains("冲突标记"), "got: {rej_desc}");
+    assert!(rej_desc.contains("conflict markers"), "got: {rej_desc}");
 
     // R03 authorized Agent merge with custom requirement -> merges, finishes rebase, restores `notes.txt`, and pushes!
     let merged_and_pushed = coordinator
@@ -590,8 +644,9 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                 run_id: conflicted.session.run_id.clone(),
                 message_id: marker_rejected.session.message.unwrap().id,
                 option_id: None,
-                text: Some("附上合并说明注释".into()),
+                text: Some("append merge note comment".into()),
                 model_id: Some(saved.model.id.clone()),
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -605,7 +660,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     let head_order = text_git(&pair.clone_a, &["show", "HEAD:src/service/Order.ts"]);
     assert!(head_order.contains("logRemoteTrace()"));
     assert!(head_order.contains("acquireIdempotentLock()"));
-    assert!(head_order.contains("// merged: 附上合并说明注释"));
+    assert!(head_order.contains("// merged: append merge note comment"));
     assert!(!head_order.contains("<<<<<<<"));
     assert_eq!(
         text_git(&pair.bare, &["rev-parse", "refs/heads/feat/order"]),
@@ -659,7 +714,10 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                     file_id: order2.id.clone(),
                     commit_token: order2.commit_token.clone(),
                 }],
-                draft: String::new(),
+                prompt: String::new(),
+                confirmed_plan: None,
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
             },
             |_| Ok(()),
         )
@@ -667,7 +725,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .unwrap();
     assert_eq!(conf2.session.session_status, CPushSessionStatus::Conflict);
 
-    // User chooses `我手动合并`:
+    // User chooses "Merge manually":
     let waiting = coordinator
         .respond_cpush(
             temp.path(),
@@ -683,6 +741,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                 option_id: Some("manual-merge".into()),
                 text: None,
                 model_id: None,
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -701,6 +760,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
             &ReconcileCPushRequest {
                 request_id: "reconcile-still-conflicted".into(),
                 target: target2.clone(),
+                locale: None,
             },
         )
         .await
@@ -724,7 +784,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     )
     .unwrap();
 
-    // Return check B: resolved & unpushed -> asks `"冲突已解决，是否继续推送？"` (`NeedsDecision` / `resolved`)!
+    // Return check B: resolved & unpushed -> asks "Conflict resolved — continue pushing?" (`NeedsDecision` / `resolved`)!
     let resolved_unpushed = coordinator
         .reconcile_worktree(
             temp.path(),
@@ -732,6 +792,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
             &ReconcileCPushRequest {
                 request_id: "reconcile-resolved-unpushed".into(),
                 target: target2.clone(),
+                locale: None,
             },
         )
         .await
@@ -748,7 +809,6 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     assert_eq!(resolved_unpushed.session.auto_collapse, None);
 
     // Put session back into `WaitingManual` briefly or push in terminal while in `PushFailed` / `WaitingManual` to verify R04 terminal-pushed auto-collapse!
-    // Let's also test terminal push while in `PushFailed` / `WaitingManual`:
     // Suppose user pushes from terminal right now:
     git(&pair.clone_a, &["push", "origin", "feat/order"]).unwrap();
     // Simulate returning when session was `WaitingManual`:
@@ -775,6 +835,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
             &ReconcileCPushRequest {
                 request_id: "reconcile-terminal-pushed".into(),
                 target: target2.clone(),
+                locale: None,
             },
         )
         .await
@@ -789,7 +850,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
             .as_ref()
             .unwrap()
             .title
-            .contains("终端已完成")
+            .contains("completed in terminal")
     );
 
     // 3. W04: Simulated app crash during `Running` push phase restores as `PushFailed` requiring user confirmation, NEVER auto-pushing!
@@ -817,6 +878,6 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
             .as_ref()
             .unwrap()
             .title
-            .contains("中断")
+            .contains("interrupted")
     );
 }

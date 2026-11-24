@@ -1,8 +1,11 @@
-//! M5 Remote synchronization, dirty-worktree lossless rebase, conflict stage extraction,
+//! Remote synchronization, dirty-worktree lossless rebase, conflict stage extraction,
 //! authorized post-merge validation, and fast-forward-only push coordinator.
 //! Never invokes `git push --force`, `--force-with-lease`, or `git rebase --autostash`.
 use super::{parse::StatusEntry, runner::GitOutput, *};
-use crate::foundation::pi::PiResolvedConflictFile;
+use crate::{
+    foundation::pi::PiResolvedConflictFile,
+    i18n::{self, LanguageKind},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet, ffi::OsStr, io::Write, os::unix::ffi::OsStrExt,
@@ -149,16 +152,16 @@ fn format_git_error(output: &GitOutput) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.bytes);
     let combined = match (stderr.trim(), stdout.trim()) {
-        ("", "") => format!("Git 退出码 {:?}", output.code),
+        ("", "") => format!("Git exit code {:?}", output.code),
         (err, "") => err.to_owned(),
         ("", out) => out.to_owned(),
-        (err, out) => format!("{err}；{out}"),
+        (err, out) => format!("{err}; {out}"),
     };
     let clean = combined.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = clean.chars();
     let head: String = chars.by_ref().take(280).collect();
     if chars.next().is_some() {
-        format!("{head}…")
+        format!("{head}...")
     } else {
         head
     }
@@ -186,7 +189,7 @@ fn validate_remote_name(remote: &str) -> Result<()> {
             .chars()
             .any(|ch| ch.is_whitespace() || ch.is_control())
     {
-        return Err("远端名称不合法".into());
+        return Err("Invalid Git remote name".into());
     }
     Ok(())
 }
@@ -364,14 +367,14 @@ impl RepositoryStore {
         let mut parts = text.split_whitespace();
         let ahead: u64 = parts
             .next()
-            .ok_or("缺少领先提交数")?
+            .ok_or("Missing ahead commit count")?
             .parse()
-            .map_err(|_| "领先提交数无效")?;
+            .map_err(|_| "Invalid ahead commit count")?;
         let behind: u64 = parts
             .next()
-            .ok_or("缺少落后提交数")?
+            .ok_or("Missing behind commit count")?
             .parse()
-            .map_err(|_| "落后提交数无效")?;
+            .map_err(|_| "Invalid behind commit count")?;
         Ok((ahead, behind))
     }
 
@@ -437,19 +440,22 @@ impl RepositoryStore {
         root: &Path,
         branch: &str,
         range: &str,
+        locale: LanguageKind,
     ) -> Result<Vec<RebasedCommitSummary>> {
         let out = self
             .inner
             .reader
+            .with_locale(locale)
             .run(root, &["log", "--reverse", "--format=%H%x09%s", range])
             .await?;
         if !out.success {
             return Ok(Vec::new());
         }
-        let text = parse::utf8(&out.bytes)?;
+        let text = parse::utf8_with_locale(&out.bytes, locale)?;
+        let fallback_title = i18n::cpush_commit_completed_fallback(locale);
         let mut commits = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let (oid, title) = line.split_once('\t').unwrap_or((line, "提交"));
+            let (oid, title) = line.split_once('\t').unwrap_or((line, fallback_title));
             let oid = oid.trim().to_owned();
             if !oid.is_empty() {
                 commits.push(RebasedCommitSummary {
@@ -513,15 +519,15 @@ impl RepositoryStore {
                 let first = records
                     .split(|b| *b == 0)
                     .find(|r| !r.is_empty())
-                    .ok_or("暂存区条目为空")?;
+                    .ok_or("Index stage entry is empty")?;
                 let tab = first
                     .iter()
                     .position(|b| *b == b'\t')
-                    .ok_or("暂存区条目缺少制表符")?;
+                    .ok_or("Index stage entry is missing tab separator")?;
                 let header = parse::utf8(&first[..tab])?;
                 let mut parts = header.split_whitespace();
-                let mode = parts.next().ok_or("缺少暂存文件模式")?.to_owned();
-                let oid = parts.next().ok_or("缺少暂存对象哈希")?.to_owned();
+                let mode = parts.next().ok_or("Missing staged file mode")?.to_owned();
+                let oid = parts.next().ok_or("Missing staged object hash")?.to_owned();
                 Some((mode, oid))
             } else {
                 None
@@ -538,14 +544,16 @@ impl RepositoryStore {
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     working_missing = true;
                 }
-                Err(_) => return Err("无法备份工作区未提交文件状态".into()),
+                Err(_) => return Err("Cannot back up uncommitted worktree file metadata".into()),
                 Ok(meta) if meta.file_type().is_symlink() => {
-                    let link = fs::read_link(&full).map_err(|_| "无法备份工作区符号链接")?;
+                    let link =
+                        fs::read_link(&full).map_err(|_| "Cannot back up worktree symlink")?;
                     symlink_target = Some(link.as_os_str().as_encoded_bytes().to_vec());
                 }
                 Ok(meta) if meta.is_file() => {
                     executable = meta.permissions().mode() & 0o111 != 0;
-                    let file_bytes = fs::read(&full).map_err(|_| "无法读取待保全的工作区文件")?;
+                    let file_bytes =
+                        fs::read(&full).map_err(|_| "Cannot read worktree draft for backup")?;
                     let hashed = reader
                         .write_with(
                             root,
@@ -555,12 +563,20 @@ impl RepositoryStore {
                         )
                         .await?;
                     if !hashed.success {
-                        return Err("无法将工作区草稿写入 Git 对象库进行安全备份".into());
+                        return Err(
+                            "Cannot store worktree draft into Git object database for safe backup"
+                                .into(),
+                        );
                     }
                     let oid = parse::utf8(&hashed.bytes)?.trim().to_owned();
                     working_blob_oid = Some(oid);
                 }
-                Ok(_) => return Err("变更包含特殊文件，已暂停自动变基以保护工作区".into()),
+                Ok(_) => {
+                    return Err(
+                        "Changes include special files; paused automatic rebase to protect the working tree"
+                            .into(),
+                    );
+                }
             }
 
             tracked_items.push(BackedUpTrackedPath {
@@ -582,20 +598,21 @@ impl RepositoryStore {
         };
         let backup_path = self.sync_backup_file_path(root).await?;
         if let Some(parent) = backup_path.parent() {
-            fs::create_dir_all(parent).map_err(|_| "无法创建同步备份目录")?;
+            fs::create_dir_all(parent).map_err(|_| "Cannot create sync backup directory")?;
         }
         let bytes = serde_json::to_vec_pretty(&backup).map_err(|e| e.to_string())?;
         let mut temp = NamedTempFile::new_in(backup_path.parent().unwrap_or(root))
-            .map_err(|_| "无法创建同步备份临时文件")?;
+            .map_err(|_| "Cannot create temporary sync backup file")?;
         temp.as_file()
             .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|_| "无法设置同步备份文件权限")?;
-        temp.write_all(&bytes).map_err(|_| "无法写入同步备份记录")?;
+            .map_err(|_| "Cannot set sync backup file permissions")?;
+        temp.write_all(&bytes)
+            .map_err(|_| "Cannot write sync backup record")?;
         temp.as_file()
             .sync_all()
-            .map_err(|_| "无法刷盘同步备份记录")?;
+            .map_err(|_| "Cannot sync backup record to disk")?;
         temp.persist(&backup_path)
-            .map_err(|_| "无法保存同步备份记录")?;
+            .map_err(|_| "Cannot persist sync backup record")?;
 
         // Reset ONLY the backed-up tracked paths to `HEAD` so `git rebase` runs on a clean tracked tree:
         for path in &tracked_paths {
@@ -607,12 +624,12 @@ impl RepositoryStore {
                 let tab = rec
                     .iter()
                     .position(|b| *b == b'\t')
-                    .ok_or("ls-tree 条目格式无效")?;
+                    .ok_or("Invalid ls-tree entry format")?;
                 let header = parse::utf8(&rec[..tab])?;
                 let mut parts = header.split_whitespace();
-                let mode = parts.next().ok_or("缺少 HEAD 文件模式")?;
+                let mode = parts.next().ok_or("Missing HEAD file mode")?;
                 let _kind = parts.next();
-                let oid = parts.next().ok_or("缺少 HEAD 对象哈希")?;
+                let oid = parts.next().ok_or("Missing HEAD object hash")?;
                 let upd = reader
                     .write(
                         root,
@@ -625,20 +642,26 @@ impl RepositoryStore {
                     )
                     .await?;
                 if !upd.success {
-                    return Err("准备安全变基时重置暂存条目失败".into());
+                    return Err(
+                        "Failed to reset staged entry while preparing lossless rebase".into(),
+                    );
                 }
                 let co = reader
                     .write(root, &["checkout-index", "-f", "-q", "--", path])
                     .await?;
                 if !co.success {
-                    return Err("准备安全变基时检出基线文件失败".into());
+                    return Err(
+                        "Failed to check out baseline file while preparing lossless rebase".into(),
+                    );
                 }
             } else {
                 let rm = reader
                     .write(root, &["update-index", "--force-remove", "--", path])
                     .await?;
                 if !rm.success {
-                    return Err("准备安全变基时移除暂存新增项失败".into());
+                    return Err(
+                        "Failed to remove staged addition while preparing lossless rebase".into(),
+                    );
                 }
                 let _ = fs::remove_file(root.join(path));
             }
@@ -652,10 +675,11 @@ impl RepositoryStore {
         let bytes = match fs::read(&backup_path) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(_) => return Err("无法读取同步前的暂存与草稿备份记录".into()),
+            Err(_) => return Err("Cannot read pre-sync staging and draft backup record".into()),
         };
-        let backup: DirtySyncBackup = serde_json::from_slice(&bytes)
-            .map_err(|_| "同步前的暂存与草稿备份格式损坏；记录已保留在 .git/picket 中")?;
+        let backup: DirtySyncBackup = serde_json::from_slice(&bytes).map_err(|_| {
+            "Pre-sync staging and draft backup record is corrupted; kept in .git/picket for inspection"
+        })?;
         let reader = &self.inner.reader;
 
         for item in &backup.tracked_items {
@@ -672,14 +696,17 @@ impl RepositoryStore {
                     )
                     .await?;
                 if !out.success {
-                    return Err(format!("恢复 {} 的暂存区边界失败", item.path));
+                    return Err(format!("Failed to restore staged state for {}", item.path));
                 }
             } else {
                 let out = reader
                     .write(root, &["update-index", "--force-remove", "--", &item.path])
                     .await?;
                 if !out.success {
-                    return Err(format!("恢复 {} 的暂存删除状态失败", item.path));
+                    return Err(format!(
+                        "Failed to restore staged deletion for {}",
+                        item.path
+                    ));
                 }
             }
 
@@ -688,27 +715,29 @@ impl RepositoryStore {
                 let _ = fs::remove_file(&full);
             } else if let Some(link_bytes) = &item.symlink_target {
                 if let Some(parent) = full.parent() {
-                    fs::create_dir_all(parent).map_err(|_| "无法创建工作区目录")?;
+                    fs::create_dir_all(parent).map_err(|_| "Cannot create working directory")?;
                 }
                 let _ = fs::remove_file(&full);
                 let target = Path::new(OsStr::from_bytes(link_bytes));
-                std::os::unix::fs::symlink(target, &full).map_err(|_| "无法恢复工作区符号链接")?;
+                std::os::unix::fs::symlink(target, &full)
+                    .map_err(|_| "Cannot restore working tree symbolic link")?;
             } else if let Some(blob_oid) = &item.working_blob_oid {
                 let content = reader.bytes(root, &["cat-file", "blob", blob_oid]).await?;
                 if let Some(parent) = full.parent() {
-                    fs::create_dir_all(parent).map_err(|_| "无法创建工作区目录")?;
+                    fs::create_dir_all(parent).map_err(|_| "Cannot create working directory")?;
                 }
                 let _ = fs::remove_file(&full);
-                fs::write(&full, &content).map_err(|_| "无法恢复工作区未暂存草稿文件")?;
+                fs::write(&full, &content)
+                    .map_err(|_| "Cannot restore unstaged draft file to working tree")?;
                 let perm = if item.executable { 0o755 } else { 0o644 };
                 fs::set_permissions(&full, fs::Permissions::from_mode(perm))
-                    .map_err(|_| "无法恢复工作区文件权限")?;
+                    .map_err(|_| "Cannot restore working tree file permissions")?;
             }
 
             let restored_hash = self.working_file(root, &item.path)?;
             if restored_hash != item.working_sha256 {
                 return Err(format!(
-                    "同步后校验 {} 的工作区草稿指纹不一致，已保留备份记录供核查",
+                    "Post-sync working draft hash mismatch for {}; kept backup record for inspection",
                     item.path
                 ));
             }
@@ -717,7 +746,9 @@ impl RepositoryStore {
         for (untracked_path, expected_hash) in &backup.untracked_hashes {
             let actual = self.working_file(root, untracked_path)?;
             if &actual != expected_hash {
-                return Err(format!("未跟踪文件 {untracked_path} 在同步后发生变化"));
+                return Err(format!(
+                    "Untracked file {untracked_path} changed unexpectedly during sync"
+                ));
             }
         }
 
@@ -750,13 +781,14 @@ impl RepositoryStore {
         &self,
         target: &ReadTarget,
         verify_remote_network: bool,
+        locale: LanguageKind,
     ) -> Result<(LiveRemoteStatus, RepositorySnapshot)> {
-        let (_, root) = self.registered_worktree_root(target).await?;
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
 
         let rebase_in_progress = self.rebase_in_progress(&root).await?;
         let merge_or_other_in_progress = self.other_git_op_in_progress(&root).await?.is_some();
@@ -774,7 +806,7 @@ impl RepositoryStore {
                 ],
             )
             .await?;
-        let parsed = parse::status(&status_bytes)?;
+        let parsed = parse::status_with_locale(&status_bytes, locale)?;
         let raw_detached = parsed.branch == "(detached)";
         let rebase_branch = if raw_detached {
             self.active_rebase_branch(&root).await
@@ -816,8 +848,13 @@ impl RepositoryStore {
                 .await
                 .unwrap_or((0, 0));
             let commits = if a > 0 {
-                self.list_commits_in_range(&root, &branch, &format!("{}..HEAD", spec.tracking_ref))
-                    .await?
+                self.list_commits_in_range(
+                    &root,
+                    &branch,
+                    &format!("{}..HEAD", spec.tracking_ref),
+                    locale,
+                )
+                .await?
             } else {
                 Vec::new()
             };
@@ -826,7 +863,7 @@ impl RepositoryStore {
             (0, Vec::new())
         };
 
-        let snapshot = self.read_repository_locked(&root).await?;
+        let snapshot = self.read_repository_locked(&root, locale).await?;
         Ok((
             LiveRemoteStatus {
                 upstream,
@@ -840,17 +877,27 @@ impl RepositoryStore {
         ))
     }
 
-    /// Shared safe pull-and-rebase engine used by both explicit `拉取并变基` and `C-Push` / `提交并推送`.
+    #[cfg(test)]
     pub async fn sync_rebase_onto_upstream(
         &self,
         target: &ReadTarget,
     ) -> Result<RebaseSyncOutcome> {
-        let (_, root) = self.registered_worktree_root(target).await?;
+        self.sync_rebase_onto_upstream_with_locale(target, LanguageKind::En)
+            .await
+    }
+
+    /// Shared safe pull-and-rebase engine used by explicit Pull & Rebase, C-Push, and Commit & Push.
+    pub async fn sync_rebase_onto_upstream_with_locale(
+        &self,
+        target: &ReadTarget,
+        locale: LanguageKind,
+    ) -> Result<RebaseSyncOutcome> {
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
 
         if self.rebase_in_progress(&root).await? {
             let conflicted_files = self.list_unmerged_files(&root).await?;
@@ -863,8 +910,8 @@ impl RepositoryStore {
                     .branch_upstream_spec(&root, &rebased_branch)
                     .await?
                     .map(|u| u.display)
-                    .unwrap_or_else(|| "远端分支".into());
-                let snapshot = self.read_repository_locked(&root).await?;
+                    .unwrap_or_else(|| i18n::remote_branch_fallback(locale).into());
+                let snapshot = self.read_repository_locked(&root, locale).await?;
                 return Ok(RebaseSyncOutcome::Conflict {
                     upstream,
                     conflicted_files,
@@ -872,16 +919,15 @@ impl RepositoryStore {
                 });
             }
             return Err(
-                "当前工作树存在未结束的变基操作（rebase），请先在 Git / IDE 中完成或中止".into(),
+                "An unfinished rebase is active in the current worktree; finish or abort it in Git / IDE first"
+                    .into(),
             );
         }
         if let Some(marker) = self.other_git_op_in_progress(&root).await? {
-            return Err(format!(
-                "存在未完成的 Git 操作或锁（{marker}），已暂停同步；草稿与选择已保留"
-            ));
+            return Err(i18n::commit_ongoing_op_error(locale, marker));
         }
         if !self.list_unmerged_files(&root).await?.is_empty() {
-            return Err("当前工作区已有未解决的合并冲突，请先处理冲突后再同步".into());
+            return Err(i18n::commit_unresolved_conflict_error(locale).into());
         }
 
         let worktree_reader = reader.for_worktree(&root).await?;
@@ -897,19 +943,17 @@ impl RepositoryStore {
                 ],
             )
             .await?;
-        let parsed = parse::status(&status_bytes)?;
+        let parsed = parse::status_with_locale(&status_bytes, locale)?;
         if parsed.branch == "(detached)" {
-            return Err(
-                "当前处于分离 HEAD，请先在顶部切换已有分支，或在 IDE / 终端切好分支后再同步".into(),
-            );
+            return Err(i18n::commit_detached_head_error(locale).into());
         }
         let Some(head) = parsed.head.clone() else {
-            return Err("当前分支尚无首次提交，无法执行拉取变基".into());
+            return Err("Current branch has no initial commit yet; cannot pull and rebase".into());
         };
 
         let remotes = self.list_remotes_unlocked(&root).await?;
         let Some(spec) = self.branch_upstream_spec(&root, &parsed.branch).await? else {
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(RebaseSyncOutcome::MissingUpstream { remotes, snapshot });
         };
 
@@ -933,18 +977,18 @@ impl RepositoryStore {
             .await?;
         if !fetch_out.success {
             self.clear_remote_verified(&target.repository_id, &spec.remote);
-            return Err(format!(
-                "无法连接远端 {} 拉取最新引用（{}）",
-                spec.remote,
-                format_git_error(&fetch_out)
+            return Err(i18n::remote_fetch_failed_error(
+                locale,
+                &spec.remote,
+                &format_git_error(&fetch_out),
             ));
         }
         self.mark_remote_verified(&target.repository_id, &spec.remote);
 
         let Some(new_upstream_oid) = self.ref_oid(&root, &spec.tracking_ref).await else {
             return Err(format!(
-                "远端 {} 上不存在跟踪分支 {}，请核对远端分支名称",
-                spec.remote, spec.remote_branch
+                "Tracking branch {} does not exist on remote {}; verify the remote branch name",
+                spec.remote_branch, spec.remote
             ));
         };
 
@@ -952,7 +996,7 @@ impl RepositoryStore {
             .compute_ahead_behind(&root, &head, &spec.tracking_ref)
             .await?;
         if behind == 0 {
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(RebaseSyncOutcome::AlreadyUpToDate { snapshot });
         }
 
@@ -963,13 +1007,10 @@ impl RepositoryStore {
                 .is_ancestor(&root, shared_published, &new_upstream_oid)
                 .await
         {
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(RebaseSyncOutcome::UnsafePublishedHistory {
                 upstream: spec.display.clone(),
-                reason: format!(
-                    "检测到远端分支 {} 的历史发生非快进重写，直接自动变基可能改写已发布提交；已暂停，请在核对远端历史后手动处理。",
-                    spec.display
-                ),
+                reason: i18n::remote_rewound_history_reason(locale, &spec.display),
                 snapshot,
             });
         }
@@ -986,10 +1027,10 @@ impl RepositoryStore {
                 )
                 .await?;
             if !merges.trim().is_empty() {
-                let snapshot = self.read_repository_locked(&root).await?;
+                let snapshot = self.read_repository_locked(&root, locale).await?;
                 return Ok(RebaseSyncOutcome::UnsafePublishedHistory {
                     upstream: spec.display,
-                    reason: "待变基的本地提交中包含合并提交（merge commit），为避免扁平化改写分支历史已暂停自动变基。".into(),
+                    reason: i18n::remote_merge_commit_reason(locale).into(),
                     snapshot,
                 });
             }
@@ -1023,13 +1064,13 @@ impl RepositoryStore {
                     .filter(|r| !r.is_empty() && *r != spec.tracking_ref && !r.ends_with("/HEAD"))
                     .collect();
                 if !published_on_other.is_empty() {
-                    let snapshot = self.read_repository_locked(&root).await?;
+                    let snapshot = self.read_repository_locked(&root, locale).await?;
                     return Ok(RebaseSyncOutcome::UnsafePublishedHistory {
                         upstream: spec.display,
-                        reason: format!(
-                            "本地提交 {} 已存在于远端引用 {} 中，为防止改写已发布历史已暂停自动变基。",
+                        reason: i18n::remote_published_on_other_ref_reason(
+                            locale,
                             &oid[..oid.len().min(7)],
-                            published_on_other[0].trim_start_matches("refs/remotes/")
+                            published_on_other[0].trim_start_matches("refs/remotes/"),
                         ),
                         snapshot,
                     });
@@ -1042,7 +1083,10 @@ impl RepositoryStore {
             .text(&root, &["merge-base", &head, &spec.tracking_ref])
             .await
             .map(|s| s.trim().to_owned())
-            .map_err(|_| "远端分支与当前本地分支没有共同祖先，已暂停自动变基".to_string())?;
+            .map_err(|_| {
+                "Remote branch and current local branch share no common ancestor; paused automatic rebase"
+                    .to_string()
+            })?;
 
         let mut incoming_or_replayed = self
             .diff_touched_paths(&root, &merge_base, &spec.tracking_ref)
@@ -1062,7 +1106,7 @@ impl RepositoryStore {
             .cloned()
             .collect();
         if !overlapping.is_empty() {
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(RebaseSyncOutcome::UnsafeDirtyOverlap {
                 upstream: spec.display,
                 overlapping_paths: overlapping,
@@ -1091,12 +1135,13 @@ impl RepositoryStore {
                     &root,
                     &parsed.branch,
                     &format!("{}..HEAD", spec.tracking_ref),
+                    locale,
                 )
                 .await?
             } else {
                 Vec::new()
             };
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(RebaseSyncOutcome::Completed {
                 rebased_commits,
                 snapshot,
@@ -1107,7 +1152,7 @@ impl RepositoryStore {
         if self.rebase_in_progress(&root).await? {
             let conflicted_files = self.list_unmerged_files(&root).await?;
             if !conflicted_files.is_empty() {
-                let snapshot = self.read_repository_locked(&root).await?;
+                let snapshot = self.read_repository_locked(&root, locale).await?;
                 return Ok(RebaseSyncOutcome::Conflict {
                     upstream: spec.display,
                     conflicted_files,
@@ -1120,7 +1165,7 @@ impl RepositoryStore {
             let _ = self.restore_dirty_backup(&root).await;
         }
         Err(format!(
-            "拉取变基未完成（{}）；原有暂存与草稿已保留",
+            "Pull and rebase did not complete ({}); original staged changes and drafts were preserved",
             format_git_error(&rebase_out)
         ))
     }
@@ -1128,20 +1173,26 @@ impl RepositoryStore {
     pub async fn extract_conflict_batch(
         &self,
         target: &ReadTarget,
+        locale: LanguageKind,
     ) -> Result<ExtractedConflictBatch> {
-        let (_, root) = self.registered_worktree_root(target).await?;
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
 
         if !self.rebase_in_progress(&root).await? {
-            return Err("当前没有进行中的变基冲突可由 Agent 合并；请刷新查看最新状态".into());
+            return Err(
+                "No active rebase conflict available for Agent merge; refresh to inspect latest status"
+                    .into(),
+            );
         }
         let unmerged = self.list_unmerged_files(&root).await?;
         if unmerged.is_empty() {
-            return Err("当前未检测到未解决的冲突文件；请刷新核对变基状态".into());
+            return Err(
+                "No unresolved conflicted files detected; refresh to verify rebase status".into(),
+            );
         }
 
         let branch = self
@@ -1152,40 +1203,40 @@ impl RepositoryStore {
             .branch_upstream_spec(&root, &branch)
             .await?
             .map(|u| u.display)
-            .unwrap_or_else(|| "远端分支".into());
+            .unwrap_or_else(|| i18n::remote_branch_fallback(locale).into());
 
         let mut files = Vec::with_capacity(unmerged.len());
         for summary in unmerged {
             let full = root.join(&summary.path);
             let meta = fs::symlink_metadata(&full).map_err(|_| {
                 format!(
-                    "冲突文件 {} 在工作区中缺失（可能为删除/修改冲突），无法安全自动合并；请选择「我手动合并」在编辑器中处理。",
+                    "Conflicted file {} is missing in the working tree (possibly a modify/delete conflict) and cannot be auto-merged safely; choose \"Merge manually\" in your editor.",
                     summary.path
                 )
             })?;
             if !meta.is_file() {
                 return Err(format!(
-                    "冲突文件 {} 不是普通文本文件，无法安全自动合并；请选择「我手动合并」处理。",
+                    "Conflicted file {} is not a regular text file and cannot be auto-merged safely; choose \"Merge manually\".",
                     summary.path
                 ));
             }
             if meta.len() as usize > MAX_CONFLICT_TEXT_BYTES {
                 return Err(format!(
-                    "冲突文件 {} 超过自动合并大小上限（128 KB），请选择「我手动合并」在编辑器中处理。",
+                    "Conflicted file {} exceeds the automatic merge size limit (128 KB); choose \"Merge manually\" in your editor.",
                     summary.path
                 ));
             }
-            let working_bytes =
-                fs::read(&full).map_err(|_| format!("无法读取冲突文件 {}", summary.path))?;
+            let working_bytes = fs::read(&full)
+                .map_err(|_| format!("Cannot read conflicted file {}", summary.path))?;
             if working_bytes.contains(&0) {
                 return Err(format!(
-                    "冲突文件 {} 包含二进制内容，无法自动合并；请选择「我手动合并」处理。",
+                    "Conflicted file {} contains binary data and cannot be auto-merged; choose \"Merge manually\".",
                     summary.path
                 ));
             }
             let conflicted_content = String::from_utf8(working_bytes).map_err(|_| {
                 format!(
-                    "冲突文件 {} 非 UTF-8 编码文本，无法安全自动合并；请选择「我手动合并」处理。",
+                    "Conflicted file {} is not UTF-8 text and cannot be auto-merged safely; choose \"Merge manually\".",
                     summary.path
                 )
             })?;
@@ -1194,19 +1245,22 @@ impl RepositoryStore {
             let read_stage_utf8 = |stage: u8| {
                 let spec = format!(":{stage}:{path_str}");
                 let root_ref = &root;
+                let reader_ref = &reader;
                 async move {
-                    let out = reader.run(root_ref, &["cat-file", "blob", &spec]).await?;
+                    let out = reader_ref
+                        .run(root_ref, &["cat-file", "blob", &spec])
+                        .await?;
                     if !out.success {
                         return Ok::<Option<String>, String>(None);
                     }
                     if out.bytes.contains(&0) {
                         return Err(format!(
-                            "冲突文件 {path_str} 的历史版本包含二进制数据，请选择「我手动合并」处理。"
+                            "Conflict stage for {path_str} contains binary data; choose \"Merge manually\"."
                         ));
                     }
                     let text = String::from_utf8(out.bytes).map_err(|_| {
                         format!(
-                            "冲突文件 {path_str} 的历史版本非 UTF-8 编码，请选择「我手动合并」处理。"
+                            "Conflict stage for {path_str} is not UTF-8 text; choose \"Merge manually\"."
                         )
                     })?;
                     Ok(Some(text))
@@ -1216,13 +1270,13 @@ impl RepositoryStore {
             let base_content = read_stage_utf8(1).await?;
             let Some(upstream_content) = read_stage_utf8(2).await? else {
                 return Err(format!(
-                    "冲突文件 {} 属于新增/删除型冲突，无法安全自动合并文本；请选择「我手动合并」处理。",
+                    "Conflicted file {} is an add/delete conflict and cannot be auto-merged as text; choose \"Merge manually\".",
                     summary.path
                 ));
             };
             let Some(local_content) = read_stage_utf8(3).await? else {
                 return Err(format!(
-                    "冲突文件 {} 属于新增/删除型冲突，无法安全自动合并文本；请选择「我手动合并」处理。",
+                    "Conflicted file {} is an add/delete conflict and cannot be auto-merged as text; choose \"Merge manually\".",
                     summary.path
                 ));
             };
@@ -1246,22 +1300,29 @@ impl RepositoryStore {
         target: &ReadTarget,
         expected: &[ExtractedConflictFile],
         resolved: &[PiResolvedConflictFile],
+        locale: LanguageKind,
     ) -> Result<RebaseContinueOutcome> {
-        let (_, root) = self.registered_worktree_root(target).await?;
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
 
         if !self.rebase_in_progress(&root).await? {
-            return Err("变基状态已变化，未写入模型合并结果；请刷新核对当前 Git 状态".into());
+            return Err(
+                "Rebase status changed before applying model merge output; refresh to verify live Git status"
+                    .into(),
+            );
         }
         let live_unmerged = self.list_unmerged_files(&root).await?;
         let expected_paths: BTreeSet<&str> = expected.iter().map(|f| f.path.as_str()).collect();
         let live_paths: BTreeSet<&str> = live_unmerged.iter().map(|f| f.path.as_str()).collect();
         if expected_paths != live_paths || resolved.len() != expected.len() {
-            return Err("冲突文件集合已变化，已中止自动写入以保护工作区".into());
+            return Err(
+                "Set of conflicted files changed; aborted automatic write to protect the working tree"
+                    .into(),
+            );
         }
 
         let by_path: HashMap<&str, &ExtractedConflictFile> =
@@ -1270,15 +1331,17 @@ impl RepositoryStore {
         for item in resolved {
             parse::relative(&item.path)?;
             let Some(orig) = by_path.get(item.path.as_str()) else {
-                return Err(format!("拦截到未授权的文件修改请求：{}", item.path));
+                return Err(i18n::remote_conflict_unauthorized_file_error(
+                    locale, &item.path,
+                ));
             };
             if orig.file_id != item.file_id || !seen.insert(item.path.as_str()) {
-                return Err("模型返回的冲突文件身份不匹配".into());
+                return Err("Model returned mismatched conflict file identity".into());
             }
             let current_hash = self.working_file(&root, &item.path)?;
             if current_hash != orig.working_hash {
                 return Err(format!(
-                    "冲突文件 {} 在等待期间已被外部修改，未覆盖你的最新内容",
+                    "Conflicted file {} was modified externally while waiting; preserved your latest content",
                     item.path
                 ));
             }
@@ -1287,26 +1350,23 @@ impl RepositoryStore {
                 .as_deref()
                 .is_some_and(line_has_conflict_markers);
             if !base_had_markers && line_has_conflict_markers(&item.content) {
-                return Err(format!(
-                    "模型对 {} 的合并结果仍残留冲突标记，已拒绝写入",
-                    item.path
+                return Err(i18n::remote_conflict_leftover_markers_error(
+                    locale, &item.path,
                 ));
             }
             if item.content.trim().is_empty()
                 && !orig.upstream_content.trim().is_empty()
                 && !orig.local_content.trim().is_empty()
             {
-                return Err(format!(
-                    "模型对 {} 返回了空内容，已拒绝覆盖原冲突文件",
-                    item.path
-                ));
+                return Err(i18n::remote_conflict_empty_result_error(locale, &item.path));
             }
         }
 
         // Write ONLY the authorized conflicted files & stage ONLY those paths:
         for item in resolved {
-            fs::write(root.join(&item.path), item.content.as_bytes())
-                .map_err(|_| format!("写入冲突合并结果失败：{}", item.path))?;
+            fs::write(root.join(&item.path), item.content.as_bytes()).map_err(|_| {
+                format!("Failed to write merged conflict content for {}", item.path)
+            })?;
         }
         let mut add_args: Vec<&str> = vec!["add", "--"];
         for item in resolved {
@@ -1315,12 +1375,15 @@ impl RepositoryStore {
         let add_out = reader.write(&root, &add_args).await?;
         if !add_out.success {
             return Err(format!(
-                "暂存已合并冲突文件失败（{}）",
+                "Failed to stage merged conflict files ({})",
                 format_git_error(&add_out)
             ));
         }
         if !self.list_unmerged_files(&root).await?.is_empty() {
-            return Err("暂存后仍存在未解决的 Git 冲突条目，已暂停继续变基".into());
+            return Err(
+                "Unmerged Git index entries remain after staging; paused rebase continuation"
+                    .into(),
+            );
         }
 
         let branch = self
@@ -1331,7 +1394,7 @@ impl RepositoryStore {
         let upstream_display = spec_opt
             .as_ref()
             .map(|u| u.display.clone())
-            .unwrap_or_else(|| "远端分支".into());
+            .unwrap_or_else(|| i18n::remote_branch_fallback(locale).into());
 
         let cont_out = reader.write(&root, &["rebase", "--continue"]).await?;
         if cont_out.success && !self.rebase_in_progress(&root).await? {
@@ -1346,6 +1409,7 @@ impl RepositoryStore {
                         &root,
                         &branch,
                         &format!("{}..HEAD", spec.tracking_ref),
+                        locale,
                     )
                     .await?
                 } else {
@@ -1354,7 +1418,7 @@ impl RepositoryStore {
             } else {
                 Vec::new()
             };
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(RebaseContinueOutcome::Completed {
                 upstream: upstream_display,
                 rebased_commits,
@@ -1365,7 +1429,7 @@ impl RepositoryStore {
         if self.rebase_in_progress(&root).await? {
             let next_conflicts = self.list_unmerged_files(&root).await?;
             if !next_conflicts.is_empty() {
-                let snapshot = self.read_repository_locked(&root).await?;
+                let snapshot = self.read_repository_locked(&root, locale).await?;
                 return Ok(RebaseContinueOutcome::NextConflict {
                     upstream: upstream_display,
                     conflicted_files: next_conflicts,
@@ -1375,29 +1439,33 @@ impl RepositoryStore {
         }
 
         Err(format!(
-            "继续变基未通过校验（{}）；冲突文件改动已保留供检查",
+            "Continuing rebase failed validation ({}); merged file edits were kept for inspection",
             format_git_error(&cont_out)
         ))
     }
 
-    pub async fn abort_active_rebase(&self, target: &ReadTarget) -> Result<RepositorySnapshot> {
-        let (_, root) = self.registered_worktree_root(target).await?;
+    pub async fn abort_active_rebase(
+        &self,
+        target: &ReadTarget,
+        locale: LanguageKind,
+    ) -> Result<RepositorySnapshot> {
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
+        let reader = self.inner.reader.with_locale(locale);
         if self.rebase_in_progress(&root).await? {
-            let out = self
-                .inner
-                .reader
-                .write(&root, &["rebase", "--abort"])
-                .await?;
+            let out = reader.write(&root, &["rebase", "--abort"]).await?;
             if !out.success {
-                return Err(format!("中止变基失败（{}）", format_git_error(&out)));
+                return Err(format!(
+                    "Failed to abort rebase ({})",
+                    format_git_error(&out)
+                ));
             }
         }
         let _ = self.restore_dirty_backup(&root).await?;
-        self.read_repository_locked(&root).await
+        self.read_repository_locked(&root, locale).await
     }
 
     /// Fast-forward-only branch push (`R02`, `R05`). Never uses `--force` or `--force-with-lease`.
@@ -1405,22 +1473,31 @@ impl RepositoryStore {
         &self,
         target: &ReadTarget,
         set_upstream_remote: Option<&str>,
+        locale: LanguageKind,
     ) -> Result<PushOutcome> {
-        let (_, root) = self.registered_worktree_root(target).await?;
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
-        let reader = &self.inner.reader;
+        let reader = self.inner.reader.with_locale(locale);
 
         if self.rebase_in_progress(&root).await? {
-            return Err("当前分支仍有未结束的变基操作，请先完成冲突合并后再推送".into());
+            return Err(
+                "Current branch still has an unfinished rebase; finish resolving conflicts before pushing"
+                    .into(),
+            );
         }
         if let Some(marker) = self.other_git_op_in_progress(&root).await? {
-            return Err(format!("存在未完成的 Git 操作（{marker}），已暂停推送"));
+            return Err(format!(
+                "Unfinished Git operation ({marker}) in progress; paused push"
+            ));
         }
         if !self.list_unmerged_files(&root).await?.is_empty() {
-            return Err("当前工作区存在未解决的冲突文件，请先处理冲突后再推送".into());
+            return Err(
+                "Working tree has unresolved conflicted files; resolve conflicts before pushing"
+                    .into(),
+            );
         }
 
         let status_bytes = reader
@@ -1435,26 +1512,31 @@ impl RepositoryStore {
                 ],
             )
             .await?;
-        let parsed = parse::status(&status_bytes)?;
+        let parsed = parse::status_with_locale(&status_bytes, locale)?;
         if parsed.branch == "(detached)" {
-            return Err("当前处于分离 HEAD，无法直接推送；请先切换到本地分支".into());
+            return Err(
+                "Currently on detached HEAD and cannot push directly; switch to a local branch first"
+                    .into(),
+            );
         }
         if parsed.head.is_none() {
-            return Err("当前分支尚无提交可推送".into());
+            return Err("Current branch has no commits to push yet".into());
         }
 
         let remotes = self.list_remotes_unlocked(&root).await?;
         let (remote_name, remote_branch, set_u) = if let Some(chosen_remote) = set_upstream_remote {
             validate_remote_name(chosen_remote)?;
             if !remotes.iter().any(|r| r == chosen_remote) {
-                return Err(format!("仓库中不存在远端“{chosen_remote}”"));
+                return Err(format!(
+                    "Remote \"{chosen_remote}\" does not exist in this repository"
+                ));
             }
             (chosen_remote.to_owned(), parsed.branch.clone(), true)
         } else if let Some(spec) = self.branch_upstream_spec(&root, &parsed.branch).await? {
             validate_remote_name(&spec.remote)?;
             (spec.remote, spec.remote_branch, false)
         } else {
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(PushOutcome::MissingUpstream { remotes, snapshot });
         };
 
@@ -1485,7 +1567,7 @@ impl RepositoryStore {
         let remote_display = format!("{remote_name}/{remote_branch}");
         if push_out.success {
             self.mark_remote_verified(&target.repository_id, &remote_name);
-            let snapshot = self.read_repository_locked(&root).await?;
+            let snapshot = self.read_repository_locked(&root, locale).await?;
             return Ok(PushOutcome::Pushed {
                 remote_branch: remote_display,
                 snapshot,
@@ -1508,7 +1590,7 @@ impl RepositoryStore {
         } else {
             self.mark_remote_verified(&target.repository_id, &remote_name);
         }
-        let snapshot = self.read_repository_locked(&root).await?;
+        let snapshot = self.read_repository_locked(&root, locale).await?;
         Ok(PushOutcome::Failed {
             remote_branch: remote_display,
             non_fast_forward,

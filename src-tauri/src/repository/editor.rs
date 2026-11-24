@@ -1,8 +1,9 @@
-//! Controlled external IDE launcher for M2.
+//! Controlled external IDE launcher.
 //! Resolves real worktree paths, exports `HEAD:<path>` / `:<path>` / conflict stages to
 //! read-only temporary snapshots (never passing Git object refs directly to IDEs),
-//! and invokes `idea`, `webstorm`, `code`, or `cursor` via argv without shell interpolation.
+//! and invokes `idea`, `rustrover`, `webstorm`, `code`, or `cursor` via argv without shell interpolation.
 use super::*;
+use crate::i18n::{self, LanguageKind};
 use std::{ffi::OsString, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use tempfile::TempDir;
 use tokio::{io::AsyncReadExt, process::Command};
@@ -93,7 +94,7 @@ fn ensure_safe_repo_path(path: &str) -> Result<()> {
         .split('/')
         .any(|segment| segment.eq_ignore_ascii_case(".git"))
     {
-        return Err("不允许通过编辑器打开 .git 内部文件".into());
+        return Err("Opening internal .git files in an external editor is not allowed".into());
     }
     Ok(())
 }
@@ -112,21 +113,32 @@ fn inspect_working_target(root: &Path, relative_path: &str) -> Result<WorkingTar
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(WorkingTarget::Missing);
         }
-        Err(_) => return Err("无法读取工作树文件状态；当前草稿与选择已保留".into()),
+        Err(_) => {
+            return Err(
+                "Cannot inspect worktree file status; current draft and selection were preserved"
+                    .into(),
+            );
+        }
     };
-    let parent = fs::canonicalize(full.parent().ok_or("文件路径缺少父目录")?)
-        .map_err(|_| "无法核对文件所在目录；当前草稿与选择已保留")?;
+    let parent = fs::canonicalize(
+        full.parent()
+            .ok_or("File path is missing parent directory")?,
+    )
+    .map_err(|_| "Cannot verify parent directory; current draft and selection were preserved")?;
     if !parent.starts_with(root) {
-        return Err("文件父目录越出当前工作树边界，已拒绝打开".into());
+        return Err("File parent directory escapes worktree boundary; refused to open".into());
     }
     if metadata.file_type().is_symlink() {
-        let link = fs::read_link(&full).map_err(|_| "无法读取符号链接目标")?;
+        let link = fs::read_link(&full).map_err(|_| "Cannot read symbolic link target")?;
         return Ok(WorkingTarget::SymlinkTarget(
             link.as_os_str().as_encoded_bytes().to_vec(),
         ));
     }
     if !metadata.is_file() {
-        return Err("目标路径不是普通文件，无法在外部编辑器中打开；草稿与选择已保留".into());
+        return Err(
+            "Target path is not a regular file and cannot open in an external editor; draft and selection were preserved"
+                .into(),
+        );
     }
     Ok(WorkingTarget::RealFile(full))
 }
@@ -148,7 +160,7 @@ impl EditorLauncher {
             .inner
             .override_dirs
             .lock()
-            .map_err(|_| "编辑器配置锁不可用")? = dirs;
+            .map_err(|_| "Editor configuration lock is unavailable")? = dirs;
         Ok(())
     }
 
@@ -157,23 +169,31 @@ impl EditorLauncher {
             .inner
             .temp
             .lock()
-            .map_err(|_| "编辑器临时目录锁不可用")?
+            .map_err(|_| "Editor temporary directory lock is unavailable")?
             .take();
         if let Some(directory) = temp {
             directory
                 .close()
-                .map_err(|error| format!("清理临时 Diff 快照失败：{error}"))?;
+                .map_err(|error| format!("Failed to clean up temporary diff snapshots: {error}"))?;
         }
         Ok(())
     }
 
     pub fn resolve_executable(&self, editor: EditorKind) -> Result<PathBuf> {
+        self.resolve_executable_with_locale(editor, LanguageKind::En)
+    }
+
+    pub fn resolve_executable_with_locale(
+        &self,
+        editor: EditorKind,
+        locale: LanguageKind,
+    ) -> Result<PathBuf> {
         let (cli, display_name, bundles) = editor_metadata(editor);
         let override_dirs = self
             .inner
             .override_dirs
             .lock()
-            .map_err(|_| "编辑器查找目录锁不可用")?
+            .map_err(|_| "Editor search directory lock is unavailable")?
             .clone();
         let candidates = if let Some(dirs) = override_dirs {
             let mut list = Vec::new();
@@ -214,11 +234,7 @@ impl EditorLauncher {
         candidates
             .into_iter()
             .find(|candidate| is_executable_file(candidate))
-            .ok_or_else(|| {
-                format!(
-                    "未找到 {display_name} 可执行入口（{cli}）。请确认已安装 {display_name} 或启用其命令行工具，也可在设置中切换其他编辑器；当前草稿与选择已保留。"
-                )
-            })
+            .ok_or_else(|| i18n::editor_not_found_error(locale, display_name, cli))
     }
 
     pub fn detect_installed_editors(&self) -> Vec<EditorKind> {
@@ -229,26 +245,31 @@ impl EditorLauncher {
     }
 
     fn write_snapshot(&self, role: &str, repo_path: &str, bytes: &[u8]) -> Result<PathBuf> {
-        let mut guard = self.inner.temp.lock().map_err(|_| "编辑器临时目录不可用")?;
+        let mut guard = self
+            .inner
+            .temp
+            .lock()
+            .map_err(|_| "Editor temporary directory is unavailable")?;
         if guard.is_none() {
             let created = tempfile::Builder::new()
                 .prefix("picket-ide-")
                 .tempdir()
-                .map_err(|_| "无法创建编辑器 Diff 临时目录")?;
+                .map_err(|_| "Cannot create temporary editor diff directory")?;
             fs::set_permissions(created.path(), fs::Permissions::from_mode(0o700))
-                .map_err(|_| "无法设置编辑器临时目录权限")?;
+                .map_err(|_| "Cannot set temporary editor directory permissions")?;
             *guard = Some(created);
         }
         let base = guard.as_ref().unwrap().path();
         let slot = self.inner.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let folder = base.join(format!("s-{slot}")).join(role);
-        fs::create_dir_all(&folder).map_err(|_| "无法准备 Diff 临时快照子目录")?;
+        fs::create_dir_all(&folder)
+            .map_err(|_| "Cannot prepare temporary diff snapshot directory")?;
         fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "无法设置 Diff 快照目录权限")?;
+            .map_err(|_| "Cannot set temporary diff snapshot permissions")?;
         let target = folder.join(safe_snapshot_filename(repo_path));
-        fs::write(&target, bytes).map_err(|_| "无法写入临时快照文件")?;
+        fs::write(&target, bytes).map_err(|_| "Cannot write temporary diff snapshot")?;
         fs::set_permissions(&target, fs::Permissions::from_mode(0o444))
-            .map_err(|_| "无法将临时快照设为只读")?;
+            .map_err(|_| "Cannot mark temporary diff snapshot read-only")?;
         Ok(target)
     }
 
@@ -258,6 +279,7 @@ impl EditorLauncher {
         executable: &Path,
         worktree_root: &Path,
         args: &[OsString],
+        locale: LanguageKind,
     ) -> Result<()> {
         let (_, display_name, _) = editor_metadata(editor);
         let mut command = Command::new(executable);
@@ -268,9 +290,9 @@ impl EditorLauncher {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(false);
-        let mut child = command.spawn().map_err(|error| {
-            format!("启动 {display_name} 失败（{error}）；当前草稿与选择已保留。")
-        })?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| i18n::editor_launch_failed_error(locale, display_name, &error))?;
         let stderr = child.stderr.take();
         let wait_window = if self
             .inner
@@ -296,15 +318,11 @@ impl EditorLauncher {
                         .join(" ");
                 }
                 if detail.is_empty() {
-                    detail = format!("退出码 {:?}", status.code());
+                    detail = format!("exit code {:?}", status.code());
                 }
-                Err(format!(
-                    "{display_name} 返回错误（{detail}）；当前草稿与选择已保留。"
-                ))
+                Err(i18n::editor_returned_error(locale, display_name, &detail))
             }
-            Ok(Err(error)) => Err(format!(
-                "等待 {display_name} 启动结果失败（{error}）；当前草稿与选择已保留。"
-            )),
+            Ok(Err(error)) => Err(i18n::editor_wait_failed_error(locale, display_name, &error)),
             Err(_) => {
                 tokio::spawn(async move {
                     let _ = child.wait().await;
@@ -334,7 +352,12 @@ fn build_diff_args(editor: EditorKind, left: &Path, right: &Path) -> Vec<OsStrin
     }
 }
 
-fn build_goto_args(editor: EditorKind, file: &Path, line: u32) -> Result<Vec<OsString>> {
+fn build_goto_args(
+    editor: EditorKind,
+    file: &Path,
+    line: u32,
+    locale: LanguageKind,
+) -> Result<Vec<OsString>> {
     match editor {
         EditorKind::Idea | EditorKind::Rustrover | EditorKind::Webstorm => Ok(vec![
             "--line".into(),
@@ -342,7 +365,7 @@ fn build_goto_args(editor: EditorKind, file: &Path, line: u32) -> Result<Vec<OsS
             file.as_os_str().to_owned(),
         ]),
         EditorKind::Vscode | EditorKind::Cursor => {
-            let rendered = display(file)?;
+            let rendered = display_with_locale(file, locale)?;
             Ok(vec!["--goto".into(), format!("{rendered}:{line}:1").into()])
         }
     }
@@ -368,13 +391,21 @@ impl RepositoryStore {
         launcher: &EditorLauncher,
         request: &OpenFileRequest,
     ) -> Result<OpenFileOutcome> {
-        validate_request_id(&request.request_id)?;
+        let locale = request.locale;
+        validate_request_id_with_locale(&request.request_id, locale)?;
         if request.line == Some(0) {
-            return Err("跳转行号无效，行号必须从 1 开始；当前草稿与选择已保留".into());
+            return Err(i18n::editor_invalid_line_error(locale).into());
         }
-        let executable = launcher.resolve_executable(request.editor)?;
-        let (registered, root) = self.registered_worktree_root(&request.target).await?;
-        let worktree_reader = self.inner.reader.for_worktree(&root).await?;
+        let executable = launcher.resolve_executable_with_locale(request.editor, locale)?;
+        let (registered, root) = self
+            .registered_worktree_root(&request.target, locale)
+            .await?;
+        let worktree_reader = self
+            .inner
+            .reader
+            .with_locale(locale)
+            .for_worktree(&root)
+            .await?;
         let status_bytes = worktree_reader
             .bytes(
                 &root,
@@ -387,7 +418,7 @@ impl RepositoryStore {
                 ],
             )
             .await?;
-        let live_status = parse::status(&status_bytes)?;
+        let live_status = parse::status_with_locale(&status_bytes, locale)?;
 
         let authorized = registered
             .commit_states
@@ -400,7 +431,7 @@ impl RepositoryStore {
         let path = live_entry
             .map(|entry| entry.path.clone())
             .or_else(|| authorized.map(|item| item.path.clone()))
-            .ok_or("所选文件已不在当前工作树的变更列表中，请刷新后重试；草稿与选择已保留")?;
+            .ok_or_else(|| i18n::ai_file_missing_error(locale, false))?;
         let previous_path = live_entry
             .and_then(|entry| entry.previous.clone())
             .or_else(|| authorized.and_then(|item| item.previous_path.clone()));
@@ -427,14 +458,14 @@ impl RepositoryStore {
                         let head_bytes = self
                             .read_git_blob(&worktree_reader, &root, &format!("HEAD:{head_source}"))
                             .await?
-                            .ok_or("目标文件在工作区与历史版本中均不存在，无法定位行号；草稿与选择已保留")?;
+                            .ok_or("Target file does not exist in working tree or HEAD; cannot jump to line (draft and selection were preserved)")?;
                         launcher.write_snapshot("HEAD", &path, &head_bytes)?
                     }
                 }
             };
-            let args = build_goto_args(request.editor, &target_file, line)?;
+            let args = build_goto_args(request.editor, &target_file, line, locale)?;
             launcher
-                .launch(request.editor, &executable, &root, &args)
+                .launch(request.editor, &executable, &root, &args, locale)
                 .await?;
             return Ok(OpenFileOutcome {
                 file_path: path,
@@ -451,7 +482,8 @@ impl RepositoryStore {
                 }
                 WorkingTarget::Missing => {
                     return Err(
-                        "文件当前没有变更且不在工作区中，请刷新变更列表；草稿与选择已保留".into(),
+                        "File has no pending changes and does not exist in the working tree; refresh the change list (draft and selection were preserved)"
+                            .into(),
                     );
                 }
             };
@@ -461,6 +493,7 @@ impl RepositoryStore {
                     &executable,
                     &root,
                     &[target_file.as_os_str().to_owned()],
+                    locale,
                 )
                 .await?;
             return Ok(OpenFileOutcome {
@@ -473,7 +506,7 @@ impl RepositoryStore {
         if entry.conflicted {
             let WorkingTarget::RealFile(working_file) = working else {
                 return Err(
-                    "冲突文件在工作区中不存在，请先在 Git / 终端核对合并状态；草稿与选择已保留"
+                    "Conflicted file does not exist in the working tree; inspect merge status in Git / terminal first (draft and selection were preserved)"
                         .into(),
                 );
             };
@@ -519,7 +552,7 @@ impl RepositoryStore {
                 }
             };
             launcher
-                .launch(request.editor, &executable, &root, &args)
+                .launch(request.editor, &executable, &root, &args, locale)
                 .await?;
             return Ok(OpenFileOutcome {
                 file_path: path,
@@ -550,7 +583,7 @@ impl RepositoryStore {
             let right = launcher.write_snapshot("STAGED", &path, &staged_bytes)?;
             let args = build_diff_args(request.editor, &left, &right);
             launcher
-                .launch(request.editor, &executable, &root, &args)
+                .launch(request.editor, &executable, &root, &args, locale)
                 .await?;
             return Ok(OpenFileOutcome {
                 file_path: path,
@@ -570,7 +603,7 @@ impl RepositoryStore {
                         .read_git_blob(&worktree_reader, &root, &format!(":0:{path}"))
                         .await?
                         .ok_or(
-                            "新增文件在工作区与暂存区均不存在，请刷新后重试；草稿与选择已保留",
+                            "Added file does not exist in working tree or index; refresh and retry (draft and selection were preserved)",
                         )?;
                     launcher.write_snapshot("STAGED", &path, &staged_bytes)?
                 }
@@ -581,6 +614,7 @@ impl RepositoryStore {
                     &executable,
                     &root,
                     &[target_file.as_os_str().to_owned()],
+                    locale,
                 )
                 .await?;
             return Ok(OpenFileOutcome {
@@ -642,7 +676,7 @@ impl RepositoryStore {
         };
         let args = build_diff_args(request.editor, &left, &right);
         launcher
-            .launch(request.editor, &executable, &root, &args)
+            .launch(request.editor, &executable, &root, &args, locale)
             .await?;
         Ok(OpenFileOutcome {
             file_path: path,

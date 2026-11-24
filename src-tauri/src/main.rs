@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod cpush;
 mod foundation;
+mod i18n;
 mod models;
 mod repository;
 
 use cpush::{
     CPushCoordinator,
     types::{
-        CPushCommandReply, CPushProgressEvent, CommitAndPushRequest, PullRebaseRequest,
+        CPushCommandReply, CPushProgressEvent, PlanCPushRequest, PullRebaseRequest,
         ReconcileCPushRequest, RespondCPushRequest, StartCPushRequest,
     },
 };
@@ -17,8 +18,8 @@ use models::{
     smoke::ModelSmokeState,
     store::ModelStore,
     types::{
-        GenerateCommitReply, GenerateCommitRequest, ModelIdRequest, ModelInput, ModelMutateReply,
-        ModelSaveReply, ModelStreamEvent, ModelTestReply, ReviewScopeReply, ReviewScopeRequest,
+        ModelIdRequest, ModelInput, ModelMutateReply, ModelSaveReply, ModelStreamEvent,
+        ModelTestReply, ReviewScopeReply, ReviewScopeRequest,
     },
 };
 use repository::{
@@ -26,7 +27,7 @@ use repository::{
     editor::EditorLauncher,
     persistence::WorkbenchPersistence,
     types::{
-        BranchReply, BranchRequest, CommitReply, CommitRequest, EditorKind, OpenFileReply,
+        BranchReply, BranchRequest, EditorKind, LocalKeepReply, LocalKeepRequest, OpenFileReply,
         OpenFileRequest, OpenRequest, ReadReply, RefreshRequest, WorkbenchRestoreReply,
         WorkbenchSaveRequest,
     },
@@ -104,11 +105,11 @@ async fn open_repository(
     picker: State<'_, RepositoryPicker>,
     request: OpenRequest,
 ) -> Result<ReadReply, String> {
-    repository::validate_request_id(&request.request_id)?;
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
     let _selection = picker
         .0
         .try_lock()
-        .map_err(|_| "目录选择或仓库读取正在进行，请勿重复打开")?;
+        .map_err(|_| i18n::picker_busy(request.locale))?;
     let path = if app.state::<DesktopLifecycle>().ui_smoke {
         let (root, editor_bin) = app
             .state::<repository::smoke::SmokeState>()
@@ -118,22 +119,27 @@ async fn open_repository(
         Some(root)
     } else {
         let (send, receive) = tokio::sync::oneshot::channel();
-        let window = app.get_webview_window("main").ok_or("工作台窗口不可用")?;
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| i18n::main_window_unavailable(request.locale))?;
         app.dialog()
             .file()
             .set_parent(&window)
-            .set_title("选择 Git 工作目录")
+            .set_title(i18n::select_git_working_directory_title(request.locale))
             .pick_folder(move |path| {
                 let _ = send.send(path);
             });
         receive
             .await
-            .map_err(|_| "目录选择未完成，请重新打开")?
-            .map(|path| path.into_path().map_err(|_| "请选择本机目录"))
+            .map_err(|_| i18n::picker_incomplete(request.locale))?
+            .map(|path| {
+                path.into_path()
+                    .map_err(|_| i18n::picker_must_be_local_dir(request.locale))
+            })
             .transpose()?
     };
     let snapshot = match path {
-        Some(path) => Some(store.open(&path).await?),
+        Some(path) => Some(store.open_with_locale(&path, request.locale).await?),
         None => None,
     };
     Ok(ReadReply {
@@ -149,8 +155,10 @@ async fn refresh_repository(
     store: State<'_, RepositoryStore>,
     request: RefreshRequest,
 ) -> Result<ReadReply, String> {
-    repository::validate_request_id(&request.request_id)?;
-    let snapshot = store.refresh(&request.target).await?;
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
+    let snapshot = store
+        .refresh_with_locale(&request.target, request.locale)
+        .await?;
     Ok(ReadReply {
         protocol_version: 1,
         request_id: request.request_id,
@@ -160,11 +168,51 @@ async fn refresh_repository(
 }
 
 #[tauri::command]
+async fn set_repository_local_keep(
+    app: tauri::AppHandle,
+    store: State<'_, RepositoryStore>,
+    persistence: State<'_, WorkbenchPersistence>,
+    request: LocalKeepRequest,
+) -> Result<LocalKeepReply, String> {
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
+    let snapshot = store
+        .set_local_keep(
+            &request.target,
+            &request.paths,
+            request.keep,
+            request.locale,
+        )
+        .await?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let removed_selection_paths = if request.keep {
+        request.paths.as_slice()
+    } else {
+        &[]
+    };
+    persistence
+        .sync_local_keep(
+            &data_dir,
+            &store,
+            &request.target.repository_id,
+            removed_selection_paths,
+            request.locale,
+        )
+        .await?;
+    Ok(LocalKeepReply {
+        protocol_version: 1,
+        kind: "localKeep",
+        request_id: request.request_id,
+        target: request.target,
+        snapshot,
+    })
+}
+
+#[tauri::command]
 async fn change_repository_branch(
     store: State<'_, RepositoryStore>,
     request: BranchRequest,
 ) -> Result<BranchReply, String> {
-    repository::validate_request_id(&request.request_id)?;
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
     let snapshot = store.change_branch(&request).await?;
     Ok(BranchReply {
         protocol_version: 1,
@@ -178,29 +226,12 @@ async fn change_repository_branch(
 }
 
 #[tauri::command]
-async fn commit_repository(
-    store: State<'_, RepositoryStore>,
-    request: CommitRequest,
-) -> Result<CommitReply, String> {
-    repository::validate_request_id(&request.request_id)?;
-    let (snapshot, commit) = store.commit(&request).await?;
-    Ok(CommitReply {
-        protocol_version: 1,
-        kind: "commit",
-        request_id: request.request_id,
-        target: request.target,
-        snapshot,
-        commit,
-    })
-}
-
-#[tauri::command]
 async fn open_in_editor(
     store: State<'_, RepositoryStore>,
     launcher: State<'_, EditorLauncher>,
     request: OpenFileRequest,
 ) -> Result<OpenFileReply, String> {
-    repository::validate_request_id(&request.request_id)?;
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
     let outcome = store.open_in_editor(&launcher, &request).await?;
     Ok(OpenFileReply {
         protocol_version: 1,
@@ -246,12 +277,21 @@ async fn load_workbench_state(
         launcher.set_search_dirs(Some(vec![parent.join("editor-bin")]))?;
     }
     let installed = launcher.detect_installed_editors();
-    if !installed.is_empty() && !installed.contains(&restored.editor) {
-        restored.editor = installed[0];
+    if !installed.is_empty() {
+        if !installed.contains(&restored.editor) {
+            restored.editor = installed[0];
+        }
+        for item in &mut restored.repository_settings {
+            if !installed.contains(&item.editor) {
+                item.editor = installed[0];
+            }
+        }
     }
     restored.installed_editors = Some(installed);
 
-    let (saved_models, active_model_id, model_warning) = models.restore(&data_dir).await?;
+    let (saved_models, active_model_id, model_warning) = models
+        .restore_with_locale(&data_dir, restored.locale)
+        .await?;
     restored.models = Some(saved_models);
     restored.active_model_id = Some(active_model_id);
     if let Some(m_warn) = model_warning {
@@ -260,7 +300,9 @@ async fn load_workbench_state(
             None => m_warn,
         });
     }
-    let (cpush_sessions, cpush_warning) = cpush.restore(&data_dir, &restored.snapshots).await?;
+    let (cpush_sessions, cpush_warning) = cpush
+        .restore_with_locale(&data_dir, &restored.snapshots, restored.locale)
+        .await?;
     restored.c_push_sessions = Some(cpush_sessions);
     if let Some(c_warn) = cpush_warning {
         restored.warning = Some(match restored.warning {
@@ -314,7 +356,9 @@ async fn select_model(
     request: ModelIdRequest,
 ) -> Result<ModelMutateReply, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    models.select_model(&data_dir, &request.model_id).await
+    models
+        .select_model_with_locale(&data_dir, &request.model_id, request.locale)
+        .await
 }
 
 #[tauri::command]
@@ -330,25 +374,8 @@ async fn delete_model(
             "picket-ui-smoke-pw",
         )?;
     }
-    models.delete_model(&data_dir, &request.model_id).await
-}
-
-#[tauri::command]
-async fn generate_commit_message(
-    app: tauri::AppHandle,
-    store: State<'_, RepositoryStore>,
-    models: State<'_, ModelStore>,
-    supervisor: State<'_, PiSupervisor>,
-    request: GenerateCommitRequest,
-    on_event: Channel<ModelStreamEvent>,
-) -> Result<GenerateCommitReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let paths = runtime_paths(&app)?;
     models
-        .generate_commit(&data_dir, &paths, &supervisor, &store, &request, |event| {
-            let _ = on_event.send(event);
-            Ok(())
-        })
+        .delete_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
 }
 
@@ -377,6 +404,34 @@ fn cancel_model_request(
     request_id: String,
 ) -> Result<(), String> {
     supervisor.cancel(&request_id)
+}
+
+#[tauri::command]
+async fn plan_cpush(
+    app: tauri::AppHandle,
+    store: State<'_, RepositoryStore>,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    cpush: State<'_, CPushCoordinator>,
+    request: PlanCPushRequest,
+    on_event: Channel<CPushProgressEvent>,
+) -> Result<CPushCommandReply, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let paths = runtime_paths(&app)?;
+    cpush
+        .plan_cpush(
+            &data_dir,
+            &paths,
+            &supervisor,
+            &models,
+            &store,
+            &request,
+            |event| {
+                let _ = on_event.send(event);
+                Ok(())
+            },
+        )
+        .await
 }
 
 #[tauri::command]
@@ -432,23 +487,6 @@ async fn respond_cpush(
                 Ok(())
             },
         )
-        .await
-}
-
-#[tauri::command]
-async fn commit_and_push_repository(
-    app: tauri::AppHandle,
-    store: State<'_, RepositoryStore>,
-    cpush: State<'_, CPushCoordinator>,
-    request: CommitAndPushRequest,
-    on_event: Channel<CPushProgressEvent>,
-) -> Result<CPushCommandReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    cpush
-        .commit_and_push(&data_dir, &store, &request, |event| {
-            let _ = on_event.send(event);
-            Ok(())
-        })
         .await
 }
 
@@ -531,30 +569,37 @@ async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Result<
             && req.x_api_key.is_none()
             && req.body.contains("Connection check.")
     });
-    let saw_generate = recorded.iter().any(|req| {
-        req.path.ends_with("/chat/completions")
-            && req.authorization.as_deref() == Some(expected_bearer.as_str())
-            && req.x_api_key.is_none()
-            && req.body.contains("commit message generator")
-            && req.body.contains("+second=3")
-            && !req.body.contains("lock: updated")
-    });
+    let plan_count = recorded
+        .iter()
+        .filter(|req| {
+            req.path.ends_with("/chat/completions")
+                && req.authorization.as_deref() == Some(expected_bearer.as_str())
+                && req.x_api_key.is_none()
+                && req.body.contains("Picket's C-Push planner")
+                && req.body.contains("User extra instructions")
+                && req.body.contains("+first=2")
+                && !req.body.contains("+second=3")
+                && !req.body.contains("lock: updated")
+        })
+        .count();
     let saw_review = recorded.iter().any(|req| {
         req.path.ends_with("/chat/completions")
             && req.authorization.as_deref() == Some(expected_bearer.as_str())
             && req.body.contains("pre-commit code reviewer")
-            && req.body.contains("+second=3")
+            && req.body.contains("User review instructions / context")
+            && req.body.contains("+first=2")
+            && !req.body.contains("+second=3")
             && !req.body.contains("pnpm-lock.yaml")
     });
-    if !saw_conn || !saw_generate || !saw_review {
-        return Err("Model smoke server did not observe connection test, scoped generate, and lockfile-filtered review requests".into());
+    if !saw_conn || plan_count != 1 || !saw_review {
+        return Err("Model smoke server did not observe connection test, single scoped preview plan (without re-planning on confirmed C-Push), and lockfile-filtered review requests".into());
     }
     println!(
         "{}",
         serde_json::json!({
             "type": "uiSmokeModelProof",
             "keychainEncryptedAndRestored": true,
-            "partialScopeGenerateVerified": true,
+            "partialScopePreviewPlanVerified": true,
             "lockfileFilteredReviewVerified": true
         })
     );
@@ -714,33 +759,60 @@ async fn verify_repository_persistence_smoke(app: tauri::AppHandle) -> Result<()
         return Err("Not running repository persistence smoke mode".into());
     }
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let raw = std::fs::read_to_string(data_dir.join("workbench-state.json"))
-        .map_err(|e| format!("Missing persisted workbench-state.json: {e}"))?;
-    if raw.contains("commitToken") || raw.contains("branchToken") || raw.contains("apiKey") {
-        return Err("Persisted workbench file leaked tokens or credential fields".into());
+    let mut last_error = String::from("Missing persisted workbench-state.json");
+    for attempt in 0..8 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        }
+        let raw = match std::fs::read_to_string(data_dir.join("workbench-state.json")) {
+            Ok(raw) => raw,
+            Err(e) => {
+                last_error = format!("Missing persisted workbench-state.json: {e}");
+                continue;
+            }
+        };
+        if raw.contains("commitToken")
+            || raw.contains("branchToken")
+            || raw.contains("apiKey")
+            || raw.contains("draftText")
+        {
+            return Err(
+                "Persisted workbench file leaked tokens, credential fields, or legacy draft fields"
+                    .into(),
+            );
+        }
+        let cold_store = RepositoryStore::default();
+        let cold_persistence = WorkbenchPersistence::default();
+        let restored = cold_persistence.restore(&data_dir, &cold_store).await?;
+        let has_saved_prompt = restored.worktrees.iter().any(|tree| {
+            tree.prompt_text == "persisted-across-restart: extra instruction"
+                && tree.selected_ids.len() == 1
+        });
+        if restored.protocol_version == 2
+            && restored.editor == EditorKind::Vscode
+            && restored.snapshots.len() == 1
+            && has_saved_prompt
+            && restored.warning.is_none()
+        {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "type": "uiSmokeIdeAndPersistenceProof",
+                    "ideStagedDiffVerified": true,
+                    "persistenceRestoreVerified": true
+                })
+            );
+            return Ok(());
+        }
+        last_error = format!(
+            "Cold persistence restore did not match v2 saved editor, repository, or worktree prompt/selection (editor={:?}, snaps={}, has_prompt={}, warn={:?})",
+            restored.editor,
+            restored.snapshots.len(),
+            has_saved_prompt,
+            restored.warning
+        );
     }
-    let cold_store = RepositoryStore::default();
-    let cold_persistence = WorkbenchPersistence::default();
-    let restored = cold_persistence.restore(&data_dir, &cold_store).await?;
-    let has_saved_draft = restored.worktrees.iter().any(|tree| {
-        tree.draft_text == "persisted-across-restart: keep draft" && tree.selected_ids.len() == 1
-    });
-    if restored.editor != EditorKind::Vscode
-        || restored.snapshots.len() != 1
-        || !has_saved_draft
-        || restored.warning.is_some()
-    {
-        return Err("Cold persistence restore did not match saved editor, repository, or worktree draft/selection".into());
-    }
-    println!(
-        "{}",
-        serde_json::json!({
-            "type": "uiSmokeIdeAndPersistenceProof",
-            "ideStagedDiffVerified": true,
-            "persistenceRestoreVerified": true
-        })
-    );
-    Ok(())
+    Err(last_error)
 }
 
 #[tauri::command]
@@ -761,6 +833,15 @@ async fn verify_restart_smoke(
     if !resolved.api_key.starts_with("smoke-token-") {
         return Err("Restart smoke Keychain lookup did not recover expected secret".into());
     }
+    let cold_store = RepositoryStore::default();
+    let cold_persistence = WorkbenchPersistence::default();
+    let restored_wb = cold_persistence.restore(&data_dir, &cold_store).await?;
+    let Some(ref win_prefs) = restored_wb.window_preferences else {
+        return Err("Restart smoke did not persist windowPreferences".into());
+    };
+    if !win_prefs.pinned {
+        return Err("Restart smoke windowPreferences lost pinned state".into());
+    }
     app.state::<DesktopLifecycle>().mark_restart_verified();
     println!(
         "{}",
@@ -768,7 +849,8 @@ async fn verify_restart_smoke(
             "type": "uiSmokeRestartProof",
             "coldProcessRepositoryHydrated": true,
             "coldProcessKeychainModelHydrated": true,
-            "coldProcessSessionHistoryHydrated": true
+            "coldProcessSessionHistoryHydrated": true,
+            "coldProcessCompactWindowHydrated": true
         })
     );
     Ok(())
@@ -824,6 +906,7 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(RepositoryStore::default())
         .manage(EditorLauncher::default())
         .manage(WorkbenchPersistence::default())
@@ -846,8 +929,8 @@ fn main() {
             fail_ui_smoke,
             open_repository,
             refresh_repository,
+            set_repository_local_keep,
             change_repository_branch,
-            commit_repository,
             open_in_editor,
             load_workbench_state,
             save_workbench_state,
@@ -855,12 +938,11 @@ fn main() {
             save_model,
             select_model,
             delete_model,
-            generate_commit_message,
             review_selected_scope,
             cancel_model_request,
+            plan_cpush,
             start_cpush,
             respond_cpush,
-            commit_and_push_repository,
             pull_rebase_repository,
             reconcile_cpush_session,
             start_model_smoke_server,
@@ -902,13 +984,21 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("Cannot initialize Picket");
-    app.run(|app, event| {
-        if let tauri::RunEvent::ExitRequested {
+    app.run(|app, event| match event {
+        tauri::RunEvent::ExitRequested {
             code: None, api, ..
-        } = event
-        {
+        } => {
             api.prevent_exit();
             exit_after_cleanup(app);
         }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+        _ => {}
     });
 }

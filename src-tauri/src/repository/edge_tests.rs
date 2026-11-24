@@ -153,7 +153,7 @@ async fn external_filter_configuration_only_blocks_files_that_need_conversion() 
     )
     .unwrap();
     let error = store.open(&fixture.root).await.unwrap_err();
-    assert!(error.contains("外部过滤器"), "{error}");
+    assert!(error.contains("external Git filter"), "{error}");
     fixture.verify_unchanged().unwrap();
 }
 

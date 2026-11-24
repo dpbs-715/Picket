@@ -1,3 +1,4 @@
+use crate::i18n::{LanguageKind, deserialize_language_or_default};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -12,12 +13,35 @@ pub struct ReadTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenRequest {
     pub request_id: String,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RefreshRequest {
     pub request_id: String,
     pub target: ReadTarget,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalKeepRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    pub paths: Vec<String>,
+    pub keep: bool,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalKeepReply {
+    pub protocol_version: u8,
+    pub kind: &'static str,
+    pub request_id: String,
+    pub target: ReadTarget,
+    pub snapshot: RepositorySnapshot,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +57,8 @@ pub struct BranchRequest {
     pub action: BranchAction,
     pub branch: String,
     pub branch_token: String,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +85,8 @@ pub struct CommitRequest {
     pub selections: Vec<CommitSelection>,
     pub message: String,
     pub push: bool,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,16 +96,6 @@ pub struct CommitResult {
     pub title: String,
     pub branch: String,
     pub parent: Option<String>,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommitReply {
-    pub protocol_version: u8,
-    pub kind: &'static str,
-    pub request_id: String,
-    pub target: ReadTarget,
-    pub snapshot: RepositorySnapshot,
-    pub commit: CommitResult,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +123,8 @@ pub struct OpenFileRequest {
     pub file_id: String,
     pub editor: EditorKind,
     pub line: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,15 +154,49 @@ pub enum WorkbenchTab {
     Commit,
     Review,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindowPosition {
+    pub x: i32,
+    pub y: i32,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PersistedWindowPreferences {
+    pub pinned: bool,
+    pub compact_mode: bool,
+    pub pinned_expanded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_size: Option<WindowSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_position: Option<WindowPosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_position: Option<WindowPosition>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PersistedRepositorySettings {
+    pub repository_id: String,
+    pub editor: EditorKind,
+    pub commit_language: LanguageKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_keep_paths: Vec<String>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersistedWorktreeState {
     pub repository_id: String,
     pub worktree_id: String,
-    pub draft_text: String,
-    pub draft_editing: bool,
-    pub draft_outdated: bool,
+    pub prompt_text: String,
     pub selected_ids: Vec<String>,
+    #[serde(default)]
+    pub unselected_ids: Vec<String>,
     pub scope_version: String,
     pub tab: WorkbenchTab,
 }
@@ -150,22 +204,33 @@ pub struct PersistedWorktreeState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkbenchSaveRequest {
     pub revision: u64,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
     pub editor: EditorKind,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub default_commit_language: LanguageKind,
+    #[serde(default)]
+    pub repository_settings: Vec<PersistedRepositorySettings>,
+    #[serde(default)]
+    pub window_preferences: Option<PersistedWindowPreferences>,
     pub active_worktree_id: Option<String>,
-    pub empty_draft: String,
-    pub empty_editing: bool,
+    pub empty_prompt: String,
     pub worktrees: Vec<PersistedWorktreeState>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchRestoreReply {
     pub protocol_version: u8,
+    pub locale: LanguageKind,
     pub editor: EditorKind,
+    pub default_commit_language: LanguageKind,
+    pub repository_settings: Vec<PersistedRepositorySettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_preferences: Option<PersistedWindowPreferences>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub installed_editors: Option<Vec<EditorKind>>,
     pub active_worktree_id: Option<String>,
-    pub empty_draft: String,
-    pub empty_editing: bool,
+    pub empty_prompt: String,
     pub worktrees: Vec<PersistedWorktreeState>,
     pub snapshots: Vec<RepositorySnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,6 +265,7 @@ pub struct RepositoryInfo {
     pub name: String,
     pub branches: Vec<Branch>,
     pub remote_branches: Vec<RemoteBranch>,
+    pub local_keep_paths: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -260,6 +326,7 @@ pub struct Change {
     pub range: Range,
     pub binary: bool,
     pub ignored_for_review: bool,
+    pub local_keep: bool,
     pub content_version: String,
     pub commit_token: String,
 }

@@ -169,7 +169,8 @@ fn handle_connection(
 
     let response_text = if body.contains("authorized Git conflict merge resolver") {
         build_conflict_smoke_resolution(&body)
-    } else if body.contains("C-Push commit splitting planner")
+    } else if body.contains("Picket's C-Push planner")
+        || body.contains("C-Push commit splitting planner")
         || body.contains("<cpush_skill_spec>")
     {
         build_cpush_smoke_plan(&body)
@@ -189,13 +190,11 @@ fn handle_connection(
                 "path": file_path,
                 "line": 1,
                 "severity": "high",
-                "title": "需确认已暂存配置变更边界",
-                "reason": "检测到关键键值调整，提交前请确认上游调用方兼容。"
+                "title": "Verify staged configuration boundary",
+                "reason": "Detected key-value update; verify upstream callers remain compatible before committing."
             }]
         })
         .to_string()
-    } else if body.contains("commit message generator") {
-        "feat(scope): 更新已暂存配置项并同步所选范围\n\n- 提交已暂存的配置键值调整\n- 同步记录所选锁文件范围变更".to_owned()
     } else {
         "OK".to_owned()
     };
@@ -406,11 +405,11 @@ fn build_conflict_smoke_resolution(raw_body: &str) -> String {
         let upstream = extract_fenced_block(section, "#### Remote Upstream Version (onto):");
         let local = extract_fenced_block(section, "#### Local Commit Version (being rebased):");
 
-        let content = if instruction.contains("模拟残留冲突标记") {
+        let content = if instruction.contains("simulate leftover conflict markers") {
             format!("<<<<<<< HEAD\n{upstream}\n=======\n{local}\n>>>>>>> local\n")
-        } else if instruction.contains("仅保留远端") {
+        } else if instruction.contains("keep upstream only") {
             format!("{}\n", upstream.trim_end())
-        } else if instruction.contains("仅保留本地") {
+        } else if instruction.contains("keep local only") {
             format!("{}\n", local.trim_end())
         } else {
             let mut merged_lines: Vec<String> = Vec::new();
@@ -420,7 +419,7 @@ fn build_conflict_smoke_resolution(raw_body: &str) -> String {
                     merged_lines.push(s);
                 }
             }
-            if !instruction.is_empty() && instruction.contains("附上合并说明注释") {
+            if !instruction.is_empty() && instruction.contains("append merge note comment") {
                 merged_lines.push(format!("// merged: {instruction}"));
             }
             format!("{}\n", merged_lines.join("\n"))
@@ -440,9 +439,9 @@ fn build_conflict_smoke_resolution(raw_body: &str) -> String {
 
     serde_json::json!({
         "summary": if instruction.is_empty() {
-            "已合入远端改动并保留本地修改"
+            "Merged remote upstream changes while preserving local edits"
         } else {
-            "已按你的合并要求解决冲突"
+            "Resolved merge conflicts following your instructions"
         },
         "resolvedFiles": resolved,
     })
@@ -450,8 +449,8 @@ fn build_conflict_smoke_resolution(raw_body: &str) -> String {
 }
 
 fn build_cpush_smoke_plan(raw_body: &str) -> String {
-    let decoded = raw_body.replace("\\n", "\n");
-    let files = extract_authorized_plan_files(raw_body);
+    let decoded = decode_prompt_text(raw_body);
+    let files = extract_authorized_plan_files(&decoded);
     let doc_file = files
         .iter()
         .find(|(_, path)| path.ends_with(".md") || path.contains("RELEASE_NOTES"));
@@ -461,6 +460,37 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
         .map(|(id, _)| id.clone())
         .collect();
     let has_qa = decoded.contains("Previous Q&A decisions in this C-Push session:");
+    let extra_instruction = decoded
+        .split("User extra instructions (supplemental grouping/message guidance ONLY")
+        .nth(1)
+        .and_then(|s| s.split_once(":\n").map(|(_, rest)| rest))
+        .map(|s| s.split("\n\nUnselected worktree files").next().unwrap_or(s))
+        .map(|s| s.split("\n\nPrevious Q&A decisions").next().unwrap_or(s))
+        .map(|s| s.split("\n\nAuthorized selected files").next().unwrap_or(s))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if !has_qa
+        && (extra_instruction.contains("include unselected")
+            || extra_instruction.contains("force-push")
+            || extra_instruction.contains("force push")
+            || extra_instruction.contains("edit code")
+            || extra_instruction.contains("rewrite published"))
+    {
+        let affected: Vec<String> = files.iter().take(1).map(|(id, _)| id.clone()).collect();
+        return serde_json::json!({
+            "kind": "question",
+            "title": "Extra instruction exceeds authorized C-Push permissions",
+            "scope": "Authorization boundary check",
+            "description": "Extra instructions cannot include unselected files, force-push, edit code, or rewrite published history. Choose how to proceed:",
+            "affectedFileIds": affected,
+            "options": [
+                { "id": "proceed-authorized", "label": "Proceed strictly within selected files", "recommended": true },
+                { "id": "dismiss-session", "label": "Stop and adjust selection" }
+            ]
+        })
+        .to_string();
+    }
 
     // If ambiguous doc + code files are selected and user has not answered yet -> ask!
     if let Some((doc_id, _)) = doc_file
@@ -469,14 +499,14 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
     {
         return serde_json::json!({
             "kind": "question",
-            "title": "发布说明要一起提交吗？",
-            "scope": "影响提交 2/2「docs」",
-            "description": "检测到代码改动与文档同时勾选，请确认发布说明的归属方式：",
+            "title": "Include release notes in this commit?",
+            "scope": "Affects commit 2/2 (docs)",
+            "description": "Code changes and documentation are both selected. Confirm how to group the release notes:",
             "affectedFileIds": [doc_id],
             "options": [
-                { "id": "merge", "label": "合并进提交 1" },
-                { "id": "split", "label": "单独提交并一起推送", "recommended": true },
-                { "id": "skip", "label": "暂不提交" }
+                { "id": "merge", "label": "Fold into commit 1" },
+                { "id": "split", "label": "Commit separately and push together", "recommended": true },
+                { "id": "skip", "label": "Skip for now" }
             ]
         })
         .to_string();
@@ -493,25 +523,26 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
             .rev()
             .find(|l| l.trim_start().starts_with("A:"))
             .unwrap_or("");
+        let lower_answer = last_answer.to_ascii_lowercase();
 
         // Out-of-scope or ambiguous free-text keeps asking (`C02`):
-        if last_answer.contains("未选")
-            || last_answer.contains("越界")
-            || last_answer.contains("随便看看不确定")
+        if lower_answer.contains("unselected")
+            || lower_answer.contains("out-of-scope")
+            || lower_answer.contains("not sure maybe")
         {
             let affected: Vec<String> = doc_file
                 .map(|(id, _)| vec![id.clone()])
                 .unwrap_or_else(|| files.iter().take(1).map(|(id, _)| id.clone()).collect());
             return serde_json::json!({
                 "kind": "question",
-                "title": "该要求超出当前已勾选范围或含义不明",
-                "scope": "需重新确认归属",
-                "description": "C-Push 仅处理本次已勾选的变更文件，不能自动纳入未选文件。请在已授权范围内选择处理方式：",
+                "title": "Instruction exceeds selected scope or is ambiguous",
+                "scope": "Reconfirm file attribution",
+                "description": "C-Push only processes files selected in this run and cannot automatically include unselected files. Choose how to proceed within the authorized scope:",
                 "affectedFileIds": affected,
                 "options": [
-                    { "id": "merge", "label": "合并进提交 1" },
-                    { "id": "split", "label": "单独提交并一起推送", "recommended": true },
-                    { "id": "skip", "label": "暂不提交" }
+                    { "id": "merge", "label": "Fold into commit 1" },
+                    { "id": "split", "label": "Commit separately and push together", "recommended": true },
+                    { "id": "skip", "label": "Skip for now" }
                 ]
             })
             .to_string();
@@ -524,8 +555,8 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
             .collect();
         if !sensitive_ids.is_empty()
             && (last_answer.contains("optionId=skip")
-                || last_answer.contains("排除")
-                || last_answer.contains("暂不提交"))
+                || lower_answer.contains("exclude")
+                || lower_answer.contains("skip"))
         {
             let keep_ids: Vec<String> = files
                 .iter()
@@ -538,12 +569,12 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
                 vec![serde_json::json!({
                     "id": "group-1",
                     "fileIds": keep_ids,
-                    "message": "feat(scope): 提交已确认的业务改动"
+                    "message": "feat(scope): commit confirmed application changes"
                 })]
             };
             return serde_json::json!({
                 "kind": "ready",
-                "summary": "已按确认排除本地敏感配置，仅提交其余改动",
+                "summary": "Excluded local sensitive config as confirmed and committed remaining changes",
                 "groups": groups,
                 "skippedFileIds": sensitive_ids
             })
@@ -553,28 +584,29 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
         if let Some((doc_id, _)) = doc_file
             && !code_files.is_empty()
         {
-            if last_answer.contains("optionId=skip") || last_answer.contains("暂不提交") {
+            if last_answer.contains("optionId=skip") || lower_answer.contains("skip") {
                 return serde_json::json!({
                     "kind": "ready",
-                    "summary": "已按确认跳过文档，仅提交代码改动",
+                    "summary": "Skipped documentation as confirmed and committed code changes",
                     "groups": [{
                         "id": "group-1",
                         "fileIds": code_files,
-                        "message": "feat(scope): 更新已暂存配置与核心实现\n\n- 沿用已暂存范围提交业务改动\n- 按确认保留发布说明在工作区"
+                        "message": "feat(scope): update staged config and core logic\n\n- commit staged configuration changes\n- keep release notes in the working tree as confirmed"
                     }],
                     "skippedFileIds": [doc_id]
                 })
                 .to_string();
             }
-            if last_answer.contains("optionId=merge") || last_answer.contains("合并进提交 1") {
+            if last_answer.contains("optionId=merge") || last_answer.contains("Fold into commit 1")
+            {
                 let all_ids: Vec<String> = files.iter().map(|(id, _)| id.clone()).collect();
                 return serde_json::json!({
                     "kind": "ready",
-                    "summary": "已按确认合并为单笔提交",
+                    "summary": "Merged into a single commit as confirmed",
                     "groups": [{
                         "id": "group-1",
                         "fileIds": all_ids,
-                        "message": "feat(scope): 更新已暂存配置并同步发布说明\n\n- 提交已暂存改动与关联代码\n- 同步更新发布说明文档"
+                        "message": "feat(scope): update staged config and release notes\n\n- commit staged changes and related code\n- update release notes documentation"
                     }],
                     "skippedFileIds": []
                 })
@@ -582,17 +614,17 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
             }
             return serde_json::json!({
                 "kind": "ready",
-                "summary": "已拆分为业务改动与文档两笔独立提交",
+                "summary": "Split into two commits for code and documentation",
                 "groups": [
                     {
                         "id": "group-1",
                         "fileIds": code_files,
-                        "message": "feat(scope): 更新已暂存配置与核心实现\n\n- 沿用已暂存范围提交配置改动\n- 同步关联新增与修改文件"
+                        "message": "feat(scope): update staged config and core logic\n\n- commit staged configuration changes\n- include related added and modified files"
                     },
                     {
                         "id": "group-2",
                         "fileIds": [doc_id],
-                        "message": "docs: 更新发布说明文档\n\n- 记录本次配置与业务改动说明"
+                        "message": "docs: update release notes\n\n- document configuration and feature updates"
                     }
                 ],
                 "skippedFileIds": []
@@ -605,11 +637,11 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
     let all_ids: Vec<String> = files.iter().map(|(id, _)| id.clone()).collect();
     serde_json::json!({
         "kind": "ready",
-        "summary": "范围明确，直接生成提交计划",
+        "summary": "Scope is unambiguous; generated commit plan directly",
         "groups": [{
             "id": "group-1",
             "fileIds": all_ids,
-            "message": "feat(scope): 提交已选范围改动\n\n- 按已选精确范围写入本地提交\n- 保全未选文件与未暂存草稿"
+            "message": "feat(scope): commit selected scope changes\n\n- write local commit for the exact selected scope\n- preserve unselected files and unstaged drafts"
         }],
         "skippedFileIds": []
     })
@@ -621,7 +653,10 @@ pub struct ModelSmokeState(pub Mutex<Option<LocalModelSseServer>>);
 
 impl ModelSmokeState {
     pub fn ensure_server(&self) -> Result<String, String> {
-        let mut guard = self.0.lock().map_err(|_| "模型测试服务锁不可用")?;
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_| "Model smoke server lock is unavailable")?;
         if guard.is_none() {
             *guard = Some(LocalModelSseServer::start()?);
         }
@@ -629,7 +664,10 @@ impl ModelSmokeState {
     }
 
     pub fn requests(&self) -> Result<Vec<RecordedModelHttpRequest>, String> {
-        let guard = self.0.lock().map_err(|_| "模型测试服务锁不可用")?;
+        let guard = self
+            .0
+            .lock()
+            .map_err(|_| "Model smoke server lock is unavailable")?;
         Ok(guard
             .as_ref()
             .map_or_else(Vec::new, LocalModelSseServer::requests))

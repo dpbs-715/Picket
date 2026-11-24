@@ -21,11 +21,12 @@ pub mod smoke;
 mod tests;
 pub mod types;
 
+use crate::i18n::{self, LanguageKind};
 use parse::{StatusEntry, WorktreeEntry};
 use runner::GitReader;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -37,6 +38,12 @@ use std::{
 use types::*;
 
 type Result<T> = std::result::Result<T, String>;
+pub(crate) const MAX_LOCAL_KEEP_PATHS_PER_REPO: usize = 2048;
+pub(crate) struct ExportedLocalKeep {
+    pub entries: Vec<(String, Vec<String>)>,
+    pub known_common_dirs: HashSet<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct RepositoryStore {
     inner: Arc<StoreInner>,
@@ -51,10 +58,13 @@ struct StoreInner {
     branch_requests: Mutex<HashSet<String>>,
     commit_requests: Mutex<HashSet<String>>,
     verified_remotes: Mutex<HashSet<(String, String)>>,
+    local_keep: Mutex<HashMap<PathBuf, BTreeSet<String>>>,
+    offline_local_keep: Mutex<HashMap<String, Vec<String>>>,
 }
 #[derive(Clone)]
 struct Registration {
     sequence: u64,
+    common_dir: PathBuf,
     primary_root: PathBuf,
     paths: HashMap<String, PathBuf>,
     branch_tokens: HashMap<String, String>,
@@ -66,15 +76,15 @@ fn hash(bytes: impl AsRef<[u8]>) -> String {
 fn identity(prefix: &str, path: &Path) -> String {
     format!("{prefix}-{}", hash(path.as_os_str().as_encoded_bytes()))
 }
-fn display(path: &Path) -> Result<String> {
+fn display_with_locale(path: &Path, locale: LanguageKind) -> Result<String> {
     path.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| "存在非 UTF-8 目录，当前版本不能安全打开".into())
+        .ok_or_else(|| i18n::non_utf8_directory(locale).into())
 }
-fn label(path: &Path) -> String {
+fn label(path: &Path, locale: LanguageKind) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("工作树")
+        .unwrap_or_else(|| i18n::default_worktree_label(locale))
         .to_owned()
 }
 fn ignored_for_review(path: &str) -> bool {
@@ -90,6 +100,23 @@ fn ignored_for_review(path: &str) -> bool {
         )
     )
 }
+pub(crate) fn is_valid_local_keep_path(path: &str) -> bool {
+    if path.is_empty() || path.len() > 4096 || path.contains('\0') || path.starts_with('/') {
+        return false;
+    }
+    if path.split('/').any(|segment| {
+        segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.eq_ignore_ascii_case(".git")
+    }) {
+        return false;
+    }
+    parse::relative(path).is_ok()
+}
+pub(crate) fn file_id_for_path(path: &str) -> String {
+    format!("file-{}", hash(path))
+}
 
 impl RepositoryStore {
     pub async fn shutdown(&self) {
@@ -100,13 +127,13 @@ impl RepositoryStore {
             .inner
             .opened_order
             .lock()
-            .map_err(|_| "仓库顺序记录不可用")?
+            .map_err(|_| "Repository order registry is unavailable")?
             .clone();
         let repositories = self
             .inner
             .repositories
             .lock()
-            .map_err(|_| "仓库注册表不可用")?;
+            .map_err(|_| "Repository registry is unavailable")?;
         Ok(order
             .into_iter()
             .filter_map(|id| {
@@ -117,105 +144,326 @@ impl RepositoryStore {
             .collect())
     }
     pub async fn open(&self, directory: &Path) -> Result<RepositorySnapshot> {
+        self.open_with_locale(directory, LanguageKind::En).await
+    }
+    pub async fn open_with_locale(
+        &self,
+        directory: &Path,
+        locale: LanguageKind,
+    ) -> Result<RepositorySnapshot> {
         let directory = fs::canonicalize(directory)
-            .map_err(|_| "所选目录不可访问，请选择本机 Git 工作目录".to_string())?;
+            .map_err(|_| i18n::repo_directory_inaccessible(locale).to_string())?;
         if !directory.is_dir() {
-            return Err("请选择目录，而不是文件".into());
+            return Err(i18n::repo_must_select_directory(locale).into());
         }
-        let dir_name = label(&directory);
-        let root = match self
-            .inner
-            .reader
+        let dir_name = label(&directory, locale);
+        let reader = self.inner.reader.with_locale(locale);
+        let root = match reader
             .text(&directory, &["rev-parse", "--show-toplevel"])
             .await
         {
             Ok(root) => root,
-            Err(_) => {
-                let is_bare = self
-                    .inner
-                    .reader
+            Err(err) => {
+                if reader.cancelled() {
+                    return Err(err);
+                }
+                let is_bare = reader
                     .text(&directory, &["rev-parse", "--is-bare-repository"])
                     .await
                     .is_ok_and(|out| out.trim() == "true");
                 if is_bare {
-                    return Err(format!(
-                        "无法打开“{dir_name}”：该目录是 Git 裸仓库（无工作区文件），请选择普通 Git 工作目录"
-                    ));
+                    return Err(i18n::open_bare_repo_error(locale, &dir_name));
                 }
-                return Err(format!(
-                    "无法打开“{dir_name}”：该目录未受 Git 管理（未找到 .git），请先执行 git init 或选择其他 Git 仓库"
-                ));
+                return Err(i18n::open_not_git_repo_error(locale, &dir_name));
             }
         };
-        let root = fs::canonicalize(root).map_err(|_| "Git 工作目录不可访问".to_string())?;
-        self.read_repository(&root).await
+        let root = fs::canonicalize(root)
+            .map_err(|_| "Git working directory is inaccessible".to_string())?;
+        self.read_repository(&root, locale).await
     }
+    #[cfg(test)]
     pub async fn refresh(&self, target: &ReadTarget) -> Result<RepositorySnapshot> {
+        self.refresh_with_locale(target, LanguageKind::En).await
+    }
+    pub async fn refresh_with_locale(
+        &self,
+        target: &ReadTarget,
+        locale: LanguageKind,
+    ) -> Result<RepositorySnapshot> {
         let path = self
             .inner
             .repositories
             .lock()
-            .map_err(|_| "仓库注册表不可用")?
+            .map_err(|_| "Repository registry is unavailable")?
             .get(&target.repository_id)
             .and_then(|repository| repository.paths.get(&target.worktree_id))
             .cloned()
-            .ok_or("仓库或工作树未在当前窗口打开，请重新选择目录")?;
-        let common = self
-            .inner
-            .reader
+            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
+        let reader = self.inner.reader.with_locale(locale);
+        let common = reader
             .text(
                 &path,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )
             .await?;
-        let common = fs::canonicalize(common).map_err(|_| "无法访问 Git 公共目录")?;
+        let common = fs::canonicalize(common).map_err(|_| "Cannot access Git common directory")?;
         if identity("repo", &common) != target.repository_id {
-            return Err("工作树所属仓库已变化，请重新打开；已保留原草稿和选择".into());
+            return Err(i18n::repo_identity_changed_error(locale).into());
         }
-        let snapshot = self.read_repository(&path).await?;
+        let snapshot = self.read_repository(&path, locale).await?;
         if snapshot.repository.id != target.repository_id {
-            return Err("工作树所属仓库已变化，请重新打开；已保留原草稿和选择".into());
+            return Err(i18n::repo_identity_changed_error(locale).into());
         }
         Ok(snapshot)
+    }
+    pub async fn set_local_keep(
+        &self,
+        target: &ReadTarget,
+        paths: &[String],
+        keep: bool,
+        locale: LanguageKind,
+    ) -> Result<RepositorySnapshot> {
+        if paths.is_empty() {
+            return Err(i18n::local_keep_empty_paths_error(locale).into());
+        }
+        if paths.len() > MAX_LOCAL_KEEP_PATHS_PER_REPO {
+            return Err(i18n::local_keep_limit_exceeded_error(locale).into());
+        }
+        if !paths.iter().all(|path| is_valid_local_keep_path(path)) {
+            return Err(i18n::local_keep_invalid_path_error(locale).into());
+        }
+        let path = self
+            .inner
+            .repositories
+            .lock()
+            .map_err(|_| "Repository registry is unavailable")?
+            .get(&target.repository_id)
+            .and_then(|repository| repository.paths.get(&target.worktree_id))
+            .cloned()
+            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
+        let reader = self.inner.reader.with_locale(locale);
+        let common = reader
+            .text(
+                &path,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .await?;
+        let common = fs::canonicalize(common)
+            .map_err(|_| "Cannot access Git common directory".to_string())?;
+        if identity("repo", &common) != target.repository_id {
+            return Err(i18n::repo_identity_changed_error(locale).into());
+        }
+        let _guard = self
+            .repository_gate(&target.repository_id)?
+            .lock_owned()
+            .await;
+        self.resolve_keep_set_for_common(&common)?;
+        {
+            let mut keep_map = self
+                .inner
+                .local_keep
+                .lock()
+                .map_err(|_| "Local Keep registry is unavailable")?;
+            let set = keep_map.entry(common.clone()).or_default();
+            if keep {
+                let added_count = paths
+                    .iter()
+                    .filter(|candidate| !set.contains(candidate.as_str()))
+                    .collect::<HashSet<_>>()
+                    .len();
+                if set.len() + added_count > MAX_LOCAL_KEEP_PATHS_PER_REPO {
+                    return Err(i18n::local_keep_limit_exceeded_error(locale).into());
+                }
+                for item in paths {
+                    set.insert(item.clone());
+                }
+            } else {
+                for item in paths {
+                    set.remove(item.as_str());
+                }
+            }
+        }
+        let snapshot = self.read_repository_locked(&path, locale).await?;
+        if snapshot.repository.id != target.repository_id {
+            return Err(i18n::repo_identity_changed_error(locale).into());
+        }
+        Ok(snapshot)
+    }
+    pub(crate) fn import_persisted_local_keep(
+        &self,
+        entries: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        let mut live = self
+            .inner
+            .local_keep
+            .lock()
+            .map_err(|_| "Local Keep registry is unavailable")?;
+        let mut offline = self
+            .inner
+            .offline_local_keep
+            .lock()
+            .map_err(|_| "Offline Local Keep registry is unavailable")?;
+        live.clear();
+        offline.clear();
+        for (common_dir, raw_paths) in entries {
+            if common_dir.is_empty() {
+                continue;
+            }
+            let sanitized: BTreeSet<String> = raw_paths
+                .iter()
+                .filter(|path| is_valid_local_keep_path(path))
+                .take(MAX_LOCAL_KEEP_PATHS_PER_REPO)
+                .cloned()
+                .collect();
+            if sanitized.is_empty() {
+                continue;
+            }
+            match fs::canonicalize(common_dir) {
+                Ok(canon) => {
+                    let set = live.entry(canon).or_default();
+                    for item in sanitized {
+                        if set.len() >= MAX_LOCAL_KEEP_PATHS_PER_REPO {
+                            break;
+                        }
+                        set.insert(item);
+                    }
+                }
+                Err(_) => {
+                    offline.insert(common_dir.clone(), sanitized.into_iter().collect());
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn export_persisted_local_keep(
+        &self,
+        locale: LanguageKind,
+    ) -> Result<ExportedLocalKeep> {
+        let repositories = self
+            .inner
+            .repositories
+            .lock()
+            .map_err(|_| "Repository registry is unavailable")?;
+        let live = self
+            .inner
+            .local_keep
+            .lock()
+            .map_err(|_| "Local Keep registry is unavailable")?;
+        let offline = self
+            .inner
+            .offline_local_keep
+            .lock()
+            .map_err(|_| "Offline Local Keep registry is unavailable")?;
+        let mut known = HashSet::with_capacity(repositories.len() + live.len() + offline.len());
+        for reg in repositories.values() {
+            known.insert(display_with_locale(&reg.common_dir, locale)?);
+        }
+        let mut out = BTreeMap::<String, Vec<String>>::new();
+        for (common_path, set) in live.iter() {
+            let key = display_with_locale(common_path, locale)?;
+            known.insert(key.clone());
+            if !set.is_empty() {
+                out.insert(key, set.iter().cloned().collect());
+            }
+        }
+        for (common_str, paths) in offline.iter() {
+            if !known.contains(common_str) {
+                known.insert(common_str.clone());
+                if !paths.is_empty() {
+                    out.insert(common_str.clone(), paths.clone());
+                }
+            }
+        }
+        Ok(ExportedLocalKeep {
+            entries: out.into_iter().collect(),
+            known_common_dirs: known,
+        })
+    }
+    pub(crate) fn offline_local_keep_for_repo_id(
+        &self,
+        repository_id: &str,
+    ) -> Option<Vec<String>> {
+        let offline = self.inner.offline_local_keep.lock().ok()?;
+        offline
+            .iter()
+            .find(|(common_dir, _)| identity("repo", Path::new(common_dir)) == repository_id)
+            .map(|(_, paths)| paths.clone())
+    }
+    fn resolve_keep_set_for_common(&self, common: &Path) -> Result<BTreeSet<String>> {
+        let migrated = if let Some(common_str) = common.to_str() {
+            self.inner
+                .offline_local_keep
+                .lock()
+                .map_err(|_| "Offline Local Keep registry is unavailable")?
+                .remove(common_str)
+        } else {
+            None
+        };
+        let mut keep_map = self
+            .inner
+            .local_keep
+            .lock()
+            .map_err(|_| "Local Keep registry is unavailable")?;
+        let set = keep_map.entry(common.to_path_buf()).or_default();
+        if let Some(paths) = migrated {
+            for item in paths {
+                if set.len() >= MAX_LOCAL_KEEP_PATHS_PER_REPO {
+                    break;
+                }
+                if is_valid_local_keep_path(&item) {
+                    set.insert(item);
+                }
+            }
+        }
+        Ok(set.clone())
     }
     fn repository_gate(&self, repository_id: &str) -> Result<Arc<tokio::sync::Mutex<()>>> {
         Ok(self
             .inner
             .gates
             .lock()
-            .map_err(|_| "仓库协调器不可用")?
+            .map_err(|_| "Repository gate is unavailable")?
             .entry(repository_id.into())
             .or_default()
             .clone())
     }
-    async fn read_repository(&self, root: &Path) -> Result<RepositorySnapshot> {
-        let common = self
-            .inner
-            .reader
-            .text(
-                root,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            )
-            .await?;
-        let common = fs::canonicalize(common).map_err(|_| "无法访问 Git 公共目录")?;
-        let _guard = self
-            .repository_gate(&identity("repo", &common))?
-            .lock_owned()
-            .await;
-        self.read_repository_locked(root).await
-    }
-    async fn read_repository_locked(&self, root: &Path) -> Result<RepositorySnapshot> {
-        let sequence = self.inner.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-        let reader = &self.inner.reader;
+    async fn read_repository(
+        &self,
+        root: &Path,
+        locale: LanguageKind,
+    ) -> Result<RepositorySnapshot> {
+        let reader = self.inner.reader.with_locale(locale);
         let common = reader
             .text(
                 root,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )
             .await?;
-        let common = fs::canonicalize(common).map_err(|_| "无法访问 Git 公共目录".to_string())?;
+        let common = fs::canonicalize(common).map_err(|_| "Cannot access Git common directory")?;
+        let _guard = self
+            .repository_gate(&identity("repo", &common))?
+            .lock_owned()
+            .await;
+        self.read_repository_locked(root, locale).await
+    }
+    async fn read_repository_locked(
+        &self,
+        root: &Path,
+        locale: LanguageKind,
+    ) -> Result<RepositorySnapshot> {
+        let sequence = self.inner.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let reader = self.inner.reader.with_locale(locale);
+        let common = reader
+            .text(
+                root,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .await?;
+        let common = fs::canonicalize(common)
+            .map_err(|_| "Cannot access Git common directory".to_string())?;
         let repository_id = identity("repo", &common);
         let active_id = identity("wt", root);
+        let keep_set = self.resolve_keep_set_for_common(&common)?;
         let entries = parse::worktrees(
             &reader
                 .bytes(root, &["worktree", "list", "--porcelain", "-z"])
@@ -231,7 +479,10 @@ impl RepositoryStore {
                 entry.path = path;
             }
             let id = identity("wt", &entry.path);
-            let tree = match self.read_worktree(&repository_id, &entry).await {
+            let tree = match self
+                .read_worktree(&repository_id, &entry, &keep_set, locale)
+                .await
+            {
                 Ok((tree, commit_state)) => {
                     commit_states.insert(id.clone(), commit_state);
                     tree
@@ -240,8 +491,8 @@ impl RepositoryStore {
                 Err(error) => WorktreeSnapshot {
                     repository_id: repository_id.clone(),
                     worktree_id: id.clone(),
-                    label: label(&entry.path),
-                    path: display(&entry.path)?,
+                    label: label(&entry.path, locale),
+                    path: display_with_locale(&entry.path, locale)?,
                     branch: entry.branch.clone(),
                     detached: entry.branch == "(detached)",
                     head: entry.head.clone(),
@@ -256,7 +507,7 @@ impl RepositoryStore {
             worktrees.push(tree);
         }
         if !worktrees.iter().any(|tree| tree.worktree_id == active_id) {
-            return Err("Git 未列出所选工作树，请重新打开".into());
+            return Err("Git did not list the selected worktree; please reopen".into());
         }
         let branch_output = reader
             .bytes(
@@ -266,7 +517,7 @@ impl RepositoryStore {
             .await?;
         let mut branches = Vec::new();
         for record in branch_output.split(|byte| *byte == 0) {
-            let record = parse::utf8(record)?;
+            let record = parse::utf8_with_locale(record, locale)?;
             let Some(name) = record.trim_start_matches('\n').strip_prefix("refs/heads/") else {
                 continue;
             };
@@ -299,7 +550,7 @@ impl RepositoryStore {
             .await?;
         let mut remote_branches = Vec::new();
         for record in remote_output.split(|byte| *byte == 0) {
-            let record = parse::utf8(record)?;
+            let record = parse::utf8_with_locale(record, locale)?;
             let record = record.trim_start_matches('\n');
             if record.is_empty() {
                 continue;
@@ -325,9 +576,9 @@ impl RepositoryStore {
             });
         }
         let name = if common.file_name().is_some_and(|name| name == ".git") {
-            label(common.parent().unwrap_or(root))
+            label(common.parent().unwrap_or(root), locale)
         } else {
-            label(&common).trim_end_matches(".git").to_owned()
+            label(&common, locale).trim_end_matches(".git").to_owned()
         };
         let snapshot = RepositorySnapshot {
             repository: RepositoryInfo {
@@ -335,6 +586,7 @@ impl RepositoryStore {
                 name,
                 branches,
                 remote_branches,
+                local_keep_paths: keep_set.iter().cloned().collect(),
             },
             worktrees,
             active_worktree_id: active_id,
@@ -344,7 +596,7 @@ impl RepositoryStore {
             .inner
             .repositories
             .lock()
-            .map_err(|_| "仓库注册表不可用")?;
+            .map_err(|_| "Repository registry is unavailable")?;
         if registered
             .get(&repository_id)
             .is_none_or(|previous| previous.sequence < sequence)
@@ -362,6 +614,7 @@ impl RepositoryStore {
                 repository_id.clone(),
                 Registration {
                     sequence,
+                    common_dir: common,
                     primary_root: root.to_path_buf(),
                     paths,
                     branch_tokens,
@@ -373,7 +626,7 @@ impl RepositoryStore {
                 .inner
                 .opened_order
                 .lock()
-                .map_err(|_| "仓库顺序记录不可用")?;
+                .map_err(|_| "Repository order registry is unavailable")?;
             if !order.iter().any(|existing| existing == &repository_id) {
                 order.push(repository_id);
             }
@@ -384,9 +637,16 @@ impl RepositoryStore {
         &self,
         repository_id: &str,
         entry: &WorktreeEntry,
+        keep_set: &BTreeSet<String>,
+        locale: LanguageKind,
     ) -> Result<(WorktreeSnapshot, commit::CommitRegistration)> {
         let root = &entry.path;
-        let reader = self.inner.reader.for_worktree(root).await?;
+        let reader = self
+            .inner
+            .reader
+            .with_locale(locale)
+            .for_worktree(root)
+            .await?;
         let before = reader
             .bytes(
                 root,
@@ -399,14 +659,12 @@ impl RepositoryStore {
                 ],
             )
             .await?;
-        let status = parse::status(&before)?;
+        let status = parse::status_with_locale(&before, locale)?;
         if status.entries.len() > 10_000 {
-            return Err("变更文件超过 10000 项，未载入不完整列表".into());
+            return Err(i18n::repo_too_many_changes_error(locale).into());
         }
         if status.entries.iter().any(|entry| entry.mode == "160000") {
-            return Err(
-                "存在子模块变更，当前只读阶段尚不能安全计算其范围；请在 Git / IDE 中查看".into(),
-            );
+            return Err(i18n::repo_submodule_read_error(locale).into());
         }
         let mut fingerprints = HashMap::new();
         for file in &status.entries {
@@ -467,7 +725,7 @@ impl RepositoryStore {
                     )
                     .await?;
                 if !matches!(output.code, Some(0 | 1)) {
-                    return Err("无法读取未跟踪文件的 Git 增删统计".into());
+                    return Err("Cannot read Git line statistics for untracked file".into());
                 }
                 parse::untracked_numstat(&output.bytes, &file.path)?
             } else {
@@ -486,7 +744,7 @@ impl RepositoryStore {
                     .get(&file.path)
                     .is_some_and(|previous| previous != &current)
                 {
-                    return Err("文件在读取期间发生变化，请重新刷新；当前草稿与选择已保留".into());
+                    return Err(i18n::repo_changed_during_read_error(locale).into());
                 }
                 working_hashes.insert(file.path.clone(), current.clone());
                 Some(current)
@@ -503,8 +761,9 @@ impl RepositoryStore {
             } else {
                 "unstaged"
             };
+            let is_local_keep = keep_set.contains(&file.path);
             let version = format!(
-                "{}\0{}\0{}\0{}\0{}",
+                "{}\0{}\0{}\0{}\0{}\0{}",
                 file.path,
                 file.previous.as_deref().unwrap_or(""),
                 if index { "index" } else { "worktree" },
@@ -514,6 +773,11 @@ impl RepositoryStore {
                     working.as_deref().unwrap_or("")
                 },
                 file.index_oid,
+                if is_local_keep {
+                    "local-keep"
+                } else {
+                    "normal"
+                },
             );
             let effective = if file.xy == "??" {
                 b'A'
@@ -533,7 +797,7 @@ impl RepositoryStore {
                 }
             };
             files.push(Change {
-                id: format!("file-{}", hash(&file.path)),
+                id: file_id_for_path(&file.path),
                 path: file.path.clone(),
                 previous_path: file.previous.clone(),
                 status: status_code.into(),
@@ -545,6 +809,7 @@ impl RepositoryStore {
                 },
                 binary: stats.binary,
                 ignored_for_review: ignored_for_review(&file.path),
+                local_keep: is_local_keep,
                 content_version: hash(version),
                 commit_token: String::new(),
             });
@@ -562,7 +827,7 @@ impl RepositoryStore {
             )
             .await?;
         if before != after {
-            return Err("Git 状态在读取期间发生变化，请重新刷新；当前草稿与选择已保留".into());
+            return Err(i18n::repo_changed_during_read_error(locale).into());
         }
         let raw_detached = status.branch == "(detached)";
         let rebase_branch = if raw_detached {
@@ -593,25 +858,25 @@ impl RepositoryStore {
                 }
             }
             (Some(_), None) => Remote::Error {
-                reason: "本地找不到有效的跟踪引用，无法确认领先 / 落后；尚未联网刷新".into(),
+                reason: i18n::remote_missing_tracking_ref_error(locale).into(),
             },
             (None, _) => {
                 let reason = if detached {
-                    "当前为分离 HEAD，未确定跟踪分支".to_owned()
+                    i18n::remote_detached_head_reason(locale).to_owned()
                 } else {
                     let remotes = self.list_remotes_unlocked(root).await.unwrap_or_default();
                     if remotes.is_empty() {
-                        "尚未配置 Git 远端与跟踪分支".to_owned()
+                        i18n::remote_no_remotes_configured_reason(locale).to_owned()
                     } else {
-                        "尚未配置跟踪远端分支".to_owned()
+                        i18n::remote_no_upstream_configured_reason(locale).to_owned()
                     }
                 };
                 Remote::Missing { reason }
             }
         };
-        let branch_state = self.branch_state(root).await?;
+        let branch_state = self.branch_state(root, locale).await?;
         if branch_state.status != before {
-            return Err("Git 状态在读取期间发生变化，请重新刷新；当前草稿与选择已保留".into());
+            return Err(i18n::repo_changed_during_read_error(locale).into());
         }
         let worktree_id = identity("wt", root);
         let commit_state = commit::CommitRegistration::build(
@@ -631,8 +896,8 @@ impl RepositoryStore {
             WorktreeSnapshot {
                 repository_id: repository_id.into(),
                 worktree_id,
-                label: label(root),
-                path: display(root)?,
+                label: label(root, locale),
+                path: display_with_locale(root, locale)?,
                 branch: display_branch,
                 detached,
                 head: status.head,
@@ -653,27 +918,36 @@ impl RepositoryStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(hash(b"missing\0"));
             }
-            Err(_) => return Err("无法读取变更文件，当前草稿与选择已保留".into()),
+            Err(_) => {
+                return Err(
+                    "Cannot read changed file; current draft and selection were preserved".into(),
+                );
+            }
         };
-        let parent = fs::canonicalize(path.parent().ok_or("文件缺少父目录")?)
-            .map_err(|_| "无法读取文件所在目录")?;
+        let parent = fs::canonicalize(
+            path.parent()
+                .ok_or("File path is missing parent directory")?,
+        )
+        .map_err(|_| "Cannot access parent directory of changed file")?;
         if !parent.starts_with(root) {
-            return Err("文件父目录指向工作树之外，已停止读取".into());
+            return Err(
+                "File parent directory points outside the worktree; stopped reading".into(),
+            );
         }
         if metadata.file_type().is_symlink() {
-            let target = fs::read_link(path).map_err(|_| "无法读取符号链接")?;
+            let target = fs::read_link(path).map_err(|_| "Cannot read symbolic link target")?;
             let mut payload = b"symlink\0".to_vec();
             payload.extend_from_slice(target.as_os_str().as_encoded_bytes());
             return Ok(hash(payload));
         }
         if !metadata.is_file() {
-            return Err("变更包含不支持的特殊文件，已停止读取".into());
+            return Err("Changes contain unsupported special files; stopped reading".into());
         }
-        let mut file = File::open(&path).map_err(|_| "无法打开变更文件")?;
+        let mut file = File::open(&path).map_err(|_| "Cannot open changed file")?;
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let opened = file.metadata().map_err(|_| "无法核对变更文件")?;
+        let opened = file.metadata().map_err(|_| "Cannot stat changed file")?;
         if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() || !opened.is_file() {
-            return Err("文件在打开时被替换，请重新刷新".into());
+            return Err("File was replaced while opening; please refresh".into());
         }
         let mut digest = Sha256::new();
         digest.update(if opened.permissions().mode() & 0o111 != 0 {
@@ -684,9 +958,11 @@ impl RepositoryStore {
         let mut buffer = [0; 64 * 1024];
         loop {
             if self.inner.reader.cancelled() {
-                return Err("应用正在退出，已停止 Git 读取".into());
+                return Err(i18n::repo_shutting_down_error(LanguageKind::En).into());
             }
-            let count = file.read(&mut buffer).map_err(|_| "变更文件读取失败")?;
+            let count = file
+                .read(&mut buffer)
+                .map_err(|_| "Failed to read changed file")?;
             if count == 0 {
                 break;
             }
@@ -701,14 +977,19 @@ fn staged(file: &StatusEntry) -> bool {
         && file.xy.as_bytes().first().is_some_and(|byte| *byte != b'.')
 }
 
+#[cfg(test)]
 pub fn validate_request_id(request_id: &str) -> Result<()> {
+    validate_request_id_with_locale(request_id, LanguageKind::En)
+}
+
+pub fn validate_request_id_with_locale(request_id: &str, locale: LanguageKind) -> Result<()> {
     if request_id.is_empty()
         || request_id.len() > 128
         || !request_id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     {
-        return Err("无效的仓库读取请求身份".into());
+        return Err(i18n::invalid_repo_request_id(locale).into());
     }
     Ok(())
 }

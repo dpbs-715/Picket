@@ -1,6 +1,7 @@
 use super::{keychain::CredentialVault, smoke::LocalModelSseServer, store::ModelStore, types::*};
 use crate::{
     foundation::pi::{PiPaths, PiSupervisor},
+    i18n::LanguageKind,
     repository::{
         RepositoryStore,
         smoke::{Fixture, git},
@@ -44,6 +45,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 api_key: format!("  {secret_claude}  "),
                 context_window: None,
                 max_output_tokens: None,
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -66,6 +68,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 api_key: "must-be-discarded-for-ollama".into(),
                 context_window: Some(32_768),
                 max_output_tokens: Some(4_096),
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -85,12 +88,13 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 id: None,
                 provider: ProviderKind::Custom,
                 api_format: Some(ApiFormatKind::AnthropicMessages),
-                name: "网关模型".into(),
+                name: "Gateway Model".into(),
                 model_id: "coding-v3".into(),
                 base_url: "https://gateway.example.com/v1".into(),
                 api_key: secret_custom.into(),
                 context_window: Some(256_000),
                 max_output_tokens: Some(32_768),
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -152,18 +156,19 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 id: Some(saved_custom.model.id.clone()),
                 provider: ProviderKind::Custom,
                 api_format: Some(ApiFormatKind::OpenaiCompletions),
-                name: "网关模型（已编辑）".into(),
+                name: "Gateway Model (Edited)".into(),
                 model_id: "coding-v4".into(),
                 base_url: "https://gateway2.example.com/v1".into(),
                 api_key: String::new(),
                 context_window: Some(128_000),
                 max_output_tokens: Some(16_384),
+                locale: LanguageKind::En,
             },
         )
         .await
         .unwrap();
     assert_eq!(edited_keep_key.model.id, saved_custom.model.id);
-    assert_eq!(edited_keep_key.model.name, "网关模型（已编辑）");
+    assert_eq!(edited_keep_key.model.name, "Gateway Model (Edited)");
     assert_eq!(edited_keep_key.model.model_id, "coding-v4");
     assert_eq!(
         edited_keep_key.model.api_format,
@@ -199,12 +204,13 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 id: Some(saved_custom.model.id.clone()),
                 provider: ProviderKind::Custom,
                 api_format: Some(ApiFormatKind::OpenaiResponses),
-                name: "网关模型（新密钥）".into(),
+                name: "Gateway Model (Rotated Key)".into(),
                 model_id: "coding-v5".into(),
                 base_url: "https://gateway2.example.com/v1".into(),
                 api_key: rotated_secret.into(),
                 context_window: None,
                 max_output_tokens: None,
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -282,6 +288,7 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             api_key: "sk-ok".into(),
             context_window: None,
             max_output_tokens: None,
+            locale: LanguageKind::En,
         })
         .unwrap_err();
         assert!(!err.is_empty(), "expected error for {bad_url}");
@@ -298,6 +305,7 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             api_key: "   ".into(),
             context_window: None,
             max_output_tokens: None,
+            locale: LanguageKind::En,
         })
         .is_err()
     );
@@ -313,9 +321,28 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             api_key: "sk-ok".into(),
             context_window: Some(16_384),
             max_output_tokens: Some(32_768),
+            locale: LanguageKind::En,
         })
         .unwrap_err()
-        .contains("不能超过上下文长度")
+        .contains("cannot exceed context window")
+    );
+
+    // Localized Chinese validation error (`LanguageKind::Zh`):
+    assert!(
+        validate_and_normalize_model_input(&ModelInput {
+            id: None,
+            provider: ProviderKind::Openai,
+            api_format: None,
+            name: "GPT".into(),
+            model_id: "gpt-4.1".into(),
+            base_url: String::new(),
+            api_key: "sk-ok".into(),
+            context_window: Some(16_384),
+            max_output_tokens: Some(32_768),
+            locale: LanguageKind::Zh,
+        })
+        .unwrap_err()
+        .contains("\u{4e0d}\u{80fd}\u{8d85}\u{8fc7}\u{4e0a}\u{4e0b}\u{6587}\u{957f}\u{5ea6}")
     );
 
     assert!(
@@ -380,11 +407,12 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                     api_key: api_key.into(),
                     context_window: None,
                     max_output_tokens: None,
+                    locale: LanguageKind::En,
                 },
             )
             .await
             .unwrap();
-        assert!(reply.summary.contains("连接成功"), "{}", reply.summary);
+        assert!(reply.summary.contains("Connected"), "{}", reply.summary);
     }
 
     // 2. HTTP 401 failure sanitizes echoed API key:
@@ -408,6 +436,7 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 api_key: leaked_key.into(),
                 context_window: None,
                 max_output_tokens: None,
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -415,7 +444,7 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
     assert!(!auth_err.contains(leaked_key), "{auth_err}");
     server.set_failure(None);
 
-    // 3. Save model in Keychain and test generate_commit & review_scope on real temporary Git:
+    // 3. Save model in Keychain and test review_scope partial diff scoping, prompt forwarding, filtering, and cancellation on real temporary Git:
     let saved = model_store
         .save_model(
             temp.path(),
@@ -429,6 +458,7 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 api_key: "sk-saved-in-keychain-only".into(),
                 context_window: None,
                 max_output_tokens: None,
+                locale: LanguageKind::En,
             },
         )
         .await
@@ -453,44 +483,8 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
         }
     };
 
-    // Generate commit message for partial file (`part.txt`) + lockfile (`pnpm-lock.yaml`):
+    // Review with lockfile + binary + partial file + user prompt -> lockfile & binary skipped, partial staged diff reviewed with prompt forwarded:
     let mut streamed_deltas = 0usize;
-    let gen_reply = model_store
-        .generate_commit(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &repo_store,
-            &GenerateCommitRequest {
-                request_id: "gen-m3-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt"), sel_of("pnpm-lock.yaml")],
-                draft: String::new(),
-            },
-            |event| {
-                if matches!(event, ModelStreamEvent::Delta { .. }) {
-                    streamed_deltas += 1;
-                }
-                Ok(())
-            },
-        )
-        .await
-        .unwrap();
-    assert!(streamed_deltas >= 1);
-    assert_eq!(
-        gen_reply.text,
-        "feat(scope): 更新已暂存配置项并同步所选范围\n\n- 提交已暂存的配置键值调整\n- 同步记录所选锁文件范围变更"
-    );
-    let last_gen_req = server.requests().pop().unwrap();
-    assert!(
-        last_gen_req.body.contains("+first=2") && !last_gen_req.body.contains("second=3"),
-        "partial file must send ONLY staged diff, never unstaged draft: {}",
-        last_gen_req.body
-    );
-    assert!(last_gen_req.body.contains("test: read fixture"));
-
-    // Review with lockfile + binary + partial file -> lockfile & binary skipped, partial file reviewed:
     let rev_reply = model_store
         .review_scope(
             temp.path(),
@@ -506,13 +500,30 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                     sel_of("pnpm-lock.yaml"),
                     sel_of("logo.bin"),
                 ],
-                draft: String::new(),
+                prompt: "Focus on staged config key invariants".into(),
                 changed_paths: None,
+                locale: LanguageKind::En,
             },
-            |_| Ok(()),
+            |event| {
+                if matches!(event, ModelStreamEvent::Delta { .. }) {
+                    streamed_deltas += 1;
+                }
+                Ok(())
+            },
         )
         .await
         .unwrap();
+    assert!(streamed_deltas >= 1);
+    let last_rev_req = server.requests().pop().unwrap();
+    assert!(
+        last_rev_req.body.contains("+first=2")
+            && !last_rev_req.body.contains("second=3")
+            && last_rev_req
+                .body
+                .contains("Focus on staged config key invariants"),
+        "partial file review must send ONLY staged diff plus user review prompt: {}",
+        last_rev_req.body
+    );
     assert_eq!(
         rev_reply.reviewed_file_ids,
         vec![sel_of("part.txt").file_id]
@@ -525,16 +536,16 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
         rev_reply
             .skipped_paths
             .iter()
-            .any(|p| p.starts_with("pnpm-lock.yaml"))
+            .any(|p| p.starts_with("pnpm-lock.yaml") && p.contains("lockfile"))
     );
     assert!(
         rev_reply
             .skipped_paths
             .iter()
-            .any(|p| p.starts_with("logo.bin"))
+            .any(|p| p.starts_with("logo.bin") && p.contains("binary file"))
     );
 
-    // Selecting ONLY lockfile + binary makes 0 model HTTP calls and returns reviewed_file_ids = []:
+    // Selecting ONLY lockfile + binary makes 0 model HTTP calls and localizes skipped_paths for `LanguageKind::Zh`:
     let count_before = server.requests().len();
     let skip_only_reply = model_store
         .review_scope(
@@ -547,8 +558,9 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 target: target.clone(),
                 model_id: saved.model.id.clone(),
                 selections: vec![sel_of("pnpm-lock.yaml"), sel_of("logo.bin")],
-                draft: String::new(),
+                prompt: String::new(),
                 changed_paths: None,
+                locale: LanguageKind::Zh,
             },
             |_| Ok(()),
         )
@@ -557,23 +569,34 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
     assert_eq!(server.requests().len(), count_before);
     assert!(skip_only_reply.reviewed_file_ids.is_empty());
     assert_eq!(skip_only_reply.skipped_paths.len(), 2);
+    assert!(
+        skip_only_reply
+            .skipped_paths
+            .iter()
+            .any(|p| p.starts_with("pnpm-lock.yaml") && p.contains("\u{9501}\u{6587}\u{4ef6}"))
+    );
+    assert!(skip_only_reply.skipped_paths.iter().any(
+        |p| p.starts_with("logo.bin") && p.contains("\u{4e8c}\u{8fdb}\u{5236}\u{6587}\u{4ef6}")
+    ));
 
     // Editing unstaged half of partial `part.txt` does NOT invalidate its staged scope,
-    // whereas modifying selected unstaged `新 文件.ts` DOES pause the stale scope:
+    // whereas modifying selected unstaged `\u{65b0} \u{6587}\u{4ef6}.ts` DOES pause the stale scope:
     fs::write(fixture.root.join("part.txt"), "first=2\nsecond=999\n").unwrap();
     assert!(
         model_store
-            .generate_commit(
+            .review_scope(
                 temp.path(),
                 &paths,
                 &supervisor,
                 &repo_store,
-                &GenerateCommitRequest {
-                    request_id: "gen-partial-draft-ok".into(),
+                &ReviewScopeRequest {
+                    request_id: "rev-partial-draft-ok".into(),
                     target: target.clone(),
                     model_id: saved.model.id.clone(),
                     selections: vec![sel_of("part.txt")],
-                    draft: String::new(),
+                    prompt: String::new(),
+                    changed_paths: None,
+                    locale: LanguageKind::En,
                 },
                 |_| Ok(()),
             )
@@ -582,55 +605,59 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
     );
 
     fs::write(
-        fixture.root.join("新 文件.ts"),
+        fixture.root.join("\u{65b0} \u{6587}\u{4ef6}.ts"),
         "export const changed = 2;\n",
     )
     .unwrap();
     let stale_err = model_store
-        .generate_commit(
+        .review_scope(
             temp.path(),
             &paths,
             &supervisor,
             &repo_store,
-            &GenerateCommitRequest {
-                request_id: "gen-stale".into(),
+            &ReviewScopeRequest {
+                request_id: "rev-stale".into(),
                 target: target.clone(),
                 model_id: saved.model.id.clone(),
-                selections: vec![sel_of("新 文件.ts")],
-                draft: String::new(),
+                selections: vec![sel_of("\u{65b0} \u{6587}\u{4ef6}.ts")],
+                prompt: String::new(),
+                changed_paths: None,
+                locale: LanguageKind::En,
             },
             |_| Ok(()),
         )
         .await
         .unwrap_err();
-    assert!(stale_err.contains("已变化"), "{stale_err}");
+    assert!(stale_err.contains("has changed"), "{stale_err}");
 
     // Cancellation during slow stream settles cleanly:
     server.set_slow_delay_ms(3_000);
     let cancel_sup = supervisor.clone();
     let cancel_err = model_store
-        .generate_commit(
+        .review_scope(
             temp.path(),
             &paths,
             &supervisor,
             &repo_store,
-            &GenerateCommitRequest {
-                request_id: "gen-cancel-1".into(),
+            &ReviewScopeRequest {
+                request_id: "rev-cancel-1".into(),
                 target: target.clone(),
                 model_id: saved.model.id.clone(),
                 selections: vec![sel_of("part.txt")],
-                draft: String::new(),
+                prompt: String::new(),
+                changed_paths: None,
+                locale: LanguageKind::En,
             },
             move |event| {
                 if matches!(event, ModelStreamEvent::Delta { .. }) {
-                    let _ = cancel_sup.cancel("gen-cancel-1");
+                    let _ = cancel_sup.cancel("rev-cancel-1");
                 }
                 Ok(())
             },
         )
         .await
         .unwrap_err();
-    assert!(cancel_err.contains("已取消"), "{cancel_err}");
+    assert!(cancel_err.contains("cancelled"), "{cancel_err}");
 
     // Ensure Git index remained completely untouched throughout all AI operations:
     assert_eq!(

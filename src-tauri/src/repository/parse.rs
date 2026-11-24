@@ -1,10 +1,14 @@
+use crate::i18n::{self, LanguageKind};
 use std::{
     collections::BTreeMap,
     path::{Component, Path, PathBuf},
 };
 
 pub fn utf8(bytes: &[u8]) -> Result<String, String> {
-    String::from_utf8(bytes.to_vec()).map_err(|_| "存在非 UTF-8 Git 路径，未载入不完整结果".into())
+    utf8_with_locale(bytes, LanguageKind::En)
+}
+pub fn utf8_with_locale(bytes: &[u8], locale: LanguageKind) -> Result<String, String> {
+    String::from_utf8(bytes.to_vec()).map_err(|_| i18n::parse_non_utf8_path_error(locale).into())
 }
 pub fn relative(path: &str) -> Result<(), String> {
     if path.is_empty()
@@ -12,7 +16,7 @@ pub fn relative(path: &str) -> Result<(), String> {
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
     {
-        return Err("Git 返回了不安全的文件路径".into());
+        return Err("Git returned an unsafe file path".into());
     }
     Ok(())
 }
@@ -33,13 +37,13 @@ pub struct Status {
     pub divergence: Option<(u64, u64)>,
     pub entries: Vec<StatusEntry>,
 }
-pub fn status(bytes: &[u8]) -> Result<Status, String> {
+pub fn status_with_locale(bytes: &[u8], locale: LanguageKind) -> Result<Status, String> {
     let mut parsed = Status::default();
     let mut records = bytes
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty());
     while let Some(record) = records.next() {
-        let line = utf8(record)?;
+        let line = utf8_with_locale(record, locale)?;
         if let Some(head) = line.strip_prefix("# branch.oid ") {
             parsed.head = (head != "(initial)").then(|| head.to_owned());
         } else if let Some(branch) = line.strip_prefix("# branch.head ") {
@@ -47,16 +51,18 @@ pub fn status(bytes: &[u8]) -> Result<Status, String> {
         } else if let Some(upstream) = line.strip_prefix("# branch.upstream ") {
             parsed.upstream = Some(upstream.to_owned());
         } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
-            let (ahead, behind) = ab.split_once(' ').ok_or("Git 领先 / 落后状态格式不匹配")?;
+            let (ahead, behind) = ab
+                .split_once(' ')
+                .ok_or("Git ahead/behind status format mismatch")?;
             parsed.divergence = Some((
                 ahead
                     .trim_start_matches('+')
                     .parse()
-                    .map_err(|_| "无效领先数")?,
+                    .map_err(|_| "Invalid ahead commit count")?,
                 behind
                     .trim_start_matches('-')
                     .parse()
-                    .map_err(|_| "无效落后数")?,
+                    .map_err(|_| "Invalid behind commit count")?,
             ));
         } else if let Some(path) = line.strip_prefix("? ") {
             relative(path)?;
@@ -78,12 +84,17 @@ pub fn status(bytes: &[u8]) -> Result<Status, String> {
             };
             let fields: Vec<_> = line.splitn(count, ' ').collect();
             if fields.len() != count {
-                return Err("Git 文件状态格式不匹配".into());
+                return Err("Git file status format mismatch".into());
             }
             let path = fields[count - 1].to_owned();
             relative(&path)?;
             let previous = if fields[0] == "2" {
-                let previous = utf8(records.next().ok_or("Git 重命名缺少原路径")?)?;
+                let previous = utf8_with_locale(
+                    records
+                        .next()
+                        .ok_or("Git rename entry is missing source path")?,
+                    locale,
+                )?;
                 relative(&previous)?;
                 Some(previous)
             } else {
@@ -102,11 +113,11 @@ pub fn status(bytes: &[u8]) -> Result<Status, String> {
                 conflicted: fields[0] == "u",
             });
         } else if !line.starts_with("# ") && !line.starts_with("! ") {
-            return Err("无法识别 Git 状态格式".into());
+            return Err("Unrecognized Git status record format".into());
         }
     }
     if parsed.branch.is_empty() {
-        return Err("Git 未返回当前分支状态".into());
+        return Err("Git did not report current branch status".into());
     }
     let mut unique = BTreeMap::<String, StatusEntry>::new();
     for mut entry in parsed.entries {
@@ -117,7 +128,10 @@ pub fn status(bytes: &[u8]) -> Result<Status, String> {
                 entry.xy = format!("{}?", &entry.xy[..1]);
                 unique.insert(entry.path.clone(), entry);
             } else {
-                return Err("Git 返回了无法合并的同路径状态，未载入不完整列表".into());
+                return Err(
+                    "Git returned incompatible duplicate status entries; incomplete list was not loaded"
+                        .into(),
+                );
             }
         } else {
             unique.insert(entry.path.clone(), entry);
@@ -141,12 +155,20 @@ pub fn numstat(bytes: &[u8]) -> Result<BTreeMap<String, Stats>, String> {
         let line = utf8(record)?;
         let fields: Vec<_> = line.splitn(3, '\t').collect();
         if fields.len() != 3 {
-            return Err("Git 增删统计格式不匹配".into());
+            return Err("Git numstat format mismatch".into());
         }
         let path = if fields[2].is_empty() {
-            let old = utf8(records.next().ok_or("Git 重命名统计缺少原路径")?)?;
+            let old = utf8(
+                records
+                    .next()
+                    .ok_or("Git rename numstat missing source path")?,
+            )?;
             relative(&old)?;
-            utf8(records.next().ok_or("Git 重命名统计缺少目标路径")?)?
+            utf8(
+                records
+                    .next()
+                    .ok_or("Git rename numstat missing target path")?,
+            )?
         } else {
             fields[2].into()
         };
@@ -161,12 +183,12 @@ fn parse_stats(added: &str, removed: &str) -> Result<Stats, String> {
         added: if binary {
             0
         } else {
-            added.parse().map_err(|_| "无效新增行数")?
+            added.parse().map_err(|_| "Invalid added line count")?
         },
         removed: if binary {
             0
         } else {
-            removed.parse().map_err(|_| "无效删除行数")?
+            removed.parse().map_err(|_| "Invalid removed line count")?
         },
         binary,
     })
@@ -177,10 +199,14 @@ pub fn untracked_numstat(bytes: &[u8], expected_path: &str) -> Result<Stats, Str
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty())
         .collect();
-    let header = utf8(records.first().ok_or("Git 未返回未跟踪文件统计")?)?;
+    let header = utf8(
+        records
+            .first()
+            .ok_or("Git did not return untracked file stats")?,
+    )?;
     let fields: Vec<_> = header.splitn(3, '\t').collect();
     if fields.len() != 3 {
-        return Err("未跟踪文件增删统计格式不匹配".into());
+        return Err("Untracked file numstat format mismatch".into());
     }
     // --no-index encodes /dev/null -> path like a rename. Only this known
     // pseudo-source is allowed; normal numstat paths retain their strict guard.
@@ -189,10 +215,10 @@ pub fn untracked_numstat(bytes: &[u8], expected_path: &str) -> Result<Stats, Str
     } else if records.len() == 1 {
         fields[2].into()
     } else {
-        return Err("未跟踪文件统计来源不匹配".into());
+        return Err("Untracked file numstat source mismatch".into());
     };
     if target != expected_path {
-        return Err("未跟踪文件统计目标不匹配".into());
+        return Err("Untracked file numstat target mismatch".into());
     }
     parse_stats(fields[0], fields[1])
 }

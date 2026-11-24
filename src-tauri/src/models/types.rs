@@ -1,5 +1,8 @@
 use super::defaults::{model_defaults, resolve_default_token_limits, validate_token_limits};
-use crate::repository::types::{CommitSelection, ReadTarget};
+use crate::{
+    i18n::{self, LanguageKind, deserialize_language_or_default},
+    repository::types::{CommitSelection, ReadTarget},
+};
 use serde::{Deserialize, Serialize};
 
 pub const MODEL_PROTOCOL_VERSION: u8 = 1;
@@ -117,6 +120,8 @@ pub struct ModelInput {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug)]
@@ -161,28 +166,8 @@ pub struct ModelMutateReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelIdRequest {
     pub model_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GenerateCommitRequest {
-    pub request_id: String,
-    pub target: ReadTarget,
-    pub model_id: String,
-    pub selections: Vec<CommitSelection>,
-    pub draft: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GenerateCommitReply {
-    pub protocol_version: u8,
-    pub kind: &'static str,
-    pub request_id: String,
-    pub target: ReadTarget,
-    pub model_id: String,
-    pub text: String,
-    pub skipped_paths: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -192,9 +177,11 @@ pub struct ReviewScopeRequest {
     pub target: ReadTarget,
     pub model_id: String,
     pub selections: Vec<CommitSelection>,
-    pub draft: String,
+    pub prompt: String,
     #[serde(default)]
     pub changed_paths: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -242,49 +229,49 @@ pub enum ModelStreamEvent {
     },
 }
 
-pub fn validate_http_base_url(raw: &str) -> Result<String, String> {
+pub fn validate_http_base_url(raw: &str, locale: LanguageKind) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("请填写接口地址".into());
+        return Err(i18n::url_required_error(locale).into());
     }
     if trimmed
         .chars()
         .any(|ch| ch.is_whitespace() || ch.is_control())
     {
-        return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+        return Err(i18n::url_invalid_http_error(locale).into());
     }
     let rest = trimmed
         .strip_prefix("https://")
         .or_else(|| trimmed.strip_prefix("http://"))
-        .ok_or("接口地址须为不含用户名和密码的 HTTP / HTTPS 地址")?;
+        .ok_or_else(|| i18n::url_no_userinfo_http_error(locale))?;
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     if authority.is_empty() {
-        return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+        return Err(i18n::url_invalid_http_error(locale).into());
     }
     if authority.contains('@') {
-        return Err("接口地址须为不含用户名和密码的 HTTP / HTTPS 地址".into());
+        return Err(i18n::url_no_userinfo_http_error(locale).into());
     }
     if let Some(after_open) = authority.strip_prefix('[') {
         let Some(close_idx) = after_open.find(']') else {
-            return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+            return Err(i18n::url_invalid_http_error(locale).into());
         };
         let host = &after_open[..close_idx];
         let remainder = &after_open[close_idx + 1..];
         if host.is_empty() {
-            return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+            return Err(i18n::url_invalid_http_error(locale).into());
         }
         if let Some(port) = remainder.strip_prefix(':') {
             if !port.parse::<u16>().is_ok_and(|p| p >= 1) {
-                return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+                return Err(i18n::url_invalid_http_error(locale).into());
             }
         } else if !remainder.is_empty() {
-            return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+            return Err(i18n::url_invalid_http_error(locale).into());
         }
     } else if let Some((host, port)) = authority.split_once(':')
         && (host.is_empty() || port.contains(':') || !port.parse::<u16>().is_ok_and(|p| p >= 1))
     {
-        return Err("请填写有效的 HTTP / HTTPS 接口地址".into());
+        return Err(i18n::url_invalid_http_error(locale).into());
     }
     Ok(trimmed.trim_end_matches('/').to_owned())
 }
@@ -299,31 +286,32 @@ pub fn validate_and_normalize_model_input_with_options(
     input: &ModelInput,
     allow_empty_key: bool,
 ) -> Result<NormalizedModelInput, String> {
+    let locale = input.locale;
     if let Some(raw) = &input.id
         && (raw.trim().len() > 128 || raw.chars().any(char::is_control))
     {
-        return Err("模型标识无效".into());
+        return Err(i18n::model_invalid_id_record_error(locale).into());
     }
 
     let model_id = input.model_id.trim();
     if model_id.is_empty() {
-        return Err("请填写模型 ID".into());
+        return Err(i18n::model_id_required_error(locale).into());
     }
     if model_id.len() > 256 || model_id.chars().any(char::is_control) {
-        return Err("模型 ID 格式无效或长度超出限制".into());
+        return Err(i18n::model_id_invalid_error(locale).into());
     }
     let name_trimmed = input.name.trim();
     let name = if name_trimmed.is_empty() {
         model_id.to_owned()
     } else {
         if name_trimmed.chars().count() > 128 || name_trimmed.chars().any(char::is_control) {
-            return Err("显示名称格式无效或长度超出限制".into());
+            return Err(i18n::model_display_name_invalid_error(locale).into());
         }
         name_trimmed.to_owned()
     };
 
     let base_url = if input.provider.needs_url() {
-        Some(validate_http_base_url(&input.base_url)?)
+        Some(validate_http_base_url(&input.base_url, locale)?)
     } else {
         None
     };
@@ -334,11 +322,11 @@ pub fn validate_and_normalize_model_input_with_options(
             if allow_empty_key {
                 String::new()
             } else {
-                return Err("请填写 API Key".into());
+                return Err(i18n::model_api_key_required_error(locale).into());
             }
         } else {
             if trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-                return Err("API Key 包含非法控制字符或长度超出限制".into());
+                return Err(i18n::model_api_key_invalid_error(locale).into());
             }
             trimmed.to_owned()
         }
@@ -353,7 +341,7 @@ pub fn validate_and_normalize_model_input_with_options(
         resolve_default_token_limits(input.provider, Some(api_format));
     let context_window = input.context_window.unwrap_or(default_context_window);
     let max_output_tokens = input.max_output_tokens.unwrap_or(default_max_output_tokens);
-    validate_token_limits(context_window, max_output_tokens)?;
+    validate_token_limits(context_window, max_output_tokens, locale)?;
 
     Ok(NormalizedModelInput {
         provider: input.provider,
