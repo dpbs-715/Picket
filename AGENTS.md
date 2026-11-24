@@ -1,65 +1,67 @@
-# Picket 开发约定
+# Picket Development Guidelines
 
-本文件适用于整个仓库，指导开发 Picket 的编码助手；它不是 Picket 内置 Agent 的系统提示词。更深目录中的同名文件只约束其子目录。
+This file applies to the entire repository and guides coding assistants developing Picket; it is not the system prompt for Picket's built-in Agent. Any `AGENTS.md` inside a subdirectory applies only to that subtree.
 
-## 开始工作
+## Getting Started
 
-- 使用中文与用户沟通。说明实际完成、验证结果和未验证项，不把计划、配置存在或模拟结果说成已实现。
-- 先读 `README.md` 和相关模块；阶段与验收以 `docs/development-plan.md` 为准。当前 M0–M6 的功能开发、发布加固与 MVP 验收已完成（仓库读取、IDEA 风格本地/远程双折叠分支菜单与远程分支跟踪检出、变更一键全选、精确范围本地提交、五类外部 IDE 本机动态识别联动、跨进程冷重启草稿持久化、五类提供商模型配置、macOS 系统钥匙串、提交说明生成、结构化代码审查、一键 C-Push 自动拆分与问答恢复、远端拉取变基、手动提交并推送、推送失败仅重试推送、冲突受控合并、切回自动对账以及随包 Pi Core 实机 `kimi-k2.8` 推理验证均已完成，详见 `docs/validation/m6.md`）；后续改动时同步维护文档与回归测试。
-- 产品行为见 `docs/development.md`，页面关系见 `docs/ui-spec.md`，视觉定稿见 `docs/design/picket-mvp.tsx`。原稿右侧演练控制台、模拟修复等不是正式功能，不能直接将整份演示代码当生产界面。
-- `docs/` 按当前 `.gitignore` 仅在本地维护；缺失时说明缺少依据并询问用户，不自行补造定稿，也不擅自取消忽略。
-- 先检查 `git status`，保留用户已有修改。提交、推送、重置、清理和分支操作需有用户的明确授权；产品内的 C-Push 授权规则不等于授权编码助手操作本仓库历史。
+- Follow the user's current language in conversation. State clearly what was actually completed, verified, and left unverified; never present plans, existing configuration, or simulated output as implemented features.
+- Keep all repository files outside `docs/` in English (including code, tests, comments, prompts, configuration files, `AGENTS.md`, and `README.md`), except the runtime Chinese localization catalogs in `src/i18n/messages.ts`, `agent/src/i18n.ts`, and `src-tauri/src/i18n.rs`.
+- Read `README.md` and relevant modules first; milestones and acceptance criteria follow `docs/development-plan.md`. M0–M6 feature implementation, release hardening, MVP acceptance, C-Push streamlining, and Pinned Compact Mode are complete (repository reads, IDEA-style Local / Remote collapsible branch menu and remote tracking branch checkout, default auto-selection of normal changes with tri-state Select All, fixed repository-wide `Local Keep` group, internal exact-scope local commits, dynamic detection and controlled launch of five external IDEs, cross-process cold-restart prompt, project settings, and window/compact geometry persistence with silent v1 draft cleanup, five model providers, macOS Keychain storage, structured code review with user prompt context, minimalist on-demand `+ Prompt` toggle and editable pre-generated C-Push commit plans, single-path one-click C-Push split commits and Q&A recovery, pull-with-rebase, retry-push-only on push failure, controlled conflict resolution, pinned `400×~86` 2-row compact bar with expandable project/branch/remote/file drawers, top-left-anchored resize, and unfocused macOS notifications, focus reconciliation, 1-click Model Settings jump on model errors, and bundled Pi Core live `kimi-k2.8` inference verification — see `docs/validation/m6.md`, `docs/validation/local-keep.md`, `docs/validation/cpush-streamline.md`, and `docs/validation/compact-mode.md`). Keep documentation and regression tests synchronized on subsequent changes.
+- Product behavior is specified in `docs/development.md`, screen hierarchy in `docs/ui-spec.md`, and the visual baseline in `docs/design/picket-mvp.tsx`. The right-side demo console and simulated auto-fix in the design prototype are not production features; never ship the prototype file directly as the production UI.
+- `docs/` is maintained locally under `.gitignore`. If `docs/` is missing, explain what specification is absent and ask the user rather than inventing requirements or removing the `.gitignore` entry.
+- Check `git status` first and preserve existing user changes. Committing, pushing, resetting, cleaning, and branch operations require explicit user authorization; Picket's in-product C-Push authorization rules do not authorize coding assistants to mutate this repository's Git history.
 
-## 技术与职责
+## Architecture & Responsibilities
 
-- 首发 macOS；当前实际验证的是 arm64。Node / pnpm 版本看 `package.json`，Rust 看 `rust-toolchain.toml`，具体依赖以两份锁文件为准。
-- `src/`：React + TypeScript 界面，按 feature 组织；`src/desktop/` 封装类型化桌面命令与事件。
-- `shared/`：界面和 Node 进程共享的协议与身份字段；Rust 对应类型必须同步，协议变更同时验证两端。
-- `agent/`：独立 Pi Core 进程，不在 WebView 中运行模型或保存密钥。
-- `src-tauri/`：Rust 桌面层，负责 Git 读取、受控写入协调、授权检查、系统能力、进程生命周期与恢复。`src-tauri/src/repository/`、`src-tauri/src/models/` 与 `src-tauri/src/cpush/` 当前开放已选择仓库的读取、使用 `branchToken` 切换已有本地分支 / 从远程跟踪分支受控检出本地跟踪分支 / 既有工作树跳转（2026-11-23 用户确认砍掉手动输入新建分支与新建 Worktree，保留类似 IDEA 的远程分支检出）、使用每文件 `commitToken` 的精确范围本地提交、五类外部 IDE（IDEA、RustRover、WebStorm、VS Code、Cursor）本机安装动态探测与受控启动、工作树草稿 / 选择 / 模型目录与 C-Push 会话记录的本机持久化、`Security.framework` 钥匙串凭据管理、经随包 Pi Core 执行的连接测试 / 提交说明生成 / 结构化代码审查，以及一键 C-Push 自动分组拆分、手动“提交并推送”、显式“拉取并变基”、脏工作树无损备份变基、推送失败仅重试推送、用户授权后的 Agent 冲突合并与外部 IDE 手动合并返回对账。`branchToken` 不授权提交，也不能把 UI 范围版本当作写入授权。
-- `scripts/`：开发、打包与验证入口，不在前端组件中拼接 shell 命令。
-- `src/features/foundation/` 与 `src-tauri/src/foundation/` 是 M0 验证实现。候选 Git 执行器仅用于临时仓库，可执行 hooks 当前明确拒绝；未通过生产验收前不得直接开放给用户仓库。
-- 代码按职责拆分，测试跟随所属模块；不为了未来假设添加共享层或提前铺空目录。不直接修改依赖、生成文件、缓存或构建产物。
+- Initial target platform is macOS; current hardware verification is arm64. Check `package.json` for Node / pnpm versions, `rust-toolchain.toml` for Rust, and the lockfiles for exact dependency versions.
+- `src/`: React + TypeScript UI organized by feature; `src/desktop/` wraps typed desktop commands and events; `src/i18n/` provides English (default) and Chinese UI localization.
+- `shared/`: Shared protocols and identity contracts between the UI and the Node sidecar; corresponding Rust types must stay synchronized and be validated on both sides whenever protocols change.
+- `agent/`: Standalone Pi Core sidecar process; never execute models or store API keys inside the WebView.
+- `src-tauri/`: Rust desktop coordinator responsible for Git reads, controlled writes, authorization checks, system integration, process lifecycle, and recovery. `src-tauri/src/repository/`, `src-tauri/src/models/`, and `src-tauri/src/cpush/` currently provide: reading user-selected repositories; switching local branches, checking out remote tracking branches, and jumping to existing worktrees with `branchToken` (manual new-branch and new-worktree creation were intentionally removed in favor of IDEA-style remote branch checkout); internal exact-scope local commits authorized by per-file `commitToken`s; dynamic local detection and controlled launch for five external IDEs (`IntelliJ IDEA`, `RustRover`, `WebStorm`, `VS Code`, `Cursor`); local persistence (`v2`) of UI language, per-project preferred editor and commit message language, canonical-`common_dir`-keyed `Local Keep` paths, window pin/compact geometry preferences, per-worktree extra prompts/selections, model catalog, and C-Push session history; `Security.framework` Keychain credential storage; macOS background attention notifications (`tauri-plugin-notification`) with `RunEvent::Reopen` window focus restoration; connection testing and structured code review via bundled Pi Core; and editable pre-generated C-Push commit plans (`plan_cpush`), verbatim confirmed-plan execution, one-click C-Push split commits, explicit "Pull & Rebase", lossless dirty-worktree backup across rebase, retry-push-only recovery, user-authorized Agent conflict resolution, and external IDE manual-merge reconciliation (zero-model and manual commit UI/IPC paths were intentionally removed so C-Push is the sole commit & push path). `branchToken` never authorizes commits, and UI `scopeVersion` is never accepted as write authorization.
+- `scripts/`: Entry points for development, packaging, and verification; never concatenate shell commands in frontend components.
+- `src/features/foundation/` and `src-tauri/src/foundation/` are M0 diagnostic probes. Candidate Git executors there run strictly against disposable temporary repositories and reject executable hooks; never expose them directly to user repositories without production validation.
+- Split code by responsibility and colocate tests with their owning module; do not add speculative shared layers or empty directories. Never manually edit third-party dependencies, generated files, caches, or build artifacts.
 
-## 不可破坏的行为
+## Non-Negotiable Invariants
 
-- 有模型时 C-Push 是一键处理授权范围、拆分、提交与推送；只在需要决定时询问，不自行添加每次必经的确认页。无模型仍可手写并明确触发 Git 操作。
-- 勾选只表达选择，不改 Git 暂存区。部分暂存默认只提交已暂存部分，未选已暂存文件不能混入，未暂存草稿必须保全。
-- main / master 保留轻量主分支提示，允许直接提交与推送（若远端开启分支保护被拒，保留本地提交并提示切分支）；分离 HEAD 提交前须先切分支；不自动强推、丢弃用户改动或改写已发布历史。
-- Rust 是受控 Git 写入入口，Git 是实际状态的来源。UI 与模型不能直接宣布提交成功，不能用 `git add -A` 代替范围计算。
-- 异步任务绑定 repository、worktree、session、request 和范围版本；切换界面、重试、取消与晚响应不能串目标、扩大权限、覆盖较新草稿或重复提交。
-- 推送失败保留已有提交，重试只推送。中断后的写入恢复先核对 Git，不能从头盲目重跑。
-- 用户写说明时，新消息不得抢焦点、自动展开覆盖输入或改写文字。消息展开只覆盖下半工作区。
-- 只有用户授权当前冲突合并后，Agent 才可修改相应冲突文件；审查意见不等于允许自动修复常规业务代码。
-- 凭据存系统钥匙串；协议、日志、普通配置与测试样例不落真实密钥。不要复用开发者本机 Pi 登录或自动加载其资源到产品 Agent。
+- C-Push is the sole commit and push workflow: without a configured model, commits cannot run and the primary footer button guides the user to configure a model. When a model is configured, C-Push runs in a single click (analyzing authorized scope, splitting, generating messages, committing, and pushing) or executes a valid user-edited Preview Plan verbatim without re-planning; pause to ask only when a real decision is required, and never add mandatory confirmation dialogs to every commit. The prompt input carries user extra instructions only (shared with C-Push planning and Code Review), never raw commit messages and never widening authorized scope.
+- Checkboxes express UI selection only and never mutate `.git/index`. Partially staged files default to committing only their staged hunks; unselected staged files must never leak into commits, and unstaged working-tree drafts must be preserved byte-for-byte.
+- Fixed `Local Keep` paths are excluded from Select All, C-Push, Preview Plan, and Code Review unless explicitly checked by the user; they are persisted locally per repository by canonicalized Git common dir without touching `.git/index`, `.git/info/exclude`, `.gitignore`, `skip-worktree`, or `assume-unchanged`.
+- `main` / `master` display a lightweight `Protected` badge inside the branch menu/drawer (without cluttering the outer header row) while allowing direct commits and pushes (if a remote branch protection rule rejects the push, preserve local commits and prompt to switch branches); detached `HEAD` must switch to a local branch before committing; never auto-force-push, discard user modifications, or rewrite published remote history.
+- Rust is the sole controlled Git write entry point, and Git is the source of truth. Neither the UI nor the model may declare a commit successful on its own, and `git add -A` must never replace exact scope construction.
+- Asynchronous tasks bind `repositoryId`, `worktreeId`, `sessionId`, `requestId`, and `scopeVersion`; switching views, retrying, cancelling, or receiving late responses must never cross targets, widen permissions, overwrite newer prompts/plans, or duplicate commits. Outdated Preview Plans (`baseScopeVersion !== scopeVersion`) must never be committed directly and are discarded on C-Push in favor of fresh planning.
+- When pushing fails after local commits succeed, preserve completed commits (and preserve the prompt text) and retry pushing only. Recovery after interruption must reconcile against live Git history first instead of blindly re-running from step one.
+- While the user is typing extra instructions or editing a Preview Plan message, incoming messages must never steal focus, auto-expand over the editor, or alter user text. Expanded message cards cover only the lower workspace.
+- The Agent may modify conflicted files only after the user explicitly authorizes conflict resolution for the active conflict; code review findings never authorize automatic edits to business source files.
+- Store credentials exclusively in the macOS Keychain; never write real API keys into IPC payloads, logs, plain config files, or test fixtures. Never reuse a developer's local Pi login or auto-load external host resources into the product Agent.
 
-## 开发与验证命令
+## Development & Verification Commands
 
-在项目根目录执行，使用 pnpm，不生成其他包管理器锁文件：
+Run from the repository root with `pnpm` (do not create lockfiles from other package managers):
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm desktop dev          # 桌面开发；pnpm dev 仅为浏览器预览
-pnpm desktop fmt          # Rust 格式化
-pnpm check                # TS 类型、Node 测试、Rust 格式/静态检查与测试
-pnpm ui:verify            # Chrome 交互测试；独立开发样例，不运行真实 Git / 模型
-pnpm desktop build        # 生成 macOS 应用包
-pnpm package:verify --ui   # 验证最新应用包、真实临时 Git 读取、IDE 快照导出、分支 / 工作树切换、精确范围本地提交、跨重启草稿恢复、钥匙串模型保存、Pi 生成/审查、C-Push 拆分推送及冲突合并；需桌面会话，会打开并关闭窗口
+pnpm desktop dev          # Desktop development; `pnpm dev` is browser preview only
+pnpm desktop fmt          # Format Rust sources
+pnpm check                # TypeScript typecheck, Node tests, Rust fmt/clippy, and Rust tests
+pnpm ui:verify            # Headless Chrome interaction suite using isolated fixtures (no real Git or live model)
+pnpm desktop build        # Build macOS application bundle
+pnpm package:verify --ui   # Verify latest .app bundle, disposable Git reads, IDE diff export, branch/worktree switching, exact-scope commits, cold-restart recovery, Keychain model storage, Pi generate/review, C-Push split/push, and conflict merge (requires desktop session; opens and closes window)
 ```
 
-- `scripts/desktop.mjs` 显式补充 `~/.cargo/bin`，不要为运行检查擅改用户 shell 配置。
-- Git 测试使用临时仓库 / 本地 bare 远端，不能拿当前项目或用户业务仓库验证破坏性操作。
-- 改界面、状态、Rust 或协议后运行相关测试与 `pnpm check`；改打包、进程生命周期、运行时或依赖时，还需重新打包并验证应用包。无法执行的检查必须明确列出。
-- Node 测试和桌面检查都会生成同一套 sidecar 文件；不要将带 `sidecar:prepare` 的命令并行执行。
-- 测试夹具、脚本化 provider 和真实在线服务分开报告；单个命令返回成功不代表完整 MVP 验收通过。历史验证见 `docs/validation/`。
-- 保留 M0 的范围保全、重复操作、取消时序和退出清理回归；不要通过降低检查、跳过 hook 或改写验收来掩盖失败。
+- `scripts/desktop.mjs` prepends `~/.cargo/bin` explicitly; do not modify the user's shell profile to run checks.
+- All Git tests must run against temporary repositories and local `bare` remotes; never run destructive Git tests against this repository or user business repositories.
+- After modifying UI, state, Rust, or shared protocols, run relevant tests and `pnpm check`. When changing packaging, process lifecycle, bundled runtimes, or dependencies, also rebuild and verify the macOS `.app` bundle. Explicitly list any check that could not be executed.
+- Both Node tests and desktop checks write to the same sidecar staging directory; never run commands that invoke `sidecar:prepare` in parallel.
+- Report test fixtures, scripted local providers, and live online model services separately; a single passing command does not imply full MVP acceptance. Historical validation records live in `docs/validation/`.
+- Preserve M0 regressions covering scope preservation, idempotency, cancellation timing, and child-process cleanup on exit; never weaken lints, skip Git hooks, or relax acceptance assertions to mask failures.
 
-## Serena 与仓库维护
+## Serena & Repository Maintenance
 
-- 项目配置为 `.serena/project.yml`，支持 TypeScript / TSX / JavaScript 与 Rust。Pi 的 MCP 入口为 `.pi/mcp-adapter.json`，Codex 为 `.codex/config.toml`，Antigravity 为工作区插件 `.agents/plugins/picket-serena/`（`plugin.json` + `mcp_config.json`）；根目录不再定义 Serena 服务。以当前活动项目的真实路径为准，不硬编码开发机用户名或旧工作目录。
-- Pi 使用 Serena 的 `agent` 上下文，Codex 使用 `codex` 上下文，Antigravity 使用 `antigravity` 上下文。客户端各自启动一个 Serena 进程是正常行为；不要另加根目录重复入口，也不要把 Pi 专用的生命周期字段复制到 Codex 或 Antigravity 配置。
-- 可用时优先用 Serena 定位符号与引用，再读取所需实现；工具不可用时使用 `rg` / 文件读取，不声称仅因存在配置就已连接。
-- Serena 尊重 `.gitignore`。`docs/` 和设计原稿不在代码索引中，必要时直接用文件工具阅读；不要把索引无结果当作文件不存在。
-- 缓存、日志、memories 和 `project.local.yml` 保持本地；可共享配置与本文件可以纳入后续提交，但本任务本身不授权提交。
-- 修改 Serena 后验证 TS 与 Rust 两端的符号 / 引用；索引、健康检查需要 `~/.cargo/bin` 在当前进程 PATH 中。首次运行可下载必要语言服务，但不要改全局偏好或扩大到其他项目。
-- 完成后给出变更、检查结果和剩余限制。需要改变定稿、权限、平台或阶段范围时，先向用户确认。
+- Serena project configuration lives in `.serena/project.yml`, supporting TypeScript / TSX / JavaScript and Rust. Pi uses `.pi/mcp-adapter.json`, Codex uses `.codex/config.toml`, and Antigravity uses the workspace plugin `.agents/plugins/picket-serena/` (`plugin.json` + `mcp_config.json`); no root-level Serena server entry is defined. Always resolve paths from the active checkout without hard-coding machine usernames or stale directories.
+- Pi runs Serena with the `agent` context, Codex with `codex`, and Antigravity with `antigravity`. Each client spawning its own Serena process is expected; do not add duplicate root entries or copy Pi-specific lifecycle fields into Codex or Antigravity configs.
+- Prefer Serena for symbol and reference lookup when connected, then read targeted implementations; fall back to `rg` and file reads when unavailable, and never claim Serena is connected merely because config files exist.
+- Serena respects `.gitignore`. `docs/` and design prototypes are excluded from symbol indexing — read them directly with file tools rather than treating empty symbol results as missing files.
+- Keep caches, logs, memories, and `project.local.yml` local-only; shared configs and this file may be included in future commits when authorized, though tasks do not authorize committing on their own.
+- After modifying Serena configs, verify symbol/reference resolution across both TypeScript and Rust (`~/.cargo/bin` must be on `PATH` for indexing and health checks). First-run language server downloads are acceptable, without altering global user preferences or other projects.
+- Summarize completed changes, verification outcomes, and remaining limitations when done. Confirm with the user before changing frozen UI specs, permissions, target platforms, or milestone scope.

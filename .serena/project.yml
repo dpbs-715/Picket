@@ -134,9 +134,11 @@ default_modes:
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
 initial_prompt: >-
-  本项目是 Picket。先阅读根目录 AGENTS.md 与 README.md，按任务读取本地 docs/ 中的定稿与开发计划。
-  使用当前检出的真实路径，不引用迁移前的工作目录。M0 验证实现不等于正式工作台，
-  脚本化响应与临时 Git 仓库不能冒充在线模型或用户仓库验收。产品与安全边界以 AGENTS.md 和定稿为准。
+  This repository is Picket. Read root AGENTS.md and README.md first, and inspect local specifications
+  and plans under docs/ as needed for the task. Always resolve paths from the active checkout without
+  referencing stale directories. M0 diagnostic probes are not the production workbench, and scripted
+  providers or disposable Git fixtures must never be reported as live online model or user-repository
+  acceptance. Follow AGENTS.md and docs/ specifications for all product and security boundaries.
 
 # list of mode names to be activated additionally for this project, e.g. ["query-projects"]
 # The full set of modes to be activated is base_modes (from global config) + default_modes + added_modes.
