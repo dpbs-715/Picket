@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { getMessages } from '../../i18n/messages';
 import {
+  canonicalEndpointUrl,
+  duplicateModelInput,
   editModelInput,
   formatTokenCount,
   newModelInput,
+  nextDuplicateModelName,
   normalizedModel,
   providers,
   resolveDefaultTokenLimits,
+  sameCredentialEndpoint,
   validateModel,
 } from './modelProviders';
 
@@ -100,5 +104,68 @@ describe('Model form field rules and localized validation', () => {
     expect(formatTokenCount(200_000)).toBe('200K');
     expect(formatTokenCount(32_768)).toBe('32K');
     expect(formatTokenCount(1_000_000)).toBe('1M');
+  });
+
+  it('builds duplicate inputs with localized Copy numbering, sourceModelId sharing, and endpoint matching', () => {
+    const source = {
+      id: 'model-src-1',
+      name: 'Gateway Pro',
+      provider: 'custom' as const,
+      apiFormat: 'openai-responses' as const,
+      modelId: 'gpt-5-codex',
+      baseUrl: 'https://API.Example.com/v1/',
+      contextWindow: 256_000,
+      maxOutputTokens: 32_768,
+      keyHint: 'fake…9999',
+      sharedKeyCount: 1,
+    };
+
+    expect(nextDuplicateModelName('Gateway Pro', [source], 'en')).toBe('Gateway Pro Copy');
+    expect(nextDuplicateModelName('Gateway Pro', [
+      source,
+      { name: 'Gateway Pro Copy' },
+      { name: 'Gateway Pro Copy 2' },
+    ], 'en')).toBe('Gateway Pro Copy 3');
+
+    const zhSuffix = getMessages('zh').modelForm.duplicateNameSuffix;
+    expect(nextDuplicateModelName('Primary', [{ name: 'Primary' }], 'zh')).toBe(`Primary ${zhSuffix}`);
+    expect(nextDuplicateModelName('Primary', [
+      { name: 'Primary' },
+      { name: `Primary ${zhSuffix}` },
+      { name: `Primary ${zhSuffix} 2` },
+    ], 'zh')).toBe(`Primary ${zhSuffix} 3`);
+
+    const dup = duplicateModelInput(source, [source], 'en');
+    expect(dup).toEqual({
+      sourceModelId: 'model-src-1',
+      keepActiveModel: true,
+      provider: 'custom',
+      apiFormat: 'openai-responses',
+      name: 'Gateway Pro Copy',
+      modelId: 'gpt-5-codex',
+      baseUrl: 'https://API.Example.com/v1/',
+      apiKey: '',
+      contextWindow: 256_000,
+      maxOutputTokens: 32_768,
+    });
+    expect(normalizedModel(dup).sourceModelId).toBe('model-src-1');
+    // Entering a new API key detaches from sourceModelId:
+    expect(normalizedModel({ ...dup, apiKey: 'fake-new-independent-key' }).sourceModelId).toBeUndefined();
+    // Ollama duplicates omit sourceModelId cleanly:
+    const ollamaDup = duplicateModelInput({
+      id: 'model-ollama',
+      name: 'Local Qwen',
+      provider: 'ollama',
+      modelId: 'qwen2.5-coder:14b',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+    }, [], 'zh');
+    expect(ollamaDup.sourceModelId).toBeUndefined();
+    expect(ollamaDup.name).toBe(`Local Qwen ${zhSuffix}`);
+
+    expect(canonicalEndpointUrl('  https://API.Example.COM/v1/  ')).toBe('https://api.example.com/v1');
+    expect(sameCredentialEndpoint('custom', 'https://API.Example.com/v1/', 'custom', 'https://api.example.com/v1')).toBe(true);
+    expect(sameCredentialEndpoint('custom', 'https://api.example.com/v1', 'custom', 'https://other.example.com/v1')).toBe(false);
+    expect(sameCredentialEndpoint('openai', undefined, 'openai', undefined)).toBe(true);
+    expect(sameCredentialEndpoint('openai', undefined, 'deepseek', undefined)).toBe(false);
   });
 });

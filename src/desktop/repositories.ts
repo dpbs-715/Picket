@@ -17,6 +17,7 @@ import {
 import {
   cancelDesktopModelRequest,
   deleteDesktopModel,
+  revealDesktopModelApiKey,
   reviewDesktopScope,
   saveDesktopModel,
   selectDesktopModel,
@@ -33,6 +34,7 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
   repositoryReadsAvailable: true,
   testModel: testDesktopModelConnection,
   saveModel: saveDesktopModel,
+  revealModelApiKey: revealDesktopModelApiKey,
   cancelRequest: cancelDesktopModelRequest,
   subscribe(receive) {
     eventSubscribers.add(receive);

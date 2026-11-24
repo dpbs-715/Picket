@@ -12,6 +12,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 import { desktopWorkbenchBackend } from './repositories';
 import {
   decodeModelMutateReply,
+  decodeModelRevealKeyReply,
   decodeModelSaveReply,
   decodeModelTestReply,
   decodeReviewScopeReply,
@@ -46,6 +47,50 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
       models: [{ id: 'm1', name: 'GPT', provider: 'openai', modelId: 'gpt-4.1', apiKey: 'sk-leak' }],
       activeModelId: 'm1',
     })).toThrow();
+    expect(() => decodeModelRevealKeyReply({
+      protocolVersion: 1,
+      modelId: 'm1',
+      outcome: 'cancelled',
+      message: 'Cancelled',
+      apiKey: 'fake-leak-on-cancel',
+    })).toThrow();
+    expect(() => decodeModelRevealKeyReply({
+      protocolVersion: 1,
+      modelId: 'm1',
+      outcome: 'authenticated',
+      apiKey: 'fake-revealed-key-0001',
+      keyHint: 'fake…0001',
+      credentialRef: 'cred-leak',
+    })).toThrow();
+    expect(decodeModelRevealKeyReply({
+      protocolVersion: 1,
+      modelId: 'm1',
+      outcome: 'authenticated',
+      apiKey: 'fake-revealed-key-0001',
+      keyHint: 'fake…0001',
+    })).toEqual({
+      protocolVersion: 1,
+      modelId: 'm1',
+      outcome: 'authenticated',
+      apiKey: 'fake-revealed-key-0001',
+      keyHint: 'fake…0001',
+    });
+    expect(decodeModelSaveReply({
+      protocolVersion: 1,
+      activeModelId: 'm1',
+      model: {
+        id: 'm2',
+        name: 'GPT Copy',
+        provider: 'openai',
+        modelId: 'gpt-4.1-mini',
+        keyHint: 'fake…0001',
+        sharedKeyCount: 2,
+      },
+      models: [
+        { id: 'm1', name: 'GPT', provider: 'openai', modelId: 'gpt-4.1', keyHint: 'fake…0001', sharedKeyCount: 2 },
+        { id: 'm2', name: 'GPT Copy', provider: 'openai', modelId: 'gpt-4.1-mini', keyHint: 'fake…0001', sharedKeyCount: 2 },
+      ],
+    }).models).toHaveLength(2);
   });
 
   it('strictly verifies request identity, prompt/locale/commitLanguage forwarding, and scope tokens', async () => {

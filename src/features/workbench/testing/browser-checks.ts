@@ -2,11 +2,12 @@ import { act, createElement } from 'react';
 import type { CPushCommandReply } from '../../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../../shared/ide-protocol';
-import type { ReviewScopeReply } from '../../../../shared/model-protocol';
+import type { ModelRevealKeyReply, ModelSaveReply, ReviewScopeReply } from '../../../../shared/model-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
 import type { Root } from 'react-dom/client';
 import type { WindowController } from '../../../desktop/window';
 import { getMessages, LANGUAGE_OPTIONS } from '../../../i18n/messages';
+import type { ModelConfiguration } from '../../settings/modelProviders';
 import { Workbench } from '../Workbench';
 import { disconnectedBackend } from '../commands';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
@@ -2065,6 +2066,361 @@ export async function verifyWorkbench(root: Root) {
     'Detached HEAD in Compact Mode must explain reason in Row 2 and disable C-Push',
   );
   checks.push('Pinned Compact Mode: browser-preview boundary, 2-row ~86px layout, project & file drawers, ▸ jump targets, non-auto-expand, and background notifications');
+
+  // 18. Model key hints, authenticated full-key reveal (30s / toggle / blur / close auto-hide), duplicate sharing & endpoint guard, and shared-key editing:
+  const fakeRevealedSecret = 'fake-revealed-gateway-secret-9001';
+  let revealOutcome: ModelRevealKeyReply = {
+    protocolVersion: 1,
+    modelId: 'm-gw-1',
+    outcome: 'cancelled',
+    message: 'Authentication cancelled.',
+  };
+  const tracker = {
+    revealCalls: 0,
+    testCalls: [] as unknown[],
+    failNextTestMessage: null as string | null,
+    saveCalls: [] as unknown[],
+  };
+  const getRevealCalls = () => tracker.revealCalls;
+  const getSaveCount = () => tracker.saveCalls.length;
+  const persistedPayloads: WorkbenchSaveRequest[] = [];
+  let liveModels: ModelConfiguration[] = [
+    {
+      id: 'm-gw-1',
+      name: 'Gateway Alpha',
+      provider: 'custom',
+      apiFormat: 'openai-completions',
+      modelId: 'coder-alpha',
+      baseUrl: 'https://gw.example.com/v1',
+      contextWindow: 128_000,
+      maxOutputTokens: 16_384,
+      keyHint: 'fake…9001',
+      sharedKeyCount: 1,
+    },
+    {
+      id: 'm-ollama',
+      name: 'Local Qwen',
+      provider: 'ollama',
+      apiFormat: 'openai-completions',
+      modelId: 'qwen2.5-coder:14b',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      contextWindow: 32_768,
+      maxOutputTokens: 4_096,
+    },
+  ];
+  let liveActiveModelId = 'm-gw-1';
+
+  const credentialState = fixture('typing');
+  credentialState.models = liveModels.map((item) => ({ ...item }));
+  credentialState.activeModelId = liveActiveModelId;
+
+  await mount(credentialState, {
+    ...disconnectedBackend,
+    async saveWorkbenchState(request) {
+      persistedPayloads.push(request);
+    },
+    async revealModelApiKey(modelId) {
+      tracker.revealCalls += 1;
+      return { ...revealOutcome, modelId };
+    },
+    async testModel(input) {
+      tracker.testCalls.push(input);
+      if (tracker.failNextTestMessage) {
+        const msg = tracker.failNextTestMessage;
+        tracker.failNextTestMessage = null;
+        throw new Error(msg);
+      }
+      return `Connected: ${input.provider} · ${input.modelId} (12 ms)`;
+    },
+    async saveModel(input): Promise<ModelSaveReply> {
+      tracker.saveCalls.push(input);
+      if (input.id) {
+        const updateAll = input.sharedKeyUpdateScope !== 'detachCurrent';
+        const nextHint = input.apiKey ? `fake…${input.apiKey.slice(-4)}` : undefined;
+        liveModels = liveModels.map((item) => {
+          if (item.id === input.id) {
+            return {
+              ...item,
+              name: input.name,
+              provider: input.provider,
+              apiFormat: input.apiFormat,
+              modelId: input.modelId,
+              baseUrl: input.baseUrl || undefined,
+              contextWindow: input.contextWindow,
+              maxOutputTokens: input.maxOutputTokens,
+              ...(nextHint ? { keyHint: nextHint } : {}),
+              ...(input.sharedKeyUpdateScope === 'detachCurrent' ? { sharedKeyCount: 1 } : {}),
+            };
+          }
+          if (input.apiKey && updateAll && item.keyHint) {
+            return { ...item, keyHint: nextHint };
+          }
+          if (input.apiKey && input.sharedKeyUpdateScope === 'detachCurrent' && item.keyHint) {
+            return { ...item, sharedKeyCount: Math.max(1, (item.sharedKeyCount ?? 2) - 1) };
+          }
+          return item;
+        });
+        const updated = liveModels.find((item) => item.id === input.id)!;
+        return {
+          protocolVersion: 1,
+          model: updated,
+          models: liveModels.map((item) => ({ ...item })),
+          activeModelId: liveActiveModelId,
+        };
+      }
+
+      const createdId = `m-dup-${tracker.saveCalls.length}`;
+      const sharesSource = !!input.sourceModelId && !input.apiKey;
+      if (sharesSource) {
+        liveModels = liveModels.map((item) =>
+          item.id === input.sourceModelId
+            ? { ...item, sharedKeyCount: (item.sharedKeyCount ?? 1) + 1 }
+            : item,
+        );
+      }
+      const sourceEntry = liveModels.find((item) => item.id === input.sourceModelId);
+      const created: ModelConfiguration = {
+        id: createdId,
+        name: input.name,
+        provider: input.provider,
+        apiFormat: input.apiFormat,
+        modelId: input.modelId,
+        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+        contextWindow: input.contextWindow,
+        maxOutputTokens: input.maxOutputTokens,
+        ...(sharesSource && sourceEntry?.keyHint
+          ? { keyHint: sourceEntry.keyHint, sharedKeyCount: sourceEntry.sharedKeyCount }
+          : input.apiKey
+            ? { keyHint: `fake…${input.apiKey.slice(-4)}`, sharedKeyCount: 1 }
+            : {}),
+      };
+      liveModels = [...liveModels, created];
+      if (!input.keepActiveModel) {
+        liveActiveModelId = createdId;
+      }
+      return {
+        protocolVersion: 1,
+        model: created,
+        models: liveModels.map((item) => ({ ...item })),
+        activeModelId: liveActiveModelId,
+      };
+    },
+  });
+
+  // Opening Settings displays `keyHint` for key-bearing models without reading Keychain:
+  await click('Settings');
+  const modelRows = [...document.querySelectorAll<HTMLElement>('.model-row')];
+  assert(
+    modelRows.length === 2
+      && (modelRows[0].querySelector('.model-key-hint')?.textContent ?? '') === 'fake…9001'
+      && !modelRows[1].querySelector('.model-key-hint')
+      && getRevealCalls() === 0,
+    'Settings model list must show keyHint only for models needing a key without invoking Keychain reveal',
+  );
+
+  // Edit form shows keyHint + Eye button; Cancelled auth shows short notice without revealing secret:
+  await click('Edit model Gateway Alpha');
+  assert(
+    (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001'
+      && !!document.querySelector('button[aria-label="Reveal saved API key"]'),
+    'Edit model form must display keyHint and Reveal button next to API Key input',
+  );
+  await click('Reveal saved API key');
+  await tick();
+  assert(
+    getRevealCalls() === 1
+      && !document.querySelector('.revealed-api-key')
+      && text().includes('Authentication cancelled.')
+      && !text().includes(fakeRevealedSecret),
+    'Cancelled LocalAuthentication must not display secret and must show short inline notice',
+  );
+
+  // Authenticated reveal: verify exact 30,000ms timer registration + 30s auto-hide + password input untouched + zero persistence leak:
+  revealOutcome = {
+    protocolVersion: 1,
+    modelId: 'm-gw-1',
+    outcome: 'authenticated',
+    apiKey: fakeRevealedSecret,
+    keyHint: 'fake…9001',
+  };
+  const originalSetTimeout = window.setTimeout.bind(window);
+  let captured30sCallback: (() => void) | undefined;
+  window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    if (timeout === 30_000 && typeof handler === 'function') {
+      captured30sCallback = () => { (handler as () => void)(); };
+    }
+    return originalSetTimeout(handler, timeout, ...args);
+  }) as typeof window.setTimeout;
+  try {
+    await click('Reveal saved API key');
+    await tick();
+    assert(
+      getRevealCalls() === 2
+        && document.querySelector('.revealed-api-key')?.textContent === fakeRevealedSecret
+        && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === ''
+        && !!captured30sCallback,
+      'Authenticated reveal must render read-only key, leave password input empty, and arm 30s auto-hide timer',
+    );
+    await act(async () => { captured30sCallback!(); });
+    await tick();
+    assert(
+      !document.querySelector('.revealed-api-key') && !text().includes(fakeRevealedSecret),
+      'Revealed API key must auto-hide and clear from memory after 30 seconds',
+    );
+  } finally {
+    window.setTimeout = originalSetTimeout;
+  }
+
+  // Second click on Eye button hides immediately without re-invoking backend:
+  await click('Reveal saved API key');
+  await tick();
+  assert(getRevealCalls() === 3 && document.querySelector('.revealed-api-key')?.textContent === fakeRevealedSecret, 'Reveal before toggle check failed');
+  await click('Hide API key');
+  await tick();
+  assert(getRevealCalls() === 3 && !document.querySelector('.revealed-api-key') && !text().includes(fakeRevealedSecret), 'Second click on Eye button must immediately hide revealed key');
+
+  // Window blur hides immediately:
+  await click('Reveal saved API key');
+  await tick();
+  assert(document.querySelector('.revealed-api-key')?.textContent === fakeRevealedSecret, 'Reveal before blur check failed');
+  await act(async () => { window.dispatchEvent(new Event('blur')); });
+  await tick();
+  assert(!document.querySelector('.revealed-api-key') && !text().includes(fakeRevealedSecret), 'Window blur must immediately hide and clear revealed key');
+
+  // Closing form clears revealed key:
+  await click('Reveal saved API key');
+  await tick();
+  assert(document.querySelector('.revealed-api-key')?.textContent === fakeRevealedSecret, 'Reveal before close check failed');
+  await click('Cancel');
+  await tick();
+  assert(!text().includes(fakeRevealedSecret), 'Closing form must clear revealed key');
+  assert(!JSON.stringify(persistedPayloads).includes(fakeRevealedSecret), 'Revealed API key must never enter persisted workbench payloads');
+
+  // Duplicate model: prefill, Display Name "Copy", focus in Model ID, endpoint guard, auto-test on changed modelId, and Save Anyway:
+  await click('Duplicate model Gateway Alpha');
+  await tick();
+  const dupFormInputs = [...document.querySelectorAll<HTMLInputElement>('.model-form input')];
+  const dupNameInput = dupFormInputs[0];
+  const dupModelIdInput = dupFormInputs[1];
+  const dupUrlInput = dupFormInputs[2];
+  assert(
+    text().includes('Duplicate Model')
+      && dupNameInput.value === 'Gateway Alpha Copy'
+      && dupModelIdInput.value === 'coder-alpha'
+      && document.activeElement === dupModelIdInput
+      && (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001'
+      && !document.querySelector('button[aria-label="Reveal saved API key"]'),
+    'Duplicate form must prefill non-secret fields, focus Model ID, show source keyHint, and omit Reveal button',
+  );
+
+  // Changing Base URL blocks sharing and shows inline explanation:
+  type(dupUrlInput, 'https://different-gateway.example.com/v1'); await tick();
+  assert(
+    text().includes('Provider or base URL changed; enter a new API key.')
+      && !document.querySelector('.model-form .model-key-hint'),
+    'Changing Base URL in Duplicate form must require a new API key and explain why inline',
+  );
+  await click('Save');
+  assert(getSaveCount() === 0 && text().includes('Enter an API key'), 'Duplicate with changed URL and blank key must block save');
+
+  // Restoring normalized equivalent URL re-enables source key sharing; changing Model ID triggers auto-test + Save Anyway fallback:
+  type(dupUrlInput, 'https://GW.EXAMPLE.COM/v1/');
+  type(dupModelIdInput, 'coder-beta');
+  await tick();
+  assert(
+    !text().includes('Provider or base URL changed; enter a new API key.')
+      && (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001',
+    'Normalized matching Base URL must re-enable source key sharing',
+  );
+  tracker.testCalls = [];
+  tracker.failNextTestMessage = 'Model coder-beta temporarily unreachable';
+  await click('Save');
+  await tick();
+  assert(
+    tracker.testCalls.length === 1
+      && getSaveCount() === 0
+      && text().includes('Model coder-beta temporarily unreachable')
+      && !!button('Save Anyway'),
+    'Saving duplicated model with modified Model ID must auto-run connection test and offer Save Anyway on failure',
+  );
+  await click('Save Anyway');
+  await tick();
+  assert(
+    getSaveCount() === 1
+      && (tracker.saveCalls[0] as { sourceModelId?: string; keepActiveModel?: boolean; apiKey?: string }).sourceModelId === 'm-gw-1'
+      && (tracker.saveCalls[0] as { keepActiveModel?: boolean }).keepActiveModel === true
+      && (tracker.saveCalls[0] as { apiKey?: string }).apiKey === ''
+      && !!document.querySelector('#settings-models-section')
+      && !document.querySelector('.model-form')
+      && document.querySelector('.model-row.is-active strong')?.textContent === 'Gateway Alpha',
+    'Save Anyway must save duplicated model with sourceModelId, stay in Settings, and keep original activeModelId',
+  );
+
+  // Duplicate numbering increments to "Copy 2" when "Gateway Alpha Copy" already exists:
+  await click('Duplicate model Gateway Alpha');
+  await tick();
+  assert(
+    document.querySelectorAll<HTMLInputElement>('.model-form input')[0].value === 'Gateway Alpha Copy 2',
+    'Duplicate display name must increment to Copy 2 when Copy already exists',
+  );
+  await click('Cancel');
+
+  // Keyless Ollama model duplicates directly without API key prompt:
+  await click('Duplicate model Local Qwen');
+  await tick();
+  await click('Save');
+  await tick();
+  assert(getSaveCount() === 2 && text().includes('Local Qwen Copy'), 'Keyless Ollama duplicate must save directly');
+
+  // Editing a shared-key model (`sharedKeyCount: 2`): radio options (`updateAll` default vs `detachCurrent`) and endpoint-change detach:
+  await click('Edit model Gateway Alpha');
+  await tick();
+  assert(!document.querySelector('.shared-key-scope'), 'Blank API key when editing shared model must not show scope radio options');
+  const sharedKeyInput = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
+  type(sharedKeyInput, 'fake-new-shared-secret-2222');
+  await tick();
+  const scopeRadios = [...document.querySelectorAll<HTMLInputElement>('.shared-key-scope input[type="radio"]')];
+  assert(
+    scopeRadios.length === 2
+      && scopeRadios[0].checked
+      && text().includes('Update all 2 models sharing this key')
+      && text().includes('Use new key for this model only'),
+    'Entering new key on shared model must display count-only radio options with Update all selected by default',
+  );
+  const sharedUrlInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')][2];
+  type(sharedUrlInput, 'https://moved-endpoint.example.com/v1');
+  await tick();
+  assert(
+    !document.querySelector('.shared-key-scope')
+      && text().includes('Provider or base URL changed; enter a new API key.'),
+    'Changing Base URL on shared model must hide peer-update radio options and apply new key only to current model',
+  );
+  type(sharedUrlInput, 'https://gw.example.com/v1');
+  await tick();
+  assert(document.querySelectorAll('.shared-key-scope input[type="radio"]').length === 2, 'Restoring Base URL restores shared scope radio options');
+  await click('Save Changes');
+  await tick();
+  assert(
+    (tracker.saveCalls.at(-1) as { sharedKeyUpdateScope?: string }).sharedKeyUpdateScope === 'updateAll'
+      && [...document.querySelectorAll('.model-key-hint')].every((el) => el.textContent === 'fake…2222'),
+    'Saving shared model with default Update all must update keyHint across all sharing models',
+  );
+
+  // Detach single model from shared credential (`detachCurrent`):
+  await click('Edit model Gateway Alpha Copy');
+  await tick();
+  type(document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!, 'fake-detached-secret-3333');
+  await tick();
+  const detachRadio = document.querySelector<HTMLInputElement>('.shared-key-scope input[value="detachCurrent"]')!;
+  await act(async () => { detachRadio.click(); });
+  await click('Save Changes');
+  await tick();
+  assert(
+    (tracker.saveCalls.at(-1) as { sharedKeyUpdateScope?: string }).sharedKeyUpdateScope === 'detachCurrent',
+    'Selecting Use new key for this model only must send sharedKeyUpdateScope=detachCurrent',
+  );
+  await click('Close Settings');
+  checks.push('Model key hints, authenticated full-key reveal & 4 auto-hide rules, duplicate sharing & endpoint guard, and shared-key editing');
 
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',

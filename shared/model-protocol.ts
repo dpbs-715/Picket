@@ -9,6 +9,9 @@ export type ModelProviderId = typeof MODEL_PROVIDER_IDS[number];
 export const MODEL_API_FORMATS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
 export type ModelApiFormat = typeof MODEL_API_FORMATS[number];
 
+export const SHARED_KEY_UPDATE_SCOPES = ['updateAll', 'detachCurrent'] as const;
+export type SharedKeyUpdateScope = typeof SHARED_KEY_UPDATE_SCOPES[number];
+
 export interface SavedModelConfiguration {
   id: string;
   name: string;
@@ -18,10 +21,15 @@ export interface SavedModelConfiguration {
   baseUrl?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
+  keyHint?: string;
+  sharedKeyCount?: number;
 }
 
 export interface ModelInputPayload {
   id?: string;
+  sourceModelId?: string;
+  sharedKeyUpdateScope?: SharedKeyUpdateScope;
+  keepActiveModel?: boolean;
   provider: ModelProviderId;
   apiFormat?: ModelApiFormat;
   name: string;
@@ -44,6 +52,7 @@ export interface ModelTestReply {
 export interface ModelSaveReply {
   protocolVersion: typeof MODEL_PROTOCOL_VERSION;
   model: SavedModelConfiguration;
+  models: SavedModelConfiguration[];
   activeModelId: string;
 }
 
@@ -52,6 +61,21 @@ export interface ModelMutateReply {
   models: SavedModelConfiguration[];
   activeModelId: string | null;
 }
+
+export type ModelRevealKeyReply =
+  | {
+      protocolVersion: typeof MODEL_PROTOCOL_VERSION;
+      modelId: string;
+      outcome: 'authenticated';
+      apiKey: string;
+      keyHint: string;
+    }
+  | {
+      protocolVersion: typeof MODEL_PROTOCOL_VERSION;
+      modelId: string;
+      outcome: 'cancelled' | 'failed';
+      message: string;
+    };
 
 export interface ModelFileSelection {
   fileId: string;
@@ -97,12 +121,24 @@ function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasControlChars(text: string): boolean {
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
 export function isModelProviderId(value: unknown): value is ModelProviderId {
   return typeof value === 'string' && (MODEL_PROVIDER_IDS as readonly string[]).includes(value);
 }
 
 export function isModelApiFormat(value: unknown): value is ModelApiFormat {
   return typeof value === 'string' && (MODEL_API_FORMATS as readonly string[]).includes(value);
+}
+
+export function isSharedKeyUpdateScope(value: unknown): value is SharedKeyUpdateScope {
+  return typeof value === 'string' && (SHARED_KEY_UPDATE_SCOPES as readonly string[]).includes(value);
 }
 
 export function decodeSavedModelConfiguration(value: unknown): SavedModelConfiguration {
@@ -116,7 +152,9 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     || typeof value.modelId !== 'string' || !value.modelId
     || !(value.baseUrl === undefined || value.baseUrl === null || typeof value.baseUrl === 'string')
     || !(value.contextWindow === undefined || value.contextWindow === null || (typeof value.contextWindow === 'number' && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0))
-    || !(value.maxOutputTokens === undefined || value.maxOutputTokens === null || (typeof value.maxOutputTokens === 'number' && Number.isSafeInteger(value.maxOutputTokens) && value.maxOutputTokens > 0))) {
+    || !(value.maxOutputTokens === undefined || value.maxOutputTokens === null || (typeof value.maxOutputTokens === 'number' && Number.isSafeInteger(value.maxOutputTokens) && value.maxOutputTokens > 0))
+    || !(value.keyHint === undefined || value.keyHint === null || (typeof value.keyHint === 'string' && value.keyHint.length > 0 && value.keyHint.length <= 32 && !hasControlChars(value.keyHint)))
+    || !(value.sharedKeyCount === undefined || value.sharedKeyCount === null || (typeof value.sharedKeyCount === 'number' && Number.isSafeInteger(value.sharedKeyCount) && value.sharedKeyCount >= 1))) {
     throw new Error('Model configuration protocol mismatch or unexpected fields.');
   }
   return {
@@ -128,6 +166,8 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     ...(typeof value.baseUrl === 'string' && value.baseUrl ? { baseUrl: value.baseUrl } : {}),
     ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
     ...(typeof value.maxOutputTokens === 'number' ? { maxOutputTokens: value.maxOutputTokens } : {}),
+    ...(typeof value.keyHint === 'string' ? { keyHint: value.keyHint } : {}),
+    ...(typeof value.sharedKeyCount === 'number' ? { sharedKeyCount: value.sharedKeyCount } : {}),
   };
 }
 
@@ -151,6 +191,7 @@ export function decodeModelTestReply(value: unknown): ModelTestReply {
   if (!record(value)
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || 'apiKey' in value
+    || 'credentialRef' in value
     || !isModelProviderId(value.provider)
     || typeof value.modelId !== 'string' || !value.modelId
     || typeof value.summary !== 'string' || !value.summary
@@ -170,17 +211,26 @@ export function decodeModelSaveReply(value: unknown): ModelSaveReply {
   if (!record(value)
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || 'apiKey' in value
+    || 'credentialRef' in value
+    || !Array.isArray(value.models)
     || typeof value.activeModelId !== 'string' || !value.activeModelId) {
     throw new Error('Model save reply mismatch.');
   }
   const model = decodeSavedModelConfiguration(value.model);
-  return { protocolVersion: MODEL_PROTOCOL_VERSION, model, activeModelId: value.activeModelId };
+  const models = value.models.map(decodeSavedModelConfiguration);
+  return {
+    protocolVersion: MODEL_PROTOCOL_VERSION,
+    model,
+    models,
+    activeModelId: value.activeModelId,
+  };
 }
 
 export function decodeModelMutateReply(value: unknown): ModelMutateReply {
   if (!record(value)
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || 'apiKey' in value
+    || 'credentialRef' in value
     || !Array.isArray(value.models)
     || !(value.activeModelId === null || typeof value.activeModelId === 'string')) {
     throw new Error('Model mutation reply mismatch.');
@@ -189,11 +239,46 @@ export function decodeModelMutateReply(value: unknown): ModelMutateReply {
   return { protocolVersion: MODEL_PROTOCOL_VERSION, models, activeModelId: value.activeModelId };
 }
 
+export function decodeModelRevealKeyReply(value: unknown): ModelRevealKeyReply {
+  if (!record(value)
+    || value.protocolVersion !== MODEL_PROTOCOL_VERSION
+    || 'credentialRef' in value
+    || typeof value.modelId !== 'string' || !value.modelId) {
+    throw new Error('Model reveal key reply mismatch.');
+  }
+  if (value.outcome === 'authenticated') {
+    if (typeof value.apiKey !== 'string' || !value.apiKey
+      || typeof value.keyHint !== 'string' || !value.keyHint || hasControlChars(value.keyHint)) {
+      throw new Error('Authenticated model reveal reply is missing valid key fields.');
+    }
+    return {
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      modelId: value.modelId,
+      outcome: 'authenticated',
+      apiKey: value.apiKey,
+      keyHint: value.keyHint,
+    };
+  }
+  if (value.outcome === 'cancelled' || value.outcome === 'failed') {
+    if ('apiKey' in value || typeof value.message !== 'string' || !value.message) {
+      throw new Error('Non-authenticated model reveal reply must not include apiKey.');
+    }
+    return {
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      modelId: value.modelId,
+      outcome: value.outcome,
+      message: value.message,
+    };
+  }
+  throw new Error('Unknown model reveal outcome.');
+}
+
 export function decodeReviewScopeReply(value: unknown): ReviewScopeReply {
   if (!record(value)
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || value.kind !== 'review'
     || 'apiKey' in value
+    || 'credentialRef' in value
     || typeof value.requestId !== 'string' || !value.requestId
     || typeof value.modelId !== 'string' || !value.modelId
     || !Array.isArray(value.findings)

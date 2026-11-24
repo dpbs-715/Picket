@@ -2,15 +2,17 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type { AppLocale } from '../../shared/language-protocol';
 import {
   decodeModelMutateReply,
+  decodeModelRevealKeyReply,
   decodeModelSaveReply,
   decodeModelTestReply,
   decodeReviewScopeReply,
   type ModelFileSelection,
   type ModelInputPayload,
   type ModelMutateReply,
+  type ModelRevealKeyReply,
+  type ModelSaveReply,
   type ModelStreamEvent,
   type ReviewScopeReply,
-  type SavedModelConfiguration,
 } from '../../shared/model-protocol';
 import type { GitReadTarget } from '../../shared/git-read-protocol';
 import { getMessages } from '../i18n/messages';
@@ -30,16 +32,16 @@ export async function testDesktopModelConnection(input: ModelInputPayload): Prom
   return reply.summary;
 }
 
-export async function saveDesktopModel(input: ModelInputPayload): Promise<SavedModelConfiguration> {
+export async function saveDesktopModel(input: ModelInputPayload): Promise<ModelSaveReply> {
   const reply = decodeModelSaveReply(await invoke('save_model', { input }));
   if (reply.model.provider !== input.provider || reply.model.modelId !== input.modelId.trim()) {
     throw new Error(getMessages(input.locale).desktop.modelSaveMismatch);
   }
-  return reply.model;
+  return reply;
 }
 
 export async function selectDesktopModel(modelId: string, locale?: AppLocale): Promise<ModelMutateReply> {
-  const reply = decodeModelMutateReply(await invoke('select_model', { request: { modelId } }));
+  const reply = decodeModelMutateReply(await invoke('select_model', { request: { modelId, ...(locale ? { locale } : {}) } }));
   if (reply.activeModelId !== modelId) {
     throw new Error(getMessages(locale).desktop.modelSelectMismatch);
   }
@@ -47,9 +49,24 @@ export async function selectDesktopModel(modelId: string, locale?: AppLocale): P
 }
 
 export async function deleteDesktopModel(modelId: string, locale?: AppLocale): Promise<ModelMutateReply> {
-  const reply = decodeModelMutateReply(await invoke('delete_model', { request: { modelId } }));
+  const reply = decodeModelMutateReply(await invoke('delete_model', { request: { modelId, ...(locale ? { locale } : {}) } }));
   if (reply.models.some((model) => model.id === modelId)) {
     throw new Error(getMessages(locale).desktop.modelDeleteFailed);
+  }
+  return reply;
+}
+
+export async function revealDesktopModelApiKey(modelId: string, locale?: AppLocale): Promise<ModelRevealKeyReply> {
+  const reply = decodeModelRevealKeyReply(
+    await invoke('reveal_model_api_key', {
+      request: {
+        modelId,
+        ...(locale ? { locale } : {}),
+      },
+    }),
+  );
+  if (reply.modelId !== modelId) {
+    throw new Error(getMessages(locale).desktop.modelRevealMismatch);
   }
   return reply;
 }

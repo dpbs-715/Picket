@@ -364,13 +364,26 @@ legend { padding: 0; margin-bottom: 5px; color: #a1a1aa; font-size: 11px; }
 .model-sep { flex-shrink: 0; font-size: 10.5px; color: #52525b; }
 .model-id { font-size: 10.5px; color: #71717a; }
 .model-tokens { flex-shrink: 0; font-size: 10px; color: #71717a; }
+.model-key-hint { flex-shrink: 0; font-size: 10px; color: #71717a; }
 .model-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.model-edit, .model-delete { width: 28px; height: 28px; border-radius: 6px; color: #52525b; }
-.model-row:hover .model-edit, .model-row:hover .model-delete { color: #71717a; }
-.model-edit:hover:not(:disabled), .model-edit:focus-visible { color: #e4e4e7; background: rgb(255 255 255 / 8%); }
+.model-duplicate, .model-edit, .model-delete { width: 28px; height: 28px; border-radius: 6px; color: #52525b; }
+.model-row:hover .model-duplicate, .model-row:hover .model-edit, .model-row:hover .model-delete { color: #71717a; }
+.model-duplicate:hover:not(:disabled), .model-duplicate:focus-visible, .model-edit:hover:not(:disabled), .model-edit:focus-visible { color: #e4e4e7; background: rgb(255 255 255 / 8%); }
 .model-delete:hover:not(:disabled), .model-delete:focus-visible { color: var(--red); background: rgb(248 113 113 / 10%); }
 .model-form { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 14px; }
-.model-form > label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #a1a1aa; }
+.model-form > label, .model-form > .form-field { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #a1a1aa; }
+.api-key-label-row { justify-content: space-between; width: 100%; }
+.api-key-input-row { display: flex; align-items: center; gap: 6px; }
+.api-key-input-row > input { flex: 1; min-width: 0; }
+.api-key-reveal-button { width: 32px; height: 32px; flex-shrink: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: #a1a1aa; }
+.api-key-reveal-button:hover:not(:disabled), .api-key-reveal-button:focus-visible, .api-key-reveal-button.is-active { color: #f4f4f5; background: rgb(255 255 255 / 8%); border-color: rgb(255 255 255 / 16%); }
+.revealed-api-key { padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line); background: rgb(255 255 255 / 4%); color: #e4e4e7; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; user-select: text; }
+.field-inline-note { font-size: 10.5px; line-height: 1.4; color: var(--amber); }
+.field-inline-note.muted { color: #a1a1aa; }
+.field-inline-note.danger { color: var(--red); }
+.shared-key-scope { display: flex; flex-direction: column; gap: 5px; padding-top: 2px; }
+.shared-key-option { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #d4d4d8; cursor: pointer; user-select: none; }
+.shared-key-option input[type='radio'] { width: 13px; height: 13px; margin: 0; accent-color: var(--indigo); flex-shrink: 0; }
 .model-token-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .model-token-grid > label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: #a1a1aa; min-width: 0; }
 .provider-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }

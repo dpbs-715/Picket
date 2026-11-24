@@ -2,7 +2,13 @@ import type { CPushCommandReply, CPushConfirmedPlan } from '../../../shared/cpus
 import type { GitBranchReply } from '../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../shared/ide-protocol';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
-import type { ModelFileSelection, ModelMutateReply, ReviewScopeReply } from '../../../shared/model-protocol';
+import type {
+  ModelFileSelection,
+  ModelMutateReply,
+  ModelRevealKeyReply,
+  ModelSaveReply,
+  ReviewScopeReply,
+} from '../../../shared/model-protocol';
 import type { GitLocalKeepReply, GitReadReply } from '../../../shared/git-read-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../shared/workbench-persistence-protocol';
 import { getMessages } from '../../i18n/messages';
@@ -32,6 +38,8 @@ export type WorkbenchCommandReply =
   | CPushCommandReply
   | void;
 
+export type SaveModelOutcome = ModelConfiguration | ModelSaveReply;
+
 export interface WorkbenchBackend {
   repositoryReadsAvailable?: boolean;
   execute(command: WorkbenchCommand): Promise<WorkbenchCommandReply>;
@@ -40,7 +48,8 @@ export interface WorkbenchBackend {
   loadWorkbenchState?(): Promise<WorkbenchRestoreReply>;
   saveWorkbenchState?(request: WorkbenchSaveRequest): Promise<void>;
   testModel(input: ModelInput): Promise<string>;
-  saveModel(input: ModelInput): Promise<ModelConfiguration>;
+  saveModel(input: ModelInput): Promise<SaveModelOutcome>;
+  revealModelApiKey?(modelId: string, locale?: AppLocale): Promise<ModelRevealKeyReply>;
   subscribe?(receive: (event: WorkbenchEvent) => void): () => void;
 }
 
@@ -59,5 +68,8 @@ export const disconnectedBackend: WorkbenchBackend = {
   },
   async saveModel(input) {
     throw new Error(getMessages(input.locale).desktop.disconnectedSaveModel);
+  },
+  async revealModelApiKey(_modelId, locale) {
+    throw new Error(getMessages(locale).desktop.disconnectedRevealModelKey);
   },
 };

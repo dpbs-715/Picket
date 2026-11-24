@@ -530,7 +530,8 @@ export type WorkbenchAction =
   | { type: 'windowPreferencesUpdated'; preferences: PersistedWindowPreferences }
   | { type: 'windowSnapshotSynced'; pinned: boolean; position: WindowPosition; size: WindowSize }
   | { type: 'windowGeometryObserved'; position: WindowPosition; size: WindowSize }
-  | { type: 'modelSaved'; model: ModelConfiguration }
+  | { type: 'modelSaved'; model: ModelConfiguration; keepActiveModel?: boolean }
+  | { type: 'modelKeyHintSynced'; modelId: string; keyHint: string }
   | { type: 'modelSelected'; modelId: string }
   | { type: 'modelDeleted'; modelId: string }
   | { type: 'modelsSynced'; models: ModelConfiguration[]; activeModelId: string | null }
@@ -829,6 +830,14 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     return { ...state, defaultCommitLanguage: action.commitLanguage, settingsModified: true };
   }
   if (action.type === 'modelsSynced') return { ...state, models: action.models, activeModelId: action.activeModelId };
+  if (action.type === 'modelKeyHintSynced') {
+    return {
+      ...state,
+      models: state.models.map((model) =>
+        model.id === action.modelId ? { ...model, keyHint: action.keyHint } : model,
+      ),
+    };
+  }
   if (action.type === 'modelSaved') {
     const exists = state.models.some((model) => model.id === action.model.id);
     return exists
@@ -840,7 +849,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       : {
           ...state,
           models: [...state.models, action.model],
-          activeModelId: action.model.id,
+          activeModelId: action.keepActiveModel
+            ? (state.activeModelId ?? action.model.id)
+            : action.model.id,
         };
   }
   if (action.type === 'modelSelected') return state.models.some((model) => model.id === action.modelId) ? { ...state, activeModelId: action.modelId } : state;

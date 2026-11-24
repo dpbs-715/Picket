@@ -370,6 +370,51 @@ async function checkModelAndPreviewPlanOperations() {
   findButton('Save & Use')!.click();
   await waitForUi(() => !document.querySelector('.overlay') && !!document.querySelector('.model-button'), 'm3-model-saved');
 
+  // Verify key hint, LocalAuthentication-gated reveal (cancel + authenticated + hide), and model duplication sharing key in real WKWebView:
+  const expectedHint = `smok…${secret.slice(-4)}`;
+  findButton('Settings')!.click();
+  await waitForUi(
+    () => (document.querySelector('.model-key-hint')?.textContent ?? '') === expectedHint,
+    'm3-settings-key-hint',
+  );
+  findButton('Edit model Smoke Coder')!.click();
+  await waitForUi(() => !!findButton('Reveal saved API key'), 'm3-edit-reveal-button');
+  await invoke('set_smoke_local_auth', { outcome: 'cancelled' });
+  findButton('Reveal saved API key')!.click();
+  await waitForUi(
+    () => !document.querySelector('.revealed-api-key')
+      && (document.querySelector('.model-form')?.textContent ?? '').includes('Authentication cancelled'),
+    'm3-reveal-cancelled',
+  );
+  await invoke('set_smoke_local_auth', { outcome: 'authenticated' });
+  findButton('Reveal saved API key')!.click();
+  await waitForUi(
+    () => document.querySelector('.revealed-api-key')?.textContent === secret
+      && document.querySelector<HTMLInputElement>('.model-form input[type="password"]')?.value === '',
+    'm3-reveal-authenticated',
+  );
+  findButton('Hide API key')!.click();
+  await waitForUi(() => !document.querySelector('.revealed-api-key'), 'm3-reveal-hidden');
+  findButton('Cancel')!.click();
+  await waitForUi(() => !document.querySelector('.model-form'), 'm3-edit-closed');
+
+  findButton('Duplicate model Smoke Coder')!.click();
+  await waitForUi(() => !!document.querySelector('.model-form'), 'm3-duplicate-open');
+  const dupInputs = [...document.querySelectorAll<HTMLInputElement>('.model-form input')];
+  if (dupInputs[0]?.value !== 'Smoke Coder Copy' || document.activeElement !== dupInputs[1]) {
+    throw new Error('Duplicate model form did not prefill Smoke Coder Copy or focus Model ID in WKWebView');
+  }
+  findButton('Save')!.click();
+  await waitForUi(
+    () => !document.querySelector('.model-form') && document.querySelectorAll('.model-row').length === 2,
+    'm3-duplicate-saved',
+  );
+  if (document.querySelector('.model-row.is-active strong')?.textContent !== 'Smoke Coder') {
+    throw new Error('Duplicating model unexpectedly changed activeModelId in WKWebView');
+  }
+  findButton('Close Settings')!.click();
+  await waitForUi(() => !document.querySelector('.overlay'), 'm3-settings-closed');
+
   // Review selected scope (`part.txt` + `pnpm-lock.yaml`) with extra instructions attached:
   const partCheckbox = document.querySelector<HTMLInputElement>('input[aria-label="Select part.txt"]')!;
   const lockCheckbox = document.querySelector<HTMLInputElement>('input[aria-label="Select pnpm-lock.yaml"]')!;

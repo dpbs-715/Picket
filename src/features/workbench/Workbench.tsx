@@ -65,7 +65,7 @@ export function Workbench({
   const [state, dispatch] = useReducer(workbenchReducer, initialState, (initial) => initial ?? emptyWorkbench());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [focusModelsInSettings, setFocusModelsInSettings] = useState(false);
-  const [modelForm, setModelForm] = useState<{ open: false } | { open: true; editing?: ModelConfiguration }>({ open: false });
+  const [modelForm, setModelForm] = useState<{ open: false } | { open: true; editing?: ModelConfiguration; duplicating?: ModelConfiguration }>({ open: false });
   const [emptyTab, setEmptyTab] = useState<'commit' | 'review'>('commit');
   const [promptOpen, setPromptOpen] = useState(false);
   const promptFocusRequestedRef = useRef(false);
@@ -1184,6 +1184,7 @@ export function Workbench({
               onEditor={(nextEditor) => dispatch({ type: 'editor', editor: nextEditor, repositoryId: worktree?.repositoryId ?? null })}
               onCommitLanguage={(commitLanguage) => dispatch({ type: 'commitLanguage', commitLanguage, repositoryId: worktree?.repositoryId ?? null })}
               onSelectModel={(id) => void selectModel(id)}
+              onDuplicateModel={(target) => setModelForm({ open: true, duplicating: target })}
               onEditModel={(target) => setModelForm({ open: true, editing: target })}
               onDeleteModel={(id) => void deleteModel(id)}
               covered={modelForm.open}
@@ -1195,16 +1196,43 @@ export function Workbench({
           )}
           {modelForm.open && (
             <AddModelForm
-              key={modelForm.editing?.id ?? 'new'}
+              key={
+                modelForm.editing
+                  ? `edit:${modelForm.editing.id}`
+                  : modelForm.duplicating
+                    ? `dup:${modelForm.duplicating.id}`
+                    : 'new'
+              }
               initialModel={modelForm.editing}
+              sourceModel={modelForm.duplicating}
+              existingModels={state.models}
               onClose={() => setModelForm({ open: false })}
               test={(input) => backend.testModel({ ...input, locale: state.locale })}
               save={(input) => backend.saveModel({ ...input, locale: state.locale })}
-              onSaved={(savedModel) => {
+              revealApiKey={
+                backend.revealModelApiKey
+                  ? (modelId) => backend.revealModelApiKey!(modelId, state.locale)
+                  : undefined
+              }
+              onKeyHintResolved={(modelId, keyHint) => dispatch({ type: 'modelKeyHintSynced', modelId, keyHint })}
+              onSaved={(savedOutcome) => {
                 const wasEditing = !!modelForm.editing;
-                dispatch({ type: 'modelSaved', model: savedModel });
+                const wasDuplicating = !!modelForm.duplicating;
+                if ('models' in savedOutcome) {
+                  dispatch({
+                    type: 'modelsSynced',
+                    models: savedOutcome.models,
+                    activeModelId: savedOutcome.activeModelId,
+                  });
+                } else {
+                  dispatch({
+                    type: 'modelSaved',
+                    model: savedOutcome,
+                    keepActiveModel: wasDuplicating,
+                  });
+                }
                 setModelForm({ open: false });
-                if (!wasEditing) {
+                if (!wasEditing && !wasDuplicating) {
                   setFocusModelsInSettings(false);
                   setSettingsOpen(false);
                 }

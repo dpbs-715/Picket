@@ -19,6 +19,9 @@ const iconPaths = {
   external: 'M14 3h7v7M21 3l-9 9M10 3H3v18h18v-7',
   sparkles: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',
   pencil: 'm16 3 5 5-13 13H3v-5zM13 6l5 5',
+  copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
+  eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+  eyeOff: 'M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.1A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.3M6.6 6.6C3.8 8.5 2 12 2 12s3.5 7 10 7a10.6 10.6 0 0 0 5.4-1.4',
   shield: 'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6zM8 12l3 3 5-6',
   send: 'm22 2-7 20-4-9-9-4zM22 2 11 13',
   commit: 'M2 12h5m10 0h5M17 12a5 5 0 1 1-10 0 5 5 0 0 1 10 0',
@@ -99,7 +102,15 @@ export function Overlay({ title, children, onClose, covered = false }: { title: 
     if (covered) return;
     const previousFocus = document.activeElement;
     const panel = ref.current!;
-    (panel.querySelector<HTMLElement>('button:not([data-help-tip]), input, select, [tabindex="0"]:not([data-help-tip])') ?? panel).focus();
+    const autofocusTarget = panel.querySelector<HTMLElement>('[data-autofocus]:not(:disabled)');
+    const initialTarget = autofocusTarget
+      ?? panel.querySelector<HTMLElement>('button:not([data-help-tip]), input, select, [tabindex="0"]:not([data-help-tip])')
+      ?? panel;
+    initialTarget.focus();
+    if (autofocusTarget instanceof HTMLInputElement) {
+      const end = autofocusTarget.value.length;
+      try { autofocusTarget.setSelectionRange(end, end); } catch { /* ignore unsupported input types */ }
+    }
     const trap = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); latestClose.current(); return; }
       if (event.key !== 'Tab') return;

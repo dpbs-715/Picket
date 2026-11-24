@@ -20,6 +20,7 @@ interface Props {
   onEditor(editor: EditorId): void;
   onCommitLanguage(commitLanguage: CommitLanguage): void;
   onSelectModel(id: string): void;
+  onDuplicateModel(model: ModelConfiguration): void;
   onEditModel(model: ModelConfiguration): void;
   onDeleteModel(id: string): void;
   onAddModel(): void;
@@ -140,10 +141,11 @@ export function SettingsPanel(props: Props) {
               <button type="button" className="model-select" aria-pressed={active} title={detailTitle} onClick={() => props.onSelectModel(model.id)}>
                 <span className="model-body">
                   <span className="model-title-row"><strong className="truncate">{model.name}</strong>{active && <span className="model-active-badge"><span className="status-dot" />{t.settings.activeModelBadge}</span>}</span>
-                  <span className="model-meta-row"><span className="model-provider">{providerLabel}{showFormat ? ` · ${formatShort}` : ''}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-id truncate">{model.modelId}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-tokens">{tokenSummary}</span></span>
+                  <span className="model-meta-row"><span className="model-provider">{providerLabel}{showFormat ? ` · ${formatShort}` : ''}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-id truncate">{model.modelId}</span><span className="model-sep" aria-hidden="true">·</span><span className="mono model-tokens">{tokenSummary}</span>{providerDefaults.needsKey && model.keyHint && <><span className="model-sep" aria-hidden="true">·</span><span className="mono model-key-hint">{model.keyHint}</span></>}</span>
                 </span>
               </button>
               <div className="model-actions">
+                <IconButton icon="copy" className="model-duplicate" label={t.settings.duplicateModelLabel(model.name)} onClick={() => props.onDuplicateModel(model)} />
                 <IconButton icon="pencil" className="model-edit" label={t.settings.editModelLabel(model.name)} onClick={() => props.onEditModel(model)} />
                 <IconButton icon="trash" className="model-delete" label={t.settings.deleteModelLabel(model.name)} onClick={() => props.onDeleteModel(model.id)} />
               </div>

@@ -254,6 +254,7 @@ export interface Messages {
     noModelsConfigured: string;
     addFirstModel: string;
     activeModelBadge: string;
+    duplicateModelLabel(name: string): string;
     editModelLabel(name: string): string;
     deleteModelLabel(name: string): string;
     modelDetailTitle(params: {
@@ -268,6 +269,8 @@ export interface Messages {
   modelForm: {
     addTitle: string;
     editTitle: string;
+    duplicateTitle: string;
+    duplicateNameSuffix: string;
     providerLegend: string;
     apiFormatLabel: string;
     displayNameLabel: string;
@@ -277,7 +280,16 @@ export interface Messages {
     apiKeyTipLabel: string;
     apiKeyTipText: string;
     apiKeyKeepPlaceholder: string;
+    apiKeySharePlaceholder: string;
     apiKeyEnterPlaceholder: string;
+    endpointChangedKeyNotice: string;
+    revealApiKeyLabel: string;
+    hideApiKeyLabel: string;
+    revealingApiKeyLabel: string;
+    revealedKeyReadonlyLabel: string;
+    revealKeyErrorFallback: string;
+    sharedKeyUpdateAll(count: number): string;
+    sharedKeyDetachCurrent: string;
     contextWindowLabel: string;
     contextWindowTipLabel: string;
     contextWindowTipText(defaultValue: number): string;
@@ -289,6 +301,8 @@ export interface Messages {
     testConnection: string;
     saving: string;
     saveChanges: string;
+    saveDuplicate: string;
+    saveAnyway: string;
     saveAndUse: string;
     testErrorFallback: string;
     saveErrorFallback: string;
@@ -341,6 +355,7 @@ export interface Messages {
     disconnectedGit: string;
     disconnectedTestModel: string;
     disconnectedSaveModel: string;
+    disconnectedRevealModelKey: string;
     browserPinUnsupported: string;
     browserWindowUnsupported: string;
     cPushPlanMismatch: string;
@@ -351,6 +366,7 @@ export interface Messages {
     modelSaveMismatch: string;
     modelSelectMismatch: string;
     modelDeleteFailed: string;
+    modelRevealMismatch: string;
     reviewMismatch: string;
     missingModelScopeTokens: string;
     missingCPushScopeTokens: string;
@@ -675,6 +691,7 @@ const en: Messages = {
     noModelsConfigured: 'No models configured yet',
     addFirstModel: 'Add First Model',
     activeModelBadge: 'Active',
+    duplicateModelLabel: (name) => `Duplicate model ${name}`,
     editModelLabel: (name) => `Edit model ${name}`,
     deleteModelLabel: (name) => `Delete model ${name}`,
     modelDetailTitle: ({ providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
@@ -683,6 +700,8 @@ const en: Messages = {
   modelForm: {
     addTitle: 'Add Model',
     editTitle: 'Edit Model',
+    duplicateTitle: 'Duplicate Model',
+    duplicateNameSuffix: 'Copy',
     providerLegend: 'Provider',
     apiFormatLabel: 'API Format',
     displayNameLabel: 'Display Name',
@@ -692,7 +711,16 @@ const en: Messages = {
     apiKeyTipLabel: 'API Key storage security',
     apiKeyTipText: 'Stored only in macOS Keychain; never written to plain config files or logs.',
     apiKeyKeepPlaceholder: 'Leave empty to keep existing Keychain key, or enter a new key',
+    apiKeySharePlaceholder: 'Leave empty to share source key, or enter a new key',
     apiKeyEnterPlaceholder: 'Enter API key',
+    endpointChangedKeyNotice: 'Provider or base URL changed; enter a new API key.',
+    revealApiKeyLabel: 'Reveal saved API key',
+    hideApiKeyLabel: 'Hide API key',
+    revealingApiKeyLabel: 'Authenticating…',
+    revealedKeyReadonlyLabel: 'Saved API key (read-only)',
+    revealKeyErrorFallback: 'Unable to reveal API key.',
+    sharedKeyUpdateAll: (count) => `Update all ${count} models sharing this key`,
+    sharedKeyDetachCurrent: 'Use new key for this model only',
     contextWindowLabel: 'Context Window',
     contextWindowTipLabel: 'Context window info',
     contextWindowTipText: (defaultValue) =>
@@ -706,6 +734,8 @@ const en: Messages = {
     testConnection: 'Test Connection',
     saving: 'Saving…',
     saveChanges: 'Save Changes',
+    saveDuplicate: 'Save',
+    saveAnyway: 'Save Anyway',
     saveAndUse: 'Save & Use',
     testErrorFallback: 'Connection test did not complete. Check base URL, model ID, or network; input preserved.',
     saveErrorFallback: 'Model save did not complete. No model or key was saved; input preserved.',
@@ -778,6 +808,7 @@ const en: Messages = {
     disconnectedGit: 'Desktop Git service is not connected in browser preview; no commits, pushes, or repository changes were made, and prompt and selection are preserved.',
     disconnectedTestModel: 'Desktop model service is not connected; no connection request was sent, and input is preserved.',
     disconnectedSaveModel: 'System Keychain is not connected in browser preview; no model or API key was saved, and input is preserved.',
+    disconnectedRevealModelKey: 'System authentication is unavailable in browser preview; no API key was read.',
     browserPinUnsupported: 'Window pinning is unavailable in browser preview. Run pnpm desktop dev to open the desktop app.',
     browserWindowUnsupported: 'Window resizing and pinning are unavailable in browser preview; compact layout is previewed inside the page.',
     cPushPlanMismatch: 'C-Push plan reply target or request identity mismatch; ignored reply.',
@@ -788,6 +819,7 @@ const en: Messages = {
     modelSaveMismatch: 'Saved model configuration did not match submitted parameters. Reopen Settings to verify.',
     modelSelectMismatch: 'Model selection reply mismatch. Select the model again.',
     modelDeleteFailed: 'Model deletion did not take effect. Reopen Settings and try again.',
+    modelRevealMismatch: 'Revealed API key reply did not match the requested model; ignored reply.',
     reviewMismatch: 'Code review reply target or request identity mismatch; ignored result.',
     missingModelScopeTokens: 'Missing Rust-issued file scope tokens. Refresh changes and retry; prompt and selection are preserved.',
     missingCPushScopeTokens: 'Missing Rust-issued file scope tokens. Refresh changes before starting C-Push; prompt and selection are preserved.',
@@ -1112,6 +1144,7 @@ const zh: Messages = {
     noModelsConfigured: '尚未配置可用模型',
     addFirstModel: '添加第一个模型',
     activeModelBadge: '当前使用',
+    duplicateModelLabel: (name) => `复制模型 ${name}`,
     editModelLabel: (name) => `编辑模型 ${name}`,
     deleteModelLabel: (name) => `删除模型 ${name}`,
     modelDetailTitle: ({ providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
@@ -1120,6 +1153,8 @@ const zh: Messages = {
   modelForm: {
     addTitle: '添加模型',
     editTitle: '编辑模型',
+    duplicateTitle: '复制模型',
+    duplicateNameSuffix: '副本',
     providerLegend: '提供商',
     apiFormatLabel: '接口格式',
     displayNameLabel: '显示名称',
@@ -1129,7 +1164,16 @@ const zh: Messages = {
     apiKeyTipLabel: 'API Key 安全存储说明',
     apiKeyTipText: '密钥仅存入 macOS 系统钥匙串，不写入普通配置文件或日志。',
     apiKeyKeepPlaceholder: '留空则保留原钥匙串密钥；输入新值则替换',
+    apiKeySharePlaceholder: '留空则共用原密钥；输入新值则单独保存',
     apiKeyEnterPlaceholder: '输入密钥',
+    endpointChangedKeyNotice: '服务商或接口地址已变更，请填写新密钥。',
+    revealApiKeyLabel: '显示已保存的完整密钥',
+    hideApiKeyLabel: '隐藏完整密钥',
+    revealingApiKeyLabel: '正在验证身份…',
+    revealedKeyReadonlyLabel: '当前已保存密钥（只读）',
+    revealKeyErrorFallback: '无法显示完整密钥。',
+    sharedKeyUpdateAll: (count) => `更新所有共用此密钥的 ${count} 个模型`,
+    sharedKeyDetachCurrent: '只让当前模型使用新密钥',
     contextWindowLabel: '上下文长度',
     contextWindowTipLabel: '上下文长度说明',
     contextWindowTipText: (defaultValue) =>
@@ -1143,6 +1187,8 @@ const zh: Messages = {
     testConnection: '测试连接',
     saving: '保存中…',
     saveChanges: '保存修改',
+    saveDuplicate: '保存',
+    saveAnyway: '仍然保存',
     saveAndUse: '保存并使用',
     testErrorFallback: '连接测试未完成，请检查接口地址、模型 ID 或网络连接；输入已保留。',
     saveErrorFallback: '保存模型未完成，没有保存模型或密钥；输入已保留。',
@@ -1212,6 +1258,7 @@ const zh: Messages = {
     disconnectedGit: '当前环境未连接桌面 Git 服务，此操作尚未接入浏览器预览；不会提交、推送或修改仓库，提示词和选择已保留。',
     disconnectedTestModel: '当前环境未连接桌面模型服务，未发送连接请求；输入已保留。',
     disconnectedSaveModel: '当前环境未连接系统钥匙串，没有保存模型或密钥；输入已保留。',
+    disconnectedRevealModelKey: '当前环境未连接系统身份验证与钥匙串，无法显示密钥。',
     browserPinUnsupported: '浏览器预览不能设置窗口置顶。请使用 pnpm desktop dev 打开桌面应用。',
     browserWindowUnsupported: '浏览器预览不支持调整原生窗口大小或置顶；当前仅在页面内预览紧凑布局。',
     cPushPlanMismatch: 'C-Push 预生成计划回执的目标或请求身份不匹配，已忽略该回执。',
@@ -1222,6 +1269,7 @@ const zh: Messages = {
     modelSaveMismatch: '保存的模型配置与提交参数不一致，请刷新设置核对。',
     modelSelectMismatch: '模型切换回执不匹配，请重新选择模型。',
     modelDeleteFailed: '模型删除未生效，请刷新设置后重试。',
+    modelRevealMismatch: '显示密钥回执的模型标识不匹配，已忽略该回执。',
     reviewMismatch: '代码审查回执的目标或请求身份不匹配，已忽略该结果。',
     missingModelScopeTokens: '缺少 Rust 签发的文件范围凭证，请刷新变更状态后重试模型操作；提示词与选择已保留。',
     missingCPushScopeTokens: '缺少 Rust 签发的文件范围凭证，请刷新变更状态后再发起 C-Push；提示词与选择已保留。',

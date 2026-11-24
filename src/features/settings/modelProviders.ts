@@ -8,10 +8,11 @@ import {
 } from '../../../shared/model-defaults';
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../../shared/language-protocol';
 import { MODEL_API_FORMATS, MODEL_PROVIDER_IDS } from '../../../shared/model-protocol';
-import type { ModelApiFormat, ModelProviderId } from '../../../shared/model-protocol';
+import type { ModelApiFormat, ModelProviderId, SharedKeyUpdateScope } from '../../../shared/model-protocol';
 import { getMessages } from '../../i18n/messages';
 
 export { formatTokenCount, MODEL_TOKEN_LIMITS, resolveDefaultTokenLimits };
+export type { SharedKeyUpdateScope };
 
 export const apiFormats = MODEL_API_FORMATS.map((id) => ({
   id,
@@ -46,12 +47,17 @@ export interface ModelConfiguration {
   baseUrl?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
+  keyHint?: string;
+  sharedKeyCount?: number;
 }
 
 // Credentials exist only in the open form and the explicit desktop request.
 // They must never be included in a workbench snapshot or ordinary settings.
 export interface ModelInput {
   id?: string;
+  sourceModelId?: string;
+  sharedKeyUpdateScope?: SharedKeyUpdateScope;
+  keepActiveModel?: boolean;
   provider: ProviderId;
   apiFormat?: ApiFormatId;
   name: string;
@@ -69,6 +75,51 @@ export function providerFor(id: ProviderId) {
 
 export function apiFormatFor(id: ApiFormatId) {
   return apiFormats.find((format) => format.id === id)!;
+}
+
+export function canonicalEndpointUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  const httpsPrefix = trimmed.startsWith('https://') ? 'https://' : undefined;
+  const httpPrefix = !httpsPrefix && trimmed.startsWith('http://') ? 'http://' : undefined;
+  const scheme = httpsPrefix ?? httpPrefix;
+  if (!scheme) return trimmed.toLowerCase();
+  const rest = trimmed.slice(scheme.length);
+  const slashIdx = rest.search(/[/?#]/);
+  const authorityEnd = slashIdx === -1 ? rest.length : slashIdx;
+  const authority = rest.slice(0, authorityEnd).toLowerCase();
+  const tail = rest.slice(authorityEnd);
+  return `${scheme}${authority}${tail}`;
+}
+
+export function sameCredentialEndpoint(
+  aProvider: ProviderId,
+  aBaseUrl: string | undefined,
+  bProvider: ProviderId,
+  bBaseUrl: string | undefined,
+): boolean {
+  if (aProvider !== bProvider) return false;
+  if (!providerFor(aProvider).needsUrl) return true;
+  const a = (aBaseUrl ?? '').trim();
+  const b = (bBaseUrl ?? '').trim();
+  if (!a || !b) return false;
+  return canonicalEndpointUrl(a) === canonicalEndpointUrl(b);
+}
+
+export function nextDuplicateModelName(
+  sourceName: string,
+  existingModels: readonly Pick<ModelConfiguration, 'name'>[] = [],
+  locale: AppLocale = DEFAULT_APP_LOCALE,
+): string {
+  const base = sourceName.trim() || 'Model';
+  const suffix = getMessages(locale).modelForm.duplicateNameSuffix;
+  const existing = new Set(existingModels.map((item) => item.name.trim()));
+  const firstCandidate = `${base} ${suffix}`;
+  if (!existing.has(firstCandidate)) return firstCandidate;
+  let index = 2;
+  while (existing.has(`${base} ${suffix} ${index}`)) {
+    index += 1;
+  }
+  return `${base} ${suffix} ${index}`;
 }
 
 export function newModelInput(provider: ProviderId = 'anthropic'): ModelInput {
@@ -100,6 +151,28 @@ export function editModelInput(model: ModelConfiguration): ModelInput {
     apiKey: '',
     contextWindow: model.contextWindow ?? fallbackLimits.contextWindow,
     maxOutputTokens: model.maxOutputTokens ?? fallbackLimits.maxOutputTokens,
+  };
+}
+
+export function duplicateModelInput(
+  source: ModelConfiguration,
+  existingModels: readonly Pick<ModelConfiguration, 'name'>[] = [],
+  locale: AppLocale = DEFAULT_APP_LOCALE,
+): ModelInput {
+  const defaults = providerFor(source.provider);
+  const apiFormat = source.apiFormat ?? defaults.defaultApiFormat;
+  const fallbackLimits = resolveDefaultTokenLimits(source.provider, apiFormat);
+  return {
+    ...(defaults.needsKey ? { sourceModelId: source.id } : {}),
+    keepActiveModel: true,
+    provider: source.provider,
+    apiFormat,
+    name: nextDuplicateModelName(source.name, existingModels, locale),
+    modelId: source.modelId,
+    baseUrl: source.baseUrl ?? defaults.url,
+    apiKey: '',
+    contextWindow: source.contextWindow ?? fallbackLimits.contextWindow,
+    maxOutputTokens: source.maxOutputTokens ?? fallbackLimits.maxOutputTokens,
   };
 }
 
@@ -136,14 +209,19 @@ export function normalizedModel(input: ModelInput): ModelInput {
   const provider = providerFor(input.provider);
   const apiFormat = input.apiFormat ?? provider.defaultApiFormat;
   const fallbackLimits = resolveDefaultTokenLimits(input.provider, apiFormat);
+  const trimmedKey = provider.needsKey ? input.apiKey.trim() : '';
+  const trimmedSourceId = input.sourceModelId?.trim();
   return {
     ...(input.id ? { id: input.id } : {}),
+    ...(provider.needsKey && !trimmedKey && trimmedSourceId ? { sourceModelId: trimmedSourceId } : {}),
+    ...(input.sharedKeyUpdateScope ? { sharedKeyUpdateScope: input.sharedKeyUpdateScope } : {}),
+    ...(input.keepActiveModel ? { keepActiveModel: true } : {}),
     provider: input.provider,
     apiFormat,
     name: input.name.trim() || input.modelId.trim(),
     modelId: input.modelId.trim(),
     baseUrl: provider.needsUrl ? input.baseUrl.trim() : '',
-    apiKey: provider.needsKey ? input.apiKey.trim() : '',
+    apiKey: trimmedKey,
     contextWindow: input.contextWindow ?? fallbackLimits.contextWindow,
     maxOutputTokens: input.maxOutputTokens ?? fallbackLimits.maxOutputTokens,
     ...(input.locale ? { locale: input.locale } : {}),
