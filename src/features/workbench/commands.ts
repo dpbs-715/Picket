@@ -1,30 +1,32 @@
-import type { CPushCommandReply } from '../../../shared/cpush-protocol';
+import type { CPushCommandReply, CPushConfirmedPlan } from '../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../shared/git-branch-protocol';
-import type { GitCommitReply, GitCommitSelection } from '../../../shared/git-commit-protocol';
 import type { GitOpenFileReply } from '../../../shared/ide-protocol';
-import type { GenerateCommitReply, ModelFileSelection, ModelMutateReply, ReviewScopeReply } from '../../../shared/model-protocol';
-import type { GitReadReply } from '../../../shared/git-read-protocol';
+import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
+import type { ModelFileSelection, ModelMutateReply, ReviewScopeReply } from '../../../shared/model-protocol';
+import type { GitLocalKeepReply, GitReadReply } from '../../../shared/git-read-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../shared/workbench-persistence-protocol';
+import { getMessages } from '../../i18n/messages';
 import type { ModelConfiguration, ModelInput } from '../settings/modelProviders';
 import type { EditorId, Target, WorkbenchEvent } from './state/workbench';
 
 export type WorkbenchCommand =
-  | { kind: 'openRepository'; requestId: string }
-  | { kind: 'refresh'; target: Target; requestId: string }
-  | { kind: 'pull'; target: Target; requestId: string; modelId?: string }
-  | { kind: 'switchBranch' | 'checkoutRemoteBranch'; target: Target; requestId: string; branch: string; branchToken: string }
-  | { kind: 'openFile'; target: Target; requestId: string; fileId: string; editor: EditorId; line?: number }
-  | { kind: 'generate' | 'review' | 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; draft: string; changedPaths?: string[] }
-  | { kind: 'commit'; target: Target; requestId: string; fileIds: string[]; selections?: GitCommitSelection[]; draft: string; push: boolean; modelId?: string }
-  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; modelId?: string }
-  | { kind: 'selectModel' | 'deleteModel'; modelId: string };
+  | { kind: 'openRepository'; requestId: string; locale?: AppLocale }
+  | { kind: 'refresh'; target: Target; requestId: string; locale?: AppLocale }
+  | { kind: 'setLocalKeep'; target: Target; requestId: string; paths: string[]; keep: boolean; locale?: AppLocale }
+  | { kind: 'pull'; target: Target; requestId: string; modelId?: string; locale?: AppLocale }
+  | { kind: 'switchBranch' | 'checkoutRemoteBranch'; target: Target; requestId: string; branch: string; branchToken: string; locale?: AppLocale }
+  | { kind: 'openFile'; target: Target; requestId: string; fileId: string; editor: EditorId; line?: number; locale?: AppLocale }
+  | { kind: 'planCPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
+  | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; confirmedPlan?: CPushConfirmedPlan; locale?: AppLocale; commitLanguage?: CommitLanguage }
+  | { kind: 'review'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; changedPaths?: string[]; locale?: AppLocale }
+  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; modelId?: string; locale?: AppLocale }
+  | { kind: 'selectModel' | 'deleteModel'; modelId: string; locale?: AppLocale };
 
 export type WorkbenchCommandReply =
   | GitReadReply
+  | GitLocalKeepReply
   | GitBranchReply
-  | GitCommitReply
   | GitOpenFileReply
-  | GenerateCommitReply
   | ReviewScopeReply
   | ModelMutateReply
   | CPushCommandReply
@@ -33,7 +35,7 @@ export type WorkbenchCommandReply =
 export interface WorkbenchBackend {
   repositoryReadsAvailable?: boolean;
   execute(command: WorkbenchCommand): Promise<WorkbenchCommandReply>;
-  reconcileSession?(target: Target): Promise<void>;
+  reconcileSession?(target: Target, locale?: AppLocale): Promise<void>;
   cancelRequest?(requestId: string): Promise<void>;
   loadWorkbenchState?(): Promise<WorkbenchRestoreReply>;
   saveWorkbenchState?(request: WorkbenchSaveRequest): Promise<void>;
@@ -46,11 +48,16 @@ export interface WorkbenchBackend {
 // results, saved credentials, or successful model connections.
 export const disconnectedBackend: WorkbenchBackend = {
   async execute(command) {
-    if (['generate', 'review', 'selectModel', 'deleteModel', 'cPush', 'respond'].includes(command.kind)) {
-      throw new Error('当前环境未连接桌面模型或 C-Push 服务，此操作尚未接入浏览器预览；草稿和选择已保留。');
+    const t = getMessages(command.locale).desktop;
+    if (['planCPush', 'review', 'selectModel', 'deleteModel', 'cPush', 'respond'].includes(command.kind)) {
+      throw new Error(t.disconnectedModelOrCPush);
     }
-    throw new Error('当前环境未连接桌面 Git 服务，此操作尚未接入浏览器预览；不会提交、推送或修改仓库，草稿和选择已保留。');
+    throw new Error(t.disconnectedGit);
   },
-  async testModel() { throw new Error('当前环境未连接桌面模型服务，未发送连接请求；输入已保留。'); },
-  async saveModel() { throw new Error('当前环境未连接系统钥匙串，没有保存模型或密钥；输入已保留。'); },
+  async testModel(input) {
+    throw new Error(getMessages(input.locale).desktop.disconnectedTestModel);
+  },
+  async saveModel(input) {
+    throw new Error(getMessages(input.locale).desktop.disconnectedSaveModel);
+  },
 };

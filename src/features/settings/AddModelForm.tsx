@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '../../i18n';
 import { HelpTip, Icon, Overlay } from '../../ui/controls';
 import {
   apiFormats,
   editModelInput,
-  MODEL_TOKEN_LIMITS,
   newModelInput,
   normalizedModel,
   providerFor,
@@ -13,10 +13,7 @@ import {
 } from './modelProviders';
 import type { ApiFormatId, ModelConfiguration, ModelInput } from './modelProviders';
 
-function sanitizeModelError(error: unknown, apiKey: string, kind: 'testing' | 'saving'): string {
-  const fallback = kind === 'testing'
-    ? '连接测试未完成，请检查接口地址、模型 ID 或网络连接；输入已保留。'
-    : '保存模型未完成，没有保存模型或密钥；输入已保留。';
+function sanitizeModelError(error: unknown, apiKey: string, fallback: string): string {
   let text = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback;
   const candidates = [apiKey, apiKey.trim()].filter((item) => item.length > 0);
   for (const secret of candidates) {
@@ -47,6 +44,7 @@ interface Props {
 }
 
 export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Props) {
+  const { locale, t } = useI18n();
   const [input, setInput] = useState<ModelInput>(() => (initialModel ? editModelInput(initialModel) : newModelInput()));
   const [contextWindowText, setContextWindowText] = useState<string>(() => String((initialModel ? editModelInput(initialModel) : newModelInput()).contextWindow ?? ''));
   const [maxOutputTokensText, setMaxOutputTokensText] = useState<string>(() => String((initialModel ? editModelInput(initialModel) : newModelInput()).maxOutputTokens ?? ''));
@@ -112,7 +110,7 @@ export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Pro
     if (parsedCtx === 'invalid') {
       setResult({
         ok: false,
-        text: `上下文长度须为 ${MODEL_TOKEN_LIMITS.minContextWindow} 至 ${MODEL_TOKEN_LIMITS.maxContextWindow} 之间的整数`,
+        text: t.modelForm.validation.tokenLimit('context_range'),
       });
       return;
     }
@@ -120,7 +118,7 @@ export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Pro
     if (parsedMaxOut === 'invalid') {
       setResult({
         ok: false,
-        text: `最大输出 Token 须为 ${MODEL_TOKEN_LIMITS.minMaxOutputTokens} 至 ${MODEL_TOKEN_LIMITS.maxMaxOutputTokens} 之间的整数`,
+        text: t.modelForm.validation.tokenLimit('output_range'),
       });
       return;
     }
@@ -128,8 +126,9 @@ export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Pro
       ...input,
       contextWindow: parsedCtx ?? defaultLimits.contextWindow,
       maxOutputTokens: parsedMaxOut ?? defaultLimits.maxOutputTokens,
+      locale,
     };
-    const error = validateModel(candidate, { canKeepExistingKey });
+    const error = validateModel(candidate, { canKeepExistingKey, locale });
     if (error) { setResult({ ok: false, text: error }); return; }
     const version = ++generation.current;
     inFlight.current = version;
@@ -145,7 +144,8 @@ export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Pro
       }
     } catch (error) {
       if (generation.current === version) {
-        setResult({ ok: false, text: sanitizeModelError(error, candidate.apiKey, kind) });
+        const fallback = kind === 'testing' ? t.modelForm.testErrorFallback : t.modelForm.saveErrorFallback;
+        setResult({ ok: false, text: sanitizeModelError(error, candidate.apiKey, fallback) });
       }
     } finally {
       if (inFlight.current === version) inFlight.current = null;
@@ -153,38 +153,38 @@ export function AddModelForm({ initialModel, onClose, onSaved, test, save }: Pro
     }
   }
 
-  return <Overlay title={initialModel ? '编辑模型' : '添加模型'} onClose={onClose}>
+  return <Overlay title={initialModel ? t.modelForm.editTitle : t.modelForm.addTitle} onClose={onClose}>
     <form className="model-form scroll-area" onSubmit={(event) => { event.preventDefault(); void submit('saving'); }}>
-      <fieldset><legend>提供商</legend><div className="provider-grid" role="group" aria-label="提供商">
+      <fieldset><legend>{t.modelForm.providerLegend}</legend><div className="provider-grid" role="group" aria-label={t.modelForm.providerLegend}>
         {providers.map((item) => <button key={item.id} type="button" disabled={operation === 'saving'} aria-pressed={input.provider === item.id}
-          onClick={() => changeProvider(item.id)}>{item.label}</button>)}
+          onClick={() => changeProvider(item.id)}>{t.providers[item.id]}</button>)}
       </div></fieldset>
-      <label>接口格式
+      <label>{t.modelForm.apiFormatLabel}
         <div className="select-field">
-          <select aria-label="接口格式" disabled={operation === 'saving'} value={effectiveFormat} onChange={(event) => changeApiFormat(event.target.value as ApiFormatId)}>
-            {apiFormats.map((format) => <option key={format.id} value={format.id}>{format.label}</option>)}
+          <select aria-label={t.modelForm.apiFormatLabel} disabled={operation === 'saving'} value={effectiveFormat} onChange={(event) => changeApiFormat(event.target.value as ApiFormatId)}>
+            {apiFormats.map((format) => <option key={format.id} value={format.id}>{t.apiFormats[format.id].label}</option>)}
           </select>
           <Icon name="down" />
         </div>
       </label>
-      <label>显示名称<input disabled={operation === 'saving'} value={input.name} onChange={(event) => setInput({ ...input, name: event.target.value })} placeholder="为空时使用模型 ID" /></label>
-      <label>模型 ID<input className="mono" disabled={operation === 'saving'} value={input.modelId} onChange={(event) => change({ ...input, modelId: event.target.value })} placeholder={provider.model} required /></label>
-      {provider.needsUrl && <label>接口地址（Base URL）<input className="mono" disabled={operation === 'saving'} value={input.baseUrl} onChange={(event) => change({ ...input, baseUrl: event.target.value })} placeholder={provider.url} required /></label>}
-      {provider.needsKey && <label><span className="label-row">API Key<HelpTip align="start" label="API Key 安全存储说明" text="密钥仅存入 macOS 系统钥匙串，不写入普通配置文件或日志。" /></span><input className="mono" disabled={operation === 'saving'} type="password" value={input.apiKey} onChange={(event) => change({ ...input, apiKey: event.target.value })} autoComplete="off" spellCheck={false} placeholder={canKeepExistingKey ? '留空则保留原钥匙串密钥；输入新值则替换' : '输入密钥'} required={!canKeepExistingKey} /></label>}
+      <label>{t.modelForm.displayNameLabel}<input disabled={operation === 'saving'} value={input.name} onChange={(event) => setInput({ ...input, name: event.target.value })} placeholder={t.modelForm.displayNamePlaceholder} /></label>
+      <label>{t.modelForm.modelIdLabel}<input className="mono" disabled={operation === 'saving'} value={input.modelId} onChange={(event) => change({ ...input, modelId: event.target.value })} placeholder={provider.model} required /></label>
+      {provider.needsUrl && <label>{t.modelForm.baseUrlLabel}<input className="mono" disabled={operation === 'saving'} value={input.baseUrl} onChange={(event) => change({ ...input, baseUrl: event.target.value })} placeholder={provider.url} required /></label>}
+      {provider.needsKey && <label><span className="label-row">API Key<HelpTip align="start" label={t.modelForm.apiKeyTipLabel} text={t.modelForm.apiKeyTipText} /></span><input className="mono" disabled={operation === 'saving'} type="password" value={input.apiKey} onChange={(event) => change({ ...input, apiKey: event.target.value })} autoComplete="off" spellCheck={false} placeholder={canKeepExistingKey ? t.modelForm.apiKeyKeepPlaceholder : t.modelForm.apiKeyEnterPlaceholder} required={!canKeepExistingKey} /></label>}
       <div className="model-token-grid">
         <label>
-          <span className="label-row">上下文长度<HelpTip align="start" label="上下文长度说明" text={`模型支持的最大上下文窗口，留空回退默认值（${defaultLimits.contextWindow}）。`} /></span>
-          <input className="mono" aria-label="上下文长度" inputMode="numeric" disabled={operation === 'saving'} value={contextWindowText} onChange={(event) => changeTokens(event.target.value, maxOutputTokensText)} placeholder={`默认 ${defaultLimits.contextWindow}`} />
+          <span className="label-row">{t.modelForm.contextWindowLabel}<HelpTip align="start" label={t.modelForm.contextWindowTipLabel} text={t.modelForm.contextWindowTipText(defaultLimits.contextWindow)} /></span>
+          <input className="mono" aria-label={t.modelForm.contextWindowLabel} inputMode="numeric" disabled={operation === 'saving'} value={contextWindowText} onChange={(event) => changeTokens(event.target.value, maxOutputTokensText)} placeholder={t.modelForm.defaultPlaceholder(defaultLimits.contextWindow)} />
         </label>
         <label>
-          <span className="label-row">最大输出 Token<HelpTip align="end" label="最大输出 Token 说明" text={`单次回复（含推理思考）的最大输出上限，留空默认 ${defaultLimits.maxOutputTokens}，且不能超过上下文长度。`} /></span>
-          <input className="mono" aria-label="最大输出 Token" inputMode="numeric" disabled={operation === 'saving'} value={maxOutputTokensText} onChange={(event) => changeTokens(contextWindowText, event.target.value)} placeholder={`默认 ${defaultLimits.maxOutputTokens}`} />
+          <span className="label-row">{t.modelForm.maxOutputTokensLabel}<HelpTip align="end" label={t.modelForm.maxOutputTokensTipLabel} text={t.modelForm.maxOutputTokensTipText(defaultLimits.maxOutputTokens)} /></span>
+          <input className="mono" aria-label={t.modelForm.maxOutputTokensLabel} inputMode="numeric" disabled={operation === 'saving'} value={maxOutputTokensText} onChange={(event) => changeTokens(contextWindowText, event.target.value)} placeholder={t.modelForm.defaultPlaceholder(defaultLimits.maxOutputTokens)} />
         </label>
       </div>
       {result && <p role="status" className={`form-result ${result.ok ? 'success' : 'danger'}`}>{result.text}</p>}
       <div className="form-actions"><button type="button" className="secondary" disabled={operation !== 'idle'} onClick={() => void submit('testing')}>
-        {operation === 'testing' && <Icon name="refresh" className="spinning" />}{operation === 'testing' ? '测试中…' : '测试连接'}</button>
-        <div className="row"><button type="button" onClick={onClose}>取消</button><button type="submit" className="primary" disabled={operation !== 'idle'}>{operation === 'saving' ? '保存中…' : initialModel ? '保存修改' : '保存并使用'}</button></div>
+        {operation === 'testing' && <Icon name="refresh" className="spinning" />}{operation === 'testing' ? t.modelForm.testing : t.modelForm.testConnection}</button>
+        <div className="row"><button type="button" onClick={onClose}>{t.common.cancel}</button><button type="submit" className="primary" disabled={operation !== 'idle'}>{operation === 'saving' ? t.modelForm.saving : initialModel ? t.modelForm.saveChanges : t.modelForm.saveAndUse}</button></div>
       </div>
     </form>
   </Overlay>;

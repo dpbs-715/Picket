@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getMessages } from '../../i18n/messages';
 import {
   editModelInput,
   formatTokenCount,
@@ -9,27 +10,35 @@ import {
   validateModel,
 } from './modelProviders';
 
-describe('模型表单字段规则', () => {
-  it.each(providers)('$label 没有预填凭据，字段要求与默认 Token 配置符合定稿', (provider) => {
+describe('Model form field rules and localized validation', () => {
+  it.each(providers)('$label starts with empty credentials and shared default token limits', (provider) => {
     const input = newModelInput(provider.id);
     expect(input.apiKey).toBe('');
     expect(input.contextWindow).toBe(provider.defaultContextWindow);
     expect(input.maxOutputTokens).toBe(provider.defaultMaxOutputTokens);
-    expect(validateModel({ ...input, modelId: ' ' })).toBe('请填写模型 ID');
-    expect(validateModel(input)).toBe(provider.needsKey ? '请填写 API Key' : undefined);
-    if (provider.needsUrl) expect(validateModel({ ...input, baseUrl: '' })).toBe('请填写接口地址');
+    expect(validateModel({ ...input, modelId: ' ' })).toBe('Enter a model ID');
+    expect(validateModel(input)).toBe(provider.needsKey ? 'Enter an API key' : undefined);
+    if (provider.needsUrl) expect(validateModel({ ...input, baseUrl: '' })).toBe('Enter a base URL');
   });
 
-  it('仅本地 / 自定义需要地址，Ollama 不要求 Key', () => {
+  it('returns localized Chinese validation messages when locale is zh', () => {
+    const zh = getMessages('zh').modelForm.validation;
+    const input = newModelInput('custom');
+    expect(validateModel({ ...input, modelId: '' }, { locale: 'zh' })).toBe(zh.missingModelId);
+    expect(validateModel({ ...input, baseUrl: '' }, { locale: 'zh' })).toBe(zh.missingBaseUrl);
+    expect(validateModel({ ...input, baseUrl: 'https://api.example.com/v1' }, { locale: 'zh' })).toBe(zh.missingApiKey);
+  });
+
+  it('requires baseUrl only for ollama and custom, and omits apiKey for ollama', () => {
     expect(providers.filter((provider) => provider.needsUrl).map((provider) => provider.id)).toEqual(['ollama', 'custom']);
     expect(providers.filter((provider) => !provider.needsKey).map((provider) => provider.id)).toEqual(['ollama']);
   });
 
-  it.each(['file:///tmp/key', 'not-a-url', 'https://user:password@example.com/v1'])('拒绝不安全或无效地址 %s', (baseUrl) => {
+  it.each(['file:///tmp/key', 'not-a-url', 'https://user:password@example.com/v1'])('rejects unsafe or invalid baseUrl %s', (baseUrl) => {
     expect(validateModel({ ...newModelInput('ollama'), baseUrl })).toBeTruthy();
   });
 
-  it('空名称回退 ID，隐藏字段不随请求携带，编辑模式允许留空保留原钥匙串密钥并支持自定义接口格式与 Token 配置', () => {
+  it('falls back empty name to modelId, strips hidden fields, and supports retaining existing Keychain key on edit', () => {
     expect(normalizedModel({
       ...newModelInput('anthropic'),
       name: ' ',
@@ -60,7 +69,7 @@ describe('模型表单字段规则', () => {
     expect(editing.contextWindow).toBe(200_000);
     expect(editing.maxOutputTokens).toBe(16_384);
     expect(validateModel(editing, { canKeepExistingKey: true })).toBeUndefined();
-    expect(validateModel(editing, { canKeepExistingKey: false })).toBe('请填写 API Key');
+    expect(validateModel(editing, { canKeepExistingKey: false })).toBe('Enter an API key');
     expect(normalizedModel({
       ...editing,
       modelId: 'kimi-k3.1-pro-highspeed',
@@ -79,15 +88,15 @@ describe('模型表单字段规则', () => {
     });
   });
 
-  it('按提供商与接口格式计算默认上下文与输出上限，并拦截越界配置', () => {
+  it('resolves default context and output token limits by provider and API format, rejecting out-of-range values', () => {
     expect(resolveDefaultTokenLimits('custom', 'openai-responses')).toEqual({
       contextWindow: 200_000,
       maxOutputTokens: 32_768,
     });
-    expect(validateModel({ ...newModelInput('ollama'), contextWindow: 1024 })).toContain('上下文长度须为');
-    expect(validateModel({ ...newModelInput('ollama'), maxOutputTokens: 64 })).toContain('最大输出 Token 须为');
+    expect(validateModel({ ...newModelInput('ollama'), contextWindow: 1024 })).toContain('Context window must be an integer between');
+    expect(validateModel({ ...newModelInput('ollama'), maxOutputTokens: 64 })).toContain('Max output tokens must be an integer between');
     expect(validateModel({ ...newModelInput('ollama'), contextWindow: 8_192, maxOutputTokens: 16_384 }))
-      .toBe('最大输出 Token 不能超过上下文长度');
+      .toBe('Max output tokens cannot exceed context window');
     expect(formatTokenCount(200_000)).toBe('200K');
     expect(formatTokenCount(32_768)).toBe('32K');
     expect(formatTokenCount(1_000_000)).toBe('1M');

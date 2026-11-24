@@ -4,10 +4,12 @@ import {
   MODEL_PROVIDER_DEFAULTS,
   MODEL_TOKEN_LIMITS,
   resolveDefaultTokenLimits,
-  validateTokenLimits,
+  validateTokenLimitsCode,
 } from '../../../shared/model-defaults';
+import { DEFAULT_APP_LOCALE, type AppLocale } from '../../../shared/language-protocol';
 import { MODEL_API_FORMATS, MODEL_PROVIDER_IDS } from '../../../shared/model-protocol';
 import type { ModelApiFormat, ModelProviderId } from '../../../shared/model-protocol';
+import { getMessages } from '../../i18n/messages';
 
 export { formatTokenCount, MODEL_TOKEN_LIMITS, resolveDefaultTokenLimits };
 
@@ -58,6 +60,7 @@ export interface ModelInput {
   apiKey: string;
   contextWindow?: number;
   maxOutputTokens?: number;
+  locale?: AppLocale;
 }
 
 export function providerFor(id: ProviderId) {
@@ -100,28 +103,33 @@ export function editModelInput(model: ModelConfiguration): ModelInput {
   };
 }
 
-export function validateModel(input: ModelInput, options?: { canKeepExistingKey?: boolean }): string | undefined {
+export function validateModel(
+  input: ModelInput,
+  options?: { canKeepExistingKey?: boolean; locale?: AppLocale },
+): string | undefined {
+  const validation = getMessages(options?.locale ?? input.locale ?? DEFAULT_APP_LOCALE).modelForm.validation;
   const provider = providerFor(input.provider);
-  if (!input.modelId.trim()) return '请填写模型 ID';
+  if (!input.modelId.trim()) return validation.missingModelId;
   if (provider.needsUrl) {
-    if (!input.baseUrl.trim()) return '请填写接口地址';
+    if (!input.baseUrl.trim()) return validation.missingBaseUrl;
     try {
       const url = new URL(input.baseUrl.trim());
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-        return '接口地址须为不含用户名和密码的 HTTP / HTTPS 地址';
+        return validation.invalidUrlCredentialsOrProtocol;
       }
     } catch {
-      return '请填写有效的 HTTP / HTTPS 接口地址';
+      return validation.invalidUrlFormat;
     }
   }
   if (provider.needsKey && !input.apiKey.trim() && !options?.canKeepExistingKey) {
-    return '请填写 API Key';
+    return validation.missingApiKey;
   }
   const effectiveFormat = input.apiFormat ?? provider.defaultApiFormat;
   const fallbackLimits = resolveDefaultTokenLimits(input.provider, effectiveFormat);
   const contextWindow = input.contextWindow ?? fallbackLimits.contextWindow;
   const maxOutputTokens = input.maxOutputTokens ?? fallbackLimits.maxOutputTokens;
-  return validateTokenLimits(contextWindow, maxOutputTokens);
+  const code = validateTokenLimitsCode(contextWindow, maxOutputTokens);
+  return code ? validation.tokenLimit(code) : undefined;
 }
 
 export function normalizedModel(input: ModelInput): ModelInput {
@@ -138,5 +146,6 @@ export function normalizedModel(input: ModelInput): ModelInput {
     apiKey: provider.needsKey ? input.apiKey.trim() : '',
     contextWindow: input.contextWindow ?? fallbackLimits.contextWindow,
     maxOutputTokens: input.maxOutputTokens ?? fallbackLimits.maxOutputTokens,
+    ...(input.locale ? { locale: input.locale } : {}),
   };
 }

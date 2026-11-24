@@ -1,34 +1,43 @@
 import { act, createElement } from 'react';
+import type { CPushCommandReply } from '../../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
-import type { GitCommitReply } from '../../../../shared/git-commit-protocol';
 import type { GitOpenFileReply } from '../../../../shared/ide-protocol';
-import type { GenerateCommitReply, ReviewScopeReply } from '../../../../shared/model-protocol';
+import type { ReviewScopeReply } from '../../../../shared/model-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
 import type { Root } from 'react-dom/client';
+import type { WindowController } from '../../../desktop/window';
+import { getMessages, LANGUAGE_OPTIONS } from '../../../i18n/messages';
 import { Workbench } from '../Workbench';
 import { disconnectedBackend } from '../commands';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
 import { targetOf } from '../state/workbench';
 import type { WorkbenchEvent, WorkbenchState } from '../state/workbench';
 import { fixture, releaseQuestion } from './fixtures';
-import { repositoryReply } from './repository-fixture';
+import { repositoryReply, repositorySnapshot } from './repository-fixture';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const tick = () => act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 function button(label: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.getAttribute('aria-label') === label || button.textContent?.trim() === label);
-  assert(found, `找不到按钮：${label}`); return found;
+  const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (item) => item.getAttribute('aria-label') === label || item.textContent?.trim() === label,
+  );
+  assert(found, `Missing button: ${label}`);
+  return found;
 }
 async function click(label: string) {
   const target = button(label);
   await act(async () => { target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); });
   await act(async () => { button(label).click(); });
 }
-function type(element: HTMLInputElement | HTMLTextAreaElement, text: string) {
+async function clickElement(target: HTMLElement) {
+  await act(async () => { target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); });
+  await act(async () => { target.click(); });
+}
+function type(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   act(() => {
-    Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, text);
+    Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
     element.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
@@ -36,145 +45,274 @@ const text = () => document.querySelector('.workbench')!.textContent ?? '';
 
 export async function verifyWorkbench(root: Root) {
   const checks: string[] = [];
+  const zh = getMessages('zh');
+  const zhLanguageLabel = LANGUAGE_OPTIONS.find((item) => item.id === 'zh')!.label;
   let key = 0;
-  async function mount(initialState: WorkbenchState, backend: WorkbenchBackend = disconnectedBackend) {
-    await act(async () => { root.render(createElement(Workbench, { key: ++key, initialState, backend })); });
+  async function mount(
+    initialState: WorkbenchState,
+    backend: WorkbenchBackend = disconnectedBackend,
+    windowController?: WindowController,
+  ) {
+    await act(async () => {
+      root.render(
+        createElement(Workbench, {
+          key: ++key,
+          initialState,
+          backend,
+          ...(windowController ? { windowController } : {}),
+        }),
+      );
+    });
   }
 
+  // 1. Default English zero-model empty state, extra-instructions box, Configure Model guidance, and cancel return:
   await mount(fixture('empty'));
-  assert(text().includes('打开你的 Git 仓库') && !text().includes('my-order-service'), '默认状态混入示例');
-  assert(!document.querySelector('.changes-heading') && !document.querySelector('[aria-label="切换目录树视图"]') && !document.querySelector('[aria-label="刷新变更"]'), '空项目不应提前渲染变更工具栏');
-  assert(document.querySelector<HTMLButtonElement>('.repository-open-button')?.classList.contains('primary'), '打开本机仓库应作为空项目唯一主入口');
-  assert(!document.querySelector('.commit-empty button.primary'), '空项目下半区不应与打开仓库抢夺主按钮视觉层级');
-  assert(!document.querySelector('.commit-empty .help'), '提交说明空态不应展示冗余描述段落');
-  assert(button('提交').disabled, '无仓库不应提交');
-  await click('打开本机仓库…');
-  assert(text().includes('此操作尚未接入'), `未接入的打开操作应明确说明：${text()}`);
-  await click('手动编写');
-  let textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
-  assert(document.activeElement === textarea, '手动编写应聚焦输入');
-  type(textarea, '尚未选择仓库时写的草稿'); await tick();
-  await click('设置'); await click('添加第一个模型');
-  assert(document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Key 应为空且遮蔽');
-  await click('取消');
-  assert(document.querySelector('[aria-label="关闭设置"]'), '取消添加后应回到设置');
-  await click('关闭设置');
-  assert(textarea.value === '尚未选择仓库时写的草稿', '打开设置不能丢失草稿');
+  assert(document.documentElement.lang === 'en', 'Default document lang should be en');
+  assert(text().includes('Open Your Git Repository') && !text().includes('my-order-service'), 'Default empty state leaked sample repository');
+  assert(!document.querySelector('.changes-heading') && !document.querySelector('[aria-label="Switch to directory tree view"]') && !document.querySelector('[aria-label="Refresh Changes"]'), 'Empty repository state must not render changes toolbar');
+  assert(document.querySelector<HTMLButtonElement>('.repository-open-button')?.classList.contains('primary'), 'Open Local Repository should be the single primary action in upper empty state');
+  assert(!document.querySelector('.plan-empty button.primary'), 'Lower workspace in empty state must not compete visually with Open Local Repository');
+  assert(!document.querySelector('.action-dropdown') && !text().includes('Write Manually'), 'Manual commit dropdown and Write Manually button must be removed');
+  const footerConfigBtn = document.querySelector<HTMLButtonElement>('.action-footer button.primary')!;
+  assert(footerConfigBtn.textContent?.includes('Configure Model') && !footerConfigBtn.disabled, 'Zero-model footer primary button must guide to Configure Model');
+  assert(!document.querySelector('.prompt-textarea') && button('+ Prompt').getAttribute('aria-expanded') === 'false', 'Prompt box must stay hidden by default until + Prompt is clicked');
+  assert(!text().includes('Or click C-Push below') && !text().includes('Configure a model first'), 'Minimalist Commit Plan must not render verbose filler descriptions');
+  await click('Open Local Repository…');
+  assert(text().includes('not connected in browser preview'), `Disconnected openRepository should explain preview boundary: ${text()}`);
+  await click('+ Prompt');
+  let promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  assert(!!promptArea && document.activeElement === promptArea, 'Clicking + Prompt must reveal and focus prompt textarea');
+  await click('+ Prompt');
+  assert(!document.querySelector('.prompt-textarea'), 'Clicking + Prompt again while empty must collapse prompt box');
+  await click('+ Prompt');
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  type(promptArea, 'Extra instruction written before opening repository'); await tick();
+  assert(button('Prompt').getAttribute('aria-expanded') === 'true', 'Non-empty prompt must mark Prompt toggle active');
+  await clickElement(footerConfigBtn);
+  assert(!!document.querySelector('.model-form') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Clicking Configure Model in footer must open Add Model form with empty masked key');
+  await click('Cancel');
+  assert(!document.querySelector('.overlay'), 'Cancelling Add Model opened from footer should return directly to workbench');
+  await click('Settings');
+  assert(
+    document.querySelector('[data-setting-group="commit-language"] button[aria-pressed="true"]')?.textContent?.trim() === 'English'
+      && document.querySelector('[data-setting-group="app-language"] button[aria-pressed="true"]')?.textContent?.trim() === 'English',
+    'Default commit message language and app language must both be English',
+  );
+  await click('Add First Model');
+  await click('Cancel');
+  assert(document.querySelector('[aria-label="Close Settings"]'), 'Cancelling Add Model opened from Settings should return to Settings');
+  await click('Close Settings');
+  assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'Extra instruction written before opening repository', 'Opening and closing Settings must preserve extra instructions');
+  await click('Clear Extra Instructions');
+  assert(!document.querySelector('.prompt-textarea') && button('+ Prompt').getAttribute('aria-expanded') === 'false', 'Clearing extra instructions via × must clear and collapse prompt box');
   await mount(fixture('clean'));
-  assert(text().includes('工作区干净') && !!document.querySelector('[aria-label="刷新变更"]') && !document.querySelector('[aria-label="切换目录树视图"]') && !document.querySelector('.changes-heading input[type="checkbox"]'), '干净工作区应保留刷新并隐藏全选框与目录树切换');
-  checks.push('真实默认空态、干净工作区层级、手动输入、共用模型入口与取消返回');
+  assert(text().includes('Working Tree Clean') && !!document.querySelector('[aria-label="Refresh Changes"]') && !document.querySelector('[aria-label="Switch to directory tree view"]') && !document.querySelector('.changes-heading input[type="checkbox"]'), 'Clean worktree should keep Refresh while hiding select-all and tree toggle');
+  checks.push('Default English zero-model empty state, extra instructions box, Configure Model guidance, and cancel return');
 
+  // 2. App Language switching ('en' -> 'zh' -> 'en') and locale forwarding:
+  const localeCommands: WorkbenchCommand[] = [];
+  await mount(fixture('empty'), {
+    ...disconnectedBackend,
+    async execute(command) {
+      localeCommands.push(command);
+      return disconnectedBackend.execute(command);
+    },
+  });
+  await click('Settings');
+  const appLangZhBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-setting-group="app-language"] button')]
+    .find((item) => item.textContent?.includes(zhLanguageLabel))!;
+  await clickElement(appLangZhBtn);
+  assert(document.documentElement.getAttribute('lang') === 'zh-CN' && text().includes(zh.settings.title) && text().includes(zh.settings.appLanguage), 'Switching App Language to zh should update document lang and Settings labels');
+  await click(zh.common.closeOverlay(zh.settings.title));
+  assert(text().includes(zh.changes.emptyRepoTitle) && text().includes(zh.commit.configureModelButton) && text().includes(zh.commit.promptToggle), 'Workbench labels should switch to Chinese');
+  await click(zh.changes.openLocalRepository);
+  assert(localeCommands.at(-1)?.locale === 'zh' && text().includes(zh.desktop.disconnectedGit), 'Backend command in zh locale should receive locale: zh and localized error');
+  await click(zh.header.settings);
+  const appLangEnBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-setting-group="app-language"] button')]
+    .find((item) => item.textContent?.includes('English'))!;
+  await clickElement(appLangEnBtn);
+  assert(document.documentElement.getAttribute('lang') === 'en' && text().includes('Settings'), 'Switching App Language back to English should restore English UI');
+  await click('Close Settings');
+  assert(text().includes('Open Your Git Repository') && text().includes('Configure Model'), 'Main workbench should restore English labels');
+  checks.push('App Language live switching between English and Chinese with backend locale forwarding');
+
+  // 3. Input focus, selection range, prompt preservation, message priority, and lower-workspace dock overlay:
   const subscription: { receive?: (event: WorkbenchEvent) => void } = {};
   const typingState = fixture('typing');
   await mount(typingState, { ...disconnectedBackend, subscribe(receive) { subscription.receive = receive; return () => { subscription.receive = undefined; }; } });
-  textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
-  textarea.focus(); type(textarea, '持续输入，不许被问题覆盖'); await tick();
-  textarea.setSelectionRange(3, 7);
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  promptArea.focus(); type(promptArea, 'Continuous typing must not be interrupted'); await tick();
+  promptArea.setSelectionRange(3, 10);
   await act(async () => { subscription.receive?.({ type: 'message', target: targetOf(typingState.worktrees[0]), message: releaseQuestion(), sessionStatus: 'needsDecision' }); });
-  assert(document.activeElement === textarea, '后台提问抢走焦点');
-  assert(textarea.value === '持续输入，不许被问题覆盖' && textarea.selectionStart === 3 && textarea.selectionEnd === 7, '后台提问改变文字或光标范围');
-  assert(!document.querySelector('.message-expanded'), '后台提问不应自动展开');
-  await act(async () => { subscription.receive?.({ type: 'message', target: targetOf(typingState.worktrees[0]), message: { id: 'review', kind: 'review', title: '审查已完成', description: '次级动态' } }); });
-  assert(text().includes('+1'), '问题到达后的审查应是次级动态');
-  assert(document.activeElement === textarea, '次级动态抢走焦点');
-  await click('展开消息：发布说明要一起提交吗？');
+  assert(document.activeElement === promptArea, 'Background question stole prompt textarea focus');
+  assert(promptArea.value === 'Continuous typing must not be interrupted' && promptArea.selectionStart === 3 && promptArea.selectionEnd === 10, 'Background question altered prompt text or cursor selection');
+  assert(!document.querySelector('.message-expanded'), 'Background question must not auto-expand while user is typing');
+  await act(async () => { subscription.receive?.({ type: 'message', target: targetOf(typingState.worktrees[0]), message: { id: 'review', kind: 'review', title: 'Review finished', description: 'Secondary update' } }); });
+  assert(text().includes('+1'), 'Review notification after question should appear as secondary count');
+  assert(document.activeElement === promptArea, 'Secondary notification stole prompt textarea focus');
+  await click('Expand message: Include release notes in this commit?');
   const lower = document.querySelector('.lower-workspace')!.getBoundingClientRect();
   const expanded = document.querySelector('.message-expanded')!.getBoundingClientRect();
-  assert(Math.abs(lower.top - expanded.top) <= 1 && Math.abs(lower.bottom - expanded.bottom) <= 1, '消息覆盖超出下半工作区');
-  assert(document.querySelector('.context-header')!.getBoundingClientRect().bottom <= expanded.top, '消息覆盖头部');
-  assert(document.querySelector('.action-footer')!.getBoundingClientRect().top >= expanded.bottom, '消息覆盖底栏');
-  const reply = document.querySelector<HTMLInputElement>('[aria-label="回复当前事项"]')!;
-  type(reply, '文档单独提交'); await tick();
-  await click('收起消息'); await click('展开消息：发布说明要一起提交吗？');
-  assert(document.querySelector<HTMLInputElement>('[aria-label="回复当前事项"]')!.value === '文档单独提交', '收起丢失自由回复');
-  await click('单独提交并一起推送');
-  assert(text().includes('发布说明要一起提交吗？'), '失败不能伪造问题已解决');
-  await click('查看');
-  assert(button('审查意见').getAttribute('aria-selected') === 'true', '次级动态查看不跳审查 Tab');
-  checks.push('输入焦点、光标范围、文字保全、消息优先级与局部覆盖');
+  assert(Math.abs(lower.top - expanded.top) <= 1 && Math.abs(lower.bottom - expanded.bottom) <= 1, 'Expanded message dock exceeded lower workspace bounds');
+  assert(document.querySelector('.context-header')!.getBoundingClientRect().bottom <= expanded.top, 'Expanded message dock covered header');
+  assert(document.querySelector('.action-footer')!.getBoundingClientRect().top >= expanded.bottom, 'Expanded message dock covered footer');
+  const reply = document.querySelector<HTMLInputElement>('[aria-label="Reply to active message"]')!;
+  type(reply, 'Commit docs separately'); await tick();
+  await click('Collapse Message'); await click('Expand message: Include release notes in this commit?');
+  assert(document.querySelector<HTMLInputElement>('[aria-label="Reply to active message"]')!.value === 'Commit docs separately', 'Collapsing message dock lost custom reply draft');
+  await click('Commit separately & push together');
+  assert(text().includes('Include release notes in this commit?'), 'Failed respond must not fabricate resolved question');
+  await click('View');
+  assert(button('Code Review').getAttribute('aria-selected') === 'true', 'Secondary review View action did not switch to Code Review tab');
+  checks.push('Input focus, cursor selection, prompt preservation, message priority, and lower-workspace dock overlay');
 
+  // 4. Tri-state checkboxes, partial staged stats, directory tree grouping, and worktree isolation:
   await mount(fixture('changed'));
-  assert(!document.querySelector('.changes-heading h2') && !document.querySelector('.changes-select-all'), '顶栏不应保留冗余变更标题或文字全选按钮');
-  const checkbox = document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!;
+  assert(!document.querySelector('.changes-heading h2') && !document.querySelector('.changes-select-all'), 'Changes header must not render redundant heading or text select-all button');
+  const checkbox = document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]')!;
   const topCheckbox = document.querySelector<HTMLInputElement>('.changes-heading input[type="checkbox"]')!;
-  assert(checkbox.checked, '样例选择错误');
+  assert(checkbox.checked, 'Fixture initial selection mismatch');
   assert(
-    topCheckbox && topCheckbox.getAttribute('aria-label') === '全选变更' && !topCheckbox.checked && topCheckbox.indeterminate
+    topCheckbox && topCheckbox.getAttribute('aria-label') === 'Select all changes' && !topCheckbox.checked && topCheckbox.indeterminate
       && Math.abs(topCheckbox.getBoundingClientRect().left - checkbox.getBoundingClientRect().left) < 0.5,
-    '顶栏三态全选框应与文件复选框左列对齐且初始呈半选状态',
+    'Header tri-state select-all checkbox must align with file checkboxes and start indeterminate',
   );
   await act(async () => { topCheckbox.click(); });
   assert(
-    topCheckbox.checked && !topCheckbox.indeterminate && topCheckbox.getAttribute('aria-label') === '取消全选变更'
-      && document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked,
-    '点击半选顶栏全选框应选中包含锁文件在内的全部变更',
+    topCheckbox.checked && !topCheckbox.indeterminate && topCheckbox.getAttribute('aria-label') === 'Deselect all changes'
+      && document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.checked,
+    'Clicking indeterminate select-all must select all files including lockfile',
   );
   await act(async () => { topCheckbox.click(); });
-  assert(!topCheckbox.checked && !topCheckbox.indeterminate && topCheckbox.getAttribute('aria-label') === '全选变更' && !checkbox.checked && text().includes('未选择变更'), '再次点击全选框应清空全部勾选');
-  await click('切换目录树视图');
-  assert(text().includes('(根目录)'), '目录分组缺少根目录');
+  assert(!topCheckbox.checked && !topCheckbox.indeterminate && topCheckbox.getAttribute('aria-label') === 'Select all changes' && !checkbox.checked && text().includes('No changes selected'), 'Clicking checked select-all must clear all selections');
+  await click('Switch to directory tree view');
+  assert(text().includes('(root)'), 'Directory tree view missing (root) group');
   await act(async () => {
-    document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click();
-    document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select RELEASE_NOTES.md"]')!.click();
   });
-  const rootDirCheckbox = document.querySelector<HTMLInputElement>('[aria-label="选择目录 (根目录)"]')!;
+  const rootDirCheckbox = document.querySelector<HTMLInputElement>('[aria-label="Select directory (root)"]')!;
   const groupedCheckbox = document.querySelector<HTMLInputElement>('.file-row.grouped .file-checkbox')!;
   assert(
     rootDirCheckbox && !rootDirCheckbox.checked && rootDirCheckbox.indeterminate
       && Math.abs(rootDirCheckbox.getBoundingClientRect().left - topCheckbox.getBoundingClientRect().left) < 0.5
       && groupedCheckbox.getBoundingClientRect().left > rootDirCheckbox.getBoundingClientRect().right,
-    '目录分组复选框应与顶栏全选框同列对齐、半选准确且子文件缩进清晰',
+    'Directory checkbox must align with header select-all, show indeterminate state, and indent child files',
   );
   await act(async () => { rootDirCheckbox.click(); });
   assert(
-    rootDirCheckbox.checked && !rootDirCheckbox.indeterminate && rootDirCheckbox.getAttribute('aria-label') === '取消选择目录 (根目录)'
-      && document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked
-      && document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked
+    rootDirCheckbox.checked && !rootDirCheckbox.indeterminate && rootDirCheckbox.getAttribute('aria-label') === 'Deselect directory (root)'
+      && document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.checked
+      && document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.checked
       && !document.querySelector('[role="alert"]'),
-    '点击半选目录复选框应全选该目录文件且不触发外部 IDE 命令',
+    'Clicking indeterminate directory checkbox must select all files in that directory without triggering IDE launch',
   );
   await act(async () => { rootDirCheckbox.click(); });
   assert(
     !rootDirCheckbox.checked && !rootDirCheckbox.indeterminate
-      && !document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.checked
-      && !document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked
-      && document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked,
-    '取消全选某目录不应清除其他目录已选文件',
+      && !document.querySelector<HTMLInputElement>('[aria-label="Select RELEASE_NOTES.md"]')!.checked
+      && !document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.checked
+      && document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.checked,
+    'Deselecting a directory must not clear selected files in other directories',
   );
-  await click('切换列表视图');
-  assert(!document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!.checked && document.querySelector('.file-stats')?.textContent?.includes('+28'), '部分暂存统计错误');
-  await click('C-Push 会话记录');
+  await click('Switch to list view');
+  assert(!document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]')!.checked && document.querySelector('.file-stats')?.textContent?.includes('+28'), 'Partial staged stats mismatch');
+  await click('C-Push Session History');
   const historyEntry = [...document.querySelectorAll<HTMLButtonElement>('.history-entry')].find((entry) => entry.textContent?.includes('fix/npe'))!;
   await act(async () => { historyEntry.click(); });
-  assert(document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'fix(refund): 校验订单号非空', '切换工作树串草稿');
-  await click('C-Push 会话记录');
+  assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'write concise bullets', 'Switching worktrees leaked prompt');
+  await click('C-Push Session History');
   await act(async () => { document.querySelectorAll<HTMLButtonElement>('.history-entry')[0].click(); });
-  assert(!document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!.checked, '工作树选择未保留');
-  checks.push('勾选与文件动作分离、部分暂存统计、目录分组、工作树隔离');
+  assert(!document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]')!.checked, 'Worktree selection did not persist across switch');
+  checks.push('Selection decoupled from file open, partial staged stats, directory grouping, and worktree isolation');
 
+  // 5. One-click C-Push direct dispatch, verbatim confirmedPlan dispatch, and outdated plan discard & re-plan:
   const calls: WorkbenchCommand[] = [];
-  let finish: (() => void) | undefined;
-  await mount(fixture('typing'), { ...disconnectedBackend, execute(command) { calls.push(command); return new Promise<void>((resolve) => { finish = resolve; }); } });
+  let finishCPush: (() => void) | undefined;
+  const directState = fixture('typing');
+  directState.worktrees[0].plan = undefined;
+  await mount(directState, { ...disconnectedBackend, execute(command) { calls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
   await act(async () => { button('C-Push').click(); button('C-Push').click(); });
-  assert(calls.length === 1 && calls[0].kind === 'cPush', '一键流程重复触发或增加必经确认页');
-  assert(!document.querySelector('.scope-menu'), 'C-Push 不应打开手动确认页');
-  if (calls[0].kind === 'cPush') assert(!calls[0].fileIds.includes('lock') && calls[0].target.worktreeId === 'pay-tree', '请求扩大范围或串目标');
-  await act(async () => { finish?.(); });
-  checks.push('C-Push 直接请求、请求身份、精确选择与重复点击保护（脚本化边界）');
+  assert(calls.length === 1 && calls[0].kind === 'cPush' && !calls[0].confirmedPlan, 'Direct C-Push without pre-generated plan duplicated dispatch or fabricated confirmedPlan');
+  assert(!document.querySelector('.scope-menu'), 'C-Push must not open manual scope confirmation popover');
+  if (calls[0].kind === 'cPush') {
+    assert(!calls[0].fileIds.includes('lock') && calls[0].target.worktreeId === 'pay-tree' && calls[0].locale === 'en' && calls[0].commitLanguage === 'en', 'C-Push expanded scope, mismatched target, or omitted locale/commitLanguage');
+  }
+  await act(async () => { finishCPush?.(); });
 
-  const manual = fixture('no-model'); manual.worktrees[0].draft = { text: '手写说明', editing: true, outdated: false, revision: 0 };
-  const manualSubscription: { receive?: (event: WorkbenchEvent) => void } = {};
-  await mount(manual, { ...disconnectedBackend, subscribe(receive) { manualSubscription.receive = receive; return () => { manualSubscription.receive = undefined; }; } });
-  await click('提交');
-  assert(text().includes('仅已暂存 +28 -4'), '确认范围没有标明仅已暂存');
-  await click('仅本地提交');
-  assert(text().includes('提交尚未执行') && document.querySelector<HTMLTextAreaElement>('textarea')?.value === '手写说明', '手动提交失败未保留草稿');
-  await act(async () => { manualSubscription.receive?.({ type: 'files', target: targetOf(manual.worktrees[0]), nextScopeVersion: 'external-change', files: manual.worktrees[0].files, changedPaths: ['src/api/pay.ts'] }); });
-  assert(text().includes('范围已变化'), '确认期间改变选择未拦截');
-  assert(button('仅本地提交').disabled, '失效范围仍可写入');
-  checks.push('无模型手动范围、失效范围拦截与失败草稿保留');
+  // Valid pre-generated plan edited by user -> C-Push forwards verbatim `confirmedPlan`:
+  const planCalls: WorkbenchCommand[] = [];
+  await mount(fixture('typing'), { ...disconnectedBackend, execute(command) { planCalls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
+  const planBox = document.querySelector<HTMLTextAreaElement>('.plan-group-textarea')!;
+  type(planBox, 'feat(order): edited verbatim plan\n\n- custom bullet 1'); await tick();
+  await click('C-Push');
+  const firstPlanCall = planCalls.at(0);
+  assert(
+    planCalls.length === 1
+      && firstPlanCall?.kind === 'cPush'
+      && firstPlanCall.confirmedPlan?.groups[0].message === 'feat(order): edited verbatim plan\n\n- custom bullet 1',
+    'C-Push with valid pre-generated plan did not send edited confirmedPlan verbatim',
+  );
+  await act(async () => { finishCPush?.(); });
 
-  const single = fixture('single'); single.models = []; single.activeModelId = null;
+  // Scope change marks plan Outdated -> clicking C-Push discards outdated plan and re-plans (`confirmedPlan === undefined`):
+  const outdatedCalls: WorkbenchCommand[] = [];
+  await mount(fixture('typing'), { ...disconnectedBackend, execute(command) { outdatedCalls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.click(); });
+  assert(text().includes('Outdated') && !document.querySelector('.commit-plan-panel .change-notice'), 'Changing selected files must show Outdated badge without verbose notice banner');
+  await click('C-Push');
+  const firstOutdatedCall = outdatedCalls.at(0);
+  assert(
+    outdatedCalls.length === 1
+      && firstOutdatedCall?.kind === 'cPush'
+      && firstOutdatedCall.confirmedPlan === undefined
+      && firstOutdatedCall.fileIds.includes('lock'),
+    'Clicking C-Push with an outdated plan must discard the stale plan and re-plan the new selection',
+  );
+  await act(async () => { finishCPush?.(); });
+  checks.push('One-click C-Push direct dispatch, verbatim edited confirmedPlan, and outdated plan discard & re-plan');
+
+  // 6. Zero-model blocks commits, detached HEAD intercepts C-Push, and model errors offer 1-step Model Settings jump:
+  const zeroModelCalls: WorkbenchCommand[] = [];
+  await mount(fixture('no-model'), { ...disconnectedBackend, async execute(cmd) { zeroModelCalls.push(cmd); } });
+  assert(!document.querySelector('.action-dropdown') && button('Configure Model') && zeroModelCalls.length === 0, 'Zero-model state must not offer C-Push or manual commit');
+  await clickElement(document.querySelector<HTMLButtonElement>('.action-footer button.primary')!);
+  assert(!!document.querySelector('.model-form'), 'Zero-model primary button must open model configuration');
+
+  const detached = fixture('typing');
+  detached.worktrees[0].detached = true;
+  detached.worktrees[0].branch = '(detached)';
+  const detachedCalls: WorkbenchCommand[] = [];
+  await mount(detached, { ...disconnectedBackend, async execute(cmd) { detachedCalls.push(cmd); } });
+  await click('C-Push');
+  assert(detachedCalls.length === 0 && text().includes('Detached HEAD'), 'Detached HEAD must block C-Push before IPC');
+
+  await mount(fixture('typing'), {
+    ...disconnectedBackend,
+    async execute(command) {
+      if (command.kind === 'cPush' || command.kind === 'planCPush' || command.kind === 'review') {
+        throw new Error('Rate limit or quota exceeded (402/429). Check your account balance.');
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+  await click('Regenerate Plan');
+  const noticeModelBtn = [...document.querySelectorAll<HTMLButtonElement>('.operation-notice button')].find((b) => b.textContent?.trim() === 'Model Settings');
+  assert(!!noticeModelBtn && text().includes('402/429'), 'Quota/auth model error in notice must show 1-step Model Settings button');
+  await clickElement(noticeModelBtn!);
+  assert(!!document.querySelector('#settings-models-section'), 'Clicking Model Settings from notice must open Settings at Models section');
+  await click('Close Settings');
+  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
+  await click('Review Selected Scope');
+  const reviewModelBtn = [...document.querySelectorAll<HTMLButtonElement>('.review-empty button')].find((b) => b.textContent?.trim() === 'Model Settings');
+  assert(!!reviewModelBtn, 'Model error in Code Review panel must also show 1-step Model Settings button');
+  await clickElement(reviewModelBtn!);
+  assert(!!document.querySelector('#settings-models-section'), 'Clicking Model Settings from Review panel must open Settings');
+  await click('Close Settings');
+  checks.push('Zero-model block, detached HEAD interception, and 1-step Model Settings jump on model errors');
+
+  // 7. Single branch trigger, IDEA-style collapsible Local/Remote branch groups, and protected branch direct C-Push:
+  const single = fixture('single');
   single.repositories[1].remoteBranches!.push({
     name: 'origin/103-shan-dao-bug-xiu-gai-very-long-branch-name',
     remote: 'origin',
@@ -182,17 +320,18 @@ export async function verifyWorkbench(root: Root) {
   });
   await mount(single);
   const outerBranchLabel = document.querySelector<HTMLElement>('.branch-anchor > button .truncate')!;
-  assert(!document.querySelector('.worktree-anchor') && outerBranchLabel.scrollWidth <= outerBranchLabel.clientWidth, '外部头部应只展示当前分支入口且短分支名不得被截断出省略号');
+  assert(!document.querySelector('.worktree-anchor') && outerBranchLabel.scrollWidth <= outerBranchLabel.clientWidth, 'Header should render single branch trigger without truncating short branch names');
+  assert(!document.querySelector('.context-bottom > .context-path > .branch-tag') && !button('C-Push').disabled, 'Protected branch main should not render redundant outer Protected badge while allowing C-Push');
   await click('main');
   const groupToggles = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')];
   assert(
     groupToggles.length === 2
-      && groupToggles[0].textContent?.includes('本地分支') && groupToggles[0].getAttribute('aria-expanded') === 'true'
-      && groupToggles[1].textContent?.includes('远程分支') && groupToggles[1].getAttribute('aria-expanded') === 'false'
-      && document.querySelector('.branch-menu .branch-tag')?.textContent === '保护分支'
-      && !text().includes('新建分支')
-      && !text().includes('新建 Worktree'),
-    '单目录分支菜单应展示 IDEA 风格的本地分支 / 远程分支双折叠结构与保护分支短标签',
+      && groupToggles[0].textContent?.includes('Local Branches') && groupToggles[0].getAttribute('aria-expanded') === 'true'
+      && groupToggles[1].textContent?.includes('Remote Branches') && groupToggles[1].getAttribute('aria-expanded') === 'false'
+      && document.querySelector('.branch-menu .branch-tag')?.textContent === 'Protected'
+      && !text().includes('New Branch')
+      && !text().includes('New Worktree'),
+    'Single-worktree branch menu should render IDEA-style Local/Remote collapsible sections and Protected badge',
   );
   await act(async () => { groupToggles[1].click(); });
   const branchMenuRect = document.querySelector('.branch-menu')!.getBoundingClientRect();
@@ -202,46 +341,46 @@ export async function verifyWorkbench(root: Root) {
       && (document.querySelector('[data-branch-group="remote"]')?.textContent ?? '').includes('origin/release/v1')
       && branchMenuRect.left >= 0 && branchMenuRect.right <= innerWidth
       && remoteItems.every((item) => item.getBoundingClientRect().height <= 32),
-    '展开远程分支折叠组应展示远程分支、不越界且右侧标签不纵向折行撑高条目',
+    'Expanded Remote Branches section should stay within viewport bounds without wrapping item metadata',
   );
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-  await click('提交');
-  assert(!button('仅本地提交').disabled && !button('提交并推送').disabled && document.querySelector('.scope-menu .branch-tag')?.textContent === '保护分支', '保护分支应仅展示紧凑标签并允许直接提交');
-  checks.push('外部单一分支入口、IDEA 风格本地/远程双折叠菜单与保护分支直接提交');
+  checks.push('Single branch entry, IDEA-style Local/Remote collapsible menu, and Protected branch direct C-Push');
 
+  // 8. Provider fields, API Format select, token defaults, and disconnected model boundaries:
   await mount(fixture('no-model'));
-  await click('设置'); await click('添加第一个模型');
-  const formatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
-  const ctxInput = document.querySelector<HTMLInputElement>('input[aria-label="上下文长度"]')!;
-  const maxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="最大输出 Token"]')!;
-  assert(formatSelect && formatSelect.value === 'anthropic-messages', 'Anthropic 默认接口格式应为 anthropic-messages');
-  assert(ctxInput.value === '200000' && maxOutInput.value === '16384', 'Anthropic 默认上下文与最大输出 Token 应从共享默认配置加载');
-  const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key 安全存储说明"]')!;
+  await click('Settings'); await click('Add First Model');
+  const formatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="API Format"]')!;
+  const ctxInput = document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!;
+  const maxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!;
+  assert(formatSelect && formatSelect.value === 'anthropic-messages', 'Anthropic default API format should be anthropic-messages');
+  assert(ctxInput.value === '200000' && maxOutInput.value === '16384', 'Anthropic default token limits should load from shared defaults');
+  const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key storage security"]')!;
   assert(
     !!keyHelpTip && getComputedStyle(keyHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden'
       && !document.querySelector('.model-form > p.help'),
-    '模型表单应移除底部常驻说明并将必要规则收敛为 ? 悬浮提示',
+    'Model form should hide tooltip bubbles until hover/focus and omit redundant footer paragraphs',
   );
-  await click('自定义兼容');
-  assert((formatSelect.value as string) === 'openai-completions', '自定义兼容默认接口格式应为 openai-completions');
-  assert((ctxInput.value as string) === '128000' && (maxOutInput.value as string) === '16384', '自定义兼容应加载对应默认 Token 配置');
+  await click('Custom Compatible');
+  assert((formatSelect.value as string) === 'openai-completions', 'Custom Compatible default API format should be openai-completions');
+  assert((ctxInput.value as string) === '128000' && (maxOutInput.value as string) === '16384', 'Custom Compatible should load its default token limits');
   await act(async () => {
     formatSelect.value = 'openai-responses';
     formatSelect.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  assert((formatSelect.value as string) === 'openai-responses', '接口格式下拉框应支持自由切换协议');
-  assert((ctxInput.value as string) === '200000' && (maxOutInput.value as string) === '32768', '未手动改动时切换接口格式应联动更新默认 Token 配置');
-  await click('Ollama（本地）');
-  assert(!document.querySelector('input[type="password"]'), 'Ollama 不应要求 Key');
-  assert(document.querySelector('input[value="http://127.0.0.1:11434/v1"]'), 'Ollama 地址默认值错误');
-  await click('测试连接');
-  assert(text().includes('未发送连接请求'), '不能伪造模型连接成功');
-  await click('保存并使用');
-  assert(text().includes('没有保存模型或密钥'), '不能伪造模型保存成功');
+  assert((formatSelect.value as string) === 'openai-responses', 'API Format select should switch protocol');
+  assert((ctxInput.value as string) === '200000' && (maxOutInput.value as string) === '32768', 'Switching API format before manual edits should update default token limits');
+  await click('Ollama (Local)');
+  assert(!document.querySelector('input[type="password"]'), 'Ollama must not ask for an API key');
+  assert(document.querySelector('input[value="http://127.0.0.1:11434/v1"]'), 'Ollama default baseUrl mismatch');
+  await click('Test Connection');
+  assert(text().includes('no connection request was sent'), 'Disconnected preview must not fake successful model test');
+  await click('Save & Use');
+  assert(text().includes('no model or API key was saved'), 'Disconnected preview must not fake saved model');
   await click('Anthropic');
-  assert(document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', '切换提供商残留 Key');
-  checks.push('提供商字段、接口格式下拉框、真实零模型边界、未接入连接不伪报成功');
+  assert(document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Switching providers leaked API key');
+  checks.push('Provider fields, API Format select, zero-model boundaries, and honest disconnected model errors');
 
+  // 9. Shared model state across Settings and footer, model editing, and deleting down to zero:
   const modelCalls: WorkbenchCommand[] = [];
   let editedPayload: unknown;
   await mount(fixture('typing'), {
@@ -261,76 +400,78 @@ export async function verifyWorkbench(root: Root) {
       };
     },
   });
-  await click('设置');
+  await click('Settings');
   const activeSelect = document.querySelector<HTMLButtonElement>('.model-row.is-active .model-select')!;
-  assert(activeSelect && getComputedStyle(activeSelect).backgroundColor === 'rgba(0, 0, 0, 0)', '选中模型背景应由整张卡片承载而非局部内嵌块');
-  await click('编辑模型 GPT-4.1');
-  assert(text().includes('编辑模型') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', '打开编辑模型不应回填明文密钥');
+  assert(activeSelect && getComputedStyle(activeSelect).backgroundColor === 'rgba(0, 0, 0, 0)', 'Active model background should belong to .model-row card rather than inner button');
+  await click('Edit model GPT-4.1');
+  assert(text().includes('Edit Model') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Edit Model must not prefill plaintext API key');
   const editModelIdInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')].find((el) => el.value === 'gpt-4.1')!;
   type(editModelIdInput, 'gpt-4.1-mini'); await tick();
-  const editCtxInput = document.querySelector<HTMLInputElement>('input[aria-label="上下文长度"]')!;
-  const editMaxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="最大输出 Token"]')!;
+  const editCtxInput = document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!;
+  const editMaxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!;
   type(editCtxInput, '256000');
   type(editMaxOutInput, '24576'); await tick();
-  const editFormatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="接口格式"]')!;
+  const editFormatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="API Format"]')!;
   await act(async () => {
     editFormatSelect.value = 'openai-completions';
     editFormatSelect.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  await click('保存修改');
+  await click('Save Changes');
   assert(
     !!editedPayload && (editedPayload as { id?: string; apiKey: string; apiFormat?: string }).id === 'test-gpt'
       && (editedPayload as { apiKey: string }).apiKey === ''
       && (editedPayload as { apiFormat?: string }).apiFormat === 'openai-completions'
       && (editedPayload as { contextWindow?: number }).contextWindow === 256_000
       && (editedPayload as { maxOutputTokens?: number }).maxOutputTokens === 24_576
-      && !!document.querySelector('[aria-label="关闭设置"]')
+      && !!document.querySelector('[aria-label="Close Settings"]')
       && text().includes('gpt-4.1-mini')
       && text().includes('256K/24K'),
-    '编辑模型留空密钥应就地保存更新并回到设置列表，同时保留自定义上下文长度与最大输出 Token',
+    'Editing model with empty key should retain Keychain secret, return to Settings, and preserve custom token limits',
   );
-  await click('删除模型 Claude Sonnet 4');
-  assert(text().includes('GPT-4.1') && !text().includes('Claude Sonnet 4'), '删除当前模型没有回退');
-  assert(modelCalls.length === 1 && modelCalls[0].kind === 'deleteModel', '删除或编辑误触发模型选择');
-  await click('关闭设置');
-  assert(button('GPT-4.1'), '设置与底栏没有共享选中模型');
-  await click('设置'); await click('删除模型 GPT-4.1');
-  assert(!!document.querySelector('.model-empty') && ![...document.querySelectorAll('.settings-content button')].some((item) => item.textContent?.trim() === '添加模型'), '零模型空态不应重复展示顶部添加按钮');
-  await click('关闭设置');
-  assert(!document.querySelector('.model-button') && button('添加模型'), '删到零后仍保留空模型下拉');
-  checks.push('两处模型状态共享、卡片式模型列表、删除不触发选择与删到零回到无模型（脚本化边界）');
+  await click('Delete model Claude Sonnet 4');
+  assert(text().includes('GPT-4.1') && !text().includes('Claude Sonnet 4'), 'Deleting active model did not fall back to remaining model');
+  assert(modelCalls.length === 1 && modelCalls[0].kind === 'deleteModel', 'Deleting or editing model triggered unexpected selectModel');
+  await click('Close Settings');
+  assert(button('GPT-4.1'), 'Settings and ActionFooter did not share active model');
+  await click('Settings'); await click('Delete model GPT-4.1');
+  assert(!!document.querySelector('.model-empty') && ![...document.querySelectorAll('.settings-content button')].some((item) => item.textContent?.trim() === 'Add Model'), 'Zero-model empty state should not duplicate header Add Model button');
+  await click('Close Settings');
+  assert(!document.querySelector('.model-button') && button('Add Model'), 'Deleting last model left stale model dropdown');
+  checks.push('Shared model catalog, card model list, edit/delete isolation, and zero-model fallback');
 
   await mount(fixture('no-model'), { ...disconnectedBackend, async saveModel(input) {
-    assert(input.apiKey === '' && input.provider === 'ollama', '隐藏的 Key 不应进入本地模型保存请求');
+    assert(input.apiKey === '' && input.provider === 'ollama' && input.locale === 'en', 'Hidden key must not enter saveModel request');
     return { id: 'fixture-saved', name: input.name, provider: input.provider, modelId: input.modelId, baseUrl: input.baseUrl };
   } });
-  await click('设置'); await click('添加第一个模型'); await click('Ollama（本地）'); await click('保存并使用');
-  assert(!document.querySelector('.overlay') && button('Qwen 2.5 Coder'), '保存成功后应关闭两层表单并共享当前模型');
-  checks.push('添加表单保存回执、自动选中与返回工作台（脚本化边界）');
+  await click('Settings'); await click('Add First Model'); await click('Ollama (Local)'); await click('Save & Use');
+  assert(!document.querySelector('.overlay') && button('Qwen 2.5 Coder'), 'Saving first model should close both overlays and activate model');
+  checks.push('Add Model save receipt, auto-activation, and return to workbench');
 
   const connections: { resolve: (description: string) => void }[] = [];
   await mount(fixture('no-model'), { ...disconnectedBackend, testModel() { return new Promise((resolve) => connections.push({ resolve })); } });
-  await click('设置'); await click('添加第一个模型'); await click('Ollama（本地）'); await click('测试连接');
+  await click('Settings'); await click('Add First Model'); await click('Ollama (Local)'); await click('Test Connection');
   const modelInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')].find((input) => input.value === 'qwen2.5-coder:14b')!;
-  type(modelInput, 'changed-model'); await tick(); await click('测试连接');
-  await act(async () => { connections[0].resolve('旧连接测试结果'); });
-  assert(!text().includes('旧连接测试结果') && text().includes('测试中…'), '旧连接结果污染新字段或结束新请求');
-  await act(async () => { connections[1].resolve('新字段的测试结果（测试夹具）'); });
-  assert(text().includes('新字段的测试结果（测试夹具）'), '新连接结果未正确展示');
+  type(modelInput, 'changed-model'); await tick(); await click('Test Connection');
+  await act(async () => { connections[0].resolve('Stale connection test result'); });
+  assert(!text().includes('Stale connection test result') && text().includes('Testing…'), 'Stale test result polluted updated form fields');
+  await act(async () => { connections[1].resolve('Fresh connection test result (fixture)'); });
+  assert(text().includes('Fresh connection test result (fixture)'), 'Fresh connection result did not render');
   type(modelInput, 'changed-again'); await tick();
-  assert(!text().includes('新字段的测试结果（测试夹具）'), '修改连接字段未令旧测试失效');
-  checks.push('连接字段变化和晚测试结果隔离（脚本化边界）');
+  assert(!text().includes('Fresh connection test result (fixture)'), 'Changing connection field did not clear previous test status');
+  checks.push('Connection field mutation invalidates stale test results');
 
+  // 10. Long paths (including escaped Unicode + spaces) & 600/700px height responsiveness:
   await mount(fixture('long-paths'));
   const workbench = document.querySelector<HTMLElement>('.workbench')!;
-  assert(workbench.scrollWidth <= workbench.clientWidth, '长路径造成工作台横向溢出');
-  assert(document.querySelector('.changes-list')!.scrollHeight > document.querySelector('.changes-list')!.clientHeight, '多文件未独立滚动');
+  assert(workbench.scrollWidth <= workbench.clientWidth, 'Long file paths caused horizontal overflow');
+  assert(document.querySelector('.changes-list')!.scrollHeight > document.querySelector('.changes-list')!.clientHeight, 'Changes list did not scroll independently');
   for (const height of [600, 700]) {
     document.getElementById('root')!.style.height = `${height}px`; await tick();
-    assert(document.querySelector('.lower-workspace')!.getBoundingClientRect().height > 150, '窄窗下半区不可用');
+    assert(document.querySelector('.lower-workspace')!.getBoundingClientRect().height > 150, 'Lower workspace collapsed in compact height');
   }
-  checks.push('长路径、多文件独立滚动、600 / 700 高度布局');
+  checks.push('Long paths, independent file scrolling, and 600/700px viewport layout');
 
+  // 11. Native macOS overlaid titlebar clearance & long repository badge truncation in Settings:
   document.documentElement.classList.add('native-titlebar');
   const compact = fixture('typing');
   compact.repositories[0].name = 'a-repository-with-a-very-long-name-that-must-truncate';
@@ -338,145 +479,159 @@ export async function verifyWorkbench(root: Root) {
   await mount(compact);
   const firstRow = document.querySelector<HTMLElement>('.context-top')!;
   const repositoryButton = document.querySelector<HTMLButtonElement>('.repository-button')!;
-  assert(firstRow.getBoundingClientRect().height === 38, '合并标题栏不应增加头部行高');
-  assert(repositoryButton.getBoundingClientRect().left >= 78, '仓库入口侵入原生窗口按钮区域');
-  assert(repositoryButton.scrollWidth <= repositoryButton.clientWidth, '长仓库名挤掉头部工具');
-  assert(document.querySelector('.header-tools')!.getBoundingClientRect().right <= innerWidth, '头部工具超出窄窗');
-  assert(firstRow.hasAttribute('data-tauri-drag-region') && !repositoryButton.hasAttribute('data-tauri-drag-region'), '拖动区不能覆盖仓库按钮');
+  assert(firstRow.getBoundingClientRect().height === 38, 'Overlaid titlebar must keep 38px header height');
+  assert(repositoryButton.getBoundingClientRect().left >= 78, 'Repository button intruded into traffic light inset');
+  assert(repositoryButton.scrollWidth <= repositoryButton.clientWidth, 'Long repository name overflowed header tools');
+  assert(document.querySelector('.header-tools')!.getBoundingClientRect().right <= innerWidth, 'Header tools overflowed narrow window');
+  assert(firstRow.hasAttribute('data-tauri-drag-region') && !repositoryButton.hasAttribute('data-tauri-drag-region'), 'Drag region must not cover repository button');
   await click(compact.repositories[0].name);
   const repositoryMenu = document.querySelector('.repository-menu')!.getBoundingClientRect();
-  assert(repositoryMenu.left >= 0 && repositoryMenu.right <= innerWidth, '合并标题栏的仓库菜单超出窗口');
-  await click('设置');
-  assert(document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left >= 84, '设置标题遮住原生窗口按钮');
-  await click('添加第一个模型');
-  assert(document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left >= 84, '添加模型标题遮住原生窗口按钮');
-  assert(!document.querySelector('.overlay-heading button[data-tauri-drag-region]'), '覆盖界面的关闭按钮不能作为拖动区');
+  assert(repositoryMenu.left >= 0 && repositoryMenu.right <= innerWidth, 'Repository menu overflowed window');
+  await click('Settings');
+  assert(document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left >= 84, 'Settings title overlapped native window controls');
+  const projectBadge = document.querySelector<HTMLElement>('.project-badge')!;
+  assert(projectBadge && projectBadge.getBoundingClientRect().right <= innerWidth - 14, 'Long repository badge in Settings overflowed narrow window');
+  await click('Add First Model');
+  assert(document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left >= 84, 'Add Model title overlapped native window controls');
+  assert(!document.querySelector('.overlay-heading button[data-tauri-drag-region]'), 'Overlay close button must not carry drag region');
   document.documentElement.classList.remove('native-titlebar');
-  checks.push('合并标题栏的原生按钮留白、长仓库名、浮层范围与交互按钮边界（布局样例）');
+  checks.push('Native titlebar inset clearance, long repository badge truncation, and overlay drag boundaries');
 
+  // 12. Repository reads, pre-open prompt migration, focus refresh, read error recovery, and late refresh isolation:
   let readSequence = 0, refreshCount = 0, failRefresh = false;
   const reads: WorkbenchBackend = { ...disconnectedBackend, repositoryReadsAvailable: true, async execute(command) {
     if (command.kind !== 'openRepository' && command.kind !== 'refresh') return disconnectedBackend.execute(command);
-    if (command.kind === 'refresh') { refreshCount++; if (failRefresh) throw new Error('工作目录暂时不可读'); }
+    if (command.kind === 'refresh') { refreshCount++; if (failRefresh) throw new Error('Working directory temporarily unreadable'); }
     const reply = repositoryReply(command.requestId, ++readSequence);
     if (command.kind === 'refresh') { reply.target = command.target; reply.snapshot!.activeWorktreeId = command.target.worktreeId; }
     return reply;
   } };
-  await mount(fixture('empty'), reads);
-  await click('手动编写');
-  textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
-  type(textarea, '打开前先写好的说明'); await tick();
-  await click('打开本机仓库…');
-  assert(text().includes('real-contract-fixture') && textarea.value === '打开前先写好的说明', '读取仓库后未显示快照或丢失初始说明');
-  assert(!document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.checked, '真实快照的锁文件默认选择错误');
-  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); });
-  textarea.focus(); textarea.setSelectionRange(1, 4);
+  const emptyWithModel = fixture('empty');
+  emptyWithModel.models = [{ id: 'test-claude', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }];
+  emptyWithModel.activeModelId = 'test-claude';
+  await mount(emptyWithModel, reads);
+  await click('+ Prompt');
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  type(promptArea, 'Instruction written prior to opening repo'); await tick();
+  await click('Open Local Repository…');
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  assert(text().includes('real-contract-fixture') && promptArea.value === 'Instruction written prior to opening repo', 'Opening repository did not display snapshot or lost pre-open prompt');
+  assert(
+    document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.checked
+      && text().includes('5/5 selected'),
+    'All normal changes including lockfiles must start selected by default on real snapshot',
+  );
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.click(); });
+  promptArea.focus(); promptArea.setSelectionRange(1, 5);
   await act(async () => { window.dispatchEvent(new Event('focus')); });
-  assert(refreshCount === 1 && document.activeElement === textarea && textarea.selectionStart === 1 && textarea.selectionEnd === 4, '回到窗口刷新未发生，或抢走输入焦点 / 选区');
-  assert(textarea.value === '打开前先写好的说明' && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '刷新覆盖草稿或勾选');
-  checks.push('打开仓库回执、首次草稿迁移、锁文件选择与窗口聚焦刷新（协议夹具）');
-  failRefresh = true; await click('刷新变更');
-  assert(text().includes('工作树状态不可用') && !document.querySelector('.changes-heading input[type="checkbox"]') && button('提交').disabled && textarea.value === '打开前先写好的说明', '读取失败未隐藏顶栏全选框、未保留草稿或仍允许使用旧状态');
-  failRefresh = false; await click('重试读取');
-  assert(!text().includes('工作树状态不可用') && document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]'), '重新读取未恢复文件区');
-  checks.push('读取错误不冒充干净工作区，保留草稿并支持重试（协议夹具）');
+  assert(refreshCount === 1 && document.activeElement === promptArea && promptArea.selectionStart === 1 && promptArea.selectionEnd === 5, 'Window focus refresh did not run or stole focus/selection');
+  assert(promptArea.value === 'Instruction written prior to opening repo' && !document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.checked, 'Refresh overwrote prompt or manually unchecked selection');
+  checks.push('Open repository receipt, initial prompt migration, default normal-file auto-selection, and window focus refresh');
+
+  failRefresh = true; await click('Refresh Changes');
+  assert(text().includes('Worktree Status Unavailable') && !document.querySelector('.changes-heading input[type="checkbox"]') && button('C-Push').disabled && promptArea.value === 'Instruction written prior to opening repo', 'Read failure did not hide select-all, preserve prompt, or disable C-Push');
+  failRefresh = false; await click('Retry Read');
+  assert(!text().includes('Worktree Status Unavailable') && document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]'), 'Retry Read did not restore file list');
+  checks.push('Read error honesty, prompt preservation, and Retry Read recovery');
 
   const delayed: { finish?: (reply: ReturnType<typeof repositoryReply>) => void; requestId?: string; target?: ReturnType<typeof targetOf> } = {};
-  await mount(fixture('empty'), { ...reads, execute(command) {
+  await mount(emptyWithModel, { ...reads, execute(command) {
     if (command.kind === 'refresh') return new Promise((resolve) => { delayed.finish = resolve; delayed.requestId = command.requestId; delayed.target = command.target; });
     return reads.execute(command);
   } });
-  await click('打开本机仓库…');
-  await click('刷新变更');
+  await click('Open Local Repository…');
+  await click('Refresh Changes');
   await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')].find((btn) => btn.textContent?.includes('工作树'))!.click();
+    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')].find((btn) => btn.textContent?.includes('Worktrees'))!.click();
   });
   await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="worktree"] button')].find((button) => button.textContent?.includes('fix/npe'))!.click();
+    [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="worktree"] button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click();
   });
-  assert(document.querySelector('.branch-anchor')!.textContent?.includes('fix/npe'), '工作树切换没有生效');
-  assert(delayed.requestId && delayed.target && delayed.finish, '没有开始受控刷新');
+  assert(document.querySelector('.branch-anchor')!.textContent?.includes('fix/npe'), 'Worktree switch did not apply');
+  assert(delayed.requestId && delayed.target && delayed.finish, 'Controlled refresh did not start');
   const lateReply = repositoryReply(delayed.requestId, ++readSequence); lateReply.target = delayed.target;
   await act(async () => { delayed.finish!(lateReply); });
-  assert(document.querySelector('.branch-anchor')!.textContent?.includes('fix/npe'), '晚返回的刷新切走了当前工作树');
-  checks.push('切换工作树期间的晚刷新只更新原目标，不迁移当前视图（协议夹具）');
+  assert(document.querySelector('.branch-anchor')!.textContent?.includes('fix/npe'), 'Late refresh stole active worktree view');
+  checks.push('Late refresh during worktree switch updates only target worktree without stealing view');
 
   await mount(fixture('empty'), { ...reads, async execute(command) {
     if (command.kind === 'openRepository') return { protocolVersion: 1, requestId: command.requestId, snapshot: null };
     return reads.execute(command);
   } });
-  await click('手动编写'); type(document.querySelector<HTMLTextAreaElement>('textarea')!, '取消后仍保留'); await tick();
-  await click('打开本机仓库…');
-  assert(document.querySelector<HTMLTextAreaElement>('textarea')?.value === '取消后仍保留' && text().includes('打开你的 Git 仓库'), '取消目录选择丢失输入或伪造打开成功');
+  await click('+ Prompt');
+  type(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!, 'Kept after cancel'); await tick();
+  await click('Open Local Repository…');
+  assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'Kept after cancel' && text().includes('Open Your Git Repository'), 'Cancelling directory picker lost prompt or faked open');
   let rejectNonGit = false;
   await mount(fixture('empty'), { ...reads, async execute(command) {
     if (command.kind === 'openRepository' && rejectNonGit) {
-      throw new Error('无法打开“plain-folder”：该目录未受 Git 管理（未找到 .git），请先执行 git init 或选择其他 Git 仓库');
+      throw new Error('Cannot open "plain-folder": directory is not a Git repository (missing .git)');
     }
     return reads.execute(command);
   } });
-  await click('打开本机仓库…');
+  await click('Open Local Repository…');
   rejectNonGit = true;
   await click('real-contract-fixture');
-  await click('打开本机仓库…');
+  await click('Open Local Repository…');
   await act(async () => { window.dispatchEvent(new Event('focus')); });
   assert(
-    (document.querySelector('.operation-notice')?.textContent ?? '').includes('未受 Git 管理')
+    (document.querySelector('.operation-notice')?.textContent ?? '').includes('not a Git repository')
       && text().includes('real-contract-fixture'),
-    '切换非 Git 目录时窗口聚焦自动刷新不应冲掉错误提示',
+    'Window focus auto-refresh must not wipe non-Git directory error notice',
   );
-  checks.push('打开目录取消、切换非 Git 目录报错保留与窗口聚焦不冲掉提示（协议夹具）');
-  let branchCallCount: number = 0;
+  checks.push('Directory picker cancel, non-Git folder error preservation across focus refresh');
+
+  // 13. Branch switch, remote tracking branch checkout, and occupied worktree jump:
+  let branchCallCount = 0;
   const branchResponse: { finish?: (reply: GitBranchReply) => void; command?: Extract<WorkbenchCommand, { kind: 'switchBranch' | 'checkoutRemoteBranch' }> } = {};
   const branches: WorkbenchBackend = { ...reads, execute(command) {
     if (command.kind !== 'switchBranch' && command.kind !== 'checkoutRemoteBranch') return reads.execute(command);
     branchCallCount++; branchResponse.command = command;
     return new Promise<GitBranchReply>((resolve) => { branchResponse.finish = resolve; });
   } };
-  await mount(fixture('empty'), branches); await click('打开本机仓库…'); await click('手动编写');
-  textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
-  type(textarea, '分支操作时的人工草稿'); await tick();
-  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
-  assert(!text().includes('新建分支') && !text().includes('新建 Worktree'), '分支菜单不应包含新建分支或新建 Worktree 入口');
+  await mount(fixture('empty'), branches); await click('Open Local Repository…');
+  await click('+ Prompt');
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  type(promptArea, 'Instruction during branch operation'); await tick();
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.click(); document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
+  assert(!text().includes('New Branch') && !text().includes('New Worktree'), 'Branch menu must not render removed New Branch/Worktree items');
   await act(async () => {
     const targetBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('feat/invoice'))!;
     targetBtn.click(); targetBtn.click();
   });
-  assert(branchCallCount === 1 && branchResponse.command?.kind === 'switchBranch' && branchResponse.command.branch === 'feat/invoice' && branchResponse.command.branchToken, '切换分支重复请求或没有携带 Rust 版本');
-  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/pay'), 'Git 未返回就伪造分支切换成功');
-  type(textarea, '等待 Git 时继续写的新草稿'); await tick();
+  assert(branchCallCount === 1 && branchResponse.command?.kind === 'switchBranch' && branchResponse.command.branch === 'feat/invoice' && branchResponse.command.branchToken, 'switchBranch duplicated or omitted branchToken');
+  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/pay'), 'UI faked branch switch before Git reply');
+  type(promptArea, 'Newer instruction typed while waiting for Git'); await tick();
   const branchSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
   branchSnapshot.worktrees[0].branch = 'feat/invoice'; branchSnapshot.worktrees[0].branchToken = 'updated-branch-token';
   await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'switchBranch', outcome: 'completed', snapshot: branchSnapshot }); });
-  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/invoice'), '成功后未采用 Git 分支或未关闭菜单');
-  assert(textarea.value === '等待 Git 时继续写的新草稿' && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '分支切换回执覆盖了最新草稿或选择');
-  // Expanding remote branches and checking out a remote branch without a local counterpart:
+  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/invoice'), 'Branch switch did not adopt Git snapshot or close menu');
+  assert(promptArea.value === 'Newer instruction typed while waiting for Git' && !document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.checked, 'Branch switch reply overwrote newer prompt or selection');
   await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   await act(async () => {
-    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')].find((btn) => btn.textContent?.includes('远程分支'))!.click();
+    [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')].find((btn) => btn.textContent?.includes('Remote Branches'))!.click();
   });
   await act(async () => {
     [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="remote"] button')].find((btn) => btn.textContent?.includes('mirror/feat/reconcile'))!.click();
   });
   const remoteCmd = branchResponse.command as Extract<WorkbenchCommand, { kind: 'switchBranch' | 'checkoutRemoteBranch' }> | undefined;
-  assert((branchCallCount as number) === 2 && remoteCmd?.kind === 'checkoutRemoteBranch' && remoteCmd.branch === 'mirror/feat/reconcile', '点击远程分支未发起受控检出请求');
+  assert((branchCallCount as number) === 2 && remoteCmd?.kind === 'checkoutRemoteBranch' && remoteCmd.branch === 'mirror/feat/reconcile', 'Clicking remote branch did not dispatch checkoutRemoteBranch');
   const remoteCheckoutSnapshot = repositoryReply(remoteCmd.requestId, ++readSequence).snapshot!;
   remoteCheckoutSnapshot.worktrees[0].branch = 'feat/reconcile';
   remoteCheckoutSnapshot.worktrees[0].branchToken = 'remote-checkout-token';
   remoteCheckoutSnapshot.repository.branches.push({ name: 'feat/reconcile', worktreeId: 'pay-tree' });
   await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: remoteCmd.requestId, target: remoteCmd.target, action: 'checkoutRemoteBranch', outcome: 'completed', snapshot: remoteCheckoutSnapshot }); });
-  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/reconcile'), '远程分支检出后未更新为本地跟踪分支');
-  // Clicking a branch occupied by another worktree jumps directly to that worktree:
+  assert(!document.querySelector('.branch-menu') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/reconcile'), 'Remote branch checkout did not update local tracking branch');
   await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   await act(async () => {
     [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('fix/npe'))!.click();
   });
-  assert((branchCallCount as number) === 2 && document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), '点击已占用分支未跳转到对应工作树');
-  checks.push('切换已有本地分支、远程分支检出本地跟踪分支、草稿选择保全与已占用工作树跳转（协议夹具）');
+  assert((branchCallCount as number) === 2 && document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), 'Clicking occupied branch did not jump to existing worktree');
+  checks.push('Switch local branch, checkout remote tracking branch, preserve prompt/selection, and jump to occupied worktree');
 
   branchCallCount = 0;
-  await mount(fixture('empty'), branches); await click('打开本机仓库…');
+  await mount(fixture('empty'), branches); await click('Open Local Repository…');
   await act(async () => { document.querySelector<HTMLButtonElement>('.branch-anchor > button')!.click(); });
   await act(async () => {
     [...document.querySelectorAll<HTMLButtonElement>('[data-branch-group="local"] button')].find((btn) => btn.textContent?.includes('feat/invoice'))!.click();
@@ -487,111 +642,139 @@ export async function verifyWorkbench(root: Root) {
   const lateBranchSnapshot = repositoryReply(branchResponse.command!.requestId, ++readSequence).snapshot!;
   lateBranchSnapshot.worktrees[0].branch = 'feat/invoice';
   await act(async () => { branchResponse.finish!({ protocolVersion: 1, kind: 'branch', requestId: branchResponse.command!.requestId, target: branchResponse.command!.target, action: 'switchBranch', outcome: 'completed', snapshot: lateBranchSnapshot }); });
-  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), '分支切换晚回执切走了用户当前视图');
-  checks.push('切换分支期间切换工作树视图，晚回执只更新原工作树而不抢回界面（协议夹具）');
+  assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), 'Late branch reply stole active worktree view');
+  checks.push('Late branch reply updates only source worktree when view switched mid-flight');
 
-  let commitCalls = 0, failCommitWithMutation = false;
-  const commitPending: { finish?: (reply: GitCommitReply) => void; command?: Extract<WorkbenchCommand, { kind: 'commit' }> } = {};
-  const commits: WorkbenchBackend = {
-    ...reads,
-    async execute(command) {
-      if (command.kind === 'refresh') {
-        const reply = repositoryReply(command.requestId, ++readSequence);
-        reply.target = command.target; reply.snapshot!.activeWorktreeId = command.target.worktreeId;
-        if (failCommitWithMutation) reply.snapshot!.worktrees[0].files[0].contentVersion = 'hook-mutated';
-        return reply;
-      }
-      if (command.kind !== 'commit') return reads.execute(command);
-      commitCalls++; commitPending.command = command;
-      if (failCommitWithMutation) throw new Error('Git pre-commit 钩子修改了仓库内容，不能继续沿用旧范围；未创建提交。');
-      return new Promise<GitCommitReply>((resolve) => { commitPending.finish = resolve; });
-    },
-  };
-  await mount(fixture('empty'), commits);
-  await click('打开本机仓库…');
-  await act(async () => {
-    document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click();
-    document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.click();
-  });
-  await click('手动编写');
-  textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
-  type(textarea, 'feat(order): 仅本地提交已暂存与新文件'); await tick();
-  await click('提交');
-  assert(text().includes('确认本次提交范围') && text().includes('仅已暂存 +28 -4'), '范围确认未显示部分暂存统计');
-  failCommitWithMutation = true;
-  await click('仅本地提交');
-  assert(text().includes('钩子修改了仓库内容') && text().includes('范围已变化') && button('仅本地提交').disabled, '钩子改内容后未自动刷新并拦截旧范围');
-  assert(textarea.value === 'feat(order): 仅本地提交已暂存与新文件' && text().includes('已保留当前草稿'), '钩子改内容丢失人工草稿');
-  failCommitWithMutation = false; commitCalls = 0;
-  await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-  await click('提交');
-  await act(async () => { button('仅本地提交').click(); button('仅本地提交').click(); });
-  assert(commitCalls === 1 && commitPending.command?.selections?.length === 2 && commitPending.command.selections[0].commitToken === 'commit-order', '本地提交重复触发或未携带每文件 commitToken');
-  const postCommitSnapshot = repositoryReply(commitPending.command!.requestId, ++readSequence).snapshot!;
-  postCommitSnapshot.worktrees[0].head = 'a9c41ef000';
-  postCommitSnapshot.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 3, behind: 1, localOnly: true };
-  postCommitSnapshot.worktrees[0].files = postCommitSnapshot.worktrees[0].files
-    .filter((file) => file.id !== 'retry')
-    .map((file) => file.id === 'order' ? { ...file, gitStatus: '.M', range: { kind: 'unstaged', added: 14, removed: 4 }, contentVersion: 'order-draft', commitToken: 'commit-order-draft' } : file);
-  await act(async () => {
-    commitPending.finish!({
-      protocolVersion: 1, kind: 'commit', requestId: commitPending.command!.requestId, target: commitPending.command!.target,
-      snapshot: postCommitSnapshot,
-      commit: { oid: 'a9c41ef000', shortOid: 'a9c41ef', title: 'feat(order): 仅本地提交已暂存与新文件', branch: 'feat/pay', parent: 'head-1' },
-    });
-  });
-  assert(!document.querySelector('.scope-menu') && text().includes('已在本地提交 a9c41ef') && text().includes('↑ 3'), '本地提交完成后未更新提示或领先数');
-  assert(!document.querySelector('textarea') && text().includes('手动编写'), '成功消费的提交草稿未回到空态');
-  assert(!document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!.checked, '部分暂存剩余草稿不应自动保持勾选');
-  assert(!document.querySelector('[aria-label="选择 src/utils/retry.ts"]') && !!document.querySelector('[aria-label="选择 pnpm-lock.yaml"]'), '已提交文件未移除或未选文件丢失');
-  checks.push('无模型精确范围本地提交、commitToken 传递、钩子改内容重核与部分暂存剩余草稿未选（协议夹具）');
-
-  const detached = fixture('no-model');
-  detached.worktrees[0].detached = true; detached.worktrees[0].branch = '(detached)';
-  detached.worktrees[0].draft = { text: '分离 HEAD 草稿', editing: true, outdated: false, revision: 0 };
-  await mount(detached);
-  await click('提交');
-  assert(button('仅本地提交').disabled && text().includes('分离 HEAD'), '分离 HEAD 不应允许直接提交');
-  checks.push('分离 HEAD 提交拦截与草稿保留');
-
-  const openCalls: Extract<WorkbenchCommand, { kind: 'openFile' }>[] = [];
+  // 14. Per-project Editor & Commit Message Language isolation (`orders` vs `cli`) + Preview Plan & C-Push forwarding:
+  const isolatedOpenCalls: Extract<WorkbenchCommand, { kind: 'openFile' }>[] = [];
+  const isolatedAiCalls: Extract<WorkbenchCommand, { kind: 'planCPush' | 'cPush' }>[] = [];
   let failOpen = false;
-  const ideState = fixture('review-during-question');
-  await mount(ideState, {
+  const multiProjectState = fixture('changed');
+  multiProjectState.worktrees = multiProjectState.worktrees.map((tree) => ({
+    ...tree,
+    files: tree.files.map((file) => ({ ...file, commitToken: `tok-${tree.worktreeId}-${file.id}` })),
+  }));
+  await mount(multiProjectState, {
     ...disconnectedBackend,
     async execute(command) {
-      if (command.kind !== 'openFile') return disconnectedBackend.execute(command);
-      openCalls.push(command);
-      if (failOpen) throw new Error('未找到 Cursor 可执行入口（cursor）。当前草稿与选择已保留。');
-      const reply: GitOpenFileReply = {
-        protocolVersion: 1, kind: 'openFile', requestId: command.requestId, target: command.target,
-        editor: command.editor, filePath: command.line ? 'src/api/pay.ts' : 'src/service/Order.ts',
-        action: command.line ? 'goto' : 'stagedDiff', ...(command.line ? { line: command.line } : {}),
-      };
-      return reply;
+      if (command.kind === 'openFile') {
+        isolatedOpenCalls.push(command);
+        if (failOpen) throw new Error(`Executable not found for ${command.editor}. Prompt and selection preserved.`);
+        const reply: GitOpenFileReply = {
+          protocolVersion: 1, kind: 'openFile', requestId: command.requestId, target: command.target,
+          editor: command.editor, filePath: command.line ? 'src/api/pay.ts' : 'src/service/Order.ts',
+          action: command.line ? 'goto' : 'stagedDiff', ...(command.line ? { line: command.line } : {}),
+        };
+        return reply;
+      }
+      if (command.kind === 'planCPush') {
+        isolatedAiCalls.push(command);
+        return {
+          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          preparedPlan: {
+            summary: `Planned (${command.commitLanguage})`,
+            groups: [{ id: 'g1', fileIds: command.fileIds, message: `feat(scope): planned-${command.commitLanguage}\n\n- bullet` }],
+            skippedFileIds: [],
+          },
+          session: {
+            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
+            frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
+            sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+          },
+        };
+      }
+      if (command.kind === 'cPush') {
+        isolatedAiCalls.push(command);
+        return {
+          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          session: {
+            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
+            frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
+            sessionStatus: 'done', canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+            message: { id: `done-${command.requestId}`, kind: 'done', title: `Done (${command.commitLanguage})`, description: 'Done' },
+          },
+        };
+      }
+      return disconnectedBackend.execute(command);
     },
   });
+  const orderRow = () => document.querySelector('input[aria-label="Select src/service/Order.ts"]')!.closest<HTMLElement>('.file-row')!;
   await act(async () => {
-    document.querySelector('input[aria-label="选择 src/service/Order.ts"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-open')!.click();
+    orderRow().querySelector<HTMLButtonElement>('.file-open')!.click();
   });
-  assert(openCalls.length === 1 && openCalls[0].editor === 'idea' && !openCalls[0].line && text().includes('已在 IDEA 打开已暂存 Diff：Order.ts'), '文件行点击未触发已暂存 Diff');
+  assert(orderRow().classList.contains('is-selected') && !isolatedOpenCalls.at(0), 'Single-clicking file row must highlight row without launching IDE');
   await act(async () => {
-    document.querySelector<HTMLButtonElement>('#review-tab')!.click();
+    orderRow().querySelector<HTMLButtonElement>('.file-diff-link')!.click();
   });
+  assert(isolatedOpenCalls.length === 1 && isolatedOpenCalls[0].editor === 'idea' && text().includes('Opened staged diff in IDEA: Order.ts'), 'Clicking right-side diff link did not open staged diff in IDEA');
+  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
+  await act(async () => { document.querySelector<HTMLButtonElement>('.review-finding')!.click(); });
+  assert(isolatedOpenCalls.at(1)?.line === 46 && text().includes('Jumped to pay.ts:46 in IDEA'), 'Review finding click did not jump to line in IDEA');
+  await act(async () => { document.querySelector<HTMLButtonElement>('#commit-tab')!.click(); });
+
+  await click('Settings');
+  assert(document.querySelector('.project-badge')?.textContent?.trim() === 'my-order-service', 'Settings project badge should show active repository name');
+  await clickElement([...document.querySelectorAll<HTMLButtonElement>('[data-setting-group="editor"] button')].find((b) => b.textContent?.includes('RustRover'))!);
+  await clickElement([...document.querySelectorAll<HTMLButtonElement>('[data-setting-group="commit-language"] button')].find((b) => b.textContent?.includes(zhLanguageLabel))!);
+  await click('Close Settings');
+  assert((document.querySelector('.file-hover')?.textContent ?? '').includes('RustRover Staged Diff'), 'orders hover label should switch to RustRover');
   await act(async () => {
-    document.querySelector<HTMLButtonElement>('.review-finding')!.click();
+    orderRow().querySelector<HTMLButtonElement>('.file-open')!.dispatchEvent(
+      new MouseEvent('dblclick', { bubbles: true, cancelable: true }),
+    );
   });
-  assert(openCalls.at(1)?.line === 46 && text().includes('已在 IDEA 定位到 pay.ts:46'), '审查意见点击未定位行号');
-  await click('设置'); await click('Cursor'); await click('关闭设置');
+  assert(isolatedOpenCalls.at(-1)?.editor === 'rustrover', 'Double-clicking file row should launch rustrover diff');
+  await click('Regenerate Plan');
+  assert(isolatedAiCalls.at(-1)?.kind === 'planCPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh' && isolatedAiCalls.at(-1)?.locale === 'en', 'orders planCPush should send commitLanguage: zh while keeping locale: en');
+
+  await click('my-order-service');
+  await clickElement([...document.querySelectorAll<HTMLButtonElement>('.repository-menu button')].find((b) => b.textContent?.includes('picket-cli'))!);
+  await click('Settings');
+  assert(
+    document.querySelector('.project-badge')?.textContent?.trim() === 'picket-cli'
+      && document.querySelector('[data-setting-group="editor"] button[aria-pressed="true"]')?.textContent?.includes('IntelliJ IDEA')
+      && document.querySelector('[data-setting-group="commit-language"] button[aria-pressed="true"]')?.textContent?.includes('English'),
+    'Second repository picket-cli must keep its own independent editor and commit language settings',
+  );
+  await clickElement([...document.querySelectorAll<HTMLButtonElement>('[data-setting-group="editor"] button')].find((b) => b.textContent?.includes('Cursor'))!);
+  await click('Close Settings');
+  assert((document.querySelector('.file-hover')?.textContent ?? '').includes('Cursor Staged Diff'), 'cli hover label should switch to Cursor');
   failOpen = true;
   await act(async () => {
-    document.querySelector('input[aria-label="选择 src/service/Order.ts"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-open')!.click();
+    document.querySelector('input[aria-label="Select src/service/Order.ts"]')!.closest('.file-row')!.querySelector<HTMLButtonElement>('.file-diff-link')!.click();
   });
-  assert(openCalls.at(2)?.editor === 'cursor' && text().includes('未找到 Cursor 可执行入口'), '切换编辑器或 CLI 缺失报错未生效');
-  checks.push('外部编辑器文件已暂存 Diff、审查行号定位、编辑器切换与 CLI 缺失提示（协议夹具）');
+  assert(isolatedOpenCalls.at(-1)?.editor === 'cursor' && text().includes('Executable not found for cursor'), 'cli file open should launch cursor and surface missing CLI error');
+  failOpen = false;
+  await click('C-Push');
+  assert(isolatedAiCalls.at(-1)?.kind === 'cPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'en', 'cli C-Push should send commitLanguage: en');
 
+  await click('picket-cli');
+  await clickElement([...document.querySelectorAll<HTMLButtonElement>('.repository-menu button')].find((b) => b.textContent?.includes('my-order-service'))!);
+  assert((document.querySelector('.file-hover')?.textContent ?? '').includes('RustRover Staged Diff'), 'Switching back to orders must retain RustRover');
+  await click('C-Push');
+  assert(isolatedAiCalls.at(-1)?.kind === 'cPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh', 'Switching back to orders must retain commitLanguage: zh');
+  checks.push('External IDE launch, per-project Editor & Commit Message Language isolation across repositories');
+
+  // 15. Cross-restart v2 persistence of per-project settings, prompts, selections, and installedEditors filtering:
   const savedRequests: WorkbenchSaveRequest[] = [];
-  const restoredSnapshot = repositoryReply('restore-1', 1).snapshot!;
+  const restoredOrders = repositorySnapshot(1);
+  const restoredCli = repositorySnapshot(1);
+  restoredCli.repository = {
+    id: 'cli',
+    name: 'picket-cli',
+    branches: [{ name: 'main', worktreeId: 'cli-tree' }],
+    remoteBranches: [],
+  };
+  restoredCli.activeWorktreeId = 'cli-tree';
+  restoredCli.worktrees = [{
+    ...restoredCli.worktrees[0],
+    repositoryId: 'cli',
+    worktreeId: 'cli-tree',
+    label: 'cli',
+    branch: 'main',
+  }];
   await act(async () => {
     root.render(createElement(Workbench, {
       key: ++key,
@@ -599,11 +782,25 @@ export async function verifyWorkbench(root: Root) {
         ...reads,
         async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
           return {
-            protocolVersion: 1, editor: 'vscode', activeWorktreeId: 'pay-tree', emptyDraft: '', emptyEditing: false,
-            snapshots: [restoredSnapshot], warning: null,
+            protocolVersion: 2,
+            locale: 'en',
+            editor: 'vscode',
+            defaultCommitLanguage: 'en',
+            repositorySettings: [
+              { repositoryId: 'orders', editor: 'rustrover', commitLanguage: 'zh' },
+              { repositoryId: 'cli', editor: 'cursor', commitLanguage: 'en' },
+            ],
+            activeWorktreeId: 'pay-tree',
+            emptyPrompt: '',
+            snapshots: [restoredOrders, restoredCli],
+            warning: null,
             worktrees: [{
-              repositoryId: 'orders', worktreeId: 'pay-tree', draftText: '重启后恢复的说明', draftEditing: true,
-              draftOutdated: false, selectedIds: ['order'], scopeVersion: 'stale-before-restart', tab: 'commit',
+              repositoryId: 'orders',
+              worktreeId: 'pay-tree',
+              promptText: 'Restored extra instruction after restart',
+              selectedIds: ['order'],
+              scopeVersion: 'stale-before-restart',
+              tab: 'commit',
             }],
           };
         },
@@ -612,16 +809,26 @@ export async function verifyWorkbench(root: Root) {
     }));
   });
   await tick();
-  textarea = document.querySelector<HTMLTextAreaElement>('textarea')!;
-  assert(textarea.value === '重启后恢复的说明' && text().includes('变更已更新，已保留当前草稿'), '跨重启恢复未还原草稿或未提示外部变化');
-  assert(document.querySelector<HTMLInputElement>('[aria-label="选择 src/service/Order.ts"]')!.checked && !document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.checked, '跨重启恢复未还原保存的文件勾选');
-  assert(savedRequests.length === 0, '未修改状态下不应在启动水合时重复落盘');
-  await click('设置');
-  assert(document.querySelector<HTMLButtonElement>('.editor-grid button[aria-pressed="true"]')?.textContent?.includes('VS Code'), '跨重启未还原首选编辑器');
-  await click('WebStorm'); await click('关闭设置');
-  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click(); });
-  assert(savedRequests.length >= 2 && savedRequests.at(-1)?.editor === 'webstorm' && savedRequests.at(-1)?.worktrees[0].selectedIds.includes('pay'), '修改编辑器与文件勾选未触发持久化保存');
-  checks.push('跨重启恢复编辑器、草稿、勾选、离线变化提示与变更自动保存（协议夹具）');
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  assert(promptArea.value === 'Restored extra instruction after restart', 'Cold restart did not restore v2 promptText');
+  assert(document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]')!.checked && !document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.checked, 'Cold restart did not restore saved file selection');
+  assert(savedRequests.length === 0, 'Unmodified cold hydration must not immediately rewrite disk');
+  await click('Settings');
+  assert(
+    document.querySelector<HTMLButtonElement>('[data-setting-group="editor"] button[aria-pressed="true"]')?.textContent?.includes('RustRover')
+      && document.querySelector<HTMLButtonElement>('[data-setting-group="commit-language"] button[aria-pressed="true"]')?.textContent?.includes(zhLanguageLabel),
+    'Cold restart did not restore orders per-project editor and commitLanguage',
+  );
+  await click('WebStorm'); await click('Close Settings');
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.click(); });
+  assert(
+    savedRequests.length >= 2
+      && savedRequests.at(-1)?.repositorySettings?.find((item) => item.repositoryId === 'orders')?.editor === 'webstorm'
+      && savedRequests.at(-1)?.repositorySettings?.find((item) => item.repositoryId === 'cli')?.editor === 'cursor'
+      && savedRequests.at(-1)?.worktrees[0].selectedIds.includes('pay'),
+    'Changing per-project editor and selection did not persist updated repositorySettings while preserving other repositories',
+  );
+  checks.push('Cold-restart v2 hydration and persistence of per-project settings, prompts, and selections');
 
   await act(async () => {
     root.render(createElement(Workbench, {
@@ -630,21 +837,21 @@ export async function verifyWorkbench(root: Root) {
         ...reads,
         async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
           return {
-            protocolVersion: 1, editor: 'cursor', installedEditors: ['idea', 'rustrover', 'webstorm'],
-            activeWorktreeId: null, emptyDraft: '', emptyEditing: false, snapshots: [], worktrees: [], warning: null,
+            protocolVersion: 2, editor: 'cursor', installedEditors: ['idea', 'rustrover', 'webstorm'],
+            activeWorktreeId: null, emptyPrompt: '', snapshots: [], worktrees: [], warning: null,
           };
         },
       },
     }));
   });
   await tick();
-  await click('设置');
-  const gridText = document.querySelector('.editor-grid')?.textContent ?? '';
+  await click('Settings');
+  const gridText = document.querySelector('[data-setting-group="editor"]')?.textContent ?? '';
   assert(
     gridText.includes('IntelliJ IDEA') && gridText.includes('RustRover') && gridText.includes('WebStorm')
       && !gridText.includes('VS Code') && !gridText.includes('Cursor')
-      && document.querySelector<HTMLButtonElement>('.editor-grid button[aria-pressed="true"]')?.textContent?.includes('IntelliJ IDEA'),
-    '本机已安装编辑器过滤未隐藏未安装项或未自动回退已卸载的首选项',
+      && document.querySelector<HTMLButtonElement>('[data-setting-group="editor"] button[aria-pressed="true"]')?.textContent?.includes('IntelliJ IDEA'),
+    'Installed editor detection did not hide uninstalled editors or fall back from uninstalled preference',
   );
   await act(async () => {
     root.render(createElement(Workbench, {
@@ -653,33 +860,35 @@ export async function verifyWorkbench(root: Root) {
         ...reads,
         async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
           return {
-            protocolVersion: 1, editor: 'idea', installedEditors: [],
-            activeWorktreeId: null, emptyDraft: '', emptyEditing: false, snapshots: [], worktrees: [], warning: null,
+            protocolVersion: 2, editor: 'idea', installedEditors: [],
+            activeWorktreeId: null, emptyPrompt: '', snapshots: [], worktrees: [], warning: null,
           };
         },
       },
     }));
   });
   await tick();
-  await click('设置');
-  assert(!document.querySelector('.editor-grid') && text().includes('未检测到已安装的受支持编辑器'), '零已安装编辑器时未展示明确空态');
-  checks.push('本机已安装 IDE 动态识别过滤、未安装项隐藏与零编辑器空态（协议夹具）');
+  await click('Settings');
+  assert(!document.querySelector('[data-setting-group="editor"]') && text().includes('No supported editors detected'), 'Zero installed editors did not render empty state');
+  checks.push('Dynamic installed IDE filtering, fallback, and zero-editor empty state');
 
+  // 16. Preview Plan loading spinner, API key redaction, prompt forwarding to Review, Q&A during Preview Plan, and cancellation:
   const cancelledIds: string[] = [];
-  let finishGen: ((reply: GenerateCommitReply) => void) | undefined;
+  let finishPlan: ((reply: CPushCommandReply) => void) | undefined;
   const m3State = fixture('typing');
-  m3State.worktrees[0].draft = { text: '', editing: false, outdated: false, revision: 0 };
+  m3State.worktrees[0].plan = undefined;
+  m3State.worktrees[0].prompt = { text: 'split lockfile separately and check callback auth', revision: 0 };
   m3State.worktrees[0].files = m3State.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
   await mount(m3State, {
     ...disconnectedBackend,
     async testModel(input) {
-      throw new Error(`上游鉴权错误：Bearer ${input.apiKey} 无效`);
+      throw new Error(`Upstream auth error: Bearer ${input.apiKey} rejected`);
     },
     async cancelRequest(requestId) { cancelledIds.push(requestId); },
     execute(command) {
-      if (command.kind === 'generate') {
-        assert(command.selections?.length === command.fileIds.length && command.selections[0].commitToken === 'tok-order', '生成说明未传递每文件 commitToken');
-        return new Promise<GenerateCommitReply>((resolve) => { finishGen = resolve; });
+      if (command.kind === 'planCPush') {
+        assert(command.selections?.length === command.fileIds.length && command.selections[0].commitToken === 'tok-order', 'Preview Plan did not pass per-file commitTokens');
+        return new Promise<CPushCommandReply>((resolve) => { finishPlan = resolve; });
       }
       if (command.kind === 'review') {
         return new Promise<ReviewScopeReply>(() => {});
@@ -687,41 +896,81 @@ export async function verifyWorkbench(root: Root) {
       return disconnectedBackend.execute(command);
     },
   });
-  await click('设置'); await click('添加模型');
+  await click('Settings'); await click('Add Model');
   const keyField = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
   type(keyField, 'sk-form-secret-5566'); await tick();
-  await click('测试连接');
-  assert(text().includes('[REDACTED]') && !text().includes('sk-form-secret-5566'), '模型表单报错未脱敏 API Key');
-  await click('取消'); await click('关闭设置');
+  await click('Test Connection');
+  assert(text().includes('[REDACTED]') && !text().includes('sk-form-secret-5566'), 'Model form error leaked plaintext API key');
+  await click('Cancel'); await click('Close Settings');
 
-  await click('生成提交说明');
-  assert(text().includes('正在生成提交说明') && !!document.querySelector('textarea'), '空态点击生成说明未进入可编辑与可取消状态');
-  await click('取消');
-  assert(cancelledIds.length === 1 && !text().includes('正在生成提交说明'), '取消生成未触发后端取消或未清理忙碌态');
+  await click('Preview Plan');
+  assert(
+    text().includes('Generating commit plan…')
+      && !!document.querySelector('.commit-generating .spinning')
+      && (document.querySelector('#commit-tab')?.textContent ?? '').includes('Planning')
+      && !!document.querySelector('.prompt-textarea'),
+    'Generating commit plan should show centered spinner in plan region while keeping extra-instructions input visible above',
+  );
+  await click('Cancel');
+  assert(
+    cancelledIds.length === 1
+      && !text().includes('Generating commit plan…')
+      && !!document.querySelector('.plan-empty'),
+    'Cancel during Preview Plan did not invoke cancelRequest or restore empty plan state',
+  );
 
-  await click('生成提交说明');
-  const activeGenTarget = targetOf(m3State.worktrees[0]);
+  // Late `planCPush` reply after user edits prompt must NOT overwrite prompt or populate a stale plan:
+  await click('Preview Plan');
+  const activePlanTarget = targetOf(m3State.worktrees[0]);
+  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  type(promptArea, 'updated extra instruction while planning'); await tick();
   await act(async () => {
-    finishGen!({
-      protocolVersion: 1, kind: 'generate', requestId: 'ignored', target: activeGenTarget,
-      modelId: 'test-claude', text: 'feat(pay): 自动生成幂等锁说明', skippedPaths: [],
+    finishPlan!({
+      protocolVersion: 1,
+      kind: 'cPush',
+      requestId: 'ignored',
+      preparedPlan: {
+        summary: 'Stale plan',
+        groups: [{ id: 'g-stale', fileIds: ['order'], message: 'feat: stale plan' }],
+        skippedFileIds: [],
+      },
+      session: {
+        runId: 'ignored', repositoryId: activePlanTarget.repositoryId, worktreeId: activePlanTarget.worktreeId,
+        sessionId: activePlanTarget.sessionId, frozenScopeVersion: activePlanTarget.scopeVersion, modelId: 'test-claude',
+        frozenFileIds: ['order'], committedFileIds: [], skippedFileIds: [],
+        sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+      },
     });
   });
-  // Request ID mismatch in reply must not overwrite; now run clean generation:
-  assert(!document.querySelector<HTMLTextAreaElement>('textarea')?.value, 'requestId 不匹配的生成回执不应写入草稿');
+  assert(promptArea.value === 'updated extra instruction while planning' && !document.querySelector('.plan-group-textarea'), 'Late planCPush reply must not overwrite newer prompt or populate stale plan');
 
-  type ModelTaskCmd = Extract<WorkbenchCommand, { fileIds: string[]; modelId: string }>;
-  let capturedGenCmd: ModelTaskCmd | undefined;
-  let capturedRevCmd: ModelTaskCmd | undefined;
+  let capturedPlanCmd: Extract<WorkbenchCommand, { kind: 'planCPush' }> | undefined;
+  let capturedRevCmd: Extract<WorkbenchCommand, { kind: 'review' }> | undefined;
   await mount(m3State, {
     ...disconnectedBackend,
     async cancelRequest(requestId) { cancelledIds.push(requestId); },
     async execute(command) {
-      if (command.kind === 'generate') {
-        capturedGenCmd = command;
+      if (command.kind === 'planCPush') {
+        capturedPlanCmd = command;
         return {
-          protocolVersion: 1, kind: 'generate', requestId: command.requestId, target: command.target,
-          modelId: command.modelId, text: 'feat(order): 增加支付回调幂等锁与退避重试\n\n- 沿用 Order.ts 已暂存改动\n- 补充指数退避重试与验签错误返回', skippedPaths: [],
+          protocolVersion: 1,
+          kind: 'cPush',
+          requestId: command.requestId,
+          preparedPlan: {
+            summary: 'Prepared 1 commit',
+            groups: [{
+              id: 'g1',
+              fileIds: command.fileIds,
+              message: 'feat(order): add payment callback idempotency lock\n\n- keep staged Order.ts changes\n- add backoff retry and signature error code',
+            }],
+            skippedFileIds: [],
+          },
+          session: {
+            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
+            frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
+            sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+          },
         };
       }
       if (command.kind === 'review') {
@@ -731,19 +980,22 @@ export async function verifyWorkbench(root: Root) {
       return disconnectedBackend.execute(command);
     },
   });
-  await click('生成提交说明');
+  await click('Preview Plan');
+  const expectedPlannedMessage = 'feat(order): add payment callback idempotency lock\n\n- keep staged Order.ts changes\n- add backoff retry and signature error code';
   assert(
-    capturedGenCmd?.modelId === 'test-claude'
-      && document.querySelector<HTMLTextAreaElement>('textarea')?.value === 'feat(order): 增加支付回调幂等锁与退避重试\n\n- 沿用 Order.ts 已暂存改动\n- 补充指数退避重试与验签错误返回',
-    '生成提交说明未完整填入标题与正文要点',
+    capturedPlanCmd?.modelId === 'test-claude'
+      && capturedPlanCmd.prompt === 'split lockfile separately and check callback auth'
+      && document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'split lockfile separately and check callback auth'
+      && document.querySelector<HTMLTextAreaElement>('.plan-group-textarea')?.value === expectedPlannedMessage,
+    'Preview Plan did not populate editable plan below prompt or altered prompt input',
   );
   await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
-  await click('开始审查已选范围');
-  // While review is running, manual scope confirmation dropdown must NOT be blocked:
-  assert(!document.querySelector<HTMLButtonElement>('button[aria-label="确认提交范围或手动提交"]')!.disabled, '只读审查运行中不应阻塞手动提交入口');
-  await click('取消审查');
-  assert(cancelledIds.includes(capturedRevCmd!.requestId) && !!document.querySelector('.review-empty'), '取消审查未恢复待审查状态');
-  checks.push('M3 生成说明、范围凭证传递、表单密钥脱敏、取消生成/审查与不阻塞手动路径（协议夹具）');
+  assert(!document.querySelector('.review-empty [data-help-tip]'), 'Review empty state must not render a ? HelpTip next to Review Selected Scope');
+  await click('Review Selected Scope');
+  assert(capturedRevCmd?.prompt === 'split lockfile separately and check callback auth', 'Code Review did not forward user extra instructions');
+  await click('Cancel Review');
+  assert(cancelledIds.includes(capturedRevCmd!.requestId) && !!document.querySelector('.review-empty'), 'Cancel Review did not restore review empty state');
+  checks.push('Preview Plan loading spinner, API key redaction, prompt forwarding to Code Review, and cancel restoration');
 
   const lockOnlyState = fixture('typing');
   lockOnlyState.worktrees[0].selectedIds = ['lock'];
@@ -754,20 +1006,23 @@ export async function verifyWorkbench(root: Root) {
       if (command.kind === 'review') {
         return {
           protocolVersion: 1, kind: 'review', requestId: command.requestId, target: command.target,
-          modelId: command.modelId, findings: [], skippedPaths: ['pnpm-lock.yaml（锁文件默认忽略审查）'], reviewedFileIds: [],
+          modelId: command.modelId, findings: [], skippedPaths: ['pnpm-lock.yaml (lockfile skipped by default)'], reviewedFileIds: [],
         };
       }
       return disconnectedBackend.execute(command);
     },
   });
   await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
-  await click('开始审查已选范围');
-  assert(text().includes('所选范围均未纳入审查') && !text().includes('审查通过') && text().includes('未覆盖') && text().includes('pnpm-lock.yaml（锁文件默认忽略审查）'), '仅勾选锁文件时不应伪称审查通过');
-  checks.push('M3 锁文件过滤覆盖说明与禁止伪称审查通过（协议夹具）');
+  assert(!document.querySelector('.review-empty [data-help-tip]'), 'Review empty state must not render a ? HelpTip');
+  await click('Review Selected Scope');
+  assert(text().includes('No files in selected scope were reviewed') && !text().includes('Review passed') && text().includes('Uncovered') && text().includes('pnpm-lock.yaml (lockfile skipped by default)'), 'Lockfile-only review must report Uncovered rather than Review passed');
+  checks.push('M3 lockfile-filtered review coverage honesty without claiming Review passed');
 
+  // 17. M4 C-Push frozen scope, background question non-interruption, step pause/retry, and Q&A log:
   const cPushSub: { receive?: (event: WorkbenchEvent) => void } = {};
   const cPushCmds: WorkbenchCommand[] = [];
   const cPushState = fixture('typing');
+  cPushState.worktrees[0].plan = undefined;
   cPushState.worktrees[0].files = cPushState.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
   let resolveInitialCPush: ((reply: Awaited<ReturnType<WorkbenchBackend['execute']>>) => void) | undefined;
   let step2Paused = true;
@@ -790,16 +1045,16 @@ export async function verifyWorkbench(root: Root) {
               frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: ['order', 'pay', 'retry'], skippedFileIds: [],
               sessionStatus: 'needsDecision', canRetryRemaining: true,
               timeline: [
-                { state: 'done', label: '提交 1/2：a3f91c2 feat(order): 增加幂等锁' },
-                { state: 'failed', label: '提交 2/2 暂停：docs: 更新发布说明' },
+                { state: 'done', label: 'Commit 1/2: a3f91c2 feat(order): add idempotency lock' },
+                { state: 'failed', label: 'Commit 2/2 paused: docs: update release notes' },
               ],
-              qaLog: [{ questionId: command.messageId, question: '发布说明要一起提交吗？', answer: '单独提交并一起推送' }],
-              commits: [{ oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): 增加幂等锁', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] }],
+              qaLog: [{ questionId: command.messageId, question: 'Include release notes in this commit?', answer: 'Commit separately & push together' }],
+              commits: [{ oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): add idempotency lock', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] }],
               message: {
-                id: 'err-step-2', kind: 'error', title: '已完成 1/2 个提交，提交 2 暂停', scope: '提交 2/2',
-                description: '提交钩子暂时拒绝。已完成提交保留，修复后可重试剩余步骤。',
-                commits: [{ hash: 'a3f91c2', title: 'feat(order): 增加幂等锁' }],
-                options: [{ id: 'retry-remaining', label: '重试剩余提交', recommended: true }],
+                id: 'err-step-2', kind: 'error', title: 'Completed 1/2 commits; commit 2 paused', scope: 'Commit 2/2',
+                description: 'Commit hook rejected commit 2. Landed commits are preserved; retry remaining steps after fixing.',
+                commits: [{ hash: 'a3f91c2', title: 'feat(order): add idempotency lock' }],
+                options: [{ id: 'retry-remaining', label: 'Retry Remaining Commits', recommended: true }],
               },
             },
           };
@@ -812,18 +1067,18 @@ export async function verifyWorkbench(root: Root) {
             frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: ['order', 'pay', 'retry', 'release'], skippedFileIds: [],
             sessionStatus: 'done', canRetryRemaining: false,
             timeline: [
-              { state: 'done', label: '提交 1/2：a3f91c2 feat(order): 增加幂等锁' },
-              { state: 'done', label: '提交 2/2：b84d120 docs: 更新发布说明' },
+              { state: 'done', label: 'Commit 1/2: a3f91c2 feat(order): add idempotency lock' },
+              { state: 'done', label: 'Commit 2/2: b84d120 docs: update release notes' },
             ],
-            qaLog: [{ questionId: 'q-m4', question: '发布说明要一起提交吗？', answer: '单独提交并一起推送' }],
+            qaLog: [{ questionId: 'q-m4', question: 'Include release notes in this commit?', answer: 'Commit separately & push together' }],
             commits: [
-              { oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): 增加幂等锁', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] },
-              { oid: 'b84d120000', shortOid: 'b84d120', title: 'docs: 更新发布说明', branch: 'feat/pay', fileIds: ['release'] },
+              { oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): add idempotency lock', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] },
+              { oid: 'b84d120000', shortOid: 'b84d120', title: 'docs: update release notes', branch: 'feat/pay', fileIds: ['release'] },
             ],
             message: {
-              id: 'done-m4', kind: 'done', title: '已完成 2 个本地拆分提交', scope: 'feat/pay',
-              description: '未选锁文件与未暂存草稿保留在原处。',
-              commits: [{ hash: 'a3f91c2', title: 'feat(order): 增加幂等锁' }, { hash: 'b84d120', title: 'docs: 更新发布说明' }],
+              id: 'done-m4', kind: 'done', title: 'Completed 2 local split commits', scope: 'feat/pay',
+              description: 'Unselected lockfile and unstaged drafts remain untouched.',
+              commits: [{ hash: 'a3f91c2', title: 'feat(order): add idempotency lock' }, { hash: 'b84d120', title: 'docs: update release notes' }],
             },
           },
         };
@@ -832,14 +1087,13 @@ export async function verifyWorkbench(root: Root) {
     },
   });
   await click('C-Push');
-  assert(cPushCmds.length === 1 && cPushCmds[0].kind === 'cPush' && cPushCmds[0].selections?.length === 4, 'C-Push 未附带精确文件范围凭证');
+  assert(cPushCmds.length === 1 && cPushCmds[0].kind === 'cPush' && cPushCmds[0].selections?.length === 4, 'C-Push omitted per-file commitTokens');
   const startedCmd = cPushCmds[0];
-  // Collapse dock, focus textarea, and toggle `pnpm-lock.yaml` mid-run (`C03` + `W03`):
-  await click('收起消息');
-  const m4Editor = document.querySelector<HTMLTextAreaElement>('textarea')!;
+  await click('Collapse Message');
+  const m4Editor = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
   m4Editor.focus();
-  type(m4Editor, '后续提交草稿，运行中不被冲掉'); await tick();
-  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="选择 pnpm-lock.yaml"]')!.click(); });
+  type(m4Editor, 'Next C-Push instruction typed mid-run'); await tick();
+  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.click(); });
   await act(async () => {
     resolveInitialCPush!({
       protocolVersion: 1, kind: 'cPush', requestId: startedCmd.requestId,
@@ -848,31 +1102,34 @@ export async function verifyWorkbench(root: Root) {
         sessionId: startedCmd.target.sessionId, frozenScopeVersion: startedCmd.target.scopeVersion, modelId: 'test-claude',
         frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: [], skippedFileIds: [],
         sessionStatus: 'needsDecision', canRetryRemaining: false,
-        timeline: [{ state: 'done', label: '已固定 4 个已选文件范围' }, { state: 'active', label: '等待决定：发布说明要一起提交吗？' }],
+        timeline: [{ state: 'done', label: 'Froze scope for 4 selected files' }, { state: 'active', label: 'Waiting for decision: Include release notes in this commit?' }],
         qaLog: [], commits: [],
         message: { ...releaseQuestion(), id: 'q-m4' },
       },
     });
   });
-  assert(document.activeElement === m4Editor && !document.querySelector('.message-expanded') && m4Editor.value === '后续提交草稿，运行中不被冲掉', 'C-Push 后台提问抢走焦点或自动展开');
-  assert(button('C-Push · 待决定'), '待决定状态未同步到底栏主按钮');
-  // Clicking primary button resumes existing session instead of starting a second C-Push:
-  await click('C-Push · 待决定');
-  assert(cPushCmds.length === 1 && !!document.querySelector('.message-expanded'), '点击恢复按钮不应重复启动第二个任务');
-  await click('单独提交并一起推送');
+  assert(document.activeElement === m4Editor && !document.querySelector('.message-expanded') && m4Editor.value === 'Next C-Push instruction typed mid-run', 'C-Push background question stole focus or auto-expanded');
+  assert(button('C-Push · Decide'), 'needsDecision status did not sync to primary footer button');
+  await click('C-Push · Decide');
+  assert(cPushCmds.length === 1 && !!document.querySelector('.message-expanded'), 'Clicking resume button must expand dock rather than starting a second C-Push');
+  await click('Commit separately & push together');
   const firstRespond = cPushCmds[1];
-  assert(firstRespond?.kind === 'respond' && firstRespond.runId === startedCmd.requestId && firstRespond.target.scopeVersion === startedCmd.target.scopeVersion, '运行中勾选改变了当前 C-Push 冻结目标');
-  assert(text().includes('已完成 1/2 个提交，提交 2 暂停') && !!document.querySelector('[aria-label="会话执行步骤"]'), '部分提交暂停态或执行步骤未展示');
-  await click('重试剩余提交');
-  assert(text().includes('已完成 2 个本地拆分提交') && text().includes('b84d120') && !!document.querySelector('[aria-label="会话问答记录"]'), '重试剩余步骤未完成或缺少问答记录');
-  assert(m4Editor.value === '后续提交草稿，运行中不被冲掉', 'C-Push 完成覆盖了运行期间新写的人工草稿');
-  checks.push('M4 C-Push 范围冻结、后台提问不抢焦点、分步暂停重试与问答记录（协议夹具）');
+  assert(firstRespond?.kind === 'respond' && firstRespond.runId === startedCmd.requestId && firstRespond.target.scopeVersion === startedCmd.target.scopeVersion, 'Mid-run checkbox toggle mutated frozen C-Push target');
+  assert(text().includes('Completed 1/2 commits; commit 2 paused') && !!document.querySelector('[aria-label="Session execution steps"]'), 'Paused step state or timeline did not render');
+  await click('Retry Remaining Commits');
+  assert(text().includes('Completed 2 local split commits') && text().includes('b84d120') && !!document.querySelector('[aria-label="Session Q&A log"]'), 'Retrying remaining steps did not finish or omitted Q&A log');
+  assert(m4Editor.value === 'Next C-Push instruction typed mid-run', 'C-Push completion wiped prompt edited mid-run');
+  checks.push('M4 C-Push scope freeze, non-interrupting question, partial-step retry, and Q&A log');
 
+  // 18. M5 Pull & Rebase, C-Push push-failure prompt preservation + retry-push-only, manual IDE merge, and focus reconciliation:
   const m5Sub: { receive?: (event: WorkbenchEvent) => void } = {};
   const m5Cmds: WorkbenchCommand[] = [];
   let reconcileCalls = 0;
-  let pullcreatesConflict = false;
-  await mount(fixture('empty'), {
+  let pullCreatesConflict = false;
+  const m5InitState = fixture('empty');
+  m5InitState.models = [{ id: 'test-claude', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }];
+  m5InitState.activeModelId = 'test-claude';
+  await mount(m5InitState, {
     ...reads,
     subscribe(receive) { m5Sub.receive = receive; return () => { m5Sub.receive = undefined; }; },
     async reconcileSession(target) {
@@ -886,12 +1143,12 @@ export async function verifyWorkbench(root: Root) {
           repositorySnapshot: pushedSnap,
           session: {
             runId: 'conflict-run-1', repositoryId: target.repositoryId, worktreeId: target.worktreeId,
-            sessionId: target.sessionId, frozenScopeVersion: target.scopeVersion, modelId: '',
+            sessionId: target.sessionId, frozenScopeVersion: target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
             sessionStatus: 'done', autoCollapse: true, canRetryRemaining: false,
-            timeline: [{ state: 'done', label: '检测到终端已完成合并并推送至 mirror/feat/pay' }],
+            timeline: [{ state: 'done', label: 'Detected merge and push completed in terminal to mirror/feat/pay' }],
             qaLog: [], commits: [],
-            message: { id: 'reconciled-done', kind: 'done', title: '检测到终端已完成合并并推送', description: '本地与远端已一致。' },
+            message: { id: 'reconciled-done', kind: 'done', title: 'Detected merge and push completed in terminal', description: 'Local and remote HEAD match.' },
           },
         },
       });
@@ -900,23 +1157,23 @@ export async function verifyWorkbench(root: Root) {
       m5Cmds.push(command);
       if (command.kind === 'pull') {
         const pullSnap = repositoryReply(command.requestId, ++readSequence).snapshot!;
-        if (pullcreatesConflict) {
+        if (pullCreatesConflict) {
           return {
             protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pullSnap,
             session: {
               runId: 'conflict-run-1', repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
               frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
               sessionStatus: 'conflict', canRetryRemaining: false,
-              timeline: [{ state: 'failed', label: '变基遇到冲突：src/service/Order.ts' }],
+              timeline: [{ state: 'failed', label: 'Rebase conflict on src/service/Order.ts' }],
               qaLog: [], commits: [],
               message: {
-                id: 'conflict-msg-1', kind: 'conflict', title: '同步远端改动遇到代码冲突', scope: 'mirror/feat/pay',
-                description: '请选择合并方式；未授权前 Agent 不会修改冲突文件。',
-                files: [{ id: 'order', label: 'src/service/Order.ts', badge: '冲突' }],
+                id: 'conflict-msg-1', kind: 'conflict', title: 'Merge conflict while syncing remote changes', scope: 'mirror/feat/pay',
+                description: 'Choose a merge strategy; Agent never modifies conflicted files without authorization.',
+                files: [{ id: 'order', label: 'src/service/Order.ts', badge: 'Conflict' }],
                 options: [
-                  { id: 'manual-merge', label: '我手动合并', recommended: true },
-                  { id: 'abort-rebase', label: '中止变基' },
+                  { id: 'manual-merge', label: 'Merge Manually', recommended: true },
+                  { id: 'abort-rebase', label: 'Abort Rebase' },
                 ],
               },
             },
@@ -927,34 +1184,34 @@ export async function verifyWorkbench(root: Root) {
           protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pullSnap,
           session: {
             runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
             sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
           },
         };
       }
-      if (command.kind === 'commit' && command.push) {
+      if (command.kind === 'cPush') {
         const localCommittedSnap = repositoryReply(command.requestId, ++readSequence).snapshot!;
         localCommittedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 3, behind: 0, localOnly: true };
         localCommittedSnap.worktrees[0].files = localCommittedSnap.worktrees[0].files.filter((f) => f.id !== 'retry');
         return {
           protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: localCommittedSnap,
           session: {
-            runId: 'manual-push-run', repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
             frozenFileIds: command.fileIds, committedFileIds: command.fileIds, skippedFileIds: [],
             sessionStatus: 'pushFailed', canRetryRemaining: false,
             timeline: [
-              { state: 'done', label: '本地提交 c9012ab：feat(order): 提交并推送' },
-              { state: 'failed', label: '推送至 mirror/feat/pay 失败' },
+              { state: 'done', label: 'Local commit c9012ab: feat(order): commit and push' },
+              { state: 'failed', label: 'Push to mirror/feat/pay failed' },
             ],
             qaLog: [],
-            commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): 提交并推送', branch: 'feat/pay', fileIds: command.fileIds }],
+            commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): commit and push', branch: 'feat/pay', fileIds: command.fileIds }],
             message: {
-              id: 'push-err-1', kind: 'pushFailed', title: '已在本地提交，推送失败', scope: 'mirror/feat/pay',
-              description: '本地提交已保留，重连后点击重试推送仅推送已有提交。',
-              commits: [{ hash: 'c9012ab', title: 'feat(order): 提交并推送' }],
-              options: [{ id: 'retry-push', label: '重试推送', recommended: true }],
+              id: 'push-err-1', kind: 'pushFailed', title: 'Committed locally, push failed', scope: 'mirror/feat/pay',
+              description: 'Local commit preserved; Retry Push only pushes existing commits.',
+              commits: [{ hash: 'c9012ab', title: 'feat(order): commit and push' }],
+              options: [{ id: 'retry-push', label: 'Retry Push', recommended: true }],
             },
           },
         };
@@ -967,13 +1224,13 @@ export async function verifyWorkbench(root: Root) {
             protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pushedSnap,
             session: {
               runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
               frozenFileIds: ['order', 'retry'], committedFileIds: ['order', 'retry'], skippedFileIds: [],
               sessionStatus: 'done', canRetryRemaining: false,
-              timeline: [{ state: 'done', label: '1 个提交已推送至 mirror/feat/pay' }],
+              timeline: [{ state: 'done', label: '1 commit pushed to mirror/feat/pay' }],
               qaLog: [],
-              commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): 提交并推送', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
-              message: { id: 'push-done-1', kind: 'done', title: '1 个提交已推送至 mirror/feat/pay', description: '已完成远端推送。' },
+              commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): commit and push', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
+              message: { id: 'push-done-1', kind: 'done', title: '1 commit pushed to mirror/feat/pay', description: 'Remote push completed.' },
             },
           };
         }
@@ -981,15 +1238,15 @@ export async function verifyWorkbench(root: Root) {
           protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
           session: {
             runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: '',
+            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
             sessionStatus: 'waitingManual', canRetryRemaining: false,
-            timeline: [{ state: 'active', label: '等待你在外部 IDE 完成手动合并…' }],
+            timeline: [{ state: 'active', label: 'Waiting for manual merge in external IDE…' }],
             qaLog: [], commits: [],
             message: {
-              id: 'waiting-manual-1', kind: 'waitingManual', title: '等待你在 IDE 完成手动合并',
-              description: '解决冲突后切回 Picket 将自动核对冲突与远端状态。',
-              files: [{ id: 'order', label: 'src/service/Order.ts', badge: '冲突' }],
+              id: 'waiting-manual-1', kind: 'waitingManual', title: 'Waiting for manual merge in IDE',
+              description: 'Refocusing Picket after resolving conflicts automatically reconciles Git and remote state.',
+              files: [{ id: 'order', label: 'src/service/Order.ts', badge: 'Conflict' }],
             },
           },
         };
@@ -997,40 +1254,821 @@ export async function verifyWorkbench(root: Root) {
       return reads.execute(command);
     },
   });
-  await click('打开本机仓库…');
-  await click('远端详情');
-  assert(text().includes('尚未联网检查远端'), '离线跟踪状态应提示尚未联网检查');
-  await click('拉取并变基');
-  assert(text().includes('已完成拉取并变基') && text().includes('↓ 0'), '拉取并变基完成后未更新远端落后计数');
-  await click('远端详情');
-  assert(!text().includes('尚未联网检查远端'), '真实远端同步后不应再提示仅本地引用');
+  await click('Open Local Repository…');
+  await click('Remote Details');
+  assert(text().includes('not fetched over network yet'), 'localOnly remote state should display local-tracking-ref tooltip');
+  await click('Pull & Rebase');
+  assert(text().includes('Pull & rebase complete') && text().includes('↓ 0'), 'Pull & Rebase completion did not update behind count');
+  await click('Remote Details');
+  assert(!text().includes('not fetched over network yet'), 'Network-synced remote should clear localOnly tooltip');
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
 
   await act(async () => {
-    document.querySelector<HTMLInputElement>('[aria-label="选择 src/api/pay.ts"]')!.click();
-    document.querySelector<HTMLInputElement>('[aria-label="选择 RELEASE_NOTES.md"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select src/api/pay.ts"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select RELEASE_NOTES.md"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.click();
   });
-  await click('手动编写');
-  type(document.querySelector<HTMLTextAreaElement>('textarea')!, 'feat(order): 提交并推送'); await tick();
-  await click('提交');
-  await click('提交并推送');
-  assert(text().includes('已在本地提交，推送失败') && text().includes('c9012ab') && button('重试推送'), '推送失败未展示本地提交保留提示或底栏重试入口');
-  const commitCmdCountBeforeRetry = m5Cmds.filter((c) => c.kind === 'commit').length;
-  await click('收起消息');
-  await click('重试推送');
-  assert(!!document.querySelector('.message-expanded') && m5Cmds.filter((c) => c.kind === 'commit').length === commitCmdCountBeforeRetry, '点击底栏重试推送恢复按钮未展开失败面板');
-  await click('重试推送');
-  assert(m5Cmds.filter((c) => c.kind === 'commit').length === commitCmdCountBeforeRetry && text().includes('1 个提交已推送至 mirror/feat/pay') && text().includes('↑ 0'), '重试推送重复执行了提交或未同步远端领先计数');
+  await click('+ Prompt');
+  const m5Prompt = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  type(m5Prompt, 'keep staged hunk atomic'); await tick();
+  m5Prompt.blur();
+  await click('C-Push');
+  assert(text().includes('Committed locally, push failed') && text().includes('c9012ab') && button('Retry Push'), 'Push failure did not surface preserved local commit or Retry Push');
+  assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'keep staged hunk atomic', 'Push failure must preserve extra instructions while Retry Push is pending');
+  const cPushCmdCountBeforeRetry = m5Cmds.filter((c) => c.kind === 'cPush').length;
+  await click('Collapse Message');
+  await click('Retry Push');
+  assert(!!document.querySelector('.message-expanded') && m5Cmds.filter((c) => c.kind === 'cPush').length === cPushCmdCountBeforeRetry, 'Footer Retry Push resume button did not expand dock');
+  await click('Retry Push');
+  assert(
+    m5Cmds.filter((c) => c.kind === 'cPush').length === cPushCmdCountBeforeRetry
+      && text().includes('1 commit pushed to mirror/feat/pay')
+      && text().includes('↑ 0')
+      && !document.querySelector('.prompt-textarea'),
+    'Retrying push duplicated C-Push, failed to clear ahead count, or failed to clear/collapse extra instructions after push succeeded',
+  );
 
-  pullcreatesConflict = true;
-  await click('收起消息');
-  await click('远端详情');
-  await click('拉取并变基');
-  assert(text().includes('同步远端改动遇到代码冲突') && !!document.querySelector('.message-expanded'), '拉取遇到冲突未展开冲突卡片');
-  await click('我手动合并');
-  assert(text().includes('等待你在 IDE 完成手动合并') && button('C-Push · 待决定'), '切换手动合并未进入等待状态');
+  pullCreatesConflict = true;
+  await click('Collapse Message');
+  await click('Remote Details');
+  await click('Pull & Rebase');
+  assert(text().includes('Merge conflict while syncing remote changes') && !!document.querySelector('.message-expanded'), 'Conflict during Pull & Rebase did not expand conflict card');
+  await click('Merge Manually');
+  assert(text().includes('Waiting for manual merge in IDE') && button('C-Push · Decide'), 'Switching to manual merge did not enter waitingManual');
   await act(async () => { window.dispatchEvent(new Event('focus')); });
-  assert(reconcileCalls >= 1 && !document.querySelector('.message-expanded') && text().includes('检测到终端已完成合并并推送'), '切回窗口未触发对账或终端已推送后未自动收起面板');
-  checks.push('M5 远端拉取变基、手动提交推送失败仅重试推送、冲突转手动合并与切回自动对账收起（协议夹具）');
-  return { environment: 'Chrome headless · 开发样例，不是真实 Git / 模型验收', viewport: { width: innerWidth, height: innerHeight }, checks };
+  assert(reconcileCalls >= 1 && !document.querySelector('.message-expanded') && text().includes('Detected merge and push completed in terminal'), 'Window focus did not reconcile or auto-collapse completed terminal merge');
+  checks.push('M5 Pull & Rebase, C-Push pushFailed prompt preservation + retry-push-only, manual merge handoff, and focus reconciliation');
+
+  // 19. Local Keep fixed group: default collapsed, right-click & drag move-in/move-out, select-all tri-state, gentle notice, conflict visibility, and cold-restart hydration:
+  const localKeepOpenCalls: string[] = [];
+  const localKeepSetCalls: Array<{ paths: string[]; keep: boolean }> = [];
+  const localKeepState = fixture();
+  localKeepState.worktrees = localKeepState.worktrees.map((tree) => ({
+    ...tree,
+    files: tree.files.map((file) => ({ ...file, commitToken: `tok-lk-${tree.worktreeId}-${file.id}` })),
+  }));
+  await mount(localKeepState, {
+    ...disconnectedBackend,
+    repositoryReadsAvailable: true,
+    async execute(command) {
+      if (command.kind === 'openFile') {
+        localKeepOpenCalls.push(command.fileId);
+        return {
+          protocolVersion: 1,
+          kind: 'openFile',
+          requestId: command.requestId,
+          target: command.target,
+          editor: command.editor,
+          filePath: 'src/service/Order.ts',
+          action: 'diff',
+        } satisfies GitOpenFileReply;
+      }
+      if (command.kind === 'setLocalKeep') {
+        localKeepSetCalls.push({ paths: command.paths, keep: command.keep });
+        const snap = repositorySnapshot(++readSequence);
+        const currentKept = new Set<string>(
+          localKeepSetCalls.reduce<string[]>((acc, item) => {
+            const next = new Set(acc);
+            for (const p of item.paths) {
+              if (item.keep) next.add(p);
+              else next.delete(p);
+            }
+            return [...next];
+          }, []),
+        );
+        snap.repository.localKeepPaths = [...currentKept].sort();
+        snap.worktrees = snap.worktrees.map((wt) => ({
+          ...wt,
+          files: wt.files.map((f) => ({
+            ...f,
+            localKeep: currentKept.has(f.path),
+            commitToken: `tok-seq${readSequence}-${f.id}-${currentKept.has(f.path) ? 'keep' : 'norm'}`,
+          })),
+        }));
+        return {
+          protocolVersion: 1,
+          kind: 'localKeep',
+          requestId: command.requestId,
+          target: command.target,
+          snapshot: snap,
+        };
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+
+  const keepHeader = () => document.querySelector<HTMLButtonElement>('.local-keep-header')!;
+  const keepCount = () => document.querySelector('.local-keep-count')?.textContent?.trim();
+  assert(
+    keepHeader().getAttribute('aria-expanded') === 'false' && keepCount() === '0',
+    'Local Keep group must render at bottom collapsed by default with 0 count',
+  );
+
+  // IDEA-style single-click, Shift+Click range, Cmd+Click multi-select, and batch right-click Keep Locally:
+  const rowByPath = (path: string) => document.querySelector<HTMLElement>(`.file-row[data-file-path="${path}"]`)!;
+  const clickRowWithMods = async (path: string, init: MouseEventInit = {}) => {
+    await act(async () => {
+      rowByPath(path).querySelector<HTMLButtonElement>('.file-open')!.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true, ...init }),
+      );
+    });
+  };
+  await clickRowWithMods('src/service/Order.ts');
+  assert(
+    rowByPath('src/service/Order.ts').classList.contains('is-selected')
+      && document.querySelectorAll('.file-row.is-selected').length === 1
+      && localKeepOpenCalls.length === 0,
+    'Single click must select only the clicked file row without opening IDE',
+  );
+  await clickRowWithMods('src/utils/retry.ts', { shiftKey: true });
+  assert(
+    rowByPath('src/service/Order.ts').classList.contains('is-selected')
+      && rowByPath('src/api/pay.ts').classList.contains('is-selected')
+      && rowByPath('src/utils/retry.ts').classList.contains('is-selected')
+      && document.querySelectorAll('.file-row.is-selected').length === 3,
+    'Shift+Click must select the contiguous range of file rows',
+  );
+  await clickRowWithMods('src/api/pay.ts', { metaKey: true });
+  assert(
+    !rowByPath('src/api/pay.ts').classList.contains('is-selected')
+      && document.querySelectorAll('.file-row.is-selected').length === 2,
+    'Cmd+Click on a selected row must toggle it off',
+  );
+  await clickRowWithMods('src/api/pay.ts', { metaKey: true });
+  assert(document.querySelectorAll('.file-row.is-selected').length === 3, 'Cmd+Click on an unselected row must add it to selection');
+  await act(async () => {
+    rowByPath('src/api/pay.ts').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 150 }));
+  });
+  const batchMenuItems = [...document.querySelectorAll<HTMLButtonElement>('.file-context-menu [role="menuitem"]')];
+  assert(
+    batchMenuItems.length === 1
+      && batchMenuItems[0].textContent?.includes('Keep Locally (Do Not Commit)')
+      && batchMenuItems[0].textContent?.includes('3'),
+    'Right-clicking multi-selected rows must show single Keep Locally menu item with batch count 3',
+  );
+  await clickElement(batchMenuItems[0]);
+  assert(
+    keepCount() === '3' && localKeepOpenCalls.length === 0,
+    'Clicking Keep Locally on multi-selected rows must move all 3 files to Local Keep simultaneously',
+  );
+  await clickElement(keepHeader());
+  await clickRowWithMods('src/service/Order.ts');
+  await clickRowWithMods('src/utils/retry.ts', { shiftKey: true });
+  await act(async () => {
+    rowByPath('src/service/Order.ts').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 220 }));
+  });
+  const restoreBatchItem = document.querySelector<HTMLButtonElement>('.file-context-menu [role="menuitem"]')!;
+  assert(
+    document.querySelectorAll('.file-context-menu [role="menuitem"]').length === 1
+      && restoreBatchItem.textContent?.includes('Move Back to Changes')
+      && restoreBatchItem.textContent?.includes('3'),
+    'Right-clicking multi-selected Local Keep rows must show Move Back to Changes with count 3',
+  );
+  await clickElement(restoreBatchItem);
+  assert(keepCount() === '0', 'Batch Move Back to Changes must restore all 3 files');
+  await clickElement(keepHeader());
+  assert(keepHeader().getAttribute('aria-expanded') === 'false', 'Local Keep should collapse back after batch restore test');
+
+  const notesRow = () => document.querySelector<HTMLElement>('.file-row[data-file-path="RELEASE_NOTES.md"]')!;
+  await act(async () => {
+    notesRow().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 160 }));
+  });
+  const menuItem = document.querySelector<HTMLButtonElement>('.file-context-menu [role="menuitem"]')!;
+  assert(menuItem?.textContent?.includes('Keep Locally (Do Not Commit)'), 'Right-clicking normal file did not open Keep Locally menu item');
+  await clickElement(menuItem);
+  assert(
+    keepCount() === '1'
+      && keepHeader().getAttribute('aria-expanded') === 'false'
+      && !document.querySelector('.normal-changes-zone .file-row[data-file-path="RELEASE_NOTES.md"]')
+      && localKeepOpenCalls.length === 0,
+    'Context-menu Keep Locally must move file to collapsed Local Keep without opening IDE',
+  );
+
+  const topSelectAll = () => document.querySelector<HTMLInputElement>('.changes-summary .file-checkbox')!;
+  assert(topSelectAll().indeterminate && !topSelectAll().checked, 'Top Select All should be indeterminate when lockfile in normal changes is unselected');
+  await act(async () => { topSelectAll().click(); });
+  assert(
+    topSelectAll().checked && !topSelectAll().indeterminate && text().includes('4/4 selected'),
+    'Selecting all normal changes must mark top Select All checked even when Local Keep file is unselected',
+  );
+  assert(!document.querySelector('.local-keep-notice'), 'Gentle Local Keep notice must not appear when no Local Keep file is checked');
+
+  await clickElement(keepHeader());
+  assert(keepHeader().getAttribute('aria-expanded') === 'true' && !!document.querySelector('.local-keep-list .file-row[data-file-path="RELEASE_NOTES.md"]'), 'Expanding Local Keep did not reveal kept file row');
+  const keptCheckbox = () => document.querySelector<HTMLInputElement>('.local-keep-list input[aria-label="Select RELEASE_NOTES.md"]')!;
+  assert(!keptCheckbox().checked, 'Select All must never select Local Keep files');
+  await act(async () => { keptCheckbox().click(); });
+  assert(
+    keptCheckbox().checked
+      && !!document.querySelector('.local-keep-notice')
+      && text().includes('1 Local Keep file is checked and will be included'),
+    'Checking a Local Keep file did not display the inline gentle notice',
+  );
+  await clickElement(document.querySelector<HTMLButtonElement>('.local-keep-notice button')!);
+  assert(!keptCheckbox().checked && !document.querySelector('.local-keep-notice') && topSelectAll().checked, 'Uncheck button in gentle notice should uncheck only Local Keep files');
+
+  await act(async () => { keptCheckbox().click(); });
+  assert(keptCheckbox().checked && topSelectAll().checked, 'Top Select All should remain checked when all normal changes are selected');
+  await act(async () => { topSelectAll().click(); });
+  assert(
+    !topSelectAll().checked && !topSelectAll().indeterminate && !keptCheckbox().checked && text().includes('No changes selected'),
+    'Deselect All must also clear manually checked Local Keep files',
+  );
+
+  const keptRow = document.querySelector<HTMLElement>('.local-keep-list .file-row[data-file-path="RELEASE_NOTES.md"]')!;
+  const keptRowRect = keptRow.getBoundingClientRect();
+  const normalZone = document.querySelector<HTMLElement>('.normal-changes-zone')!;
+  const normalZoneRect = normalZone.getBoundingClientRect();
+  await act(async () => {
+    keptRow.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 10, clientX: keptRowRect.left + 20, clientY: keptRowRect.top + 10 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 10, clientX: keptRowRect.left + 28, clientY: keptRowRect.top + 18 }));
+  });
+  assert(normalZone.classList.contains('drop-zone-ready'), 'Dragging a Local Keep file did not highlight normal changes zone as ready');
+  await act(async () => {
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 10, clientX: normalZoneRect.left + 40, clientY: normalZoneRect.top + 16 }));
+  });
+  assert(normalZone.classList.contains('drop-zone-over') && text().includes('Drop to move back to changes'), 'Hovering normal changes zone during drag did not show active drop highlight');
+  await act(async () => {
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 10, clientX: normalZoneRect.left + 40, clientY: normalZoneRect.top + 16 }));
+  });
+  assert(
+    keepCount() === '0'
+      && !!document.querySelector('.normal-changes-zone .file-row[data-file-path="RELEASE_NOTES.md"]')
+      && localKeepOpenCalls.length === 0,
+    'Pointer drag-drop back to normal changes failed or accidentally opened IDE',
+  );
+
+  await clickElement(keepHeader());
+  assert(keepHeader().getAttribute('aria-expanded') === 'false', 'Local Keep should collapse on header click');
+  const payRow = document.querySelector<HTMLElement>('.normal-changes-zone .file-row[data-file-path="src/api/pay.ts"]')!;
+  const payRect = payRow.getBoundingClientRect();
+  const keepRect = keepHeader().getBoundingClientRect();
+  const keepSection = document.querySelector<HTMLElement>('.local-keep-section')!;
+  await act(async () => {
+    payRow.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 11, clientX: payRect.left + 20, clientY: payRect.top + 10 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 11, clientX: payRect.left + 32, clientY: payRect.top + 22 }));
+  });
+  assert(keepSection.classList.contains('drop-zone-ready') && !!document.querySelector('.file-drag-ghost'), 'Pointer drag past threshold did not activate drag ghost or Local Keep drop zone');
+  await act(async () => {
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 11, clientX: keepRect.left + 40, clientY: keepRect.top + 12 }));
+  });
+  assert(keepSection.classList.contains('drop-zone-over') && text().includes('Drop to keep locally'), 'Pointer hover over collapsed Local Keep header did not show active drop highlight');
+  await act(async () => {
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 11, clientX: keepRect.left + 40, clientY: keepRect.top + 12 }));
+    keepHeader().click();
+  });
+  assert(
+    keepCount() === '1'
+      && keepHeader().getAttribute('aria-expanded') === 'false'
+      && localKeepOpenCalls.length === 0,
+    'Pointer drop onto collapsed Local Keep header must move file without toggling expand or opening IDE',
+  );
+
+  // Fixed-bottom Local Keep + drag-to-edge auto-scrolling on overflowing file lists:
+  await mount(fixture('long-paths'));
+  const changesPanelEl = document.querySelector<HTMLElement>('.changes-panel')!;
+  const scrollList = document.querySelector<HTMLElement>('.changes-list')!;
+  const pinnedKeepSection = document.querySelector<HTMLElement>('.local-keep-section')!;
+  const pinnedKeepHeader = document.querySelector<HTMLButtonElement>('.local-keep-header')!;
+  assert(
+    scrollList.scrollHeight > scrollList.clientHeight + 300
+      && scrollList.scrollTop === 0
+      && !scrollList.contains(pinnedKeepSection)
+      && Math.abs(pinnedKeepSection.getBoundingClientRect().bottom - changesPanelEl.getBoundingClientRect().bottom) <= 2,
+    'Local Keep must be fixed at the bottom of .changes-panel outside .changes-list even when file list overflows at scrollTop=0',
+  );
+  // Dragging a file directly onto the fixed bottom Local Keep bar at scrollTop=0 immediately moves it without scrolling:
+  const midRow = document.querySelector<HTMLElement>('.normal-changes-zone .file-row[data-file-path="RELEASE_NOTES.md"]')!;
+  const midRect = midRow.getBoundingClientRect();
+  const pinnedKeepRect = pinnedKeepHeader.getBoundingClientRect();
+  let nativeDragCancelled = false;
+  await act(async () => {
+    const nativeDragStart = new DragEvent('dragstart', { bubbles: true, cancelable: true });
+    midRow.dispatchEvent(nativeDragStart);
+    nativeDragCancelled = nativeDragStart.defaultPrevented;
+    midRow.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 21, clientX: midRect.left + 24, clientY: midRect.top + 10 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 21, clientX: pinnedKeepRect.left + 40, clientY: pinnedKeepRect.top + 12 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 21, clientX: pinnedKeepRect.left + 40, clientY: pinnedKeepRect.top + 12 }));
+  });
+  assert(nativeDragCancelled && keepCount() === '1' && scrollList.scrollTop === 0, 'Dropping directly onto fixed-bottom Local Keep at scrollTop=0 must move the file immediately');
+
+  // Holding dragged file near bottom edge of .changes-list (above Local Keep) auto-scrolls .changes-list downward:
+  const topRow = document.querySelector<HTMLElement>('.normal-changes-zone .file-row')!;
+  const topRowRect = topRow.getBoundingClientRect();
+  const listRect = scrollList.getBoundingClientRect();
+  await act(async () => {
+    topRow.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 22, clientX: topRowRect.left + 24, clientY: topRowRect.top + 10 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 22, clientX: listRect.left + 60, clientY: listRect.bottom - 4 }));
+  });
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      const deadline = performance.now() + 1800;
+      const waitBottom = () => {
+        if (scrollList.scrollTop + scrollList.clientHeight >= scrollList.scrollHeight - 2 || performance.now() >= deadline) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(waitBottom);
+      };
+      requestAnimationFrame(waitBottom);
+    });
+  });
+  assert(scrollList.scrollTop > 300, `Holding near bottom edge of .changes-list must auto-scroll down (scrollTop=${scrollList.scrollTop})`);
+  await act(async () => {
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 22, clientX: listRect.left + 60, clientY: listRect.bottom - 4 }));
+  });
+
+  // Expand fixed Local Keep at bottom, grab kept row, drag near top edge of .changes-list -> auto-scrolls back to top and drops back:
+  await clickElement(pinnedKeepHeader);
+  const keptNotesRow = document.querySelector<HTMLElement>('.local-keep-list .file-row[data-file-path="RELEASE_NOTES.md"]')!;
+  const keptNotesRect = keptNotesRow.getBoundingClientRect();
+  const listRectAfterExpand = scrollList.getBoundingClientRect();
+  await act(async () => {
+    keptNotesRow.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 23, clientX: keptNotesRect.left + 24, clientY: keptNotesRect.top + 10 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 23, clientX: listRectAfterExpand.left + 60, clientY: listRectAfterExpand.top + 4 }));
+  });
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      const deadline = performance.now() + 1800;
+      const waitTop = () => {
+        if (scrollList.scrollTop <= 2 || performance.now() >= deadline) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(waitTop);
+      };
+      requestAnimationFrame(waitTop);
+    });
+  });
+  assert(scrollList.scrollTop <= 2, `Holding dragged file near top edge must auto-scroll back to top (scrollTop=${scrollList.scrollTop})`);
+  await act(async () => {
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 23, clientX: listRectAfterExpand.left + 60, clientY: listRectAfterExpand.top + 24 }));
+  });
+  assert(keepCount() === '0', 'Dropping back into normal changes after auto-scrolling up must restore the file');
+
+  const conflictKeepState = fixture('conflict');
+  conflictKeepState.worktrees[0].files = conflictKeepState.worktrees[0].files.map((file) =>
+    file.status === 'U' ? { ...file, localKeep: true } : file,
+  );
+  await mount(conflictKeepState);
+  assert(
+    keepHeader().getAttribute('aria-expanded') === 'false'
+      && !!document.querySelector('.local-keep-conflict-badge')
+      && (document.querySelector('.local-keep-conflict-badge')?.textContent ?? '').includes('conflict'),
+    'Collapsed Local Keep header must surface conflict badge when a conflicted file is inside Local Keep',
+  );
+
+  const coldKeepSnap = repositorySnapshot(++readSequence);
+  coldKeepSnap.repository.localKeepPaths = ['RELEASE_NOTES.md'];
+  coldKeepSnap.worktrees[0].files = coldKeepSnap.worktrees[0].files.map((f) =>
+    f.path === 'RELEASE_NOTES.md' ? { ...f, localKeep: true } : f,
+  );
+  await act(async () => {
+    root.render(createElement(Workbench, {
+      key: ++key,
+      backend: {
+        ...reads,
+        async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
+          return {
+            protocolVersion: 2,
+            locale: 'en',
+            editor: 'idea',
+            defaultCommitLanguage: 'en',
+            repositorySettings: [{ repositoryId: 'orders', editor: 'idea', commitLanguage: 'en', localKeepPaths: ['RELEASE_NOTES.md'] }],
+            activeWorktreeId: 'pay-tree',
+            emptyPrompt: '',
+            snapshots: [coldKeepSnap],
+            worktrees: [],
+            warning: null,
+          };
+        },
+        async saveWorkbenchState() {},
+      },
+    }));
+  });
+  await tick();
+  assert(
+    keepHeader().getAttribute('aria-expanded') === 'false'
+      && keepCount() === '1'
+      && !document.querySelector('.normal-changes-zone .file-row[data-file-path="RELEASE_NOTES.md"]'),
+    'Cold-start hydration did not restore Local Keep group collapsed with kept file excluded from normal changes',
+  );
+  checks.push('Local Keep fixed group: collapsed default, right-click & drag move-in/move-out, select-all tri-state, gentle notice, conflict badge, and cold-restart restore');
+
+  // 28. Pinned Compact Mode: browser-preview honesty, 2-row ~86px layout, project & file drawers with top-left anchored height adjustment, ▸ jump targets, non-auto-expand, and background notifications:
+  await mount(fixture('typing'));
+  await click('Pin Window');
+  assert(
+    !document.querySelector('.compact-bar')
+      && text().includes('unavailable in browser preview'),
+    'Browser preview without native window must report explicit unsupported error instead of faking Pin/resize',
+  );
+  await mount(fixture('compact'));
+  assert(!!document.querySelector('.compact-bar') && !document.querySelector('.prompt-textarea'), 'Compact scenario must render 2-row bar without prompt textarea');
+  await click('Expand Workbench');
+  assert(
+    !!document.querySelector('.compact-bar')
+      && text().includes('unavailable in browser preview'),
+    'Clicking Expand in browser preview without native window must report unsupported resize instead of pretending OS window resized',
+  );
+
+  // Interactive compact <-> full workflow with controllable desktop window mock:
+  const createControlledWindow = (initialPos = { x: 180, y: 120 }, initialSize = { width: 400, height: 700 }) => {
+    let winPinned = false;
+    let winPos = { ...initialPos };
+    let winSize = { ...initialSize };
+    let geometryListener: ((snap: { position: { x: number; y: number }; size: { width: number; height: number } }) => void) | undefined;
+    const notifications: { title: string; body: string }[] = [];
+    const history: { pinned: boolean; compactMode: boolean; pos: { x: number; y: number }; size: { width: number; height: number } }[] = [];
+    const controller: WindowController = {
+      isDesktopWindow: true,
+      async readSnapshot() {
+        return { pinned: winPinned, focused: true, scaleFactor: 2, position: { ...winPos }, size: { ...winSize } };
+      },
+      async applyWindowMode(opts) {
+        const previousPosition = { ...winPos };
+        const previousSize = { ...winSize };
+        winPinned = opts.pinned;
+        winSize = opts.compactMode
+          ? { width: 400, height: opts.compactHeight ?? 86 }
+          : { width: opts.fullSize.width, height: opts.fullSize.height };
+        if (opts.placement === 'restorePosition' && opts.targetPosition) {
+          winPos = { ...opts.targetPosition };
+        }
+        // placement === 'anchorTopLeft' keeps winPos (top-left) unchanged!
+        history.push({ pinned: winPinned, compactMode: opts.compactMode, pos: { ...winPos }, size: { ...winSize } });
+        return {
+          pinned: winPinned,
+          previousPosition,
+          previousSize,
+          position: { ...winPos },
+          size: { ...winSize },
+        };
+      },
+      async adjustCompactHeight(height) {
+        winSize = { width: 400, height };
+      },
+      subscribeGeometry(listener) {
+        geometryListener = listener;
+        return () => { geometryListener = undefined; };
+      },
+      async notifyBackgroundAttention(payload) {
+        notifications.push(payload);
+        return true;
+      },
+    };
+    return {
+      controller,
+      notifications,
+      history,
+      getPos: () => ({ ...winPos }),
+      getSize: () => ({ ...winSize }),
+      getPinned: () => winPinned,
+      dragTo(x: number, y: number) {
+        winPos = { x, y };
+        geometryListener?.({ position: { ...winPos }, size: { ...winSize } });
+      },
+    };
+  };
+
+  // Native titlebar clearance & long repo/branch truncation in 400x86 2-row CompactBar:
+  document.documentElement.classList.add('native-titlebar');
+  try {
+    const longCompact = fixture('compact');
+    longCompact.repositories[0].name = 'extremely-long-enterprise-monorepo-service-name-that-must-truncate';
+    longCompact.worktrees[0].branch = 'main';
+    const winMock1 = createControlledWindow();
+    await mount(longCompact, disconnectedBackend, winMock1.controller);
+    const compactTop = document.querySelector<HTMLElement>('.compact-top')!;
+    const compactRepoBtn = document.querySelector<HTMLButtonElement>('.compact-repo-button')!;
+    const compactBranchBtn = document.querySelector<HTMLButtonElement>('.compact-branch-button')!;
+    const compactRemoteBtn = document.querySelector<HTMLButtonElement>('.compact-remote-button')!;
+    const compactDragSpacer = document.querySelector<HTMLElement>('.compact-drag-spacer')!;
+    const expandBtn = button('Expand Workbench');
+    const unpinBtn = button('Unpin Window');
+    assert(
+      compactTop.getBoundingClientRect().height === 38
+        && compactTop.hasAttribute('data-tauri-drag-region')
+        && !compactRepoBtn.hasAttribute('data-tauri-drag-region')
+        && !compactBranchBtn.hasAttribute('data-tauri-drag-region')
+        && !compactRemoteBtn.hasAttribute('data-tauri-drag-region')
+        && compactDragSpacer.hasAttribute('data-tauri-drag-region')
+        && !expandBtn.hasAttribute('data-tauri-drag-region')
+        && !unpinBtn.hasAttribute('data-tauri-drag-region')
+        && compactRepoBtn.getBoundingClientRect().left >= 78
+        && document.querySelector<HTMLElement>('.compact-repo')!.getBoundingClientRect().left >= 84
+        && unpinBtn.getBoundingClientRect().right <= 400
+        && expandBtn.getBoundingClientRect().width === 26
+        && !document.querySelector('[aria-label="Settings"]')
+        && !document.querySelector('[aria-label="C-Push Session History"]')
+        && !document.querySelector('.prompt-textarea')
+        && !document.querySelector('.compact-top .branch-tag')
+        && compactRemoteBtn.textContent?.replace(/\s+/g, ' ').trim() === '\u21912 \u21931',
+      'Compact Row 1 must clear native traffic lights (84px), expose non-drag project/branch/remote triggers + middle drag spacer, omit outer Protected badge, hide History/Settings, and never push Expand/Pin off-screen',
+    );
+    const barHeight = document.querySelector<HTMLElement>('.compact-bar')!.getBoundingClientRect().height;
+    assert(barHeight >= 82 && barHeight <= 94, `Expected collapsed 2-row compact bar height ~86px, got ${barHeight}`);
+  } finally {
+    document.documentElement.classList.remove('native-titlebar');
+  }
+
+  // Mode transitions, project/branch/remote drawers, inline file checklist drawer + tri-state Select All, non-auto-expand, and background notifications:
+  const compactSub: { receive?: (event: WorkbenchEvent) => void } = {};
+  const compactCommands: WorkbenchCommand[] = [];
+  const winMock2 = createControlledWindow({ x: 210, y: 145 }, { width: 400, height: 700 });
+  const modeState = fixture('typing');
+  modeState.worktrees[0].plan = undefined;
+  modeState.worktrees[0].branchToken = 'branch-token-compact';
+  await mount(
+    modeState,
+    {
+      ...disconnectedBackend,
+      async execute(command) {
+        compactCommands.push(command);
+        if (command.kind === 'pull') {
+          return undefined;
+        }
+        return disconnectedBackend.execute(command);
+      },
+      subscribe(receive) {
+        compactSub.receive = receive;
+        return () => { compactSub.receive = undefined; };
+      },
+    },
+    winMock2.controller,
+  );
+  await tick();
+  assert(!document.querySelector('[aria-label="Collapse to Compact Mode"]'), 'Unpinned full mode should not show Collapse button');
+
+  // Click Pin -> enters 2-row ~86px Compact Mode with top-left (210, 145) unchanged:
+  await click('Pin Window');
+  await tick();
+  assert(
+    !!document.querySelector('.compact-bar')
+      && !document.querySelector('.prompt-textarea')
+      && winMock2.getPinned() === true
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145
+      && winMock2.getSize().height >= 82
+      && winMock2.getSize().height <= 94,
+    `Clicking Pin must enter ~86px 2-row Compact Mode with top-left coordinates unchanged (got size=${JSON.stringify(winMock2.getSize())})`,
+  );
+  // Short repo & branch buttons must hug tightly on the left instead of stretching across Row 1:
+  const repoRect = document.querySelector<HTMLElement>('.compact-repo-button')!.getBoundingClientRect();
+  const branchRect = document.querySelector<HTMLElement>('.compact-branch-button')!.getBoundingClientRect();
+  assert(
+    branchRect.left - repoRect.right <= 18,
+    `Expected compact branch button to sit adjacent to repo button, got gap=${branchRect.left - repoRect.right}`,
+  );
+  assert(text().includes('Selected 4/5'), `Expected Selected 4/5 trigger in Row 2, got: ${text()}`);
+
+  // 1. Project Switcher Drawer in Row 1: expands height temporarily, switches repository, and auto-collapses back to ~86px:
+  await clickElement(document.querySelector<HTMLButtonElement>('.compact-repo-button')!);
+  await tick();
+  assert(
+    !!document.querySelector('[aria-label="Opened repositories"]')
+      && text().includes('picket-cli')
+      && text().includes('Open Local Repository\u2026')
+      && winMock2.getSize().height > 120
+      && winMock2.getSize().height <= 280
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145,
+    `Opening Project Drawer in Compact Mode must grow window downward without shifting top-left (size=${JSON.stringify(winMock2.getSize())})`,
+  );
+  const cliProjectBtn = [...document.querySelectorAll<HTMLButtonElement>('.compact-project-item')]
+    .find((item) => item.textContent?.includes('picket-cli'))!;
+  await clickElement(cliProjectBtn);
+  await tick();
+  assert(
+    !document.querySelector('.compact-drawer')
+      && (document.querySelector('.compact-repo')?.textContent ?? '').includes('picket-cli')
+      && winMock2.getSize().height <= 94,
+    'Selecting a project in Compact Project Drawer must switch repository and auto-collapse back to ~86px',
+  );
+  // Switch back to my-order-service:
+  await clickElement(document.querySelector<HTMLButtonElement>('.compact-repo-button')!);
+  await tick();
+  const ordersProjectBtn = [...document.querySelectorAll<HTMLButtonElement>('.compact-project-item')]
+    .find((item) => item.textContent?.includes('my-order-service'))!;
+  await clickElement(ordersProjectBtn);
+  await tick();
+  assert((document.querySelector('.compact-repo')?.textContent ?? '').includes('my-order-service'), 'Did not switch back to my-order-service');
+
+  // 1b. Branches & Worktrees Drawer in Row 1: shows Protected inside drawer, switches branch/worktree, and auto-collapses back to ~86px:
+  await clickElement(document.querySelector<HTMLButtonElement>('.compact-branch-button')!);
+  await tick();
+  assert(
+    !!document.querySelector('.compact-branches-drawer')
+      && document.querySelector('.compact-branches-drawer .branch-tag')?.textContent === 'Protected'
+      && winMock2.getSize().height > 140
+      && winMock2.getSize().height <= 280
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145,
+    `Opening Branches Drawer in Compact Mode must show Protected badge inside Local Branches and anchor top-left (size=${JSON.stringify(winMock2.getSize())})`,
+  );
+  const compactRemoteGroupToggle = [...document.querySelectorAll<HTMLButtonElement>('.compact-branches-drawer .branch-group-toggle')]
+    .find((item) => item.textContent?.includes('Remote Branches'))!;
+  await clickElement(compactRemoteGroupToggle);
+  await tick();
+  assert(
+    (document.querySelector('.compact-branches-drawer [data-branch-group="remote"]')?.textContent ?? '').includes('upstream/feat/reconcile'),
+    'Compact Branches Drawer must expand Remote Branches list',
+  );
+  const fixBranchItem = [...document.querySelectorAll<HTMLButtonElement>('.compact-branches-drawer [data-branch-group="local"] .branch-item')]
+    .find((item) => item.textContent?.includes('fix/npe'))!;
+  await clickElement(fixBranchItem);
+  await tick();
+  assert(
+    !document.querySelector('.compact-drawer')
+      && (document.querySelector('.compact-branch')?.textContent ?? '') === 'fix/npe'
+      && winMock2.getSize().height <= 94,
+    'Selecting a branch/worktree in Compact Branches Drawer must switch context and auto-collapse back to ~86px',
+  );
+  // Switch back to feat/pay via Compact Branches Drawer:
+  await clickElement(document.querySelector<HTMLButtonElement>('.compact-branch-button')!);
+  await tick();
+  const payBranchItem = [...document.querySelectorAll<HTMLButtonElement>('.compact-branches-drawer [data-branch-group="local"] .branch-item')]
+    .find((item) => item.textContent?.includes('feat/pay'))!;
+  await clickElement(payBranchItem);
+  await tick();
+  assert((document.querySelector('.compact-branch')?.textContent ?? '') === 'feat/pay', 'Did not switch back to feat/pay');
+
+  // 1c. Remote Details Drawer in Row 1: shows tracked remote + Pull & Rebase and auto-collapses on Pull:
+  await clickElement(document.querySelector<HTMLButtonElement>('.compact-remote-button')!);
+  await tick();
+  assert(
+    !!document.querySelector('.compact-remote-drawer')
+      && text().includes('Tracked Remote Branch')
+      && text().includes('upstream/feat/pay')
+      && text().includes('2 ahead \u00b7 1 behind')
+      && winMock2.getSize().height > 120
+      && winMock2.getSize().height <= 280
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145,
+    `Opening Remote Drawer in Compact Mode must show tracked remote details and Pull & Rebase (size=${JSON.stringify(winMock2.getSize())})`,
+  );
+  await click('Pull & Rebase');
+  await tick();
+  assert(
+    !document.querySelector('.compact-drawer')
+      && compactCommands.some((command) => command.kind === 'pull' && command.target.worktreeId === 'pay-tree')
+      && winMock2.getSize().height <= 94,
+    'Clicking Pull & Rebase in Compact Remote Drawer must trigger pull command and auto-collapse back to ~86px',
+  );
+
+  // 2. Tri-state Select All + Files Checklist Drawer in Row 2:
+  const compactSelectAll = () => document.querySelector<HTMLInputElement>('.compact-selection-group > .file-checkbox')!;
+  assert(compactSelectAll().indeterminate && !compactSelectAll().checked, 'Compact Row 2 Select All must reflect indeterminate 4/5 state');
+  await clickElement(document.querySelector<HTMLButtonElement>('.compact-files-trigger')!);
+  await tick();
+  assert(
+    !!document.querySelector('.compact-files-drawer')
+      && winMock2.getSize().height > 160
+      && winMock2.getSize().height <= 280
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145,
+    `Opening Files Drawer in Compact Mode must grow height up to ~240px while keeping top-left anchored (size=${JSON.stringify(winMock2.getSize())})`,
+  );
+  const compactLockBox = document.querySelector<HTMLInputElement>('.compact-files-drawer input[aria-label="Select pnpm-lock.yaml"]')!;
+  assert(!compactLockBox.checked, 'Unchecked lockfile in fixture should appear unchecked in Compact Files Drawer');
+  await act(async () => { compactLockBox.click(); });
+  await tick();
+  assert(
+    compactSelectAll().checked && !compactSelectAll().indeterminate && text().includes('Selected 5/5'),
+    'Checking pnpm-lock.yaml inside Compact Files Drawer must update selection to 5/5',
+  );
+  // Toggle Row 2 Select All to clear -> disables C-Push, then click again to select all 5/5:
+  await act(async () => { compactSelectAll().click(); });
+  await tick();
+  assert(
+    !compactSelectAll().checked
+      && text().includes('Selected 0/5')
+      && document.querySelector<HTMLButtonElement>('.compact-bottom button.primary')?.disabled === true,
+    'Deselecting all in Compact Mode must show Selected 0/5 and disable C-Push',
+  );
+  await act(async () => { compactSelectAll().click(); });
+  await tick();
+  assert(compactSelectAll().checked && text().includes('Selected 5/5'), 'Re-checking Select All in Compact Mode must select all normal files');
+  // Press Escape to close Files Drawer -> shrinks back to ~86px:
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+  await tick();
+  assert(!document.querySelector('.compact-files-drawer') && winMock2.getSize().height <= 94, 'Escape must close Compact Files Drawer and shrink back to ~86px');
+
+  // Incoming question / pushFailed / conflict in Compact Mode NEVER auto-expands window, updates Row 2 status, and triggers background notification:
+  const activeTarget = targetOf({
+    ...modeState.worktrees[0],
+    selectedIds: ['order', 'pay', 'retry', 'release', 'lock'],
+    scopeVersion: 'scope-1#order,pay,retry,release,lock',
+  });
+  await act(async () => {
+    compactSub.receive?.({
+      type: 'message',
+      target: activeTarget,
+      sessionStatus: 'needsDecision',
+      message: releaseQuestion(),
+    });
+  });
+  await tick();
+  assert(
+    !!document.querySelector('.compact-bar')
+      && text().includes('Needs decision \u25b8')
+      && winMock2.notifications.length === 1
+      && winMock2.notifications[0].title.includes('Decision Needed'),
+    'Incoming question in Compact Mode must update Row 2 status & notify without auto-expanding',
+  );
+
+  // Plain Expand button preserves pinned=true, top-left (210, 145), and prompt text, and remembers pinnedExpanded on re-pin:
+  await click('Expand Workbench');
+  await tick();
+  const fullPromptAfterExpand = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+  assert(
+    !document.querySelector('.compact-bar')
+      && winMock2.getPinned() === true
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145
+      && winMock2.getSize().height === 700
+      && !!document.querySelector('[aria-label="Collapse to Compact Mode"]')
+      && fullPromptAfterExpand.value.includes('split release notes'),
+    'Expanding from Compact Mode must preserve pinned state, top-left position, and worktree prompt text',
+  );
+
+  // Unpin then Pin again -> remembers manual expand preference (stays in Full Mode!):
+  await click('Unpin Window');
+  await tick();
+  assert(!winMock2.getPinned() && !document.querySelector('.compact-bar'), 'Unpin should stay in full mode');
+  await click('Pin Window');
+  await tick();
+  assert(winMock2.getPinned() && !document.querySelector('.compact-bar'), 'Re-pinning after manual expand must remember expanded state');
+
+  // Collapse via header Collapse button -> enters Compact Mode; drag compact bar to (860, 40); Unpin restores original fullPosition (210, 145) & fullSize (400, 700):
+  await click('Collapse to Compact Mode');
+  await tick();
+  assert(!!document.querySelector('.compact-bar') && winMock2.getSize().height <= 94, 'Header Collapse button must enter ~86px Compact Mode');
+  await act(async () => { winMock2.dragTo(860, 40); });
+  await tick();
+  await click('Unpin Window');
+  await tick();
+  assert(
+    !document.querySelector('.compact-bar')
+      && !winMock2.getPinned()
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145
+      && winMock2.getSize().height === 700,
+    `Unpinning after dragging compact bar must restore full mode size & position (got pos=${JSON.stringify(winMock2.getPos())})`,
+  );
+
+  // Row 2 click-to-expand jump targets:
+  // (a) Click "Push failed ▸ Retry" -> expands with MessageDock open
+  const jumpWin = createControlledWindow();
+  const pushFailedCompact = fixture('push-failed');
+  pushFailedCompact.worktrees[0].dockExpanded = false;
+  pushFailedCompact.windowPrefs = { ...pushFailedCompact.windowPrefs, pinned: true, compactMode: true };
+  await mount(pushFailedCompact, disconnectedBackend, jumpWin.controller);
+  assert(text().includes('Push failed \u25b8 Retry'), 'Compact Row 2 must display Push failed ▸ Retry');
+  await clickElement(document.querySelector<HTMLButtonElement>('[data-expand-target="dock"]')!);
+  await tick();
+  assert(!document.querySelector('.compact-bar') && !!document.querySelector('.message-expanded'), 'Clicking Push failed ▸ must expand and open MessageDock');
+
+  // (b) Click "Plan 2 · Outdated ▸" pill -> expands to Commit Plan tab & focuses .plan-region
+  const outdatedPlanCompact = fixture('changed');
+  outdatedPlanCompact.worktrees[0].tab = 'review';
+  outdatedPlanCompact.windowPrefs = { ...outdatedPlanCompact.windowPrefs, pinned: true, compactMode: true };
+  await mount(outdatedPlanCompact, disconnectedBackend, jumpWin.controller);
+  assert(text().includes('Plan 2 \u00b7 Outdated \u25b8'), 'Compact Row 2 must display outdated plan pill alongside selection trigger');
+  await clickElement(document.querySelector<HTMLButtonElement>('[data-expand-target="plan"]')!);
+  await tick();
+  assert(
+    !document.querySelector('.compact-bar')
+      && document.querySelector<HTMLButtonElement>('#commit-tab')?.getAttribute('aria-selected') === 'true'
+      && !!document.querySelector('.plan-region')?.contains(document.activeElement),
+    'Clicking Plan ▸ pill in Compact Mode must switch to Commit Plan tab and focus .plan-region',
+  );
+
+  // (c) Zero-model Compact Mode -> primary button shows "Configure Model", clicking expands & opens AddModelForm:
+  const zeroModelCompact = fixture('no-model');
+  zeroModelCompact.windowPrefs = { ...zeroModelCompact.windowPrefs, pinned: true, compactMode: true };
+  await mount(zeroModelCompact, disconnectedBackend, jumpWin.controller);
+  const compactPrimaryBtn = document.querySelector<HTMLButtonElement>('.compact-bottom button.primary')!;
+  assert(compactPrimaryBtn.textContent?.includes('Configure Model') && text().includes('No model'), 'Zero-model Compact Mode must show No model badge and Configure Model button');
+  await clickElement(compactPrimaryBtn);
+  await tick();
+  assert(!document.querySelector('.compact-bar') && !!document.querySelector('.model-form'), 'Clicking Configure Model in Compact Mode must expand and open AddModelForm');
+
+  // (d) Blocking states in Compact Mode (Detached HEAD & Read Error) disable C-Push and explain reason in Row 2:
+  const detachedCompact = fixture('compact');
+  detachedCompact.worktrees[0].plan = undefined;
+  detachedCompact.worktrees[0].detached = true;
+  await mount(detachedCompact, disconnectedBackend, jumpWin.controller);
+  assert(
+    text().includes('Detached HEAD \u25b8')
+      && document.querySelector<HTMLButtonElement>('.compact-bottom button.primary')?.disabled === true,
+    'Detached HEAD in Compact Mode must explain reason in Row 2 and disable C-Push',
+  );
+  checks.push('Pinned Compact Mode: browser-preview boundary, 2-row ~86px layout, project & file drawers, ▸ jump targets, non-auto-expand, and background notifications');
+
+  return {
+    environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',
+    viewport: { width: innerWidth, height: innerHeight },
+    checks,
+  };
 }

@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
 import { repositoryReply } from '../testing/repository-fixture';
 import { sampleFindings } from '../testing/fixtures';
-import { emptyWorkbench, orderedMessages, targetOf, workbenchReducer } from './workbench';
+import {
+  activeValidPlan,
+  emptyWorkbench,
+  isPlanOutdated,
+  orderedMessages,
+  primaryAction,
+  targetOf,
+  workbenchReducer,
+} from './workbench';
 
 function openedWorkbench() {
   let state = workbenchReducer(emptyWorkbench(), { type: 'repositoryReadStarted', key: 'open', requestId: 'open-1' });
@@ -28,18 +36,18 @@ function makeCPushSession(overrides: Partial<CPushSessionSnapshot> = {}): CPushS
     message: {
       id: 'q-run-1-1',
       kind: 'question',
-      title: '发布说明要一起提交吗？',
-      scope: '影响提交 2/2「docs」',
-      description: '请确认 RELEASE_NOTES.md 归属方式：',
+      title: 'Include release notes in this commit?',
+      scope: 'Affects commit 2/2 "docs"',
+      description: 'Confirm how to group RELEASE_NOTES.md:',
       options: [
-        { id: 'merge', label: '合并进提交 1' },
-        { id: 'split', label: '单独提交并一起推送', recommended: true },
-        { id: 'skip', label: '暂不提交' },
+        { id: 'merge', label: 'Merge into commit 1' },
+        { id: 'split', label: 'Commit separately & push together', recommended: true },
+        { id: 'skip', label: 'Skip for now' },
       ],
     },
     timeline: [
-      { state: 'done', label: '已固定 4 个已选文件范围' },
-      { state: 'active', label: '等待决定：发布说明要一起提交吗？' },
+      { state: 'done', label: 'Froze scope for 4 selected files' },
+      { state: 'active', label: 'Waiting for decision: Include release notes in this commit?' },
     ],
     qaLog: [],
     commits: [],
@@ -48,9 +56,10 @@ function makeCPushSession(overrides: Partial<CPushSessionSnapshot> = {}): CPushS
   };
 }
 
-describe('M4 C-Push 会话状态、范围冻结与恢复隔离', () => {
-  it('运行中修改勾选或切换工作树不改变已冻结的会话目标与文件范围（W03）', () => {
+describe('M4 C-Push session state, editable plan lifecycle, scope freezing, and recovery isolation', () => {
+  it('keeps frozen session target and fileIds immutable when selection or worktree changes mid-run (W03)', () => {
     let state = openedWorkbench();
+    state = workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
     const tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     const frozenTarget = targetOf(tree);
 
@@ -90,11 +99,48 @@ describe('M4 C-Push 会话状态、范围冻结与恢复隔离', () => {
     const payWaiting = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     expect(payWaiting.sessionStatus).toBe('needsDecision');
     expect(payWaiting.dockExpanded).toBe(false);
-    expect(orderedMessages(payWaiting.messages)[0].title).toBe('发布说明要一起提交吗？');
+    expect(orderedMessages(payWaiting.messages)[0].title).toBe('Include release notes in this commit?');
   });
 
-  it('运行期间手动输入的新草稿不会被 C-Push 完成回执清空，次级审查通知继续保留（C03 / R01）', () => {
+  it('clears unchanged prompt after C-Push succeeds, preserves mid-run prompt edits, and keeps secondary review notice', () => {
+    // Case A: Prompt untouched during C-Push -> cleared when push succeeds (`sessionStatus: 'done'`):
+    let stateA = openedWorkbench();
+    stateA = workbenchReducer(stateA, { type: 'prompt', worktreeId: 'pay-tree', text: 'split lockfile separately' });
+    const treeA = stateA.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    const frozenTargetA = targetOf(treeA);
+    stateA = workbenchReducer(stateA, {
+      type: 'cPushStarted',
+      worktreeId: 'pay-tree',
+      runId: 'run-a',
+      frozenTarget: frozenTargetA,
+      frozenFileIds: ['order', 'retry'],
+      modelId: 'model-1',
+      expandDock: false,
+    });
+    const snapDoneA = repositoryReply('done-a', 2).snapshot!;
+    stateA = workbenchReducer(stateA, {
+      type: 'cPushSettled',
+      reply: {
+        protocolVersion: 1,
+        kind: 'cPush',
+        requestId: 'run-a',
+        repositorySnapshot: snapDoneA,
+        session: makeCPushSession({
+          runId: 'run-a',
+          sessionId: frozenTargetA.sessionId,
+          frozenScopeVersion: frozenTargetA.scopeVersion,
+          sessionStatus: 'done',
+          committedFileIds: ['order', 'retry'],
+          commits: [{ oid: 'c1', shortOid: 'c1', title: 'feat(order): split commit 1', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
+          message: { id: 'done-run-a', kind: 'done', title: '1 commit pushed to origin/feat/pay', description: 'Done' },
+        }),
+      },
+    });
+    expect(stateA.worktrees.find((w) => w.worktreeId === 'pay-tree')!.prompt.text).toBe('');
+
+    // Case B: User edits prompt mid-run -> preserved on completion!
     let state = openedWorkbench();
+    state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'initial extra instruction' });
     const tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     const frozenTarget = targetOf(tree);
 
@@ -107,17 +153,15 @@ describe('M4 C-Push 会话状态、范围冻结与恢复隔离', () => {
       modelId: 'model-1',
       expandDock: false,
     });
-    // Parallel review notification arrives:
     state = workbenchReducer(state, {
       type: 'event',
       event: {
         type: 'message',
         target: frozenTarget,
-        message: { id: 'review-notice', kind: 'review', title: '审查完成：1 项建议', description: '已更新' },
+        message: { id: 'review-notice', kind: 'review', title: 'Review complete: 1 suggestion', description: 'Updated' },
       },
     });
-    // User types new notes for a future commit while C-Push is running:
-    state = workbenchReducer(state, { type: 'draft', worktreeId: 'pay-tree', text: '下一笔提交的人工备注' });
+    state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'extra instruction for next C-Push' });
 
     const snapAfter = repositoryReply('after-cpush', 2).snapshot!;
     snapAfter.worktrees[0].files = snapAfter.worktrees[0].files.filter((f) => f.id !== 'retry');
@@ -133,20 +177,88 @@ describe('M4 C-Push 会话状态、范围冻结与恢复隔离', () => {
           frozenScopeVersion: frozenTarget.scopeVersion,
           sessionStatus: 'done',
           committedFileIds: ['order', 'retry'],
-          commits: [{ oid: 'c1', shortOid: 'c1', title: 'feat(order): 拆分提交 1', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
-          message: { id: 'done-run-1', kind: 'done', title: '已完成 1 个本地拆分提交', description: '已完成' },
+          commits: [{ oid: 'c1', shortOid: 'c1', title: 'feat(order): split commit 1', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
+          message: { id: 'done-run-1', kind: 'done', title: 'Completed 1 local split commit', description: 'Done' },
         }),
       },
     });
 
     const settled = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     expect(settled.sessionStatus).toBe('done');
-    expect(settled.draft.text).toBe('下一笔提交的人工备注');
+    expect(settled.prompt.text).toBe('extra instruction for next C-Push');
     expect(settled.messages.map((m) => m.kind).sort()).toEqual(['done', 'review']);
     expect(sampleFindings()).toHaveLength(2);
   });
 
-  it('冷启动恢复已持久化的 C-Push 中断会话时保持收起并对齐会话 ID', () => {
+  it('manages editable pre-generated plans, invalidates outdated plans on scope changes, and blocks empty messages', () => {
+    let state = openedWorkbench();
+    let tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    const target = targetOf(tree);
+
+    state = workbenchReducer(state, { type: 'request', target, kind: 'plan', requestId: 'plan-1' });
+    state = workbenchReducer(state, {
+      type: 'event',
+      event: {
+        type: 'planPrepared',
+        target,
+        requestId: 'plan-1',
+        modelId: 'model-1',
+        plan: {
+          summary: '2 commits',
+          groups: [
+            { id: 'g1', fileIds: ['order', 'pay', 'retry'], message: 'feat(order): add lock\n\n- guard callbacks' },
+            { id: 'g2', fileIds: ['release'], message: 'docs: update release notes\n\n- document lock' },
+          ],
+          skippedFileIds: [],
+        },
+      },
+    });
+
+    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    expect(isPlanOutdated(tree)).toBe(false);
+    expect(activeValidPlan(tree)?.groups).toHaveLength(2);
+
+    // Editing a group updates the message verbatim; clearing a message disables C-Push until filled or cleared:
+    state = workbenchReducer(state, { type: 'planGroupEdited', worktreeId: 'pay-tree', groupId: 'g2', message: '   ' });
+    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    expect(primaryAction(tree, true).disabled).toBe(true);
+
+    state = workbenchReducer(state, {
+      type: 'planGroupEdited',
+      worktreeId: 'pay-tree',
+      groupId: 'g2',
+      message: 'docs(release): verbatim custom message\n\n- custom bullet',
+    });
+    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    expect(primaryAction(tree, true).disabled).toBe(false);
+    expect(activeValidPlan(tree)?.groups[1].message).toBe('docs(release): verbatim custom message\n\n- custom bullet');
+
+    // Late `planPrepared` arriving after user edited prompt or plan must NOT overwrite the newer plan:
+    const currentTarget = targetOf(tree);
+    state = workbenchReducer(state, { type: 'request', target: currentTarget, kind: 'plan', requestId: 'plan-late' });
+    state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'edited prompt while plan-late was running' });
+    state = workbenchReducer(state, {
+      type: 'event',
+      event: {
+        type: 'planPrepared',
+        target: currentTarget,
+        requestId: 'plan-late',
+        modelId: 'model-1',
+        plan: { summary: 'stale', groups: [{ id: 'g-stale', fileIds: ['order'], message: 'feat: stale' }], skippedFileIds: [] },
+      },
+    });
+    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    expect(tree.plan?.groups[1].message).toBe('docs(release): verbatim custom message\n\n- custom bullet');
+
+    // Changing selected files marks the plan outdated, so `activeValidPlan` becomes undefined (C-Push will discard and re-plan):
+    state = workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
+    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    expect(isPlanOutdated(tree)).toBe(true);
+    expect(activeValidPlan(tree)).toBeUndefined();
+    expect(primaryAction(tree, true).disabled).toBe(false);
+  });
+
+  it('hydrates interrupted C-Push session on cold start with collapsed dock and aligned sessionId', () => {
     const snap = repositoryReply('restore', 1).snapshot!;
     const interrupted = makeCPushSession({
       sessionStatus: 'needsDecision',
@@ -155,19 +267,18 @@ describe('M4 C-Push 会话状态、范围冻结与恢复隔离', () => {
       message: {
         id: 'interrupted-run-1',
         kind: 'error',
-        title: '上次会话已完成 1 个提交后中断',
-        description: '请确认是否继续剩余步骤',
-        options: [{ id: 'retry-remaining', label: '确认继续剩余提交', recommended: true }],
+        title: 'Previous session interrupted after 1 commit',
+        description: 'Confirm whether to continue remaining steps',
+        options: [{ id: 'retry-remaining', label: 'Continue remaining commits', recommended: true }],
       },
     });
     const hydrated = workbenchReducer(emptyWorkbench(), {
       type: 'workbenchHydrated',
       restored: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         editor: 'idea',
         activeWorktreeId: 'pay-tree',
-        emptyDraft: '',
-        emptyEditing: false,
+        emptyPrompt: '',
         worktrees: [],
         snapshots: [snap],
         cPushSessions: [interrupted],

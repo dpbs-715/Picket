@@ -3,15 +3,16 @@ import {
   decodeCPushCommandReply,
   decodeCPushProgressEvent,
   isMatchingCPushTarget,
-  type CommitAndPushRequest,
   type CPushCommandReply,
   type CPushProgressEvent,
+  type PlanCPushRequest,
   type PullRebaseRequest,
   type ReconcileCPushRequest,
   type RespondCPushRequest,
   type StartCPushRequest,
 } from '../../shared/cpush-protocol';
 import type { GitReadTarget } from '../../shared/git-read-protocol';
+import { getMessages } from '../i18n/messages';
 
 function isMatchingWorktree(
   session: CPushCommandReply['session'],
@@ -21,6 +22,28 @@ function isMatchingWorktree(
     && !!target.worktreeId
     && session.repositoryId === target.repositoryId
     && session.worktreeId === target.worktreeId;
+}
+
+export async function planDesktopCPush(
+  request: PlanCPushRequest,
+  onProgress?: (event: CPushProgressEvent) => void,
+): Promise<CPushCommandReply> {
+  const onEvent = new Channel<unknown>();
+  if (onProgress) {
+    onEvent.onmessage = (raw) => {
+      const decoded = decodeCPushProgressEvent(raw);
+      if (isMatchingCPushTarget(decoded.session, request.target)) {
+        onProgress(decoded);
+      }
+    };
+  }
+  const reply = decodeCPushCommandReply(await invoke('plan_cpush', { request, onEvent }));
+  if (reply.requestId !== request.requestId
+    || reply.session.modelId !== request.modelId
+    || !isMatchingCPushTarget(reply.session, request.target)) {
+    throw new Error(getMessages(request.locale).desktop.cPushPlanMismatch);
+  }
+  return reply;
 }
 
 export async function startDesktopCPush(
@@ -40,27 +63,7 @@ export async function startDesktopCPush(
   if (reply.requestId !== request.requestId
     || reply.session.modelId !== request.modelId
     || !isMatchingCPushTarget(reply.session, request.target)) {
-    throw new Error('C-Push 启动回执的目标工作树或请求身份不匹配，已忽略该回执。');
-  }
-  return reply;
-}
-
-export async function commitAndPushDesktop(
-  request: CommitAndPushRequest,
-  onProgress?: (event: CPushProgressEvent) => void,
-): Promise<CPushCommandReply> {
-  const onEvent = new Channel<unknown>();
-  if (onProgress) {
-    onEvent.onmessage = (raw) => {
-      const decoded = decodeCPushProgressEvent(raw);
-      if (isMatchingWorktree(decoded.session, request.target)) {
-        onProgress(decoded);
-      }
-    };
-  }
-  const reply = decodeCPushCommandReply(await invoke('commit_and_push_repository', { request, onEvent }));
-  if (reply.requestId !== request.requestId || !isMatchingWorktree(reply.session, request.target)) {
-    throw new Error('提交并推送回执的目标工作树或请求身份不匹配，请刷新核对实际 Git 历史。');
+    throw new Error(getMessages(request.locale).desktop.cPushStartMismatch);
   }
   return reply;
 }
@@ -80,7 +83,7 @@ export async function pullRebaseDesktop(
   }
   const reply = decodeCPushCommandReply(await invoke('pull_rebase_repository', { request, onEvent }));
   if (reply.requestId !== request.requestId || !isMatchingWorktree(reply.session, request.target)) {
-    throw new Error('拉取并变基回执的目标工作树或请求身份不匹配，请刷新核对实际 Git 状态。');
+    throw new Error(getMessages(request.locale).desktop.pullRebaseMismatch);
   }
   return reply;
 }
@@ -114,7 +117,7 @@ export async function respondDesktopCPush(
   if (reply.requestId !== request.requestId
     || reply.session.runId !== request.runId
     || !isMatchingWorktree(reply.session, request.target)) {
-    throw new Error('C-Push 确认回执的目标会话或请求身份不匹配，已忽略该回执。');
+    throw new Error(getMessages(request.locale).desktop.cPushRespondMismatch);
   }
   return reply;
 }

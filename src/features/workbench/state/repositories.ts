@@ -1,13 +1,28 @@
 import type { CPushCommandReply, CPushProgressEvent, CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
-import type { GitCommitReply } from '../../../../shared/git-commit-protocol';
-import type { GitReadReply, GitRepositorySnapshot, GitWorktree } from '../../../../shared/git-read-protocol';
-import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
-import type { Message, WorkbenchState, Worktree } from './workbench';
+import { isValidRepoRelativePath } from '../../../../shared/git-read-protocol';
+import type { GitLocalKeepReply, GitReadReply, GitRepositorySnapshot, GitWorktree } from '../../../../shared/git-read-protocol';
+import { DEFAULT_APP_LOCALE, DEFAULT_COMMIT_LANGUAGE } from '../../../../shared/language-protocol';
+import {
+  WINDOW_DIMENSIONS,
+  type PersistedWindowPreferences,
+  type WorkbenchRestoreReply,
+  type WorkbenchSaveRequest,
+} from '../../../../shared/workbench-persistence-protocol';
+import { getMessages } from '../../../i18n/messages';
+import {
+  computeNormalUnselectedIds,
+  defaultWindowPreferences,
+  effectiveCommitLanguageFor,
+  effectiveEditorFor,
+  localKeepPathsFor,
+} from './workbench';
+import type { EditorId, Message, RepositorySettings, WorkbenchState, Worktree } from './workbench';
 
 interface CommitCompletion {
   worktreeId: string;
-  draftRevision: number;
+  promptRevision: number;
+  clearPrompt: boolean;
   committedFileIds: string[];
 }
 
@@ -15,36 +30,84 @@ export function readScopeVersion(tree: Pick<Worktree, 'head' | 'branch' | 'files
   if (tree.statusVersion === undefined) return tree.scopeVersion;
   // A UI invalidation token, not a Git write authorization. Rust freezes and
   // re-checks per-file commitTokens before executing any local commit.
-  return JSON.stringify([tree.head, tree.branch, tree.files.filter((file) => tree.selectedIds.includes(file.id)).map((file) => [file.id, file.contentVersion, file.range.kind])]);
+  const keptIds = tree.files.filter((file) => file.localKeep).map((file) => file.id);
+  return JSON.stringify([
+    tree.head,
+    tree.branch,
+    tree.files
+      .filter((file) => tree.selectedIds.includes(file.id))
+      .map((file) => [file.id, file.contentVersion, file.range.kind, ...(file.localKeep ? ['localKeep'] : [])]),
+    ...(keptIds.length ? [keptIds] : []),
+  ]);
+}
+
+function normalizeWorktreeLocalKeep(incoming: GitWorktree, keepSet: ReadonlySet<string>, hasSnapshotKeepList: boolean): GitWorktree {
+  const resolveKeep = (file: GitWorktree['files'][number]) =>
+    hasSnapshotKeepList ? keepSet.has(file.path) : Boolean(file.localKeep ?? keepSet.has(file.path));
+  const needsUpdate = incoming.files.some((file) => Boolean(file.localKeep) !== resolveKeep(file));
+  if (!needsUpdate) return incoming;
+  return {
+    ...incoming,
+    files: incoming.files.map((file) => ({
+      ...file,
+      localKeep: resolveKeep(file),
+    })),
+  };
 }
 
 function projectWorktree(
   incoming: GitWorktree,
   previous?: Worktree,
-  emptyDraft?: { text: string; editing: boolean },
+  emptyPromptText?: string,
   commitCompletion?: CommitCompletion,
 ): Worktree {
   const committedSet = commitCompletion && !incoming.readError ? new Set(commitCompletion.committedFileIds) : null;
+  const previousById = previous ? new Map(previous.files.map((file) => [file.id, file])) : null;
+  const previousSelectedSet = previous ? new Set(previous.selectedIds) : null;
+  const previousUnselectedSet = previous
+    ? new Set(previous.unselectedIds ?? computeNormalUnselectedIds(previous.files, previous.selectedIds))
+    : null;
   const selectedIds = previous
-    ? previous.selectedIds.filter((id) => (!committedSet || !committedSet.has(id)) && incoming.files.some((file) => file.id === id))
-    : incoming.files.filter((file) => !file.ignoredForReview).map((file) => file.id);
+    ? incoming.files
+        .filter((nextFile) => {
+          if (committedSet?.has(nextFile.id)) return false;
+          if (nextFile.localKeep) {
+            const prevFile = previousById?.get(nextFile.id);
+            return Boolean(prevFile?.localKeep && previousSelectedSet?.has(nextFile.id));
+          }
+          return !previousUnselectedSet?.has(nextFile.id);
+        })
+        .map((file) => file.id)
+    : incoming.files.filter((file) => !file.localKeep).map((file) => file.id);
+  const unselectedIds = computeNormalUnselectedIds(incoming.files, selectedIds);
   const baseChanged = !!previous && (previous.head !== incoming.head || previous.branch !== incoming.branch);
   const changed = previous?.files.filter((file) => {
     const next = incoming.files.find((item) => item.id === file.id);
-    return baseChanged || next?.contentVersion !== file.contentVersion || next?.range.kind !== file.range.kind;
+    return baseChanged
+      || next?.contentVersion !== file.contentVersion
+      || next?.range.kind !== file.range.kind
+      || Boolean(next?.localKeep) !== Boolean(file.localKeep);
   }).map((file) => file.path) ?? [];
-  const relevant = baseChanged || !!previous?.files.some((file) => previous.selectedIds.includes(file.id) && changed.includes(file.path));
+  const nextScopeCandidate = readScopeVersion({
+    head: incoming.head,
+    branch: incoming.branch,
+    files: incoming.files,
+    selectedIds,
+    statusVersion: incoming.statusVersion,
+    scopeVersion: previous?.scopeVersion ?? incoming.statusVersion,
+  });
+  const relevant = baseChanged
+    || (!!previous && nextScopeCandidate !== previous.scopeVersion)
+    || !!previous?.files.some((file) => previous.selectedIds.includes(file.id) && changed.includes(file.path));
   const reviewedPaths = previous?.files.filter((file) => previous.review.scopeFileIds?.includes(file.id)).map((file) => file.path) ?? [];
-  const draft = !previous
-    ? { text: emptyDraft?.text ?? '', editing: emptyDraft?.editing ?? false, outdated: false, revision: 0 }
-    : committedSet
-      ? previous.draft.revision === commitCompletion!.draftRevision
-        ? { text: '', editing: false, outdated: false, revision: previous.draft.revision + 1 }
-        : { ...previous.draft, outdated: !!previous.draft.text }
-      : { ...previous.draft, outdated: previous.draft.outdated || (relevant && !!previous.draft.text) };
+  const prompt = !previous
+    ? { text: emptyPromptText ?? '', revision: 0 }
+    : commitCompletion?.clearPrompt && !incoming.readError && previous.prompt.revision === commitCompletion.promptRevision
+      ? { text: '', revision: previous.prompt.revision + 1 }
+      : previous.prompt;
   const review = !previous
     ? { status: 'idle' as const, findings: [], skippedPaths: [], changedPaths: [] }
-    : committedSet
+    : committedSet && committedSet.size > 0
       ? (() => {
           const liveIds = new Set(incoming.files.map((file) => file.id));
           const validScopeIds = (previous.review.scopeFileIds ?? []).filter((id) => liveIds.has(id) && !committedSet.has(id));
@@ -65,11 +128,15 @@ function projectWorktree(
           status: relevant && previous.review.status === 'running' ? previous.requests.review?.previousReviewStatus ?? 'idle' : previous.review.status,
           changedPaths: [...new Set([...previous.review.changedPaths, ...changed.filter((path) => reviewedPaths.includes(path))])],
         };
+  const shouldClearPlan = !!committedSet && committedSet.size > 0;
   const projected: Worktree = {
     ...previous, ...incoming,
     sessionId: previous?.sessionId ?? crypto.randomUUID(), scopeVersion: previous?.scopeVersion ?? incoming.statusVersion,
     selectedIds,
-    draft,
+    unselectedIds,
+    prompt,
+    plan: shouldClearPlan ? undefined : previous?.plan,
+    planRevision: shouldClearPlan && previous?.plan ? previous.planRevision + 1 : previous?.planRevision ?? 0,
     review,
     sessionStatus: previous?.sessionStatus ?? 'idle', messages: previous?.messages ?? [],
     cPush: previous?.cPush,
@@ -77,39 +144,160 @@ function projectWorktree(
     requests: relevant ? {} : previous?.requests ?? {},
   };
   if (incoming.readError && previous) {
-    return { ...projected, files: previous.files, selectedIds: previous.selectedIds, scopeVersion: previous.scopeVersion,
-      draft: { ...previous.draft, outdated: previous.draft.outdated || !!previous.draft.text },
-      review: { ...previous.review, status: previous.review.status === 'running' ? previous.requests.review?.previousReviewStatus ?? 'idle' : previous.review.status }, requests: {} };
+    return {
+      ...projected,
+      files: previous.files,
+      selectedIds: previous.selectedIds,
+      unselectedIds: previous.unselectedIds ?? computeNormalUnselectedIds(previous.files, previous.selectedIds),
+      scopeVersion: previous.scopeVersion,
+      prompt: previous.prompt, plan: previous.plan, planRevision: previous.planRevision,
+      review: { ...previous.review, status: previous.review.status === 'running' ? previous.requests.review?.previousReviewStatus ?? 'idle' : previous.review.status }, requests: {},
+    };
   }
   return { ...projected, scopeVersion: readScopeVersion(projected) };
 }
 
 function mergeSnapshot(state: WorkbenchState, snapshot: GitRepositorySnapshot, focus: boolean, commitCompletion?: CommitCompletion): WorkbenchState {
   const previousRepository = state.repositories.find((repository) => repository.id === snapshot.repository.id);
-  if ((previousRepository?.readSequence ?? -1) >= snapshot.readSequence) return focus && state.worktrees.some((tree) => tree.worktreeId === snapshot.activeWorktreeId) ? { ...state, activeWorktreeId: snapshot.activeWorktreeId } : state;
+  const existingSettings = state.repositorySettings[snapshot.repository.id];
+  const resolvedKeepPaths = snapshot.repository.localKeepPaths !== undefined
+    ? [...new Set(snapshot.repository.localKeepPaths.filter(isValidRepoRelativePath))].sort()
+    : localKeepPathsFor(state, snapshot.repository.id);
+  const keepSet = new Set(resolvedKeepPaths);
+  const nextRepoSetting: RepositorySettings = {
+    editor: existingSettings?.editor ?? effectiveEditorFor(state, null),
+    commitLanguage: existingSettings?.commitLanguage ?? state.defaultCommitLanguage,
+    ...(resolvedKeepPaths.length ? { localKeepPaths: resolvedKeepPaths } : {}),
+  };
+  const repositorySettings = {
+    ...state.repositorySettings,
+    [snapshot.repository.id]: nextRepoSetting,
+  };
+  if ((previousRepository?.readSequence ?? -1) >= snapshot.readSequence) {
+    const nextState = { ...state, repositorySettings };
+    return focus && nextState.worktrees.some((tree) => tree.worktreeId === snapshot.activeWorktreeId)
+      ? { ...nextState, activeWorktreeId: snapshot.activeWorktreeId }
+      : nextState;
+  }
   const sameRepository = state.worktrees.filter((tree) => tree.repositoryId === snapshot.repository.id);
-  const worktrees = snapshot.worktrees.map((incoming) => projectWorktree(
-    incoming,
-    sameRepository.find((tree) => tree.worktreeId === incoming.worktreeId),
-    focus && !state.activeWorktreeId && incoming.worktreeId === snapshot.activeWorktreeId ? { text: state.emptyDraft, editing: state.emptyEditing } : undefined,
-    commitCompletion?.worktreeId === incoming.worktreeId ? commitCompletion : undefined,
-  ));
+  const authoritative = snapshot.repository.localKeepPaths !== undefined;
+  const worktrees = snapshot.worktrees.map((rawIncoming) => {
+    const incoming = normalizeWorktreeLocalKeep(rawIncoming, keepSet, authoritative);
+    return projectWorktree(
+      incoming,
+      sameRepository.find((tree) => tree.worktreeId === incoming.worktreeId),
+      focus && !state.activeWorktreeId && incoming.worktreeId === snapshot.activeWorktreeId ? state.emptyPrompt : undefined,
+      commitCompletion?.worktreeId === incoming.worktreeId ? commitCompletion : undefined,
+    );
+  });
+  const missingError = getMessages(state.locale).workbench.missingWorktreeError;
   const missing = sameRepository.filter((tree) => !worktrees.some((incoming) => incoming.worktreeId === tree.worktreeId))
-    .map((tree) => ({ ...tree, readError: '该工作树已不在 Git 的最新列表中，草稿和选择已保留，请重新打开目录。', requests: {} }));
-  return { ...state,
-    repositories: previousRepository ? state.repositories.map((repository) => repository.id === snapshot.repository.id ? { ...repository, ...snapshot.repository, readSequence: snapshot.readSequence } : repository)
-      : [...state.repositories, { ...snapshot.repository, readSequence: snapshot.readSequence }],
+    .map((tree) => ({ ...tree, readError: missingError, requests: {} }));
+  const nextRepoPayload = {
+    ...snapshot.repository,
+    ...(resolvedKeepPaths.length ? { localKeepPaths: resolvedKeepPaths } : { localKeepPaths: undefined }),
+    readSequence: snapshot.readSequence,
+  };
+  return {
+    ...state,
+    repositorySettings,
+    repositories: previousRepository
+      ? state.repositories.map((repository) => repository.id === snapshot.repository.id ? { ...repository, ...nextRepoPayload } : repository)
+      : [...state.repositories, nextRepoPayload],
     worktrees: [...state.worktrees.filter((tree) => tree.repositoryId !== snapshot.repository.id), ...worktrees, ...missing],
     activeWorktreeId: focus ? snapshot.activeWorktreeId : state.activeWorktreeId,
   };
 }
 
-export function finishRepositoryCommit(state: WorkbenchState, repositoryId: string, reply: GitCommitReply): WorkbenchState {
-  const request = state.repositoryCommits?.[repositoryId];
-  if (!request || request.requestId !== reply.requestId || request.worktreeId !== reply.target.worktreeId) return state;
-  const repositoryCommits = { ...state.repositoryCommits }; delete repositoryCommits[repositoryId];
-  const next = { ...state, repositoryCommits };
-  return mergeSnapshot(next, reply.snapshot, false, request);
+export function applyLocalKeepUpdate(
+  state: WorkbenchState,
+  repositoryId: string,
+  paths: string[],
+  keep: boolean,
+): WorkbenchState {
+  const validPaths = paths.filter(isValidRepoRelativePath);
+  if (!repositoryId || !validPaths.length) return state;
+  const keepSet = new Set(localKeepPathsFor(state, repositoryId));
+  let mutated = false;
+  for (const path of validPaths) {
+    if (keep && !keepSet.has(path)) {
+      keepSet.add(path);
+      mutated = true;
+    } else if (!keep && keepSet.has(path)) {
+      keepSet.delete(path);
+      mutated = true;
+    }
+  }
+  const hasFileMismatch = state.worktrees.some(
+    (tree) => tree.repositoryId === repositoryId && tree.files.some((file) => Boolean(file.localKeep) !== keepSet.has(file.path)),
+  );
+  if (!mutated && !hasFileMismatch) return state;
+  const nextKeepList = [...keepSet].sort();
+  const repositorySettings: Record<string, RepositorySettings> = {
+    ...state.repositorySettings,
+    [repositoryId]: {
+      editor: effectiveEditorFor(state, repositoryId),
+      commitLanguage: effectiveCommitLanguageFor(state, repositoryId),
+      ...(nextKeepList.length ? { localKeepPaths: nextKeepList } : {}),
+    },
+  };
+  const repositories = state.repositories.map((repo) =>
+    repo.id === repositoryId
+      ? { ...repo, ...(nextKeepList.length ? { localKeepPaths: nextKeepList } : { localKeepPaths: undefined }) }
+      : repo,
+  );
+  const worktrees = state.worktrees.map((tree) => {
+    if (tree.repositoryId !== repositoryId) return tree;
+    const newlyKeptIds = new Set<string>();
+    const newlyNormalIds = new Set<string>();
+    const files = tree.files.map((file) => {
+      const isKept = keepSet.has(file.path);
+      if (isKept && !file.localKeep) newlyKeptIds.add(file.id);
+      if (!isKept && file.localKeep) newlyNormalIds.add(file.id);
+      return Boolean(file.localKeep) === isKept ? file : { ...file, localKeep: isKept };
+    });
+    const hadSelectedRemoved = newlyKeptIds.size > 0 && tree.selectedIds.some((id) => newlyKeptIds.has(id));
+    let selectedIds = newlyKeptIds.size > 0
+      ? tree.selectedIds.filter((id) => !newlyKeptIds.has(id))
+      : tree.selectedIds;
+    if (newlyNormalIds.size > 0) {
+      const existing = new Set(selectedIds);
+      const added = files.filter((file) => newlyNormalIds.has(file.id) && !existing.has(file.id)).map((file) => file.id);
+      if (added.length > 0) {
+        selectedIds = [...selectedIds, ...added];
+      }
+    }
+    const unselectedIds = computeNormalUnselectedIds(files, selectedIds);
+    const scopeVersion = readScopeVersion({ ...tree, files, selectedIds });
+    const scopeChanged = scopeVersion !== tree.scopeVersion || hadSelectedRemoved;
+    return {
+      ...tree,
+      files,
+      selectedIds,
+      unselectedIds,
+      scopeVersion,
+      requests: scopeChanged ? {} : tree.requests,
+      review: scopeChanged && tree.review.status === 'running'
+        ? { ...tree.review, status: tree.requests.review?.previousReviewStatus ?? 'idle' }
+        : tree.review,
+    };
+  });
+  return {
+    ...state,
+    repositorySettings,
+    repositories,
+    worktrees,
+    settingsModified: true,
+  };
+}
+
+export function finishRepositoryLocalKeep(
+  state: WorkbenchState,
+  repositoryId: string,
+  reply: GitLocalKeepReply,
+): WorkbenchState {
+  if (reply.snapshot.repository.id !== repositoryId) return state;
+  return mergeSnapshot(state, reply.snapshot, false);
 }
 
 export function finishRepositoryBranch(state: WorkbenchState, repositoryId: string, reply: GitBranchReply): WorkbenchState {
@@ -131,19 +319,34 @@ export function finishRepositoryRead(state: WorkbenchState, key: string, reply: 
 }
 
 export function serializeWorkbenchPersistence(state: WorkbenchState, revision: number): WorkbenchSaveRequest {
+  const windowPreferences: PersistedWindowPreferences = {
+    pinned: state.windowPrefs.pinned,
+    compactMode: state.windowPrefs.compactMode,
+    pinnedExpanded: state.windowPrefs.pinnedExpanded,
+    ...(state.windowPrefs.fullSize ? { fullSize: { ...state.windowPrefs.fullSize } } : {}),
+    ...(state.windowPrefs.fullPosition ? { fullPosition: { ...state.windowPrefs.fullPosition } } : {}),
+    ...(state.windowPrefs.compactPosition ? { compactPosition: { ...state.windowPrefs.compactPosition } } : {}),
+  };
   return {
     revision,
+    locale: state.locale,
     editor: state.editor,
+    defaultCommitLanguage: state.defaultCommitLanguage,
+    repositorySettings: Object.entries(state.repositorySettings).map(([repositoryId, cfg]) => ({
+      repositoryId,
+      editor: cfg.editor,
+      commitLanguage: cfg.commitLanguage,
+      ...(cfg.localKeepPaths?.length ? { localKeepPaths: [...cfg.localKeepPaths] } : {}),
+    })),
+    windowPreferences,
     activeWorktreeId: state.activeWorktreeId,
-    emptyDraft: state.emptyDraft,
-    emptyEditing: state.emptyEditing,
+    emptyPrompt: state.emptyPrompt,
     worktrees: state.worktrees.map((tree) => ({
       repositoryId: tree.repositoryId,
       worktreeId: tree.worktreeId,
-      draftText: tree.draft.text,
-      draftEditing: tree.draft.editing,
-      draftOutdated: tree.draft.outdated,
+      promptText: tree.prompt.text,
       selectedIds: [...tree.selectedIds],
+      unselectedIds: [...(tree.unselectedIds ?? computeNormalUnselectedIds(tree.files, tree.selectedIds))],
       scopeVersion: tree.scopeVersion,
       tab: tree.tab,
     })),
@@ -155,6 +358,7 @@ export function applyCPushSnapshot(
   session: CPushSessionSnapshot,
   repositorySnapshot?: GitRepositorySnapshot,
   expandDockOnSettle?: boolean,
+  planOnly?: boolean,
 ): WorkbenchState {
   const previousTree = state.worktrees.find(
     (tree) => tree.repositoryId === session.repositoryId && tree.worktreeId === session.worktreeId,
@@ -162,6 +366,7 @@ export function applyCPushSnapshot(
   if (!previousTree) return state;
   if (
     previousTree.cPush
+    && !previousTree.cPush.planOnly
     && previousTree.cPush.runId !== session.runId
     && previousTree.sessionStatus !== 'idle'
     && previousTree.sessionStatus !== 'done'
@@ -169,35 +374,29 @@ export function applyCPushSnapshot(
     return state;
   }
 
-  const pendingCommitReq = state.repositoryCommits?.[session.repositoryId];
-  const draftRevAtStart = previousTree.cPush?.draftRevisionAtStart
-    ?? (pendingCommitReq?.worktreeId === session.worktreeId ? pendingCommitReq.draftRevision : undefined)
-    ?? -1;
-  const shouldConsumeDraft = !session.canRetryRemaining
-    && session.commits.length > 0
-    && session.committedFileIds.length > 0;
-
-  let baseState = state;
-  if (pendingCommitReq?.worktreeId === session.worktreeId) {
-    const repositoryCommits = { ...state.repositoryCommits };
-    delete repositoryCommits[session.repositoryId];
-    baseState = { ...state, repositoryCommits };
-  }
+  const promptRevAtStart = previousTree.cPush?.promptRevisionAtStart ?? previousTree.prompt.revision;
+  const isCPushCompleted = session.sessionStatus === 'done'
+    && !session.message?.id.startsWith('done-local-')
+    && !session.message?.id.startsWith('done-merge-pull-')
+    && !session.message?.id.startsWith('done-manual-rebase-')
+    && (session.commits.length > 0 || session.skippedFileIds.length > 0);
+  const hasCommittedOrFinished = session.committedFileIds.length > 0 || isCPushCompleted;
 
   let nextState = repositorySnapshot
     ? mergeSnapshot(
-        baseState,
+        state,
         repositorySnapshot,
         false,
-        session.committedFileIds.length > 0
+        session.committedFileIds.length > 0 || isCPushCompleted
           ? {
               worktreeId: session.worktreeId,
-              draftRevision: shouldConsumeDraft ? draftRevAtStart : -999_999,
+              promptRevision: promptRevAtStart,
+              clearPrompt: isCPushCompleted,
               committedFileIds: session.committedFileIds,
             }
           : undefined,
       )
-    : baseState;
+    : state;
 
   nextState = {
     ...nextState,
@@ -209,20 +408,24 @@ export function applyCPushSnapshot(
       const nextMessages: Message[] = session.message
         ? [...reviewMessages, session.message]
         : reviewMessages;
-      const nextDraft = shouldConsumeDraft && !repositorySnapshot && tree.draft.revision === draftRevAtStart
-        ? { text: '', editing: false, outdated: false, revision: tree.draft.revision + 1 }
-        : tree.draft;
+      const nextPrompt = isCPushCompleted && !repositorySnapshot && tree.prompt.revision === promptRevAtStart
+        ? { text: '', revision: tree.prompt.revision + 1 }
+        : tree.prompt;
       const nextDockExpanded = session.autoCollapse || session.sessionStatus === 'idle'
         ? false
         : expandDockOnSettle
           ? true
           : tree.dockExpanded;
+      const nextPlan = hasCommittedOrFinished ? undefined : tree.plan;
+      const nextPlanRevision = hasCommittedOrFinished && tree.plan ? tree.planRevision + 1 : tree.planRevision;
       return {
         ...tree,
         sessionStatus: session.sessionStatus,
         dockExpanded: nextDockExpanded,
         messages: nextMessages,
-        draft: nextDraft,
+        prompt: nextPrompt,
+        plan: nextPlan,
+        planRevision: nextPlanRevision,
         cPush: session.sessionStatus === 'idle'
           ? undefined
           : {
@@ -234,12 +437,13 @@ export function applyCPushSnapshot(
                 scopeVersion: session.frozenScopeVersion,
               },
               frozenFileIds: session.frozenFileIds,
-              draftRevisionAtStart: tree.cPush?.draftRevisionAtStart ?? (draftRevAtStart >= 0 ? draftRevAtStart : tree.draft.revision),
+              promptRevisionAtStart: tree.cPush?.promptRevisionAtStart ?? promptRevAtStart,
               modelId: session.modelId,
               timeline: session.timeline,
               qaLog: session.qaLog,
               commits: session.commits,
               canRetryRemaining: session.canRetryRemaining,
+              ...(planOnly ?? tree.cPush?.planOnly ? { planOnly: true } : {}),
             },
       };
     }),
@@ -252,7 +456,30 @@ export function finishCPushCommand(
   reply: CPushCommandReply,
   expandDockOnSettle?: boolean,
 ): WorkbenchState {
-  return applyCPushSnapshot(state, reply.session, reply.repositorySnapshot, expandDockOnSettle);
+  const settled = applyCPushSnapshot(state, reply.session, reply.repositorySnapshot, expandDockOnSettle);
+  if (!reply.preparedPlan) return settled;
+  const prepared = reply.preparedPlan;
+  return {
+    ...settled,
+    worktrees: settled.worktrees.map((tree) => {
+      if (tree.repositoryId !== reply.session.repositoryId || tree.worktreeId !== reply.session.worktreeId) {
+        return tree;
+      }
+      return {
+        ...tree,
+        requests: { ...tree.requests, plan: undefined },
+        plan: {
+          id: reply.session.runId,
+          baseScopeVersion: reply.session.frozenScopeVersion,
+          modelId: reply.session.modelId,
+          summary: prepared.summary,
+          groups: prepared.groups.map((group) => ({ ...group, fileIds: [...group.fileIds] })),
+          skippedFileIds: [...prepared.skippedFileIds],
+        },
+        planRevision: tree.planRevision + 1,
+      };
+    }),
+  };
 }
 
 export function receiveCPushProgress(state: WorkbenchState, progress: CPushProgressEvent): WorkbenchState {
@@ -262,7 +489,7 @@ export function receiveCPushProgress(state: WorkbenchState, progress: CPushProgr
 export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchRestoreReply): WorkbenchState {
   const persistedByWorktree = new Map(restored.worktrees.map((item) => [item.worktreeId, item]));
   const cPushByWorktree = new Map((restored.cPushSessions ?? []).map((item) => [item.worktreeId, item]));
-  const userEditedEmpty = state.emptyEditing || state.emptyDraft.length > 0;
+  const userEditedEmpty = state.emptyPrompt.length > 0;
   const hydratedModels = restored.models === undefined
     ? state.models
     : state.models.length > 0
@@ -272,16 +499,68 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
     ? state.activeModelId
     : state.activeModelId ?? restored.activeModelId ?? hydratedModels[0]?.id ?? null;
   const installedEditors = restored.installedEditors ?? state.installedEditors;
-  const desiredEditor = state.editorModified ? state.editor : restored.editor;
-  const effectiveEditor = installedEditors && installedEditors.length > 0 && !installedEditors.includes(desiredEditor)
-    ? installedEditors[0]
-    : desiredEditor;
+  const resolveEditor = (desired: EditorId): EditorId =>
+    installedEditors && installedEditors.length > 0 && !installedEditors.includes(desired)
+      ? installedEditors[0]
+      : desired;
+  const restoredLocale = restored.locale ?? DEFAULT_APP_LOCALE;
+  const restoredDefaultCommitLang = restored.defaultCommitLanguage ?? DEFAULT_COMMIT_LANGUAGE;
+  const locale = state.settingsModified ? state.locale : restoredLocale;
+  const defaultCommitLanguage = state.settingsModified ? state.defaultCommitLanguage : restoredDefaultCommitLang;
+  const desiredEditor = state.settingsModified ? state.editor : restored.editor;
+  const effectiveEditor = resolveEditor(desiredEditor);
+  const repositorySettings: Record<string, RepositorySettings> = {};
+  for (const entry of restored.repositorySettings ?? []) {
+    const keepPaths = entry.localKeepPaths?.filter(isValidRepoRelativePath) ?? [];
+    repositorySettings[entry.repositoryId] = {
+      editor: resolveEditor(entry.editor),
+      commitLanguage: entry.commitLanguage,
+      ...(keepPaths.length ? { localKeepPaths: [...new Set(keepPaths)].sort() } : {}),
+    };
+  }
+  for (const snapshot of restored.snapshots) {
+    const snapKeep = snapshot.repository.localKeepPaths?.filter(isValidRepoRelativePath);
+    const existing = repositorySettings[snapshot.repository.id];
+    const mergedKeep = snapKeep !== undefined
+      ? [...new Set(snapKeep)].sort()
+      : existing?.localKeepPaths;
+    repositorySettings[snapshot.repository.id] = {
+      editor: existing?.editor ?? resolveEditor(restored.editor),
+      commitLanguage: existing?.commitLanguage ?? restoredDefaultCommitLang,
+      ...(mergedKeep?.length ? { localKeepPaths: mergedKeep } : {}),
+    };
+  }
+  if (state.settingsModified) {
+    for (const [repositoryId, cfg] of Object.entries(state.repositorySettings)) {
+      const keepPaths = cfg.localKeepPaths ?? repositorySettings[repositoryId]?.localKeepPaths;
+      repositorySettings[repositoryId] = {
+        editor: resolveEditor(cfg.editor),
+        commitLanguage: cfg.commitLanguage,
+        ...(keepPaths?.length ? { localKeepPaths: keepPaths } : {}),
+      };
+    }
+  }
+  const restoredWindowPrefs = restored.windowPreferences
+    ? {
+        ...defaultWindowPreferences(),
+        ...restored.windowPreferences,
+        fullSize: restored.windowPreferences.fullSize
+          ? {
+              width: Math.max(WINDOW_DIMENSIONS.minFullWidth, restored.windowPreferences.fullSize.width),
+              height: Math.max(WINDOW_DIMENSIONS.minFullHeight, restored.windowPreferences.fullSize.height),
+            }
+          : defaultWindowPreferences().fullSize,
+      }
+    : state.windowPrefs;
   let next: WorkbenchState = {
     ...state,
+    locale,
     editor: effectiveEditor,
+    defaultCommitLanguage,
+    repositorySettings,
+    windowPrefs: state.settingsModified ? state.windowPrefs : restoredWindowPrefs,
     ...(installedEditors !== undefined ? { installedEditors } : {}),
-    emptyDraft: userEditedEmpty ? state.emptyDraft : restored.emptyDraft,
-    emptyEditing: userEditedEmpty ? state.emptyEditing : restored.emptyEditing,
+    emptyPrompt: userEditedEmpty ? state.emptyPrompt : restored.emptyPrompt,
     models: hydratedModels,
     activeModelId: hydratedActiveModelId,
   };
@@ -290,25 +569,38 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       next = mergeSnapshot(next, snapshot, false);
       continue;
     }
-    const worktrees = snapshot.worktrees.map((incoming) => {
+    const repoKeepPaths = repositorySettings[snapshot.repository.id]?.localKeepPaths ?? [];
+    const keepSet = new Set(repoKeepPaths);
+    const hasSnapshotKeepList = snapshot.repository.localKeepPaths !== undefined || repoKeepPaths.length > 0;
+    const worktrees = snapshot.worktrees.map((rawIncoming) => {
+      const incoming = normalizeWorktreeLocalKeep(rawIncoming, keepSet, hasSnapshotKeepList);
       const base = projectWorktree(incoming);
       const saved = persistedByWorktree.get(incoming.worktreeId);
       const savedCPush = cPushByWorktree.get(incoming.worktreeId);
-      const withSavedDraft: Worktree = (!saved || incoming.readError) ? base : (() => {
-        const selectedIds = saved.selectedIds.filter((id) => incoming.files.some((file) => file.id === id));
+      const withSavedPrompt: Worktree = (!saved || incoming.readError) ? base : (() => {
+        const selectedIds = saved.unselectedIds !== undefined
+          ? (() => {
+              const savedSelectedSet = new Set(saved.selectedIds);
+              const savedUnselectedSet = new Set(saved.unselectedIds);
+              return incoming.files
+                .filter((file) => (file.localKeep ? savedSelectedSet.has(file.id) : !savedUnselectedSet.has(file.id)))
+                .map((file) => file.id);
+            })()
+          : saved.selectedIds.filter((id) => incoming.files.some((file) => file.id === id));
+        const unselectedIds = computeNormalUnselectedIds(incoming.files, selectedIds);
         const scopeVersion = readScopeVersion({ ...base, selectedIds });
-        const outdated = saved.draftOutdated || (!!saved.draftText && !!saved.scopeVersion && saved.scopeVersion !== scopeVersion);
         return {
           ...base,
           selectedIds,
+          unselectedIds,
           scopeVersion,
-          draft: { text: saved.draftText, editing: saved.draftEditing, outdated, revision: 0 },
+          prompt: { text: saved.promptText, revision: 0 },
           tab: saved.tab,
         };
       })();
-      if (!savedCPush || savedCPush.sessionStatus === 'idle') return withSavedDraft;
+      if (!savedCPush || savedCPush.sessionStatus === 'idle') return withSavedPrompt;
       return {
-        ...withSavedDraft,
+        ...withSavedPrompt,
         sessionId: savedCPush.sessionId,
         sessionStatus: savedCPush.sessionStatus,
         messages: savedCPush.message ? [savedCPush.message] : [],
@@ -322,7 +614,7 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
             scopeVersion: savedCPush.frozenScopeVersion,
           },
           frozenFileIds: savedCPush.frozenFileIds,
-          draftRevisionAtStart: withSavedDraft.draft.revision,
+          promptRevisionAtStart: withSavedPrompt.prompt.revision,
           modelId: savedCPush.modelId,
           timeline: savedCPush.timeline,
           qaLog: savedCPush.qaLog,
@@ -333,7 +625,14 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
     });
     next = {
       ...next,
-      repositories: [...next.repositories, { ...snapshot.repository, readSequence: snapshot.readSequence }],
+      repositories: [
+        ...next.repositories,
+        {
+          ...snapshot.repository,
+          ...(repoKeepPaths.length ? { localKeepPaths: repoKeepPaths } : { localKeepPaths: undefined }),
+          readSequence: snapshot.readSequence,
+        },
+      ],
       worktrees: [...next.worktrees, ...worktrees],
     };
   }

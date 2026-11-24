@@ -1,15 +1,19 @@
 import { useEffect, useId, useRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { useI18n } from '../i18n';
 
 const iconPaths = {
   down: 'm6 9 6 6 6-6', up: 'm6 15 6-6 6 6', right: 'm9 6 6 6-6 6',
   close: 'm6 6 12 12M6 18 18 6', check: 'm5 12 4 4L19 6', plus: 'M12 5v14M5 12h14',
   history: 'M3 11a9 9 0 1 1 3 8M3 4v7h7M12 7v5l3 2',
   pin: 'm16 3 5 5-4 1-4 5v4l-3-3-6 6M4 11h4l5-4 1-4',
+  expand: 'M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7',
+  collapse: 'M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7',
   settings: 'm9 3 1-1h4l1 4 3 2 4 1v5l-4 1-2 3-1 4h-5l-1-4-3-2-4-1v-5l4-1 2-3M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
   branch: 'M6 5v14M6 9c0 5 12 5 12-3M9 4a3 3 0 1 1-6 0 3 3 0 0 1 6 0M9 20a3 3 0 1 1-6 0 3 3 0 0 1 6 0M21 4a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
   tree: 'M4 3v15h5M4 7h5M12 5h8v5h-8zM12 16h8v5h-8z',
   list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+  loader: 'M21 12a9 9 0 1 1-6.219-8.56',
   refresh: 'M20 7a9 9 0 1 0 1 8M20 2v6h-6',
   folder: 'M3 6h6l2 2h10v12H3z',
   external: 'M14 3h7v7M21 3l-9 9M10 3H3v18h18v-7',
@@ -86,6 +90,7 @@ export function Popover({ title, onClose, children, className = '' }: { title: s
 }
 
 export function Overlay({ title, children, onClose, covered = false }: { title: string; children: ReactNode; onClose: () => void; covered?: boolean }) {
+  const { t } = useI18n();
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
   const latestClose = useRef(onClose);
@@ -110,7 +115,7 @@ export function Overlay({ title, children, onClose, covered = false }: { title: 
     };
   }, [covered]);
   return <div ref={ref} className="overlay" role="dialog" aria-modal={!covered} aria-labelledby={id} tabIndex={-1} inert={covered}>
-    <div className="overlay-heading" data-tauri-drag-region><h1 id={id} data-tauri-drag-region>{title}</h1><IconButton icon="close" label={`关闭${title}`} onClick={onClose} /></div>
+    <div className="overlay-heading" data-tauri-drag-region><h1 id={id} data-tauri-drag-region>{title}</h1><IconButton icon="close" label={t.common.closeOverlay(title)} onClick={onClose} /></div>
     {children}
   </div>;
 }

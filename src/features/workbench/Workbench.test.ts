@@ -1,43 +1,81 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { getMessages } from '../../i18n/messages';
 import { Workbench } from './Workbench';
 import { fixture, scenarios } from './testing/fixtures';
 
 const render = (scenario: typeof scenarios[number]) => renderToStaticMarkup(createElement(Workbench, { initialState: fixture(scenario) }));
 
-describe('定稿工作台展示', () => {
-  it.each(scenarios)('可渲染 %s 样例，不含演练操作或凭据', (scenario) => {
+describe('Workbench static rendering', () => {
+  it.each(scenarios)('renders %s scenario without rehearsal controls, manual commit dropdowns, or demo secrets', (scenario) => {
     const html = render(scenario);
-    expect(html).toContain('aria-label="Picket 工作台"');
-    expect(html).toContain('aria-label="变更文件"');
-    expect(html).toContain('role="tablist"');
-    expect(html).not.toMatch(/模拟修复|模拟返回|演练控制台|推进至提问|sk-demo/);
+    expect(html).toContain('aria-label="Picket Workbench"');
+    if (scenario === 'compact') {
+      expect(html).toContain('aria-label="Compact Workbench"');
+      expect(html).toContain('aria-label="Expand Workbench"');
+      expect(html).not.toContain('prompt-textarea');
+      expect(html).not.toContain('aria-label="Changed Files"');
+      expect(html).not.toContain('role="tablist"');
+      expect(html).not.toContain('aria-label="Settings"');
+      expect(html).not.toContain('aria-label="C-Push Session History"');
+    } else {
+      expect(html).toContain('aria-label="Changed Files"');
+      expect(html).toContain('role="tablist"');
+    }
+    expect(html).not.toContain('action-dropdown');
+    expect(html).not.toMatch(/\u6a21\u62df\u4fee\u590d|\u6a21\u62df\u8fd4\u56de|\u6f14\u7ec3\u63a7\u5236\u53f0|\u63a8\u8fdb\u81f3\u63d0\u95ee|Simulate Fix|Simulation Console|sk-demo/);
   });
-  it('仅头部空白是拖动区，不把按钮或整个工作台当作拖动区', () => {
+
+  it('marks only header blank space as drag region and never buttons or the entire workbench in both full and compact modes', () => {
     const html = render('typing');
     expect(html).toMatch(/class="context-row context-top" data-tauri-drag-region="true"/);
     expect(html).toMatch(/class="menu-anchor repository-anchor" data-tauri-drag-region="true"/);
     expect(html).not.toMatch(/data-tauri-drag-region="deep"|<button[^>]*data-tauri-drag-region/);
     expect(html).not.toMatch(/class="context-row context-bottom" data-tauri-drag-region/);
+
+    const compactHtml = render('compact');
+    expect(compactHtml).toMatch(/class="compact-top" data-tauri-drag-region="true"/);
+    expect(compactHtml).not.toMatch(/data-tauri-drag-region="deep"|<button[^>]*data-tauri-drag-region/);
   });
-  it('默认流程不预置示例数据，无仓库与零模型均可到达', () => {
+
+  it('starts in English zero-model empty state with collapsed + Prompt toggle and minimalist Configure Model button', () => {
     const html = renderToStaticMarkup(createElement(Workbench));
-    expect(html).toContain('打开本机仓库…');
-    expect(html).toContain('手动编写');
-    expect(html).toContain('添加模型');
+    expect(html).toContain('Open Local Repository…');
+    expect(html).toContain('Configure Model');
+    expect(html).toContain('Add Model');
+    expect(html).toContain('+ Prompt');
+    expect(html).not.toContain('prompt-textarea');
+    expect(html).not.toContain('Or click C-Push below');
+    expect(html).not.toContain('Write Manually');
     expect(html).not.toMatch(/my-order-service|Order\.ts|Claude Sonnet 4|upstream\/feat\/pay|a19e7c2/);
   });
-  it('执行中、提问、续写、完成四个时刻和核心异常有独立结构', () => {
-    expect(render('running')).toContain('任务进度');
-    expect(render('question')).toContain('单独提交并一起推送');
-    expect(render('typing')).toContain('textarea');
-    expect(render('done')).toContain('知道了');
-    expect(render('push-failed')).toContain('已在本地提交，推送失败');
+
+  it('renders localized Chinese UI when state.locale is zh', () => {
+    const zhMessages = getMessages('zh');
+    const zhState = { ...fixture('empty'), locale: 'zh' as const };
+    const html = renderToStaticMarkup(createElement(Workbench, { initialState: zhState }));
+    expect(html).toContain(`aria-label="${zhMessages.workbench.ariaLabel}"`);
+    expect(html).toContain(zhMessages.changes.openLocalRepository);
+    expect(html).toContain(zhMessages.commit.configureModelButton);
+    expect(html).toContain(zhMessages.commit.promptToggle);
+  });
+
+  it('renders distinct structures for running, planning, question, editable plan, done, zero-model, and recovery states', () => {
+    expect(render('running')).toContain('Task progress');
+    expect(render('generating')).toContain('Generating commit plan…');
+    expect(render('generating')).toContain('+ Prompt');
+    expect(render('question')).toContain('Commit separately &amp; push together');
+    expect(render('typing')).toContain('Plan · 1 commit');
+    expect(render('typing')).toContain('plan-group-textarea');
+    expect(render('typing')).toContain('prompt-textarea');
+    expect(render('no-model')).toContain('Configure Model');
+    expect(render('done')).toContain('Got it');
+    expect(render('push-failed')).toContain('Committed locally, push failed');
     expect(render('push-failed')).toContain('a19e7c2');
-    expect(render('conflict')).toContain('让 Agent 合并');
-    expect(render('manual')).toContain('打开冲突文件');
-    expect(render('resolved')).toContain('继续推送');
-    expect(render('terminal-done')).not.toContain('aria-label="当前事项"');
+    expect(render('conflict')).toContain('Let Agent Merge');
+    expect(render('manual')).toContain('Open conflicted file');
+    expect(render('resolved')).toContain('Continue Push');
+    expect(render('terminal-done')).not.toContain('aria-label="Active Session"');
   });
 });

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkbenchRestoreReply } from '../../../../shared/workbench-persistence-protocol';
+import {
+  decodeWorkbenchRestoreReply,
+  type WorkbenchRestoreReply,
+} from '../../../../shared/workbench-persistence-protocol';
 import { repositorySnapshot } from '../testing/repository-fixture';
 import { readScopeVersion, serializeWorkbenchPersistence } from './repositories';
-import { emptyWorkbench, workbenchReducer } from './workbench';
+import { effectiveCommitLanguageFor, effectiveEditorFor, emptyWorkbench, workbenchReducer } from './workbench';
 
-describe('工作台跨重启持久化投影与水合', () => {
-  it('恢复首选编辑器、活动工作树、各工作树草稿与空选择，并检测关停期间的范围变化', () => {
+describe('Workbench cross-restart v2 persistence projection and hydration', () => {
+  it('restores locale, per-project settings, active worktree, prompts, and selections', () => {
     const snapshot = repositorySnapshot(1);
     const unchangedScope = readScopeVersion({
       ...snapshot.worktrees[1],
@@ -13,20 +16,17 @@ describe('工作台跨重启持久化投影与水合', () => {
       scopeVersion: snapshot.worktrees[1].statusVersion,
     });
     const restored: WorkbenchRestoreReply = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       editor: 'webstorm',
       activeWorktreeId: 'fix-tree',
-      emptyDraft: '无仓库草稿',
-      emptyEditing: true,
+      emptyPrompt: 'empty-repo extra instruction',
       snapshots: [snapshot],
       warning: null,
       worktrees: [
         {
           repositoryId: 'orders',
           worktreeId: 'pay-tree',
-          draftText: '关闭前写好的提交说明',
-          draftEditing: true,
-          draftOutdated: false,
+          promptText: 'split lockfile separately',
           selectedIds: ['order'],
           scopeVersion: 'old-scope-before-external-edit',
           tab: 'review',
@@ -34,9 +34,7 @@ describe('工作台跨重启持久化投影与水合', () => {
         {
           repositoryId: 'orders',
           worktreeId: 'fix-tree',
-          draftText: '保持未过期的说明',
-          draftEditing: true,
-          draftOutdated: false,
+          promptText: 'unchanged prompt',
           selectedIds: [],
           scopeVersion: unchangedScope,
           tab: 'commit',
@@ -45,51 +43,123 @@ describe('工作台跨重启持久化投影与水合', () => {
     };
 
     const hydrated = workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored });
+    expect(hydrated.locale).toBe('en');
+    expect(hydrated.defaultCommitLanguage).toBe('en');
     expect(hydrated.editor).toBe('webstorm');
+    expect(hydrated.repositorySettings.orders).toEqual({ editor: 'webstorm', commitLanguage: 'en' });
     expect(hydrated.activeWorktreeId).toBe('fix-tree');
-    expect(hydrated.emptyDraft).toBe('无仓库草稿');
+    expect(hydrated.emptyPrompt).toBe('empty-repo extra instruction');
 
     const payTree = hydrated.worktrees.find((tree) => tree.worktreeId === 'pay-tree')!;
     expect(payTree.selectedIds).toEqual(['order']);
     expect(payTree.tab).toBe('review');
-    expect(payTree.draft).toMatchObject({ text: '关闭前写好的提交说明', editing: true, outdated: true });
+    expect(payTree.prompt.text).toBe('split lockfile separately');
 
     const fixTree = hydrated.worktrees.find((tree) => tree.worktreeId === 'fix-tree')!;
     expect(fixTree.selectedIds).toEqual([]);
-    expect(fixTree.draft).toMatchObject({ text: '保持未过期的说明', editing: true, outdated: false });
+    expect(fixTree.prompt.text).toBe('unchanged prompt');
   });
 
-  it('异步水合晚于用户操作到达时，不覆盖用户在启动后已修改的编辑器和草稿', () => {
+  it('isolates per-repository editor and commitLanguage across projects and round-trips across cold restart', () => {
+    const ordersSnapshot = repositorySnapshot(1);
+    const cliSnapshot = repositorySnapshot(1);
+    cliSnapshot.repository = {
+      id: 'cli',
+      name: 'picket-cli',
+      branches: [{ name: 'main', worktreeId: 'cli-tree' }],
+      remoteBranches: [],
+    };
+    cliSnapshot.activeWorktreeId = 'cli-tree';
+    cliSnapshot.worktrees = [{
+      ...cliSnapshot.worktrees[0],
+      repositoryId: 'cli',
+      worktreeId: 'cli-tree',
+      label: 'cli',
+      branch: 'main',
+    }];
+
     let state = emptyWorkbench();
+    state = workbenchReducer(state, { type: 'repositoryReadStarted', key: 'open', requestId: 'open-orders' });
+    state = workbenchReducer(state, { type: 'repositoryReadFinished', key: 'open', reply: { protocolVersion: 1, requestId: 'open-orders', snapshot: ordersSnapshot } });
+    state = workbenchReducer(state, { type: 'editor', editor: 'rustrover', repositoryId: 'orders' });
+    state = workbenchReducer(state, { type: 'commitLanguage', commitLanguage: 'zh', repositoryId: 'orders' });
+
+    state = workbenchReducer(state, { type: 'repositoryReadStarted', key: 'open', requestId: 'open-cli' });
+    state = workbenchReducer(state, { type: 'repositoryReadFinished', key: 'open', reply: { protocolVersion: 1, requestId: 'open-cli', snapshot: cliSnapshot } });
+    state = workbenchReducer(state, { type: 'editor', editor: 'cursor', repositoryId: 'cli' });
+    state = workbenchReducer(state, { type: 'commitLanguage', commitLanguage: 'en', repositoryId: 'cli' });
+    state = workbenchReducer(state, { type: 'locale', locale: 'zh' });
+
+    expect(effectiveEditorFor(state, 'orders')).toBe('rustrover');
+    expect(effectiveCommitLanguageFor(state, 'orders')).toBe('zh');
+    expect(effectiveEditorFor(state, 'cli')).toBe('cursor');
+    expect(effectiveCommitLanguageFor(state, 'cli')).toBe('en');
+
+    const saved = serializeWorkbenchPersistence(state, 3);
+    expect(saved.locale).toBe('zh');
+    expect(saved.repositorySettings).toEqual([
+      { repositoryId: 'orders', editor: 'rustrover', commitLanguage: 'zh' },
+      { repositoryId: 'cli', editor: 'cursor', commitLanguage: 'en' },
+    ]);
+
+    const coldRestored = workbenchReducer(emptyWorkbench(), {
+      type: 'workbenchHydrated',
+      restored: {
+        protocolVersion: 2,
+        locale: saved.locale,
+        editor: saved.editor,
+        defaultCommitLanguage: saved.defaultCommitLanguage,
+        repositorySettings: saved.repositorySettings,
+        activeWorktreeId: saved.activeWorktreeId,
+        emptyPrompt: saved.emptyPrompt,
+        worktrees: saved.worktrees,
+        snapshots: [ordersSnapshot, cliSnapshot],
+        warning: null,
+      },
+    });
+
+    expect(coldRestored.locale).toBe('zh');
+    expect(effectiveEditorFor(coldRestored, 'orders')).toBe('rustrover');
+    expect(effectiveCommitLanguageFor(coldRestored, 'orders')).toBe('zh');
+    expect(effectiveEditorFor(coldRestored, 'cli')).toBe('cursor');
+    expect(effectiveCommitLanguageFor(coldRestored, 'cli')).toBe('en');
+  });
+
+  it('does not overwrite settings or prompts changed by the user before async hydration arrives', () => {
+    let state = emptyWorkbench();
+    state = workbenchReducer(state, { type: 'locale', locale: 'zh' });
     state = workbenchReducer(state, { type: 'editor', editor: 'cursor' });
-    state = workbenchReducer(state, { type: 'draft', worktreeId: null, text: '刚输入的新草稿' });
+    state = workbenchReducer(state, { type: 'commitLanguage', commitLanguage: 'zh' });
+    state = workbenchReducer(state, { type: 'prompt', worktreeId: null, text: 'freshly typed instruction' });
     state = workbenchReducer(state, {
       type: 'workbenchHydrated',
       restored: {
-        protocolVersion: 1,
+        protocolVersion: 2,
+        locale: 'en',
         editor: 'idea',
+        defaultCommitLanguage: 'en',
         activeWorktreeId: null,
-        emptyDraft: '旧草稿',
-        emptyEditing: false,
+        emptyPrompt: 'stale instruction',
         snapshots: [],
         worktrees: [],
         warning: null,
       },
     });
+    expect(state.locale).toBe('zh');
     expect(state.editor).toBe('cursor');
-    expect(state.emptyDraft).toBe('刚输入的新草稿');
+    expect(state.defaultCommitLanguage).toBe('zh');
+    expect(state.emptyPrompt).toBe('freshly typed instruction');
   });
 
-  it('保存投影只输出白名单字段，不携带路径、写凭证或模型信息', () => {
+  it('serializes only allowlisted v2 persistence fields without paths, write tokens, credentials, or legacy draft fields', () => {
     const snapshot = repositorySnapshot(1);
     const hydrated = workbenchReducer(emptyWorkbench(), {
       type: 'workbenchHydrated',
       restored: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         editor: 'vscode',
         activeWorktreeId: 'pay-tree',
-        emptyDraft: '',
-        emptyEditing: false,
+        emptyPrompt: '',
         snapshots: [snapshot],
         worktrees: [],
         warning: null,
@@ -98,20 +168,22 @@ describe('工作台跨重启持久化投影与水合', () => {
     const payload = serializeWorkbenchPersistence(hydrated, 5);
     const serialized = JSON.stringify(payload);
     expect(payload.revision).toBe(5);
+    expect(payload.locale).toBe('en');
     expect(payload.editor).toBe('vscode');
-    expect(serialized).not.toMatch(/commitToken|branchToken|path|apiKey/);
+    expect(payload.defaultCommitLanguage).toBe('en');
+    expect(serialized).not.toMatch(/commitToken|branchToken|path|apiKey|draftText|emptyDraft/);
   });
 
-  it('根据本机已安装编辑器列表过滤可用项，并在原保存编辑器未安装时自动回退至首个已安装项', () => {
+  it('filters against installedEditors and falls back to the first installed editor when saved editor is unavailable', () => {
     const hydrated = workbenchReducer(emptyWorkbench(), {
       type: 'workbenchHydrated',
       restored: {
-        protocolVersion: 1,
+        protocolVersion: 2,
         editor: 'cursor',
+        repositorySettings: [{ repositoryId: 'orders', editor: 'vscode', commitLanguage: 'zh' }],
         installedEditors: ['idea', 'rustrover', 'webstorm'],
         activeWorktreeId: null,
-        emptyDraft: '',
-        emptyEditing: false,
+        emptyPrompt: '',
         snapshots: [],
         worktrees: [],
         warning: null,
@@ -119,5 +191,174 @@ describe('工作台跨重启持久化投影与水合', () => {
     });
     expect(hydrated.installedEditors).toEqual(['idea', 'rustrover', 'webstorm']);
     expect(hydrated.editor).toBe('idea');
+    expect(effectiveEditorFor(hydrated, 'orders')).toBe('idea');
+    expect(effectiveCommitLanguageFor(hydrated, 'orders')).toBe('zh');
+  });
+
+  it('hydrates repository-wide localKeepPaths across worktrees on cold restart and re-applies when clean kept files reappear', () => {
+    const snapshot = repositorySnapshot(1);
+    snapshot.repository.localKeepPaths = ['RELEASE_NOTES.md', 'scripts/dev-only.sh'];
+    snapshot.worktrees[1].files.push({
+      id: 'fix-notes',
+      path: 'RELEASE_NOTES.md',
+      status: 'M',
+      gitStatus: '.M',
+      range: { kind: 'unstaged', added: 2, removed: 0 },
+      binary: false,
+      ignoredForReview: false,
+      localKeep: true,
+      contentVersion: 'v-fix-notes',
+      commitToken: 'tok-fix-notes',
+    });
+
+    const hydrated = workbenchReducer(emptyWorkbench(), {
+      type: 'workbenchHydrated',
+      restored: {
+        protocolVersion: 2,
+        editor: 'idea',
+        activeWorktreeId: 'pay-tree',
+        emptyPrompt: '',
+        snapshots: [snapshot],
+        worktrees: [],
+        warning: null,
+      },
+    });
+
+    expect(hydrated.repositorySettings.orders?.localKeepPaths).toEqual(['RELEASE_NOTES.md', 'scripts/dev-only.sh']);
+    const payTree = hydrated.worktrees.find((t) => t.worktreeId === 'pay-tree')!;
+    const fixTree = hydrated.worktrees.find((t) => t.worktreeId === 'fix-tree')!;
+    expect(payTree.files.find((f) => f.path === 'RELEASE_NOTES.md')?.localKeep).toBe(true);
+    expect(fixTree.files.find((f) => f.path === 'RELEASE_NOTES.md')?.localKeep).toBe(true);
+    expect(payTree.selectedIds).not.toContain('release');
+    expect(fixTree.selectedIds).not.toContain('fix-notes');
+
+    const nextSnap = repositorySnapshot(2);
+    nextSnap.repository.localKeepPaths = ['RELEASE_NOTES.md', 'scripts/dev-only.sh'];
+    nextSnap.worktrees[0].files.push({
+      id: 'dev-script',
+      path: 'scripts/dev-only.sh',
+      status: 'A',
+      gitStatus: '??',
+      range: { kind: 'unstaged', added: 5, removed: 0 },
+      binary: false,
+      ignoredForReview: false,
+      localKeep: true,
+      contentVersion: 'v-dev-script',
+      commitToken: 'tok-dev-script',
+    });
+    let refreshed = workbenchReducer(hydrated, { type: 'repositoryReadStarted', key: 'orders', requestId: 'ref-2' });
+    refreshed = workbenchReducer(refreshed, {
+      type: 'repositoryReadFinished',
+      key: 'orders',
+      reply: { protocolVersion: 1, requestId: 'ref-2', target: { repositoryId: 'orders', worktreeId: 'pay-tree', sessionId: payTree.sessionId, scopeVersion: payTree.scopeVersion }, snapshot: nextSnap },
+    });
+    const refreshedPay = refreshed.worktrees.find((t) => t.worktreeId === 'pay-tree')!;
+    expect(refreshedPay.files.find((f) => f.path === 'scripts/dev-only.sh')?.localKeep).toBe(true);
+    expect(refreshedPay.selectedIds).not.toContain('dev-script');
+  });
+
+  it('persists and cold-restores windowPreferences and rejects out-of-range window geometry payloads', () => {
+    let state = emptyWorkbench();
+    state = workbenchReducer(state, {
+      type: 'windowPreferencesUpdated',
+      preferences: {
+        pinned: true,
+        compactMode: true,
+        pinnedExpanded: false,
+        fullSize: { width: 430, height: 640 },
+        fullPosition: { x: 160, y: 110 },
+        compactPosition: { x: 920, y: 48 },
+      },
+    });
+    const saved = serializeWorkbenchPersistence(state, 9);
+    expect(saved.windowPreferences).toEqual({
+      pinned: true,
+      compactMode: true,
+      pinnedExpanded: false,
+      fullSize: { width: 430, height: 640 },
+      fullPosition: { x: 160, y: 110 },
+      compactPosition: { x: 920, y: 48 },
+    });
+
+    const decoded = decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: 'en',
+      editor: 'idea',
+      defaultCommitLanguage: 'en',
+      windowPreferences: saved.windowPreferences,
+      activeWorktreeId: null,
+      emptyPrompt: '',
+      worktrees: [],
+      snapshots: [],
+      warning: null,
+    });
+    const hydrated = workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored: decoded });
+    expect(hydrated.windowPrefs).toEqual(saved.windowPreferences);
+
+    // Rejects sub-480 fullSize height or non-integer coordinates:
+    expect(() =>
+      decodeWorkbenchRestoreReply({
+        protocolVersion: 2,
+        editor: 'idea',
+        windowPreferences: {
+          pinned: false,
+          compactMode: false,
+          pinnedExpanded: false,
+          fullSize: { width: 400, height: 479 },
+        },
+        activeWorktreeId: null,
+        emptyPrompt: '',
+        worktrees: [],
+        snapshots: [],
+        warning: null,
+      }),
+    ).toThrow();
+  });
+
+  it('preserves manually unchecked files across cold restart while auto-selecting newly modified normal files', () => {
+    const initialSnapshot = repositorySnapshot(1);
+    let state = emptyWorkbench();
+    state = workbenchReducer(state, { type: 'repositoryReadStarted', key: 'open', requestId: 'open-1' });
+    state = workbenchReducer(state, {
+      type: 'repositoryReadFinished',
+      key: 'open',
+      reply: { protocolVersion: 1, requestId: 'open-1', snapshot: initialSnapshot },
+    });
+    // Uncheck pnpm-lock.yaml manually:
+    state = workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
+    const saved = serializeWorkbenchPersistence(state, 11);
+    expect(saved.worktrees.find((item) => item.worktreeId === 'pay-tree')?.unselectedIds).toEqual(['lock']);
+
+    // While Picket is closed, a brand-new normal file appears on disk:
+    const restartedSnapshot = repositorySnapshot(1);
+    restartedSnapshot.worktrees[0].files.push({
+      id: 'fresh-feature',
+      path: 'src/freshFeature.ts',
+      status: 'A',
+      gitStatus: '??',
+      range: { kind: 'unstaged', added: 24, removed: 0 },
+      binary: false,
+      ignoredForReview: false,
+      contentVersion: 'v-fresh',
+      commitToken: 'tok-fresh',
+    });
+
+    const decoded = decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: saved.locale,
+      editor: saved.editor,
+      defaultCommitLanguage: saved.defaultCommitLanguage,
+      repositorySettings: saved.repositorySettings,
+      windowPreferences: saved.windowPreferences,
+      activeWorktreeId: saved.activeWorktreeId,
+      emptyPrompt: saved.emptyPrompt,
+      worktrees: saved.worktrees,
+      snapshots: [restartedSnapshot],
+      warning: null,
+    });
+    const hydrated = workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored: decoded });
+    const payTree = hydrated.worktrees.find((tree) => tree.worktreeId === 'pay-tree')!;
+    expect(payTree.selectedIds).toEqual(['order', 'pay', 'retry', 'release', 'fresh-feature']);
+    expect(payTree.unselectedIds).toEqual(['lock']);
   });
 });

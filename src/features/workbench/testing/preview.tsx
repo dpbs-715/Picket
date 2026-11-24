@@ -18,5 +18,9 @@ if (parameters.has('verify')) {
   void import('../../foundation/Foundation').then(({ Foundation }) => root.render(<Foundation />));
 } else {
   const selected: Scenario = scenarios.includes(scenario as Scenario) ? scenario as Scenario : 'question';
-  root.render(<Workbench initialState={fixture(selected)} />);
+  const initial = fixture(selected);
+  if (parameters.get('compact') === '1') {
+    initial.windowPrefs = { ...initial.windowPrefs, pinned: true, compactMode: true };
+  }
+  root.render(<Workbench initialState={initial} />);
 }

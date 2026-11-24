@@ -8,7 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // macOS /var is a symlink to /private/var. Tauri intentionally rejects a
 // symlinked starting-binary path, so resolve it rather than disabling that guard.
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'picket-package-')));
-const destination = join(temporary, '独立 路径', 'Picket.app');
+const destination = join(temporary, '\u72ec\u7acb \u8def\u5f84', 'Picket.app');
 const home = join(temporary, 'empty-home');
 mkdirSync(home);
 
@@ -31,7 +31,16 @@ function collectFiles(dir) {
 }
 
 function verifyBundleNoDemoOrSecretLeaks(bundleDir, distDir) {
-  const forbidden = ['my-order-service', '演练控制台', '模拟修复', 'sk-ui-smoke', 'sk-ant-api03-', 'sk-proj-'];
+  const forbidden = [
+    'my-order-service',
+    '\u6f14\u7ec3\u63a7\u5236\u53f0',
+    '\u6a21\u62df\u4fee\u590d',
+    'Simulation Console',
+    'Simulate Fix',
+    'sk-ui-smoke',
+    'sk-ant-api03-',
+    'sk-proj-',
+  ];
   const targets = [
     ...collectFiles(distDir),
     ...collectFiles(join(bundleDir, 'Contents', 'Resources')),
@@ -76,7 +85,7 @@ try {
       encoding: 'utf8', timeout: 45_000,
     });
     if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(result.stderr || `Application exited with ${result.status}: ${result.stdout}`);
+    if (result.status !== 0) throw new Error(result.stderr ? `${result.stderr}\n${result.stdout}` : `Application exited with ${result.status}: ${result.stdout}`);
     return result;
   };
   const report = JSON.parse(launch('--foundation-smoke').stdout);
@@ -112,8 +121,8 @@ try {
       throw new Error('IDE staged diff export or workbench persistence cold restore did not pass');
     }
     const modelM3 = events.find((event) => event.type === 'uiSmokeModelProof');
-    if (!modelM3?.keychainEncryptedAndRestored || !modelM3.partialScopeGenerateVerified || !modelM3.lockfileFilteredReviewVerified) {
-      throw new Error('M3 macOS Keychain encryption, commit generation, or lockfile-filtered review did not pass');
+    if (!modelM3?.keychainEncryptedAndRestored || !modelM3.partialScopePreviewPlanVerified || !modelM3.lockfileFilteredReviewVerified) {
+      throw new Error('M3 macOS Keychain encryption, scoped preview plan, or lockfile-filtered review did not pass');
     }
     const cpushM4 = events.find((event) => event.type === 'uiSmokeCPushProof');
     if (!cpushM4?.splitCommitsVerified || !cpushM4.unselectedStagedPreserved || !cpushM4.sessionPersistedAndRestored) {
@@ -136,7 +145,8 @@ try {
     if (restartExit?.status !== 'passed'
       || !restartProof?.coldProcessRepositoryHydrated
       || !restartProof.coldProcessKeychainModelHydrated
-      || !restartProof.coldProcessSessionHistoryHydrated) {
+      || !restartProof.coldProcessSessionHistoryHydrated
+      || !restartProof.coldProcessCompactWindowHydrated) {
       throw new Error(`Cold OS process restart verification failed: ${restartRun.stderr || JSON.stringify(restartEvents)}`);
     }
 
@@ -157,7 +167,7 @@ try {
       ideStagedDiffExportVerified: true,
       workbenchPersistenceColdRestoreVerified: true,
       keychainModelEncryptedAndRestoredVerified: true,
-      piGenerateAndReviewVerified: true,
+      piPreviewPlanAndReviewVerified: true,
       cPushSplitAndSessionVerified: true,
       m5RemotePushAndConflictMergeVerified: true,
       coldProcessRestartAndLeakScanVerified: true,

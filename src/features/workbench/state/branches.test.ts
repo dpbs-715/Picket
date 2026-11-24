@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import { repositoryReply } from '../testing/repository-fixture';
-import { emptyWorkbench, targetOf, workbenchReducer } from './workbench';
+import { emptyWorkbench, isPlanOutdated, targetOf, workbenchReducer } from './workbench';
 import type { WorkbenchState } from './workbench';
 
 function initial() {
   let state = workbenchReducer(emptyWorkbench(), { type: 'repositoryReadStarted', key: 'open', requestId: 'open' });
   state = workbenchReducer(state, { type: 'repositoryReadFinished', key: 'open', reply: repositoryReply('open') });
-  state = workbenchReducer(state, { type: 'draft', worktreeId: 'pay-tree', text: '人工草稿，切分支后仍保留' });
+  state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'extra instruction preserved across branch switch' });
   return workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'pay' });
 }
 function started(state: WorkbenchState) { return workbenchReducer(state, { type: 'repositoryBranchStarted', repositoryId: 'orders', requestId: 'branch' }); }
@@ -24,41 +24,64 @@ function reply(state: WorkbenchState, jumpToOtherWorktree = false): GitBranchRep
 }
 function finish(state: WorkbenchState, result = reply(state)) { return workbenchReducer(state, { type: 'repositoryBranchFinished', repositoryId: 'orders', reply: result }); }
 
-describe('已有分支切换与视图、本地输入的合并', () => {
-  it('切换分支只采用 Git 快照，保留最新人工草稿和选择并令旧范围失效', () => {
-    let state = initial(); const previous = source(state);
+describe('Branch switching merged with local prompts, plans, and view state', () => {
+  it('applies Git snapshot on switch, preserves latest prompt and selection, and marks pre-generated plan outdated', () => {
+    let state = initial();
+    const beforeSwitch = source(state);
+    const targetBefore = targetOf(beforeSwitch);
+    state = workbenchReducer(state, { type: 'request', target: targetBefore, kind: 'plan', requestId: 'plan-1' });
+    state = workbenchReducer(state, {
+      type: 'event',
+      event: {
+        type: 'planPrepared',
+        target: targetBefore,
+        requestId: 'plan-1',
+        modelId: 'm1',
+        plan: { summary: '1 commit', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: plan' }], skippedFileIds: [] },
+      },
+    });
+    expect(isPlanOutdated(source(state))).toBe(false);
+
+    const previous = source(state);
     state = started(state);
-    state = workbenchReducer(state, { type: 'draft', worktreeId: 'pay-tree', text: '请求中继续输入的新草稿' });
+    state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'newer prompt typed while branch switch is in flight' });
     state = finish(state);
-    expect(source(state).branch).toBe('feat/existing'); expect(source(state).branchToken).toBe('new-rust-token');
-    expect(source(state).draft).toMatchObject({ text: '请求中继续输入的新草稿', outdated: true });
+    expect(source(state).branch).toBe('feat/existing');
+    expect(source(state).branchToken).toBe('new-rust-token');
+    expect(source(state).prompt.text).toBe('newer prompt typed while branch switch is in flight');
     expect(source(state).selectedIds).toEqual(previous.selectedIds);
     expect(source(state).scopeVersion).not.toBe(previous.scopeVersion);
+    expect(isPlanOutdated(source(state))).toBe(true);
     expect(state.repositoryBranches).toEqual({});
   });
-  it('分支已在另一工作树占用时跳转到目标工作树，不把原工作树草稿和选择迁移过去', () => {
+
+  it('jumps to occupied worktree without migrating source worktree prompt or selection', () => {
     let state = started(initial()); const before = source(state);
     state = finish(state, reply(state, true));
     expect(state.activeWorktreeId).toBe('fix-tree');
-    expect(source(state)).toMatchObject({ branch: before.branch, head: before.head, scopeVersion: before.scopeVersion, draft: before.draft, selectedIds: before.selectedIds, sessionId: before.sessionId });
+    expect(source(state)).toMatchObject({ branch: before.branch, head: before.head, scopeVersion: before.scopeVersion, prompt: before.prompt, selectedIds: before.selectedIds, sessionId: before.sessionId });
   });
-  it('执行中手动切换工作树，晚结果只更新原仓库，不切走当前视图', () => {
+
+  it('updates only source repository when worktree is switched mid-flight without stealing active view', () => {
     let state = started(initial()); const result = reply(state);
     state = workbenchReducer(state, { type: 'switch', worktreeId: 'fix-tree' });
     state = finish(state, result);
     expect(state.activeWorktreeId).toBe('fix-tree'); expect(source(state).branch).toBe('feat/existing');
   });
-  it('请求中再次改变勾选，不把旧范围勾回来', () => {
+
+  it('keeps latest selection changed while branch switch is in flight', () => {
     let state = started(initial()); const result = reply(state);
     state = workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'order' });
     state = finish(state, result); expect(source(state).selectedIds).not.toContain('order');
   });
-  it('失败保留原分支、草稿与选择', () => {
+
+  it('preserves original branch, prompt, and selection on failure', () => {
     let state = started(initial()); const before = source(state);
     state = workbenchReducer(state, { type: 'repositoryBranchFailed', repositoryId: 'orders', requestId: 'branch' });
     expect(source(state)).toEqual(before); expect(state.repositoryBranches).toEqual({});
   });
-  it('拒绝旧请求身份，不把较旧 Git 快照覆盖到新分支状态', () => {
+
+  it('rejects stale requestId and older readSequence snapshots', () => {
     let state = started(initial());
     expect(finish(state, { ...reply(state), requestId: 'wrong' })).toBe(state);
     const old = reply(state);
@@ -67,7 +90,8 @@ describe('已有分支切换与视图、本地输入的合并', () => {
     state = workbenchReducer(state, { type: 'repositoryReadFinished', key: 'orders', reply: newer });
     state = finish(state, old); expect(source(state).branch).toBe('feat/newer');
   });
-  it('新打开仓库的意图优先于较早的分支切换请求，较早打开的结果也不能抢回视图', () => {
+
+  it('honors newer openRepository navigation revision over earlier branch switch', () => {
     let state = started(initial()); const branchResult = reply(state, true);
     state = workbenchReducer(state, { type: 'repositoryReadStarted', key: 'open', requestId: 'later-open' });
     state = finish(state, branchResult); expect(state.activeWorktreeId).toBe('pay-tree');

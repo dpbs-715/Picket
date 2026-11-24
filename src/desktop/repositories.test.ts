@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import type { CPushCommandReply } from '../../shared/cpush-protocol';
+import { decodeCPushCommandReply, type CPushCommandReply } from '../../shared/cpush-protocol';
 import { decodeGitBranchReply } from '../../shared/git-branch-protocol';
 import type { GitBranchReply } from '../../shared/git-branch-protocol';
-import { decodeGitCommitReply } from '../../shared/git-commit-protocol';
-import type { GitCommitReply } from '../../shared/git-commit-protocol';
 import { decodeGitOpenFileReply } from '../../shared/ide-protocol';
 import type { GitOpenFileReply } from '../../shared/ide-protocol';
-import { decodeGitReadReply } from '../../shared/git-read-protocol';
+import { decodeGitLocalKeepReply, decodeGitReadReply } from '../../shared/git-read-protocol';
 import { decodeWorkbenchRestoreReply } from '../../shared/workbench-persistence-protocol';
 import { repositoryReply } from '../features/workbench/testing/repository-fixture';
 import { desktopWorkbenchBackend } from './repositories';
@@ -20,19 +18,6 @@ function branchReply(): GitBranchReply {
   const reply = repositoryReply('branch-1', 2);
   reply.snapshot!.worktrees[0].branch = 'feat/new';
   return { ...reply, snapshot: reply.snapshot!, kind: 'branch', target, action: 'switchBranch', outcome: 'completed' };
-}
-
-function commitReply(): GitCommitReply {
-  const reply = repositoryReply('commit-1', 2);
-  reply.snapshot!.worktrees[0].head = 'commit-oid-2';
-  return {
-    protocolVersion: 1,
-    kind: 'commit',
-    requestId: 'commit-1',
-    target,
-    snapshot: reply.snapshot!,
-    commit: { oid: 'commit-oid-2', shortOid: 'commit-', title: 'feat: local commit', branch: 'feat/pay', parent: 'head-1' },
-  };
 }
 
 function cPushReply(requestId: string): CPushCommandReply {
@@ -48,13 +33,13 @@ function cPushReply(requestId: string): CPushCommandReply {
       worktreeId: target.worktreeId,
       sessionId: target.sessionId,
       frozenScopeVersion: target.scopeVersion,
-      modelId: '',
+      modelId: 'm1',
       frozenFileIds: ['order'],
       committedFileIds: ['order'],
       skippedFileIds: [],
       sessionStatus: 'done',
-      message: { id: `done-${requestId}`, kind: 'done', title: '1 个提交已推送至 origin/feat/pay', description: '已完成' },
-      timeline: [{ state: 'done', label: '1 个提交已推送至 origin/feat/pay' }],
+      message: { id: `done-${requestId}`, kind: 'done', title: '1 commit pushed to origin/feat/pay', description: 'Completed' },
+      timeline: [{ state: 'done', label: '1 commit pushed to origin/feat/pay' }],
       qaLog: [],
       commits: [{ oid: 'commit-oid-2', shortOid: 'commit-', title: 'feat: push commit', branch: 'feat/pay', fileIds: ['order'] }],
       canRetryRemaining: false,
@@ -62,36 +47,45 @@ function cPushReply(requestId: string): CPushCommandReply {
   };
 }
 
-describe('桌面 Git 适配器与共享协议', () => {
-  it('打开命令不接收路径或 shell，只传请求身份', async () => {
+describe('Desktop Git adapter and shared protocols', () => {
+  it('openRepository sends only request identity and optional locale, never paths or shell strings', async () => {
     const observed: unknown[] = [];
     mockIPC((command, args) => { observed.push([command, args]); return repositoryReply(); });
     const result = await desktopWorkbenchBackend.execute({ kind: 'openRepository', requestId: 'open-1' });
     expect(result && 'snapshot' in result ? result.snapshot?.repository.id : undefined).toBe('orders');
     expect(observed).toEqual([['open_repository', { request: { requestId: 'open-1' } }]]);
   });
-  it('取消目录选择返回 null，不伪造空仓库或成功提交', async () => {
+
+  it('cancelling directory picker returns null without fabricating an empty repository', async () => {
     mockIPC(() => ({ protocolVersion: 1, requestId: 'cancel', snapshot: null }));
     expect(await desktopWorkbenchBackend.execute({ kind: 'openRepository', requestId: 'cancel' })).toMatchObject({ snapshot: null });
   });
-  it('刷新绑定完整目标；JSON 字段顺序不影响身份比较', async () => {
+
+  it('refresh binds full target regardless of JSON property order', async () => {
     mockIPC((command, args) => {
-      expect(command).toBe('refresh_repository'); expect(args).toEqual({ request: { requestId: 'refresh', target } });
-      return { ...repositoryReply('refresh'), target: { scopeVersion: target.scopeVersion, sessionId: target.sessionId, worktreeId: target.worktreeId, repositoryId: target.repositoryId } };
+      expect(command).toBe('refresh_repository');
+      expect(args).toEqual({ request: { requestId: 'refresh', target, locale: 'zh' } });
+      return {
+        ...repositoryReply('refresh'),
+        target: { scopeVersion: target.scopeVersion, sessionId: target.sessionId, worktreeId: target.worktreeId, repositoryId: target.repositoryId },
+      };
     });
-    await expect(desktopWorkbenchBackend.execute({ kind: 'refresh', requestId: 'refresh', target })).resolves.toMatchObject({ requestId: 'refresh' });
+    await expect(desktopWorkbenchBackend.execute({ kind: 'refresh', requestId: 'refresh', target, locale: 'zh' })).resolves.toMatchObject({ requestId: 'refresh' });
   });
-  it.each(['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const)('拒绝目标字段 %s 不匹配的响应', async (key) => {
+
+  it.each(['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const)('rejects refresh reply with mismatched %s', async (key) => {
     mockIPC(() => ({ ...repositoryReply('refresh'), target: { ...target, [key]: 'wrong' } }));
-    await expect(desktopWorkbenchBackend.execute({ kind: 'refresh', requestId: 'refresh', target })).rejects.toThrow('身份不匹配');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'refresh', requestId: 'refresh', target })).rejects.toThrow('identity mismatch');
   });
-  it('拒绝错误 requestId 和跨仓库快照', async () => {
+
+  it('rejects wrong requestId and cross-repository snapshot', async () => {
     mockIPC(() => repositoryReply('wrong'));
-    await expect(desktopWorkbenchBackend.execute({ kind: 'openRepository', requestId: 'open' })).rejects.toThrow('身份不匹配');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'openRepository', requestId: 'open' })).rejects.toThrow('identity mismatch');
     mockIPC(() => ({ ...repositoryReply('refresh'), target: { ...target, repositoryId: 'other' } }));
-    await expect(desktopWorkbenchBackend.execute({ kind: 'refresh', requestId: 'refresh', target: { ...target, repositoryId: 'other' } })).rejects.toThrow('身份不匹配');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'refresh', requestId: 'refresh', target: { ...target, repositoryId: 'other' } })).rejects.toThrow('identity mismatch');
   });
-  it('switchBranch 只传完整身份、操作和 Rust 签发的版本，并支持跳转到已占用该分支的既有工作树', async () => {
+
+  it('switchBranch and checkoutRemoteBranch send full identity, action, and Rust branchToken', async () => {
     mockIPC((command, args) => {
       expect(command).toBe('change_repository_branch');
       expect(args).toEqual({ request: { requestId: 'branch-1', target, action: 'switchBranch', branch: 'feat/new', branchToken: 'rust-token' } });
@@ -144,13 +138,15 @@ describe('桌面 Git 适配器与共享协议', () => {
       target,
       branch: 'mirror/feat/reconcile',
       branchToken: 'rust-token',
-    })).rejects.toThrow('身份不匹配');
+    })).rejects.toThrow('identity mismatch');
   });
-  it.each(['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const)('分支回执拒绝不匹配的 %s', async (key) => {
+
+  it.each(['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const)('branch reply rejects mismatched %s', async (key) => {
     mockIPC(() => ({ ...branchReply(), target: { ...target, [key]: 'wrong' } }));
-    await expect(desktopWorkbenchBackend.execute({ kind: 'switchBranch', requestId: 'branch-1', target, branch: 'feat/new', branchToken: 'rust-token' })).rejects.toThrow('身份不匹配');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'switchBranch', requestId: 'branch-1', target, branch: 'feat/new', branchToken: 'rust-token' })).rejects.toThrow('identity mismatch');
   });
-  it.each(['request', 'branch', 'occupiedWrongBranch', 'repository'] as const)('分支回执拒绝错误的 %s', async (field) => {
+
+  it.each(['request', 'branch', 'occupiedWrongBranch', 'repository'] as const)('branch reply rejects wrong %s', async (field) => {
     const reply = branchReply();
     if (field === 'request') reply.requestId = 'wrong';
     if (field === 'branch') reply.snapshot.worktrees[0].branch = 'other';
@@ -159,38 +155,37 @@ describe('桌面 Git 适配器与共享协议', () => {
       reply.snapshot.repository.id = 'other'; reply.snapshot.worktrees.forEach((tree) => { tree.repositoryId = 'other'; });
     }
     mockIPC(() => reply);
-    await expect(desktopWorkbenchBackend.execute({ kind: 'switchBranch', requestId: 'branch-1', target, branch: 'feat/new', branchToken: 'rust-token' })).rejects.toThrow('身份不匹配');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'switchBranch', requestId: 'branch-1', target, branch: 'feat/new', branchToken: 'rust-token' })).rejects.toThrow('identity mismatch');
   });
-  it('分支协议拒绝已移除的新建分支 / Worktree 动作、空快照与缺失 branchToken', () => {
-    expect(() => decodeGitBranchReply({ ...branchReply(), action: 'createBranch' })).toThrow('协议不匹配');
-    expect(() => decodeGitBranchReply({ ...branchReply(), action: 'createWorktree' })).toThrow('协议不匹配');
-    expect(() => decodeGitBranchReply({ ...branchReply(), snapshot: null })).toThrow('协议不匹配');
-    expect(() => decodeGitBranchReply({ ...branchReply(), outcome: 'cancelled', snapshot: null })).toThrow('协议不匹配');
+
+  it('branch and read protocols reject removed actions, null snapshots, missing branchToken, or missing commitToken', () => {
+    expect(() => decodeGitBranchReply({ ...branchReply(), action: 'createBranch' })).toThrow('protocol mismatch');
+    expect(() => decodeGitBranchReply({ ...branchReply(), action: 'createWorktree' })).toThrow('protocol mismatch');
+    expect(() => decodeGitBranchReply({ ...branchReply(), snapshot: null })).toThrow('protocol mismatch');
+    expect(() => decodeGitBranchReply({ ...branchReply(), outcome: 'cancelled', snapshot: null })).toThrow('protocol mismatch');
     const reply = repositoryReply(); Reflect.deleteProperty(reply.snapshot!.worktrees[0], 'branchToken');
-    expect(() => decodeGitReadReply(reply)).toThrow('协议不匹配');
+    expect(() => decodeGitReadReply(reply)).toThrow('protocol mismatch');
+    const readMissingCommit = repositoryReply(); Reflect.deleteProperty(readMissingCommit.snapshot!.worktrees[0].files[0], 'commitToken');
+    expect(() => decodeGitReadReply(readMissingCommit)).toThrow('protocol mismatch');
   });
-  it('仅本地提交只传完整目标和 Rust 签发的文件凭证，不接受裸范围、路径或推送', async () => {
+
+  it('start_cpush with confirmedPlan, pull_rebase, and session reconciliation bind controlled IPC commands', async () => {
     const selections = [{ fileId: 'order', commitToken: 'commit-order' }];
+    const confirmedPlan = {
+      groups: [{ id: 'g1', fileIds: ['order'], message: 'feat(order): verbatim confirmed plan\n\n- commit staged hunk' }],
+      skippedFileIds: [],
+    };
     mockIPC((command, args) => {
-      expect(command).toBe('commit_repository');
-      expect(args).toEqual({ request: { requestId: 'commit-1', target, selections, message: 'feat: local commit', push: false } });
-      return commitReply();
-    });
-    await expect(desktopWorkbenchBackend.execute({
-      kind: 'commit', requestId: 'commit-1', target, draft: 'feat: local commit', fileIds: ['order'], selections, push: false,
-    })).resolves.toMatchObject({ kind: 'commit', commit: { oid: 'commit-oid-2' } });
-  });
-  it('手动提交并推送、拉取变基与重连对账绑定受控 IPC 命令并校验工作树身份（M5）', async () => {
-    const selections = [{ fileId: 'order', commitToken: 'commit-order' }];
-    mockIPC((command, args) => {
-      if (command === 'commit_and_push_repository') {
+      if (command === 'start_cpush') {
         expect((args as { request: unknown }).request).toEqual({
-          requestId: 'push-1',
+          requestId: 'cpush-confirmed-1',
           target,
+          modelId: 'm1',
           selections,
-          message: 'feat: manual push',
+          prompt: 'keep concise',
+          confirmedPlan,
         });
-        return cPushReply('push-1');
+        return cPushReply('cpush-confirmed-1');
       }
       if (command === 'pull_rebase_repository') {
         expect((args as { request: unknown }).request).toEqual({
@@ -205,8 +200,15 @@ describe('桌面 Git 适配器与共享协议', () => {
     });
 
     await expect(desktopWorkbenchBackend.execute({
-      kind: 'commit', requestId: 'push-1', target, draft: 'feat: manual push', fileIds: ['order'], selections, push: true,
-    })).resolves.toMatchObject({ kind: 'cPush', requestId: 'push-1' });
+      kind: 'cPush',
+      requestId: 'cpush-confirmed-1',
+      target,
+      fileIds: ['order'],
+      selections,
+      modelId: 'm1',
+      prompt: 'keep concise',
+      confirmedPlan,
+    })).resolves.toMatchObject({ kind: 'cPush', requestId: 'cpush-confirmed-1' });
 
     await expect(desktopWorkbenchBackend.execute({
       kind: 'pull', requestId: 'pull-1', target, modelId: 'm1',
@@ -214,40 +216,26 @@ describe('桌面 Git 适配器与共享协议', () => {
 
     const observedEvents: unknown[] = [];
     const unsubscribe = desktopWorkbenchBackend.subscribe!((event) => observedEvents.push(event));
-    await desktopWorkbenchBackend.reconcileSession!(target);
+    await desktopWorkbenchBackend.reconcileSession!(target, 'en');
     unsubscribe();
     expect(observedEvents).toHaveLength(1);
+
+    expect(() => decodeCPushCommandReply({
+      ...cPushReply('bad-plan'),
+      preparedPlan: { summary: 'bad', groups: [{ id: 'g1', fileIds: [], message: 'empty' }], skippedFileIds: [] },
+    })).toThrow();
   });
-  it('缺少 Rust commitToken 或会话标识在调用桌面命令前即明确拒绝', async () => {
+
+  it('rejects missing commitTokens or C-Push runId before invoking desktop IPC', async () => {
     const called = vi.fn(); mockIPC(called);
-    await expect(desktopWorkbenchBackend.execute({ kind: 'commit', requestId: 'write', target, draft: 'manual', fileIds: ['order'], push: false })).rejects.toThrow('提交范围凭证');
-    await expect(desktopWorkbenchBackend.execute({ kind: 'commit', requestId: 'push-write', target, draft: 'manual', fileIds: ['order'], push: true })).rejects.toThrow('提交范围凭证');
-    await expect(desktopWorkbenchBackend.execute({ kind: 'generate', requestId: 'gen', target, fileIds: ['order'], modelId: 'm1', draft: '' })).rejects.toThrow('范围凭证');
-    await expect(desktopWorkbenchBackend.execute({ kind: 'cPush', requestId: 'cpush-1', target, fileIds: ['order'], modelId: 'm1', draft: '' })).rejects.toThrow('范围凭证');
-    await expect(desktopWorkbenchBackend.execute({ kind: 'respond', requestId: 'resp-1', target, messageId: 'q-1', optionId: 'split' })).rejects.toThrow('会话标识');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'planCPush', requestId: 'plan-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'cPush', requestId: 'cpush-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'review', requestId: 'rev-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
+    await expect(desktopWorkbenchBackend.execute({ kind: 'respond', requestId: 'resp-1', target, messageId: 'q-1', optionId: 'split' })).rejects.toThrow('session identifier');
     expect(called).not.toHaveBeenCalled();
   });
-  it.each(['request', 'repositoryId', 'worktreeId', 'sessionId', 'scopeVersion', 'repository', 'worktree', 'branch', 'head', 'detached'] as const)('提交回执拒绝不匹配的 %s', async (field) => {
-    const reply = commitReply();
-    if (field === 'request') reply.requestId = 'wrong';
-    if (field === 'repositoryId' || field === 'worktreeId' || field === 'sessionId' || field === 'scopeVersion') reply.target = { ...target, [field]: 'wrong' };
-    if (field === 'repository') { reply.snapshot.repository.id = 'other'; reply.snapshot.worktrees.forEach((tree) => { tree.repositoryId = 'other'; }); }
-    if (field === 'worktree') reply.snapshot.activeWorktreeId = 'fix-tree';
-    if (field === 'branch') reply.snapshot.worktrees[0].branch = 'other';
-    if (field === 'head') reply.snapshot.worktrees[0].head = 'wrong-head';
-    if (field === 'detached') reply.snapshot.worktrees[0].detached = true;
-    mockIPC(() => reply);
-    await expect(desktopWorkbenchBackend.execute({
-      kind: 'commit', requestId: 'commit-1', target, draft: 'feat: local commit', fileIds: ['order'], selections: [{ fileId: 'order', commitToken: 'commit-order' }], push: false,
-    })).rejects.toThrow('身份不匹配');
-  });
-  it('提交协议拒绝缺失快照、空哈希或缺失文件 commitToken', () => {
-    expect(() => decodeGitCommitReply({ ...commitReply(), snapshot: null })).toThrow('协议不匹配');
-    expect(() => decodeGitCommitReply({ ...commitReply(), commit: { ...commitReply().commit, oid: '' } })).toThrow('协议不匹配');
-    const read = repositoryReply(); Reflect.deleteProperty(read.snapshot!.worktrees[0].files[0], 'commitToken');
-    expect(() => decodeGitReadReply(read)).toThrow('协议不匹配');
-  });
-  it('外部编辑器命令绑定工作树目标、编辑器与可选行号，并校验回执身份', async () => {
+
+  it('external editor launch binds worktree target, editor, and optional line number', async () => {
     const openReply: GitOpenFileReply = {
       protocolVersion: 1, kind: 'openFile', requestId: 'ide-1', target, editor: 'vscode', filePath: 'src/api/pay.ts', action: 'goto', line: 46,
     };
@@ -262,21 +250,24 @@ describe('桌面 Git 适配器与共享协议', () => {
 
     await expect(desktopWorkbenchBackend.execute({
       kind: 'openFile', requestId: 'ide-zero', target, fileId: 'pay', editor: 'vscode', line: 0,
-    })).rejects.toThrow('行号');
+    })).rejects.toThrow('line number');
 
     mockIPC(() => ({ ...openReply, editor: 'cursor' }));
     await expect(desktopWorkbenchBackend.execute({
       kind: 'openFile', requestId: 'ide-1', target, fileId: 'pay', editor: 'vscode', line: 46,
-    })).rejects.toThrow('身份不匹配');
-    expect(() => decodeGitOpenFileReply({ ...openReply, action: 'unknown' })).toThrow('协议不匹配');
+    })).rejects.toThrow('identity mismatch');
+    expect(() => decodeGitOpenFileReply({ ...openReply, action: 'unknown' })).toThrow('protocol mismatch');
   });
-  it('工作台持久化读取与保存校验完整快照结构且不传递本地路径', async () => {
+
+  it('workbench persistence v2 load and save validate full snapshot structure without passing local paths or v1 draft fields', async () => {
     const snapshot = repositoryReply('restore', 1).snapshot!;
     mockIPC((command) => {
       if (command === 'load_workbench_state') {
         return {
-          protocolVersion: 1, editor: 'cursor', activeWorktreeId: 'pay-tree', emptyDraft: '', emptyEditing: false,
-          worktrees: [{ repositoryId: 'orders', worktreeId: 'pay-tree', draftText: 'saved draft', draftEditing: true, draftOutdated: false, selectedIds: ['order'], scopeVersion: 'scope-1', tab: 'commit' }],
+          protocolVersion: 2, locale: 'zh', editor: 'cursor', defaultCommitLanguage: 'zh',
+          repositorySettings: [{ repositoryId: 'orders', editor: 'rustrover', commitLanguage: 'zh' }],
+          activeWorktreeId: 'pay-tree', emptyPrompt: '',
+          worktrees: [{ repositoryId: 'orders', worktreeId: 'pay-tree', promptText: 'saved extra instruction', selectedIds: ['order'], scopeVersion: 'scope-1', tab: 'commit' }],
           snapshots: [snapshot], warning: null,
         };
       }
@@ -284,18 +275,24 @@ describe('桌面 Git 适配器与共享协议', () => {
       return null;
     });
     const restored = await desktopWorkbenchBackend.loadWorkbenchState!();
+    expect(restored.locale).toBe('zh');
     expect(restored.editor).toBe('cursor');
+    expect(restored.repositorySettings).toEqual([{ repositoryId: 'orders', editor: 'rustrover', commitLanguage: 'zh' }]);
     expect(restored.snapshots).toHaveLength(1);
     await expect(desktopWorkbenchBackend.saveWorkbenchState!({
-      revision: 1, editor: 'cursor', activeWorktreeId: 'pay-tree', emptyDraft: '', emptyEditing: false, worktrees: restored.worktrees,
+      revision: 1, locale: 'en', editor: 'cursor', defaultCommitLanguage: 'en', repositorySettings: restored.repositorySettings,
+      activeWorktreeId: 'pay-tree', emptyPrompt: '', worktrees: restored.worktrees,
     })).resolves.toBeUndefined();
-    expect(() => decodeWorkbenchRestoreReply({ ...restored, editor: 'vim' })).toThrow('协议不匹配');
+    expect(() => decodeWorkbenchRestoreReply({ ...restored, editor: 'vim' })).toThrow('protocol mismatch');
+    expect(() => decodeWorkbenchRestoreReply({ ...restored, protocolVersion: 1 })).toThrow('protocol mismatch');
   });
-  it('协议保留部分暂存、原路径、二进制和本地引用来源', () => {
+
+  it('protocol preserves partial staging, previousPath, binary flag, and localOnly tracking ref', () => {
     const reply = repositoryReply(); reply.snapshot!.worktrees[0].files[0].previousPath = 'old.ts'; reply.snapshot!.worktrees[0].files[1].binary = true;
     expect(decodeGitReadReply(reply)).toEqual(reply);
   });
-  it.each(['protocol', 'negativeCount', 'duplicateWorktree', 'duplicateFile', 'unknownActive', 'missingBinary'])('拒绝不完整或不一致的协议：%s', (kind) => {
+
+  it.each(['protocol', 'negativeCount', 'duplicateWorktree', 'duplicateFile', 'unknownActive', 'missingBinary'])('rejects malformed Git read reply: %s', (kind) => {
     const reply = repositoryReply();
     switch (kind) {
       case 'protocol': Object.assign(reply, { protocolVersion: 99 }); break;
@@ -305,6 +302,46 @@ describe('桌面 Git 适配器与共享协议', () => {
       case 'unknownActive': reply.snapshot!.activeWorktreeId = 'unknown'; break;
       case 'missingBinary': Reflect.deleteProperty(reply.snapshot!.worktrees[0].files[0], 'binary'); break;
     }
-    expect(() => decodeGitReadReply(reply)).toThrow('协议不匹配');
+    expect(() => decodeGitReadReply(reply)).toThrow('protocol mismatch');
+  });
+
+  it('setLocalKeep invokes set_repository_local_keep and validates relative paths and target binding', async () => {
+    const observed: unknown[] = [];
+    mockIPC((command, args) => {
+      observed.push([command, args]);
+      const base = repositoryReply('keep-1', 3);
+      base.snapshot!.repository.localKeepPaths = ['RELEASE_NOTES.md'];
+      base.snapshot!.worktrees[0].files = base.snapshot!.worktrees[0].files.map((f) =>
+        f.path === 'RELEASE_NOTES.md' ? { ...f, localKeep: true, commitToken: 'tok-notes-kept' } : f,
+      );
+      return {
+        ...base,
+        kind: 'localKeep',
+        target,
+        snapshot: base.snapshot!,
+      };
+    });
+
+    const result = await desktopWorkbenchBackend.execute({
+      kind: 'setLocalKeep',
+      requestId: 'keep-1',
+      target,
+      paths: ['RELEASE_NOTES.md'],
+      keep: true,
+      locale: 'en',
+    });
+    expect(observed).toEqual([[
+      'set_repository_local_keep',
+      { request: { requestId: 'keep-1', target, paths: ['RELEASE_NOTES.md'], keep: true, locale: 'en' } },
+    ]]);
+    expect(result && 'kind' in result && result.kind === 'localKeep' ? result.snapshot.repository.localKeepPaths : []).toEqual(['RELEASE_NOTES.md']);
+
+    const unsafeReply = repositoryReply('keep-bad', 4);
+    unsafeReply.snapshot!.repository.localKeepPaths = ['../outside.env'];
+    expect(() => decodeGitLocalKeepReply({ ...unsafeReply, kind: 'localKeep', target, snapshot: unsafeReply.snapshot })).toThrow('protocol mismatch');
+
+    const gitDirReply = repositoryReply('keep-git', 5);
+    gitDirReply.snapshot!.repository.localKeepPaths = ['.git/info/exclude'];
+    expect(() => decodeGitLocalKeepReply({ ...gitDirReply, kind: 'localKeep', target, snapshot: gitDirReply.snapshot })).toThrow('protocol mismatch');
   });
 });

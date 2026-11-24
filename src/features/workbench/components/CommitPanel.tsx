@@ -1,30 +1,116 @@
 import type { RefObject } from 'react';
-import { Icon } from '../../../ui/controls';
+import { useI18n } from '../../../i18n';
+import { Icon, IconButton } from '../../../ui/controls';
+import { splitPath } from '../state/workbench';
+import type { Change, EditableCommitPlan } from '../state/workbench';
 
 interface Props {
-  text: string;
-  editing: boolean;
-  outdated: boolean;
+  files: Change[];
+  plan?: EditableCommitPlan;
+  planOutdated: boolean;
   hasWorktree?: boolean;
   hasModel: boolean;
-  canGenerate: boolean;
-  generating: boolean;
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
-  onChange(text: string): void;
-  onEdit(): void;
-  onGenerate(): void;
-  onCancelGenerate?(): void;
-  onAddModel(): void;
+  canPlan: boolean;
+  planning: boolean;
+  panelRef?: RefObject<HTMLDivElement | null>;
+  onPlan(): void;
+  onCancelPlan?(): void;
+  onEditPlanGroup(groupId: string, message: string): void;
+  onClearPlan(): void;
+  onConfigureModel(): void;
 }
+
 export function CommitPanel(props: Props) {
+  const { t } = useI18n();
   const emphasizePrimary = props.hasWorktree ?? true;
-  if (!props.editing && !props.text && !props.generating) return <div className="empty-state commit-empty">
-    <div className="row"><button type="button" className={emphasizePrimary ? 'primary' : 'secondary'} disabled={props.hasModel && !props.canGenerate} onClick={props.hasModel ? props.onGenerate : props.onAddModel}><Icon name={props.hasModel ? 'sparkles' : 'plus'} />{props.hasModel ? '生成提交说明' : '添加模型'}</button>
-      <button type="button" className="secondary" onClick={props.onEdit}><Icon name="pencil" />手动编写</button></div>
-  </div>;
-  return <div className="commit-editor">
-    {props.outdated && <div className="change-notice"><span>变更已更新，已保留当前草稿</span><button type="button" disabled={!props.canGenerate || props.generating} onClick={props.onGenerate}>重新生成</button></div>}
-    {props.generating && <div className="generation-status" role="status"><span>正在生成提交说明，当前文字仍可编辑…</span>{props.onCancelGenerate && <button type="button" onClick={props.onCancelGenerate}>取消</button>}</div>}
-    <textarea ref={props.textareaRef} aria-label="提交说明" value={props.text} onChange={(event) => props.onChange(event.target.value)} placeholder="编写提交说明…" spellCheck={false} />
+  const fileById = new Map(props.files.map((file) => [file.id, file]));
+
+  return <div className="commit-plan-panel" ref={props.panelRef}>
+    <div className="plan-region">
+      {props.planning ? (
+        <div className="empty-state commit-generating" role="status" aria-live="polite">
+          <span className="empty-badge accent" aria-hidden="true"><Icon name="loader" className="spinning" /></span>
+          <p className="commit-generating-label">{t.commit.planningStatus}</p>
+          {props.onCancelPlan && (
+            <button type="button" className="secondary compact" onClick={props.onCancelPlan}>
+              {t.commit.cancelPlanning}
+            </button>
+          )}
+        </div>
+      ) : !props.plan ? (
+        <div className="empty-state plan-empty">
+          <button
+            type="button"
+            className={emphasizePrimary ? 'primary' : 'secondary'}
+            disabled={props.hasModel && !props.canPlan}
+            onClick={props.hasModel ? props.onPlan : props.onConfigureModel}
+          >
+            <Icon name={props.hasModel ? 'sparkles' : 'plus'} />
+            {props.hasModel ? t.commit.previewPlanButton : t.commit.configureModelButton}
+          </button>
+        </div>
+      ) : (
+        <div className="plan-editor">
+          <div className="plan-toolbar">
+            <div className="row min-width-zero">
+              <span className="plan-summary-title truncate">
+                {t.commit.planSummary(props.plan.groups.length, props.plan.skippedFileIds.length)}
+              </span>
+              {props.planOutdated && <span className="branch-tag">{t.commit.planOutdatedBadge}</span>}
+            </div>
+            <div className="row">
+              <IconButton
+                icon="refresh"
+                label={t.commit.regeneratePlanAction}
+                disabled={!props.canPlan}
+                onClick={props.onPlan}
+              />
+              <IconButton icon="close" label={t.commit.clearPlanAction} onClick={props.onClearPlan} />
+            </div>
+          </div>
+          <div className="plan-groups scroll-area">
+            {props.plan.groups.length === 0 ? (
+              <p className="muted help plan-all-skipped">
+                {t.commit.allSkippedPlanNote(props.plan.skippedFileIds.length)}
+              </p>
+            ) : (
+              props.plan.groups.map((group, index) => {
+                const total = props.plan!.groups.length;
+                const lineCount = Math.min(6, Math.max(3, group.message.split('\n').length));
+                const emptyMessage = !group.message.trim() && !props.planOutdated;
+                return (
+                  <div className={`plan-group-card ${props.planOutdated ? 'is-outdated' : ''}`} key={group.id}>
+                    <div className="plan-group-header">
+                      <strong className="plan-group-index">{t.commit.groupHeading(index + 1, total)}</strong>
+                      <div className="plan-group-files">
+                        {group.fileIds.map((fileId) => {
+                          const matched = fileById.get(fileId);
+                          const pathLabel = matched ? splitPath(matched.path).name : fileId;
+                          return (
+                            <span className="plan-file-chip mono truncate" key={fileId} title={matched?.path ?? fileId}>
+                              {pathLabel}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <textarea
+                      className="plan-group-textarea"
+                      aria-label={t.commit.groupMessageLabel(index + 1, total)}
+                      rows={lineCount}
+                      value={group.message}
+                      onChange={(event) => props.onEditPlanGroup(group.id, event.target.value)}
+                      placeholder={t.commit.groupMessagePlaceholder}
+                      spellCheck={false}
+                    />
+                    {emptyMessage && <p className="danger help plan-group-error">{t.commit.emptyPlanMessageHint}</p>}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   </div>;
 }

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const chromePath = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-if (!existsSync(chromePath)) throw new Error('需要本机 Chrome。可用 CHROME_PATH 指定可执行文件；此检查不安装浏览器。');
+if (!existsSync(chromePath)) throw new Error('Local Chrome is required. Set CHROME_PATH to specify the binary; this check never installs a browser.');
 const temporary = mkdtempSync(join(tmpdir(), 'picket-workbench-'));
 const origin = 'http://127.0.0.1:1421';
 const pause = () => new Promise((resolve) => setTimeout(resolve, 100));
@@ -18,21 +18,21 @@ server.stderr.on('data', (chunk) => { serverOutput += chunk; });
 let serverError;
 server.on('error', (error) => { serverError = error; });
 let chrome, socket;
-const stop = async (process) => {
-  if (!process || process.exitCode !== null) return;
-  const exited = new Promise((resolve) => process.once('exit', resolve));
-  process.kill('SIGTERM'); await exited;
+const stop = async (child) => {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM'); await exited;
 };
 try {
   let ready = false;
   for (let attempt = 0; attempt < 60; attempt++) {
     if (serverError) throw serverError;
-    if (server.exitCode !== null) throw new Error(`开发服务退出：${serverOutput}`);
+    if (server.exitCode !== null) throw new Error(`Dev server exited early: ${serverOutput}`);
     try { ready = (await fetch(`${origin}/dev.html`)).ok; } catch { /* Server is still starting. */ }
     if (ready) break;
     await pause();
   }
-  if (!ready) throw new Error(`开发服务未就绪：${serverOutput}`);
+  if (!ready) throw new Error(`Dev server did not become ready: ${serverOutput}`);
   chrome = spawn(chromePath, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
     `--user-data-dir=${join(temporary, 'chrome')}`, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   let chromeOutput = '';
@@ -40,10 +40,10 @@ try {
   chrome.on('error', (error) => { chromeOutput += error.message; });
   const portFile = join(temporary, 'chrome/DevToolsActivePort');
   for (let attempt = 0; attempt < 100 && !existsSync(portFile); attempt++) {
-    if (chrome.exitCode !== null) throw new Error(`Chrome 退出：${chromeOutput}`);
+    if (chrome.exitCode !== null) throw new Error(`Chrome exited early: ${chromeOutput}`);
     await pause();
   }
-  if (!existsSync(portFile)) throw new Error(`Chrome 未就绪：${chromeOutput}`);
+  if (!existsSync(portFile)) throw new Error(`Chrome did not become ready: ${chromeOutput}`);
   const port = readFileSync(portFile, 'utf8').split('\n')[0];
   const page = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
   socket = new WebSocket(page.webSocketDebuggerUrl);
@@ -63,7 +63,7 @@ try {
   });
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence;
-    const timeout = setTimeout(() => { pending.delete(id); reject(new Error(`Chrome 命令超时：${method}`)); }, 30_000);
+    const timeout = setTimeout(() => { pending.delete(id); reject(new Error(`Chrome CDP command timed out: ${method}`)); }, 30_000);
     pending.set(id, { resolve, reject, timeout }); socket.send(JSON.stringify({ id, method, params }));
   });
   const evaluate = async (expression) => {
@@ -73,7 +73,7 @@ try {
   };
   const navigate = async (query) => {
     const loaded = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { events.delete('Page.loadEventFired'); reject(new Error('开发页面加载超时')); }, 20_000);
+      const timeout = setTimeout(() => { events.delete('Page.loadEventFired'); reject(new Error('Dev page load timed out')); }, 20_000);
       events.set('Page.loadEventFired', () => { clearTimeout(timeout); resolve(); });
     });
     await send('Page.navigate', { url: `${origin}/dev.html?${query}` }); await loaded;
@@ -87,20 +87,94 @@ try {
     if (!inspect()) { const observer = new MutationObserver(() => { if (inspect()) observer.disconnect(); }); observer.observe(document.body, { childList: true, subtree: true }); }
   })`);
   if (result.status !== 'passed') throw new Error(result.text);
-  if (browserErrors.length) throw new Error(`浏览器控制台错误：${browserErrors.join('\n')}`);
+  if (browserErrors.length) throw new Error(`Browser console errors:\n${browserErrors.join('\n')}`);
   console.log(result.text);
+
+  // Verify 400 x 480 full-mode minimum height and 400 x 140 compact bar viewport geometry:
+  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 480, deviceScaleFactor: 1, mobile: false });
+  await navigate('scenario=changed');
+  const minHeightCheck = await evaluate(`new Promise(resolve => {
+    const inspect = () => {
+      const header = document.querySelector('.context-header');
+      const changes = document.querySelector('.changes-panel');
+      const lower = document.querySelector('.lower-workspace');
+      const footer = document.querySelector('.action-footer');
+      if (!header || !changes || !lower || !footer) return false;
+      requestAnimationFrame(() => {
+        const h = header.getBoundingClientRect();
+        const c = changes.getBoundingClientRect();
+        const l = lower.getBoundingClientRect();
+        const f = footer.getBoundingClientRect();
+        resolve({
+          innerHeight,
+          changesHeight: c.height,
+          lowerHeight: l.height,
+          footerBottom: f.bottom,
+          ordered: h.bottom <= c.top + 1 && c.bottom <= l.top + 1 && l.bottom <= f.top + 1 && f.bottom <= 480.5,
+        });
+      });
+      return true;
+    };
+    if (!inspect()) {
+      const observer = new MutationObserver(() => { if (inspect()) observer.disconnect(); });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  })`);
+  assert(
+    minHeightCheck.innerHeight === 480
+      && minHeightCheck.changesHeight === 152
+      && minHeightCheck.lowerHeight >= 200
+      && minHeightCheck.ordered,
+    `400x480 full-mode minimum height layout overlapped or clipped: ${JSON.stringify(minHeightCheck)}`,
+  );
+
+  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 86, deviceScaleFactor: 1, mobile: false });
+  await navigate('scenario=compact');
+  const compactViewportCheck = await evaluate(`new Promise(resolve => {
+    const inspect = () => {
+      const bar = document.querySelector('.compact-bar');
+      const top = document.querySelector('.compact-top');
+      const bottom = document.querySelector('.compact-bottom');
+      if (!bar || !top || !bottom) return false;
+      requestAnimationFrame(() => {
+        const b = bar.getBoundingClientRect();
+        const t = top.getBoundingClientRect();
+        const f = bottom.getBoundingClientRect();
+        resolve({
+          barHeight: b.height,
+          topHeight: t.height,
+          bottomBottom: f.bottom,
+        });
+      });
+      return true;
+    };
+    if (!inspect()) {
+      const observer = new MutationObserver(() => { if (inspect()) observer.disconnect(); });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  })`);
+  assert(
+    compactViewportCheck.topHeight === 38
+      && compactViewportCheck.barHeight >= 82
+      && compactViewportCheck.barHeight <= 92
+      && compactViewportCheck.bottomBottom <= 92,
+    `400x86 compact viewport layout check failed: ${JSON.stringify(compactViewportCheck)}`,
+  );
+  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 700, deviceScaleFactor: 1, mobile: false });
+  if (browserErrors.length) throw new Error(`Viewport geometry browser console errors:\n${browserErrors.join('\n')}`);
+  console.log(JSON.stringify({ minFullViewport400x480Verified: true, compactViewport400x86Verified: true }));
   const { build } = await import('vite');
   const production = await build({ root, logLevel: 'warn', build: { write: false } });
   const builds = Array.isArray(production) ? production : [production];
-  const output = builds.flatMap((result) => result.output);
+  const output = builds.flatMap((entry) => entry.output);
   const modules = output.filter((entry) => entry.type === 'chunk').flatMap((chunk) => chunk.moduleIds);
-  assert(!modules.some((path) => /\/testing\/|\.test\.|\/Foundation\.tsx/.test(path)), '开发样例或诊断页进入正式构建');
-  assert(!output.some((entry) => entry.fileName === 'dev.html'), '开发入口进入正式构建');
+  assert(!modules.some((path) => /\/testing\/|\.test\.|\/Foundation\.tsx/.test(path)), 'Development fixtures or Foundation diagnostic page leaked into production build');
+  assert(!output.some((entry) => entry.fileName === 'dev.html'), 'dev.html leaked into production build');
   console.log(JSON.stringify({ productionModules: modules.length, developmentFixturesExcluded: true, productionBuildWritten: false }));
   const screenshotOption = process.argv.find((argument) => argument.startsWith('--screenshots='));
   if (screenshotOption) {
     const destination = resolve(screenshotOption.slice('--screenshots='.length)); mkdirSync(destination, { recursive: true });
-    for (const scenario of ['empty', 'clean', 'running', 'question', 'typing', 'done', 'review-during-question', 'push-failed', 'conflict', 'manual', 'resolved', 'no-model', 'single', 'long-paths']) {
+    for (const scenario of ['empty', 'clean', 'running', 'generating', 'question', 'typing', 'done', 'review-during-question', 'push-failed', 'conflict', 'manual', 'resolved', 'no-model', 'single', 'long-paths']) {
       await navigate(`scenario=${scenario}`);
       await evaluate(`new Promise(resolve => {
         const inspect = () => { if (document.querySelector('.workbench')) { requestAnimationFrame(() => requestAnimationFrame(resolve)); return true; } };
@@ -114,18 +188,18 @@ try {
     let detail = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(destination, 'review.png'), Buffer.from(detail.data, 'base64'));
     await navigate('scenario=typing');
-    await evaluate(`document.querySelector('button[aria-label="设置"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await evaluate(`document.querySelector('button[aria-label="Settings"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     detail = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(destination, 'settings-models.png'), Buffer.from(detail.data, 'base64'));
     await navigate('scenario=no-model');
-    await evaluate(`document.querySelector('button[aria-label="设置"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await evaluate(`document.querySelector('button[aria-label="Settings"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     detail = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(destination, 'settings.png'), Buffer.from(detail.data, 'base64'));
-    await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === '添加第一个模型').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Add First Model').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     detail = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(destination, 'add-model.png'), Buffer.from(detail.data, 'base64'));
-    if (browserErrors.length) throw new Error(`截图页面控制台错误：${browserErrors.join('\n')}`);
-    console.log(`400 × 700 开发样例截图：${destination}`);
+    if (browserErrors.length) throw new Error(`Screenshot page console errors:\n${browserErrors.join('\n')}`);
+    console.log(`400 x 700 fixture screenshots written to: ${destination}`);
   }
 } finally {
   socket?.close(); await stop(chrome); await stop(server);
