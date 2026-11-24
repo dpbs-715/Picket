@@ -53,16 +53,36 @@ export function resolveDefaultTokenLimits(
   };
 }
 
-export function validateTokenLimits(contextWindow: number, maxOutputTokens: number): string | undefined {
+export type TokenLimitValidationCode = 'context_range' | 'output_range' | 'output_exceeds_context';
+
+export function validateTokenLimitsCode(
+  contextWindow: number,
+  maxOutputTokens: number,
+): TokenLimitValidationCode | undefined {
   const { minContextWindow, maxContextWindow, minMaxOutputTokens, maxMaxOutputTokens } = MODEL_TOKEN_LIMITS;
   if (!Number.isSafeInteger(contextWindow) || contextWindow < minContextWindow || contextWindow > maxContextWindow) {
-    return `上下文长度须为 ${minContextWindow} 至 ${maxContextWindow} 之间的整数`;
+    return 'context_range';
   }
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < minMaxOutputTokens || maxOutputTokens > maxMaxOutputTokens) {
-    return `最大输出 Token 须为 ${minMaxOutputTokens} 至 ${maxMaxOutputTokens} 之间的整数`;
+    return 'output_range';
   }
   if (maxOutputTokens > contextWindow) {
-    return '最大输出 Token 不能超过上下文长度';
+    return 'output_exceeds_context';
+  }
+  return undefined;
+}
+
+export function validateTokenLimits(contextWindow: number, maxOutputTokens: number): string | undefined {
+  const { minContextWindow, maxContextWindow, minMaxOutputTokens, maxMaxOutputTokens } = MODEL_TOKEN_LIMITS;
+  const code = validateTokenLimitsCode(contextWindow, maxOutputTokens);
+  if (code === 'context_range') {
+    return `Context window must be an integer between ${minContextWindow} and ${maxContextWindow}`;
+  }
+  if (code === 'output_range') {
+    return `Max output tokens must be an integer between ${minMaxOutputTokens} and ${maxMaxOutputTokens}`;
+  }
+  if (code === 'output_exceeds_context') {
+    return 'Max output tokens cannot exceed context window';
   }
   return undefined;
 }

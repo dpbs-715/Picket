@@ -1,6 +1,7 @@
 import { Agent } from '@earendil-works/pi-agent-core';
+import { normalizeAppLocale, type AppLocale } from '../../shared/language-protocol';
+import { MODEL_GLOBAL_DEFAULTS } from '../../shared/model-defaults';
 import type {
-  GenerateCommitCommand,
   PiConflictFile,
   PiConflictResolution,
   PiCPushCommitGroup,
@@ -17,8 +18,8 @@ import type {
   ReviewScopeCommand,
   TestConnectionRequest,
 } from '../../shared/pi-protocol';
-import { MODEL_GLOBAL_DEFAULTS } from '../../shared/model-defaults';
 import { COMMIT_SKILL_SPEC, CPUSH_SKILL_SPEC } from './git-skills';
+import { LocalizedSidecarError, getSidecarMessages } from './i18n';
 import { createProbe } from './probe';
 import { createIsolatedModelRuntime, sanitizeProviderError } from './providers';
 
@@ -44,7 +45,8 @@ function stripReasoningBlocks(raw: string): string {
   return raw.replace(/^(?:\s*<think>[\s\S]*?<\/think>\s*)+/i, '').trim();
 }
 
-export function cleanCommitMessage(raw: string): string {
+export function cleanCommitMessage(raw: string, locale: AppLocale = 'en'): string {
+  const msg = getSidecarMessages(locale);
   let trimmed = stripReasoningBlocks(raw);
   const fenced = /^```[a-zA-Z0-9_-]*[ \t]*\r?\n([\s\S]*?)\r?\n```$/.exec(trimmed);
   if (fenced) {
@@ -57,7 +59,7 @@ export function cleanCommitMessage(raw: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   if (!normalized) {
-    throw new Error('模型返回了空的提交说明');
+    throw new LocalizedSidecarError(msg.emptyCommitMessage);
   }
   return normalized;
 }
@@ -130,17 +132,32 @@ function extractJsonObject(raw: string): unknown {
     if (firstBrace >= 0 && lastBrace > firstBrace) {
       return parseJsonCandidate(candidate.slice(firstBrace, lastBrace + 1));
     }
-    throw new Error('模型未返回有效的结构化审查 JSON');
+    throw new Error('Invalid JSON payload');
+  }
+}
+
+class RecoverablePlanValidationError extends LocalizedSidecarError {
+  readonly repairPrompt: string;
+
+  constructor(message: string, repairPrompt: string) {
+    super(message);
+    this.name = 'RecoverablePlanValidationError';
+    this.repairPrompt = repairPrompt;
   }
 }
 
 function formatPlanFilesPromptBlock(files: PiPlanFileEntry[]): string {
-  return files.map((file) => {
+  return files.map((file, index) => {
+    const alias = `@${index + 1}`;
     const rename = file.previousPath ? ` (renamed from ${file.previousPath})` : '';
+    const statusLabel = file.status === 'D'
+      ? `D (deleted file — MUST be assigned to a commit group, +${file.added} -${file.removed})`
+      : `${file.status} (${file.rangeKind}, +${file.added} -${file.removed})`;
     const header = [
       `### Authorized File: ${file.path}${rename}`,
       `- fileId: ${file.fileId}`,
-      `- status: ${file.status} (${file.rangeKind}, +${file.added} -${file.removed})`,
+      `- alias: ${alias}`,
+      `- status: ${statusLabel}`,
     ];
     if (file.skipReason) {
       header.push(`- note: ${file.skipReason}`);
@@ -148,33 +165,60 @@ function formatPlanFilesPromptBlock(files: PiPlanFileEntry[]): string {
     if (file.patch && file.patch.trim()) {
       header.push('```diff', file.patch.trimEnd(), '```');
     } else {
-      header.push('(Patch body omitted; assign this fileId to its logical commit group based on path/status.)');
+      header.push(`(Patch body omitted; assign ${alias} / ${file.fileId} to its logical commit group based on path/status.)`);
     }
     return header.join('\n');
   }).join('\n\n');
 }
 
-export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushPlan {
+function formatMasterChecklistBlock(files: PiPlanFileEntry[]): string {
+  const lines = files.map((file, index) => {
+    const statusTag = file.status === 'D' ? 'D (deleted)' : file.status;
+    return `- @${index + 1} | ${file.fileId} | ${statusTag} | ${file.path}`;
+  });
+  return [
+    `Master Checklist of ALL ${files.length} Authorized Selected Files (when returning kind="ready", 100% of @1..@${files.length} — including every D deleted file and patch-omitted file — MUST appear once in groups[].fileIds${files.length > 1 ? ' across your groups' : ''}; you may use either "@index" aliases like "@1" or exact fileIds in fileIds):`,
+    ...lines,
+  ].join('\n');
+}
+
+export function parseCPushPlan(
+  raw: string,
+  command: PlanCPushCommand,
+  locale: AppLocale = normalizeAppLocale(command.locale, 'en'),
+): PiCPushPlan {
+  const resolvedLocale = normalizeAppLocale(locale, 'en');
+  const msg = getSidecarMessages(resolvedLocale);
   let parsed: unknown;
   try {
     parsed = extractJsonObject(raw);
   } catch {
-    throw new Error('模型未返回有效的 C-Push 结构化规划 JSON');
+    throw new LocalizedSidecarError(msg.invalidCPushPlanJson);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('模型返回的 C-Push 规划不是 JSON 对象');
+    throw new LocalizedSidecarError(msg.cPushPlanNotObject);
   }
   const record = parsed as Record<string, unknown>;
   const byId = new Map(command.files.map((file) => [file.fileId, file]));
   const byPath = new Map(command.files.map((file) => [file.path, file]));
+  const byAlias = new Map(command.files.map((file, idx) => [`@${idx + 1}`, file]));
+  const aliasById = new Map(command.files.map((file, idx) => [file.fileId, `@${idx + 1}`]));
+  const byPrevPath = new Map<string, PiPlanFileEntry>();
+  for (const file of command.files) {
+    if (file.previousPath && !byPath.has(file.previousPath)) {
+      byPrevPath.set(file.previousPath, file);
+    }
+  }
+  const matchAuthorizedFile = (clean: string): PiPlanFileEntry | undefined =>
+    byId.get(clean) ?? byPath.get(clean) ?? byAlias.get(clean) ?? byPrevPath.get(clean);
   const resolveAuthorizedId = (token: unknown): string => {
     if (typeof token !== 'string' || !token.trim()) {
-      throw new Error('C-Push 规划包含空的文件引用');
+      throw new LocalizedSidecarError(msg.emptyCPushFileRef);
     }
     const clean = token.trim();
-    const matched = byId.get(clean) ?? byPath.get(clean);
+    const matched = matchAuthorizedFile(clean);
     if (!matched) {
-      throw new Error(`模型尝试将未授权文件（${clean}）纳入 C-Push 计划`);
+      throw new LocalizedSidecarError(msg.unauthorizedCPushFile(clean));
     }
     return matched.fileId;
   };
@@ -184,21 +228,21 @@ export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushP
     const scope = typeof record.scope === 'string' ? record.scope.trim().slice(0, 120) : '';
     const description = typeof record.description === 'string' ? record.description.trim().slice(0, 800) : '';
     if (!title || !description) {
-      throw new Error('C-Push 提问缺少标题或具体说明');
+      throw new LocalizedSidecarError(msg.missingCPushQuestionText);
     }
     if (!Array.isArray(record.options) || record.options.length === 0 || record.options.length > 6) {
-      throw new Error('C-Push 提问必须提供 1 至 6 个明确选项');
+      throw new LocalizedSidecarError(msg.invalidCPushOptionCount);
     }
     const seenOptionIds = new Set<string>();
     const options: PiCPushQuestionOption[] = record.options.map((rawOpt, index) => {
       if (typeof rawOpt !== 'object' || rawOpt === null || Array.isArray(rawOpt)) {
-        throw new Error('C-Push 提问选项格式无效');
+        throw new LocalizedSidecarError(msg.invalidCPushOptionFormat);
       }
       const opt = rawOpt as Record<string, unknown>;
       const id = typeof opt.id === 'string' && opt.id.trim() ? opt.id.trim().slice(0, 64) : `option-${index + 1}`;
       const label = typeof opt.label === 'string' ? opt.label.trim().slice(0, 120) : '';
       if (!label || seenOptionIds.has(id)) {
-        throw new Error('C-Push 提问选项缺少标签或存在重复 ID');
+        throw new LocalizedSidecarError(msg.invalidCPushOptionLabelOrDuplicateId);
       }
       seenOptionIds.add(id);
       return {
@@ -211,7 +255,7 @@ export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushP
     const affectedFileIds = [...new Set(
       rawAffected.flatMap((token) => {
         if (typeof token !== 'string') return [];
-        const matched = byId.get(token.trim()) ?? byPath.get(token.trim());
+        const matched = matchAuthorizedFile(token.trim());
         return matched ? [matched.fileId] : [];
       }),
     )];
@@ -226,21 +270,36 @@ export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushP
   }
 
   if (record.kind !== 'ready') {
-    throw new Error('C-Push 规划结果缺少有效的 kind（须为 ready 或 question）');
+    throw new LocalizedSidecarError(msg.invalidCPushPlanKind);
   }
   if (!Array.isArray(record.groups)) {
-    throw new Error('C-Push 规划缺少 groups 数组');
+    throw new LocalizedSidecarError(msg.missingCPushGroups);
   }
   const rawSkipped = Array.isArray(record.skippedFileIds) ? record.skippedFileIds : [];
   if (rawSkipped.length > 0 && command.qaHistory.length === 0) {
-    throw new Error('未经用户确认，C-Push 不能擅自跳过已勾选文件');
+    throw new RecoverablePlanValidationError(
+      msg.unconfirmedCPushSkip,
+      [
+        'Validation error: `skippedFileIds` MUST be `[]` when `qaHistory` is empty — selected files cannot be skipped without asking the user first.',
+        `Either assign ALL ${command.files.length} authorized files (@1 through @${command.files.length}) to commit groups in \`groups[].fileIds\` with \`"skippedFileIds": []\`, OR return \`"kind": "question"\` so the user can confirm whether to skip them.`,
+        'Return ONLY the corrected raw JSON object (no prose outside JSON).',
+      ].join('\n'),
+    );
   }
   const assigned = new Set<string>();
   const skippedFileIds: string[] = [];
   for (const rawId of rawSkipped) {
     const fileId = resolveAuthorizedId(rawId);
     if (assigned.has(fileId)) {
-      throw new Error(`文件 ${fileId} 在 C-Push 计划中重复出现`);
+      const file = byId.get(fileId);
+      throw new RecoverablePlanValidationError(
+        msg.duplicateCPushFile(fileId),
+        [
+          `Validation error: authorized file ${aliasById.get(fileId) ?? ''} (${file?.path ?? fileId}) appeared multiple times in skippedFileIds.`,
+          `Each authorized file (@1 through @${command.files.length}) must appear once across groups[].fileIds and skippedFileIds.`,
+          'Return ONLY the corrected raw JSON object (no prose outside JSON).',
+        ].join('\n'),
+      );
     }
     assigned.add(fileId);
     skippedFileIds.push(fileId);
@@ -248,23 +307,31 @@ export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushP
 
   const groups: PiCPushCommitGroup[] = record.groups.map((rawGroup, index) => {
     if (typeof rawGroup !== 'object' || rawGroup === null || Array.isArray(rawGroup)) {
-      throw new Error('C-Push 提交分组格式无效');
+      throw new LocalizedSidecarError(msg.invalidCPushGroupFormat);
     }
     const group = rawGroup as Record<string, unknown>;
     if (!Array.isArray(group.fileIds) || group.fileIds.length === 0) {
-      throw new Error('C-Push 每个提交分组至少需包含一个已授权文件');
+      throw new LocalizedSidecarError(msg.emptyCPushGroupFiles);
     }
     const groupFileIds: string[] = [];
     for (const rawId of group.fileIds) {
       const fileId = resolveAuthorizedId(rawId);
       if (assigned.has(fileId)) {
-        throw new Error(`文件 ${fileId} 被分配到了多个提交分组`);
+        const file = byId.get(fileId);
+        throw new RecoverablePlanValidationError(
+          msg.duplicateCPushGroupAssignment(fileId),
+          [
+            `Validation error: authorized file ${aliasById.get(fileId) ?? ''} (${file?.path ?? fileId}, fileId=${fileId}) was assigned to multiple commit groups.`,
+            `Each authorized file (@1 through @${command.files.length}) may appear in ONLY ONE group, and 100% of @1..@${command.files.length} must remain covered.`,
+            'Return ONLY the corrected raw JSON object (no prose outside JSON).',
+          ].join('\n'),
+        );
       }
       assigned.add(fileId);
       groupFileIds.push(fileId);
     }
     const rawMsg = typeof group.message === 'string' ? group.message : '';
-    const message = cleanCommitMessage(rawMsg);
+    const message = cleanCommitMessage(rawMsg, resolvedLocale);
     const id = typeof group.id === 'string' && group.id.trim()
       ? group.id.trim().slice(0, 64)
       : `group-${index + 1}`;
@@ -272,18 +339,34 @@ export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushP
   });
 
   if (groups.length === 0 && skippedFileIds.length === 0) {
-    throw new Error('C-Push 计划未包含任何有效分组');
+    throw new LocalizedSidecarError(msg.noValidCPushGroups);
   }
-  for (const file of command.files) {
-    if (!assigned.has(file.fileId)) {
-      throw new Error(`已选文件 ${file.path} 未被纳入 C-Push 分组计划`);
-    }
+  const missingFiles = command.files
+    .map((file, idx) => ({ file, alias: `@${idx + 1}` }))
+    .filter(({ file }) => !assigned.has(file.fileId));
+  if (missingFiles.length > 0) {
+    const firstMissing = missingFiles[0].file;
+    const repairLines = missingFiles.map(
+      ({ file, alias }) => `- ${alias} | fileId=${file.fileId} | status=${file.status} | path=${file.path}`,
+    );
+    const coverageGuidance = command.qaHistory.length === 0
+      ? `Every single authorized file (@1 through @${command.files.length}) MUST appear in exactly one group's \`fileIds\` (\`skippedFileIds\` MUST be \`[]\`), OR return \`"kind": "question"\` if user confirmation is required.`
+      : `Every single authorized file (@1 through @${command.files.length}) MUST appear once across \`groups[].fileIds\` and \`skippedFileIds\`.`;
+    throw new RecoverablePlanValidationError(
+      msg.missingSelectedCPushFile(firstMissing.path),
+      [
+        `Validation error: your C-Push plan omitted ${missingFiles.length} authorized selected file(s):`,
+        ...repairLines,
+        coverageGuidance,
+        'Include every missing file above in its matching commit group (including any status=D deleted files) and return ONLY the corrected raw JSON object (no prose outside JSON).',
+      ].join('\n'),
+    );
   }
   const summary = typeof record.summary === 'string' && record.summary.trim()
     ? record.summary.trim().slice(0, 200)
     : groups.length <= 1
-      ? '已生成单笔提交计划'
-      : `已规划拆分为 ${groups.length} 个独立提交`;
+      ? msg.defaultSingleCommitPlanSummary
+      : msg.defaultSplitCommitPlanSummary(groups.length);
   return {
     kind: 'ready',
     summary,
@@ -292,15 +375,20 @@ export function parseCPushPlan(raw: string, command: PlanCPushCommand): PiCPushP
   };
 }
 
-export function parseReviewFindings(raw: string, files: PiDiffFile[]): PiReviewFinding[] {
+export function parseReviewFindings(
+  raw: string,
+  files: PiDiffFile[],
+  locale: AppLocale = 'en',
+): PiReviewFinding[] {
+  const msg = getSidecarMessages(locale);
   let parsed: unknown;
   try {
     parsed = extractJsonObject(raw);
   } catch {
-    throw new Error('模型未返回有效的结构化审查结果');
+    throw new LocalizedSidecarError(msg.invalidReviewJson);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed) || !Array.isArray((parsed as { findings?: unknown }).findings)) {
-    throw new Error('模型返回的审查结果缺少 findings 数组');
+    throw new LocalizedSidecarError(msg.missingReviewFindings);
   }
   const byId = new Map(files.map((file) => [file.fileId, file]));
   const byPath = new Map(files.map((file) => [file.path, file]));
@@ -308,7 +396,7 @@ export function parseReviewFindings(raw: string, files: PiDiffFile[]): PiReviewF
 
   for (const item of (parsed as { findings: unknown[] }).findings) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      throw new Error('审查结果项格式无效');
+      throw new LocalizedSidecarError(msg.invalidReviewFindingItem);
     }
     const record = item as Record<string, unknown>;
     const matched = (typeof record.fileId === 'string' ? byId.get(record.fileId) : undefined)
@@ -321,7 +409,7 @@ export function parseReviewFindings(raw: string, files: PiDiffFile[]): PiReviewF
       ? 'high'
       : rawSeverity === 'suggestion' || rawSeverity === 'medium' || rawSeverity === 'low' || rawSeverity === 'warning' || rawSeverity === 'info'
         ? 'suggestion'
-        : (() => { throw new Error('审查结果包含未知严重程度'); })();
+        : (() => { throw new LocalizedSidecarError(msg.unknownReviewSeverity); })();
 
     const line = typeof record.line === 'number' && Number.isFinite(record.line)
       ? Math.max(1, Math.trunc(record.line))
@@ -329,7 +417,7 @@ export function parseReviewFindings(raw: string, files: PiDiffFile[]): PiReviewF
     const title = typeof record.title === 'string' ? record.title.trim().slice(0, 180) : '';
     const reason = typeof record.reason === 'string' ? record.reason.trim().slice(0, 800) : '';
     if (!title || !reason) {
-      throw new Error('审查结果缺少标题或原因说明');
+      throw new LocalizedSidecarError(msg.missingReviewTitleOrReason);
     }
     findings.push({
       fileId: matched.fileId,
@@ -343,54 +431,38 @@ export function parseReviewFindings(raw: string, files: PiDiffFile[]): PiReviewF
   return findings;
 }
 
-function buildGeneratePrompts(command: GenerateCommitCommand): { systemPrompt: string; userPrompt: string } {
-  const systemPrompt = [
-    'You are Picket\'s Git commit message generator, governed by the repository `commit` skill specification below.',
-    '',
-    '<commit_skill_spec>',
-    COMMIT_SKILL_SPEC,
-    '</commit_skill_spec>',
-    '',
-    'Desktop Adapter Rules:',
-    '1. Write ONE concise Conventional Commits message (`<type>(<optional scope>): <subject>`, without a trailing period) strictly for the supplied diff scope.',
-    '2. Follow the `commit` skill\'s body policy: keep single-line by default, and add a blank line + concise body ONLY when the reason, migration impact, or non-obvious context would be lost from the subject alone.',
-    '3. Keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English. Match the natural language (Chinese vs English) and `<type>(<scope>)` naming convention of recent commit subjects or the user draft; if neither indicates English, write the subject after the colon in concise Chinese.',
-    '4. Describe ONLY the supplied diff changes. For partially staged files, only the staged diff is supplied; never guess or invent unstaged edits. Preserve user draft intent when provided.',
-    '5. Output ONLY the raw commit message text (no `Committed <hash>:` wrapper, no markdown code fences, no extra commentary).',
-  ].join('\n');
+export function buildReviewPrompts(command: ReviewScopeCommand): { systemPrompt: string; userPrompt: string } {
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const languageDirective = locale === 'zh'
+    ? 'Write every finding `title` and `reason` in clear, concise Chinese (the schema below uses English placeholders only).'
+    : 'Write every finding `title` and `reason` in clear, concise English.';
 
-  const parts: string[] = [`Target branch: ${command.branch}`];
-  if (command.recentCommits.length > 0) {
-    parts.push(
-      `Recent commit subjects (language and <type>(<scope>) naming reference):\n${command.recentCommits.map((subject) => `- ${subject}`).join('\n')}`,
-    );
-  }
-  if (command.draft.trim()) {
-    parts.push(`Existing user draft / notes:\n${command.draft.trim()}`);
-  }
-  parts.push(`Selected diff scope:\n${formatDiffPromptBlock(command.files, command.skippedPaths)}`);
-  return { systemPrompt, userPrompt: parts.join('\n\n') };
-}
-
-function buildReviewPrompts(command: ReviewScopeCommand): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = [
     'You are Picket\'s pre-commit code reviewer.',
     'Review ONLY the supplied Git diff patches and report concrete defects, security/credential leaks, data loss hazards, concurrency/state bugs, or maintainability risks.',
-    'Do NOT invent issues outside the supplied patches. Write titles and reasons in clear, concise Chinese.',
+    'When `User review instructions / context` is provided, apply its focus and background strictly within the supplied patches without inventing findings on unselected files.',
+    `Do NOT invent issues outside the supplied patches. ${languageDirective}`,
     'Return ONLY a single JSON object with this exact schema (no prose outside JSON):',
-    '{"findings":[{"fileId":"<exact fileId from input>","path":"<exact path from input>","line":1,"severity":"high","title":"简短问题标题","reason":"具体原因与风险说明"}]}',
+    '{"findings":[{"fileId":"<exact fileId from input>","path":"<exact path from input>","line":1,"severity":"high","title":"Concise issue title","reason":"Concrete cause and impact explanation"}]}',
     'Use severity "high" only for real bugs, security/credential exposure, broken invariants, or data corruption; use "suggestion" for non-blocking improvements. Return {"findings":[]} if no issues are found.',
   ].join('\n');
 
   const parts: string[] = [`Branch: ${command.branch}`];
-  if (command.draft.trim()) {
-    parts.push(`Planned commit note:\n${command.draft.trim()}`);
+  if (command.prompt.trim()) {
+    parts.push(`User review instructions / context:\n${command.prompt.trim()}`);
   }
   parts.push(`Reviewable diff patches:\n${formatDiffPromptBlock(command.files, [])}`);
   return { systemPrompt, userPrompt: parts.join('\n\n') };
 }
 
-function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: string; userPrompt: string } {
+export function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: string; userPrompt: string } {
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const commitLang = normalizeAppLocale(command.commitLanguage, 'en');
+  const uiLanguage = locale === 'zh' ? 'Chinese' : 'English';
+  const commitRule = commitLang === 'zh'
+    ? 'Git commit message language (`commitLanguage = "zh"`, `<commit_skill_spec>` flag `-ch`): keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English, and write BOTH the subject (after `<type>(<optional scope>):`) AND every `- ` detail bullet of `groups[].message` in concise Chinese — using `recentCommits` only as `<type>(<scope>)` scope-naming reference.'
+    : 'Git commit message language (`commitLanguage = "en"`, `<commit_skill_spec>` flag `-en`): keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English, and write BOTH the subject (after `<type>(<optional scope>):`) AND every `- ` detail bullet of `groups[].message` in concise English — using `recentCommits` only as `<type>(<scope>)` scope-naming reference and NOT switching language even if `recentCommits` or `User extra instructions` are in another language.';
+
   const systemPrompt = [
     'You are Picket\'s C-Push planner, governed by the repository `cpush` and `commit` skill specifications below.',
     '',
@@ -407,26 +479,34 @@ function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: strin
     '   Users often click "Select All" before C-Push. Before returning `kind: "ready"`, inspect every selected file. If ANY selected file has NOT yet been confirmed in `qaHistory` and looks like:',
     '   - a local environment, secret, or credential file (`.env`, `.env.*` other than `.env.example`/`.env.sample`/`.env.template`, `*.pem`, `*.key`, `.npmrc`, `*.local.*`), or a diff introducing hardcoded credentials / local-only debug endpoints;',
     '   - a temporary local test/debug/scratch script (e.g. ad-hoc `test-*.cjs`, `debug-*`, `scratch.*`, temporary dumps/logs) or unfinished unrelated work that should not be committed blindly;',
-    '   - or a file with genuinely ambiguous commit attribution (e.g. mixed release notes/docs or an ambiguous manual `draft` across split commits);',
-    '   you MUST return `kind: "question"` first! List those `affectedFileIds`, explain clearly in Chinese why confirmation is needed, and offer clear options (recommend `"skip"` / `"排除这些文件，仅提交其余改动"` for local env, secret, or temporary test files).',
-    '2. Intentional Clean Scope: When all selected files are clearly intentional changes (or once `qaHistory` resolves any questionable files), return `kind: "ready"` directly without asking unnecessary confirmation questions. Split unrelated intentional changes into focused logical commits.',
-    '3. File-level Authorization Boundary: Each authorized `fileId` is an indivisible unit (partially staged files represent ONLY their staged diff). Never invent or include files outside the authorized list (`Unselected worktree files` are strictly off-limits).',
-    '4. Skipping Policy: When `qaHistory` is empty, `skippedFileIds` MUST be `[]` (ask via `kind: "question"` instead of silently dropping a selected file). When `qaHistory` is non-empty, place a `fileId` in `skippedFileIds` ONLY when the user chose/asked to exclude or skip it; if ALL selected files are skipped, `groups` may be `[]` and `skippedFileIds` lists all of them. If the user\'s reply asks to include an unselected file, modify code, force-push, or is unclear, return `kind: "question"` explaining the boundary in Chinese.',
-    '5. Commit Message Style (follow `<commit_skill_spec>`): Keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English; match the subject language of `recentCommits` (or concise Chinese by default when recent commits are Chinese or absent). Write a concise `<type>(<optional scope>): <subject>` without a trailing period; include a blank line and brief body ONLY when the reason, migration impact, or non-obvious context would be lost from the subject alone. Preserve existing user `draft` intent on the relevant commit without duplicating it verbatim across unrelated commits.',
+    '   - or a file with genuinely ambiguous commit attribution (e.g. mixed release notes/docs or ambiguous user grouping instructions across split commits);',
+    `   you MUST return \`kind: "question"\` first! List those \`affectedFileIds\`, explain clearly in ${uiLanguage} why confirmation is needed, and offer clear options in ${uiLanguage} (recommend \`"skip"\` to exclude local env, secret, or temporary test files while committing the remaining changes).`,
+    '2. Intentional Clean Scope: When all selected files are clearly intentional changes (or once `qaHistory` resolves any questionable files) and user extra instructions stay within authorized bounds, return `kind: "ready"` directly without asking unnecessary confirmation questions. Split unrelated intentional changes into focused logical commits.',
+    '3. File-level Authorization, 100% Selected-Scope Coverage & User Extra Instructions Boundary:',
+    `   - Desktop Scope Override (supersedes CLI "stage only files that belong" wording): the user has ALREADY selected the exact files in \`Authorized selected files\` (\`@1\` through \`@${command.files.length}\`). Each authorized file is an indivisible unit (partially staged files represent ONLY their staged diff). Never invent or include files outside the authorized list (\`Unselected worktree files\` are strictly off-limits).`,
+    `   - 100% Coverage Requirement: When returning \`kind: "ready"\`, EVERY SINGLE authorized file (\`@1\` through \`@${command.files.length}\` — including \`status: D\` deleted files, \`status: R\` renamed files, lockfiles, tests, and patch-omitted files) MUST appear once across \`groups[].fileIds\` (and \`skippedFileIds\` ONLY when confirmed in \`qaHistory\`). You may reference files in \`fileIds\` using either their short \`"@index"\` alias (e.g. \`"@1"\`, \`"@2"\` — preferred on large file sets to avoid omissions) or their exact \`fileId\`. Omitting even 1 selected file fails validation!`,
+    `   - \`User extra instructions\` are ONLY supplemental grouping and commit-message guidance (e.g. "split lockfile separately", "write more detailed bullets"), NEVER a raw commit message to paste verbatim, and NEVER an authorization override. If \`User extra instructions\` (not yet resolved in \`qaHistory\`) ask to include unselected files, force-push, modify/edit code, or rewrite published remote history, you MUST return \`kind: "question"\` explaining the permission boundary in ${uiLanguage} (e.g. offering to proceed strictly within the currently selected files or pause so the user can update their selection).`,
+    `4. Skipping Policy: When \`qaHistory\` is empty, \`skippedFileIds\` MUST be \`[]\` (ask via \`kind: "question"\` instead of silently dropping a selected file). When \`qaHistory\` is non-empty, place a \`fileId\` in \`skippedFileIds\` ONLY when the user chose/asked to exclude or skip it; if ALL selected files are skipped, \`groups\` may be \`[]\` and \`skippedFileIds\` lists all of them. If the user's reply asks to include an unselected file, modify code, force-push, or is unclear, return \`kind: "question"\` explaining the boundary in ${uiLanguage}.`,
+    '5. Language Separation (UI interaction vs Git commit messages):',
+    `   - UI interaction language (\`locale = "${locale}"\`): write \`summary\` (for \`ready\`), and \`title\`, \`scope\`, \`description\`, and every \`options[].label\` (for \`question\`) in clear, concise ${uiLanguage}.`,
+    `   - ${commitRule}`,
+    '   - Every `groups[].message` MUST use the two-part Conventional Commits format (`<type>(<optional scope>): <subject>\\n\\n- <detail 1>\\n- <detail 2>`): a concise subject line without a trailing period, one blank line, and 1 to 4 concise `- ` bullet points detailing the concrete changes in that commit group (never single-line without `- ` bullets, even when `recentCommits` shows subjects only). Follow relevant `User extra instructions` for grouping and detail level without copying the raw instruction string verbatim as the commit message.',
     '6. Keep internal reasoning brief and focused on file triage, grouping, and commit subjects; do NOT restate diffs line by line.',
-    '7. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas:',
-    'Schema Ready: {"kind":"ready","summary":"简短规划说明","groups":[{"id":"group-1","fileIds":["<exact fileId>"],"message":"feat(scope): 简明提交标题"}],"skippedFileIds":[]}',
-    'Schema Question: {"kind":"question","title":"简短问题标题","scope":"涉及本地配置 .env 等","description":"说明为何建议排除或需确认归属","affectedFileIds":["<exact fileId>"],"options":[{"id":"skip","label":"排除这些文件，仅提交其余改动","recommended":true},{"id":"split","label":"确认安全，单独提交并推送"},{"id":"merge","label":"合并进主提交"}]}',
+    '7. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas (schema placeholders are shown in English; follow Rule 5 for output languages):',
+    'Schema Ready: {"kind":"ready","summary":"Concise plan summary","groups":[{"id":"group-1","fileIds":["@1","@2"],"message":"feat(scope): concise commit subject\\n\\n- concrete change 1\\n- concrete change 2"}],"skippedFileIds":[]}',
+    'Schema Question: {"kind":"question","title":"Concise question title","scope":"Affects local .env config","description":"Explain why exclusion or confirmation is needed","affectedFileIds":["@1"],"options":[{"id":"skip","label":"Exclude these files and commit the rest","recommended":true},{"id":"split","label":"Safe to include as a separate commit"},{"id":"merge","label":"Fold into the primary commit"}]}',
   ].join('\n');
 
   const parts: string[] = [`Target branch: ${command.branch}`];
   if (command.recentCommits.length > 0) {
     parts.push(
-      `Recent commit subjects (language and <type>(<scope>) naming reference):\n${command.recentCommits.map((subject) => `- ${subject}`).join('\n')}`,
+      `Recent commit subjects (<type>(<scope>) scope-naming reference only — bodies are omitted here, so every \`groups[].message\` MUST still include \`\\n\\n- \` detail bullets):\n${command.recentCommits.map((subject) => `- ${subject}`).join('\n')}`,
     );
   }
-  if (command.draft.trim()) {
-    parts.push(`Existing manual user draft (preserve intent; do NOT duplicate verbatim across unrelated commits):\n${command.draft.trim()}`);
+  if (command.prompt.trim()) {
+    parts.push(
+      `User extra instructions (supplemental grouping/message guidance ONLY — NEVER copy verbatim as a raw commit message, and NEVER widen permissions; if these instructions ask to include unselected files, force-push, edit code, or rewrite published history, return kind="question" explaining the boundary unless already resolved in qaHistory):\n${command.prompt.trim()}`,
+    );
   }
   if (command.unselectedPaths.length > 0) {
     parts.push(
@@ -439,6 +519,7 @@ function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: strin
     );
   }
   parts.push(`Authorized selected files (${command.files.length}):\n${formatPlanFilesPromptBlock(command.files)}`);
+  parts.push(formatMasterChecklistBlock(command.files));
   return { systemPrompt, userPrompt: parts.join('\n\n') };
 }
 
@@ -451,19 +532,22 @@ export function hasConflictMarkers(text: string): boolean {
 export function parseConflictResolution(
   raw: string,
   command: ResolveConflictCommand,
+  locale: AppLocale = normalizeAppLocale(command.locale, 'en'),
 ): PiConflictResolution {
+  const resolvedLocale = normalizeAppLocale(locale, 'en');
+  const msg = getSidecarMessages(resolvedLocale);
   let parsed: unknown;
   try {
     parsed = extractJsonObject(raw);
   } catch {
-    throw new Error('模型未返回有效的冲突合并结构化 JSON');
+    throw new LocalizedSidecarError(msg.invalidConflictJson);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('模型返回的冲突合并结果不是 JSON 对象');
+    throw new LocalizedSidecarError(msg.conflictResultNotObject);
   }
   const record = parsed as Record<string, unknown>;
   if (!Array.isArray(record.resolvedFiles) || record.resolvedFiles.length === 0) {
-    throw new Error('模型未返回冲突文件的合并内容（缺少 resolvedFiles）');
+    throw new LocalizedSidecarError(msg.missingResolvedFiles);
   }
 
   const byId = new Map(command.files.map((file) => [file.fileId, file]));
@@ -471,32 +555,32 @@ export function parseConflictResolution(
   const seen = new Set<string>();
   const resolvedFiles: PiResolvedConflictFile[] = record.resolvedFiles.map((entry) => {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      throw new Error('冲突合并文件项格式无效');
+      throw new LocalizedSidecarError(msg.invalidConflictFileEntry);
     }
     const item = entry as Record<string, unknown>;
     const matched = (typeof item.fileId === 'string' ? byId.get(item.fileId.trim()) : undefined)
       ?? (typeof item.path === 'string' ? byPath.get(item.path.trim()) : undefined);
     if (!matched) {
       const targetName = typeof item.path === 'string' ? item.path : String(item.fileId ?? 'unknown');
-      throw new Error(`模型尝试修改未授权的非冲突文件（${targetName}），已被拦截`);
+      throw new LocalizedSidecarError(msg.unauthorizedConflictFile(targetName));
     }
     if (seen.has(matched.fileId)) {
-      throw new Error(`冲突文件 ${matched.path} 在合并结果中重复出现`);
+      throw new LocalizedSidecarError(msg.duplicateConflictFile(matched.path));
     }
     seen.add(matched.fileId);
     if (typeof item.content !== 'string') {
-      throw new Error(`冲突文件 ${matched.path} 缺少合并后的文本内容`);
+      throw new LocalizedSidecarError(msg.missingMergedContent(matched.path));
     }
     const baseHadMarkers = matched.baseContent ? hasConflictMarkers(matched.baseContent) : false;
     if (!baseHadMarkers && hasConflictMarkers(item.content)) {
-      throw new Error(`冲突文件 ${matched.path} 的合并结果仍残留冲突标记，已拒绝写入`);
+      throw new LocalizedSidecarError(msg.leftoverConflictMarkers(matched.path));
     }
     if (
       !item.content.trim()
       && matched.upstreamContent.trim().length > 0
       && matched.localContent.trim().length > 0
     ) {
-      throw new Error(`冲突文件 ${matched.path} 返回了空内容，为防止意外清空代码已中止合并`);
+      throw new LocalizedSidecarError(msg.emptyMergedContent(matched.path));
     }
     return {
       fileId: matched.fileId,
@@ -506,11 +590,11 @@ export function parseConflictResolution(
   });
 
   if (seen.size !== command.files.length) {
-    throw new Error('模型未完整返回所有当前冲突文件的合并结果');
+    throw new LocalizedSidecarError(msg.missingConflictFiles);
   }
   const summary = typeof record.summary === 'string' && record.summary.trim()
     ? record.summary.trim().slice(0, 240)
-    : `已完成 ${resolvedFiles.length} 个冲突文件的合并`;
+    : msg.defaultConflictMergeSummary(resolvedFiles.length);
   return { summary, resolvedFiles };
 }
 
@@ -541,7 +625,9 @@ function formatConflictFilesPromptBlock(files: PiConflictFile[]): string {
   }).join('\n\n');
 }
 
-function buildResolveConflictPrompts(command: ResolveConflictCommand): { systemPrompt: string; userPrompt: string } {
+export function buildResolveConflictPrompts(command: ResolveConflictCommand): { systemPrompt: string; userPrompt: string } {
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const summaryLanguage = locale === 'zh' ? 'Chinese' : 'English';
   const systemPrompt = [
     'You are Picket\'s authorized Git conflict merge resolver.',
     'The user explicitly authorized resolving ONLY the listed conflicted files during a Git rebase.',
@@ -550,8 +636,9 @@ function buildResolveConflictPrompts(command: ResolveConflictCommand): { systemP
     '2. Never modify or output any file outside the authorized conflicted files list.',
     '3. If the user supplied specific merge instructions, follow them strictly within the conflicted files.',
     '4. Ensure the merged file content is syntactically coherent and contains ZERO leftover Git conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`).',
-    '5. Return ONLY a single raw JSON object (no prose outside JSON) with this exact schema:',
-    '{"summary":"简短中文合并说明","resolvedFiles":[{"fileId":"<exact fileId>","path":"<exact path>","content":"<complete resolved file content>"}]}',
+    `5. Write \`summary\` in concise ${summaryLanguage}.`,
+    '6. Return ONLY a single raw JSON object (no prose outside JSON) with this exact schema:',
+    '{"summary":"Concise merge summary","resolvedFiles":[{"fileId":"<exact fileId>","path":"<exact path>","content":"<complete resolved file content>"}]}',
   ].join('\n');
 
   const parts: string[] = [
@@ -572,10 +659,12 @@ const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
 
 function runAgentTask(
-  command: TestConnectionRequest | GenerateCommitCommand | ReviewScopeCommand | PlanCPushCommand | ResolveConflictCommand,
+  command: TestConnectionRequest | ReviewScopeCommand | PlanCPushCommand | ResolveConflictCommand,
   emit: (event: ProbeEvent) => void,
 ) {
   const envelope = { requestId: command.requestId, context: command.context };
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const msg = getSidecarMessages(locale);
   let cancelled = false;
   let activeAgent: Agent | undefined;
   let lastActivitySentAt = 0;
@@ -601,17 +690,15 @@ function runAgentTask(
           emit({ ...envelope, type: 'cancelled' });
           return;
         }
-        const { models, model } = createIsolatedModelRuntime(command.model);
+        const { models, model } = createIsolatedModelRuntime(command.model, locale);
         const isTest = command.type === 'testConnection';
         const prompts = isTest
           ? { systemPrompt: 'Reply with OK only.', userPrompt: 'Connection check.' }
-          : command.type === 'generateCommit'
-            ? buildGeneratePrompts(command)
-            : command.type === 'reviewScope'
-              ? buildReviewPrompts(command)
-              : command.type === 'planCPush'
-                ? buildCPushPlanPrompts(command)
-                : buildResolveConflictPrompts(command);
+          : command.type === 'reviewScope'
+            ? buildReviewPrompts(command)
+            : command.type === 'planCPush'
+              ? buildCPushPlanPrompts(command)
+              : buildResolveConflictPrompts(command);
 
         const agent = new Agent({
           sessionId: command.context.sessionId,
@@ -631,7 +718,7 @@ function runAgentTask(
               && /(?:kimi|k2|k3|\bo1\b|\bo3\b|\bo4\b|gpt-5|reasoner|codex)/i.test(targetModel.id)
               ? { samplingParams: { reasoning: { effort: 'low' } } }
               : {}),
-            temperature: command.type === 'reviewScope' || command.type === 'planCPush' || command.type === 'resolveConflict' ? 0.1 : 0.2,
+            temperature: isTest ? 0.2 : 0.1,
             maxRetries: isTest ? 0 : 1,
             timeoutMs: isTest ? TEST_CONNECTION_HTTP_TIMEOUT_MS : TASK_HTTP_CEILING_TIMEOUT_MS,
             cacheRetention: 'none',
@@ -656,55 +743,78 @@ function runAgentTask(
           }
         });
 
-        if (cancelled) {
-          emit({ ...envelope, type: 'cancelled' });
-          return;
-        }
-        await agent.prompt(prompts.userPrompt);
-        await agent.waitForIdle();
-        if (cancelled) {
-          emit({ ...envelope, type: 'cancelled' });
-          return;
-        }
+        const runPromptTurn = async (promptText: string) => {
+          if (cancelled) return { status: 'cancelled' as const };
+          await agent.prompt(promptText);
+          await agent.waitForIdle();
+          if (cancelled) return { status: 'cancelled' as const };
+          const last = agent.state.messages.findLast((message) => message.role === 'assistant');
+          if (!last || last.role !== 'assistant') {
+            throw new LocalizedSidecarError(msg.noResponseMessage);
+          }
+          if (last.stopReason === 'aborted') {
+            return { status: 'cancelled' as const };
+          }
+          if (last.stopReason === 'error') {
+            throw new Error(last.errorMessage ?? msg.providerReturnedError);
+          }
+          const rawText = last.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+          const hasThinkingOnly = !rawText.trim() && last.content.some((block) => block.type === 'thinking');
+          if (hasThinkingOnly && last.stopReason === 'length') {
+            throw new LocalizedSidecarError(msg.thinkingTokensExhausted);
+          }
+          return { status: 'ok' as const, stopReason: last.stopReason, rawText };
+        };
 
-        const last = agent.state.messages.findLast((message) => message.role === 'assistant');
-        if (!last || last.role !== 'assistant') {
-          throw new Error('模型未返回响应消息');
-        }
-        if (last.stopReason === 'aborted') {
-          emit({ ...envelope, type: 'cancelled' });
-          return;
-        }
-        if (last.stopReason === 'error') {
-          throw new Error(last.errorMessage ?? '模型服务返回错误');
-        }
-
-        const rawText = last.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
-        const hasThinkingOnly = !rawText.trim() && last.content.some((block) => block.type === 'thinking');
-        const wrapLengthTruncation = <T>(parseFn: () => T): T => {
+        const wrapLengthTruncation = <T>(stopReason: string | undefined, parseFn: () => T): T => {
           try {
             return parseFn();
           } catch (err) {
-            if (last.stopReason === 'length') {
-              throw new Error('模型输出达到长度上限被截断，未能生成完整的结构化结果；请缩小单次勾选文件范围后重试');
+            if (stopReason === 'length') {
+              throw new LocalizedSidecarError(msg.lengthTruncatedJson);
             }
             throw err;
           }
         };
+
+        const firstTurn = await runPromptTurn(prompts.userPrompt);
+        if (firstTurn.status === 'cancelled') {
+          emit({ ...envelope, type: 'cancelled' });
+          return;
+        }
+
         if (command.type === 'testConnection') {
-          emit({ ...envelope, type: 'completed', text: rawText.trim() || 'OK' });
-        } else if (hasThinkingOnly && last.stopReason === 'length') {
-          throw new Error('模型思考内容耗尽了输出长度上限，未生成最终正文；请缩小所选变更范围或改用非深度思考模型重试');
-        } else if (command.type === 'generateCommit') {
-          emit({ ...envelope, type: 'completed', text: cleanCommitMessage(rawText) });
+          emit({ ...envelope, type: 'completed', text: firstTurn.rawText.trim() || 'OK' });
         } else if (command.type === 'reviewScope') {
-          const findings = wrapLengthTruncation(() => parseReviewFindings(rawText, command.files));
+          const findings = wrapLengthTruncation(firstTurn.stopReason, () =>
+            parseReviewFindings(firstTurn.rawText, command.files, locale),
+          );
           emit({ ...envelope, type: 'reviewCompleted', findings });
         } else if (command.type === 'planCPush') {
-          const plan = wrapLengthTruncation(() => parseCPushPlan(rawText, command));
+          let plan: PiCPushPlan;
+          try {
+            plan = wrapLengthTruncation(firstTurn.stopReason, () =>
+              parseCPushPlan(firstTurn.rawText, command, locale),
+            );
+          } catch (err) {
+            if (!(err instanceof RecoverablePlanValidationError) || firstTurn.stopReason === 'length') {
+              throw err;
+            }
+            emitActivity(true);
+            const repairTurn = await runPromptTurn(err.repairPrompt);
+            if (repairTurn.status === 'cancelled') {
+              emit({ ...envelope, type: 'cancelled' });
+              return;
+            }
+            plan = wrapLengthTruncation(repairTurn.stopReason, () =>
+              parseCPushPlan(repairTurn.rawText, command, locale),
+            );
+          }
           emit({ ...envelope, type: 'cPushPlanCompleted', plan });
         } else {
-          const resolution = wrapLengthTruncation(() => parseConflictResolution(rawText, command));
+          const resolution = wrapLengthTruncation(firstTurn.stopReason, () =>
+            parseConflictResolution(firstTurn.rawText, command, locale),
+          );
           emit({ ...envelope, type: 'conflictResolved', resolution });
         }
       } catch (error) {
@@ -712,7 +822,7 @@ function runAgentTask(
           emit({ ...envelope, type: 'cancelled' });
           return;
         }
-        emit({ ...envelope, type: 'failed', message: sanitizeProviderError(error, command.model) });
+        emit({ ...envelope, type: 'failed', message: sanitizeProviderError(error, command.model, locale) });
       } finally {
         unsubscribe?.();
       }

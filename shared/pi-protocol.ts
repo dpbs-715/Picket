@@ -1,3 +1,4 @@
+import { isAppLocale, type AppLocale, type CommitLanguage } from './language-protocol';
 import { isModelApiFormat, isModelProviderId, type ModelApiFormat, type ModelProviderId } from './model-protocol';
 
 export const PI_PROTOCOL_VERSION = 1;
@@ -114,18 +115,7 @@ export interface TestConnectionRequest {
   requestId: string;
   context: RequestContext;
   model: PiProviderSpec;
-}
-
-export interface GenerateCommitCommand {
-  type: 'generateCommit';
-  requestId: string;
-  context: RequestContext;
-  model: PiProviderSpec;
-  branch: string;
-  recentCommits: string[];
-  draft: string;
-  files: PiDiffFile[];
-  skippedPaths: string[];
+  locale?: AppLocale;
 }
 
 export interface ReviewScopeCommand {
@@ -134,9 +124,10 @@ export interface ReviewScopeCommand {
   context: RequestContext;
   model: PiProviderSpec;
   branch: string;
-  draft: string;
+  prompt: string;
   files: PiDiffFile[];
   skippedPaths: string[];
+  locale?: AppLocale;
 }
 
 export interface PlanCPushCommand {
@@ -146,10 +137,12 @@ export interface PlanCPushCommand {
   model: PiProviderSpec;
   branch: string;
   recentCommits: string[];
-  draft: string;
+  prompt: string;
   files: PiPlanFileEntry[];
   unselectedPaths: string[];
   qaHistory: PiCPushQaTurn[];
+  locale?: AppLocale;
+  commitLanguage?: CommitLanguage;
 }
 
 export interface ResolveConflictCommand {
@@ -162,12 +155,12 @@ export interface ResolveConflictCommand {
   userInstruction: string;
   commits: string[];
   files: PiConflictFile[];
+  locale?: AppLocale;
 }
 
 export type PiTaskRequest =
   | ProbeRequest
   | TestConnectionRequest
-  | GenerateCommitCommand
   | ReviewScopeCommand
   | PlanCPushCommand
   | ResolveConflictCommand;
@@ -377,31 +370,21 @@ export function decodeCommand(line: string): PiCommand {
     };
   }
   if (command.type === 'testConnection') {
+    if (!(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
+      throw new Error('Invalid locale');
+    }
     return {
       type: 'testConnection',
       requestId: command.requestId,
       context: decodeRequestContext(command.context),
       model: decodeProviderSpec(command.model),
-    };
-  }
-  if (command.type === 'generateCommit') {
-    if (typeof command.branch !== 'string' || typeof command.draft !== 'string') {
-      throw new Error('Invalid generateCommit fields');
-    }
-    return {
-      type: 'generateCommit',
-      requestId: command.requestId,
-      context: decodeRequestContext(command.context),
-      model: decodeProviderSpec(command.model),
-      branch: command.branch,
-      recentCommits: decodeStringList(command.recentCommits, 'recentCommits'),
-      draft: command.draft,
-      files: decodeDiffFiles(command.files),
-      skippedPaths: decodeStringList(command.skippedPaths, 'skippedPaths'),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }
   if (command.type === 'reviewScope') {
-    if (typeof command.branch !== 'string' || typeof command.draft !== 'string') {
+    if (typeof command.branch !== 'string'
+      || typeof command.prompt !== 'string'
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
       throw new Error('Invalid reviewScope fields');
     }
     return {
@@ -410,13 +393,17 @@ export function decodeCommand(line: string): PiCommand {
       context: decodeRequestContext(command.context),
       model: decodeProviderSpec(command.model),
       branch: command.branch,
-      draft: command.draft,
+      prompt: command.prompt,
       files: decodeDiffFiles(command.files),
       skippedPaths: decodeStringList(command.skippedPaths, 'skippedPaths'),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }
   if (command.type === 'planCPush') {
-    if (typeof command.branch !== 'string' || typeof command.draft !== 'string') {
+    if (typeof command.branch !== 'string'
+      || typeof command.prompt !== 'string'
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
+      || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))) {
       throw new Error('Invalid planCPush fields');
     }
     return {
@@ -426,16 +413,19 @@ export function decodeCommand(line: string): PiCommand {
       model: decodeProviderSpec(command.model),
       branch: command.branch,
       recentCommits: decodeStringList(command.recentCommits, 'recentCommits'),
-      draft: command.draft,
+      prompt: command.prompt,
       files: decodePlanFiles(command.files),
       unselectedPaths: decodeStringList(command.unselectedPaths, 'unselectedPaths'),
       qaHistory: decodeQaHistory(command.qaHistory),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
+      ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
     };
   }
   if (command.type === 'resolveConflict') {
     if (typeof command.branch !== 'string'
       || typeof command.upstream !== 'string'
-      || typeof command.userInstruction !== 'string') {
+      || typeof command.userInstruction !== 'string'
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
       throw new Error('Invalid resolveConflict fields');
     }
     return {
@@ -448,6 +438,7 @@ export function decodeCommand(line: string): PiCommand {
       userInstruction: command.userInstruction,
       commits: decodeStringList(command.commits, 'commits'),
       files: decodeConflictFiles(command.files),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }
   throw new Error('Unknown command');

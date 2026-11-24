@@ -12,19 +12,19 @@
   },
   "apiFormats": {
     "openai-completions": {
-      "label": "OpenAI Chat Completions（/chat/completions）",
+      "label": "OpenAI Chat Completions (/chat/completions)",
       "short": "Chat Completions",
       "defaultContextWindow": 128000,
       "defaultMaxOutputTokens": 8192
     },
     "openai-responses": {
-      "label": "OpenAI Responses（/responses）",
+      "label": "OpenAI Responses (/responses)",
       "short": "Responses",
       "defaultContextWindow": 200000,
       "defaultMaxOutputTokens": 32768
     },
     "anthropic-messages": {
-      "label": "Anthropic Messages（/v1/messages）",
+      "label": "Anthropic Messages (/v1/messages)",
       "short": "Anthropic",
       "defaultContextWindow": 200000,
       "defaultMaxOutputTokens": 16384
@@ -68,7 +68,7 @@
       "defaultMaxOutputTokens": 8192
     },
     "ollama": {
-      "label": "Ollama（本地）",
+      "label": "Ollama (Local)",
       "defaultApiFormat": "openai-completions",
       "needsKey": false,
       "needsUrl": true,
@@ -80,14 +80,14 @@
       "defaultMaxOutputTokens": 8192
     },
     "custom": {
-      "label": "自定义兼容",
+      "label": "Custom Compatible",
       "defaultApiFormat": "openai-completions",
       "needsKey": true,
       "needsUrl": true,
       "defaultBaseUrl": "",
       "placeholderUrl": "https://api.example.com/v1",
       "exampleModelId": "custom-code-model",
-      "exampleName": "自定义模型",
+      "exampleName": "Custom Model",
       "defaultContextWindow": 128000,
       "defaultMaxOutputTokens": 16384
     }

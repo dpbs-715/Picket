@@ -1,4 +1,5 @@
 import type { GitReadTarget } from './git-read-protocol';
+import type { AppLocale } from './language-protocol';
 
 export const IDE_PROTOCOL_VERSION = 1;
 
@@ -11,6 +12,7 @@ export interface GitOpenFileRequest {
   fileId: string;
   editor: GitEditorId;
   line?: number;
+  locale?: AppLocale;
 }
 
 export interface GitOpenFileReply {
@@ -37,7 +39,7 @@ export function isGitEditorId(value: unknown): value is GitEditorId {
 
 export function decodeGitOpenFileReply(value: unknown): GitOpenFileReply {
   const fail = (): never => {
-    throw new Error('桌面编辑器联动协议不匹配，请重启应用后重试。');
+    throw new Error('Desktop editor protocol mismatch. Please restart the app and try again.');
   };
   const target = record(value) ? value.target : undefined;
   if (!record(value) || value.protocolVersion !== IDE_PROTOCOL_VERSION || value.kind !== 'openFile'

@@ -3,6 +3,7 @@ import * as openaiCompletions from '@earendil-works/pi-ai/api/openai-completions
 import * as openaiResponses from '@earendil-works/pi-ai/api/openai-responses';
 import { createModels, createProvider, type MutableModels } from '@earendil-works/pi-ai/models';
 import type { Api, Model, ProviderStreams } from '@earendil-works/pi-ai';
+import type { AppLocale } from '../../shared/language-protocol';
 import {
   resolveDefaultApiFormat,
   resolveDefaultBaseUrl,
@@ -10,6 +11,7 @@ import {
 } from '../../shared/model-defaults';
 import type { ModelApiFormat } from '../../shared/model-protocol';
 import type { PiProviderSpec } from '../../shared/pi-protocol';
+import { LocalizedSidecarError, getSidecarMessages } from './i18n';
 
 interface ResolvedRuntimeModel {
   models: MutableModels;
@@ -30,25 +32,26 @@ function resolveApiAndStreams(
   return { format, api: 'openai-completions', streams: openaiCompletions as unknown as ProviderStreams };
 }
 
-export function createIsolatedModelRuntime(spec: PiProviderSpec): ResolvedRuntimeModel {
+export function createIsolatedModelRuntime(spec: PiProviderSpec, locale: AppLocale = 'en'): ResolvedRuntimeModel {
+  const msg = getSidecarMessages(locale);
   const baseUrl = (spec.baseUrl || resolveDefaultBaseUrl(spec.provider)).trim();
   if (!baseUrl) {
-    throw new Error('缺少模型服务接口地址（Base URL）');
+    throw new LocalizedSidecarError(msg.missingBaseUrl);
   }
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(baseUrl);
   } catch {
-    throw new Error('模型服务接口地址不是有效的 HTTP / HTTPS URL');
+    throw new LocalizedSidecarError(msg.invalidBaseUrl);
   }
   if ((parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
-    throw new Error('模型服务接口地址仅支持不含账号密码的 HTTP / HTTPS 协议');
+    throw new LocalizedSidecarError(msg.unsupportedBaseUrlProtocol);
   }
 
   const requiresKey = spec.provider !== 'ollama';
   const trimmedKey = spec.apiKey.trim();
   if (requiresKey && !trimmedKey) {
-    throw new Error('缺少模型 API Key');
+    throw new LocalizedSidecarError(msg.missingApiKey);
   }
   // Keyless Ollama local endpoints run through the OpenAI SDK client, which
   // expects a non-empty placeholder string even when the local server ignores auth.
@@ -115,8 +118,9 @@ export function createIsolatedModelRuntime(spec: PiProviderSpec): ResolvedRuntim
   return { models, model };
 }
 
-export function sanitizeProviderError(raw: unknown, spec: PiProviderSpec): string {
-  let text = raw instanceof Error ? raw.message : typeof raw === 'string' ? raw : '未知模型错误';
+export function sanitizeProviderError(error: unknown, spec: PiProviderSpec, locale: AppLocale = 'en'): string {
+  const msg = getSidecarMessages(locale);
+  let text = error instanceof Error ? error.message : typeof error === 'string' ? error : msg.unknownModelError;
   const candidates = [spec.apiKey, spec.apiKey.trim()].filter((item) => item.length > 0);
   for (const secret of candidates) {
     text = text.split(secret).join('[REDACTED]');
@@ -134,21 +138,40 @@ export function sanitizeProviderError(raw: unknown, spec: PiProviderSpec): strin
     .trim();
 
   const compact = text.length > 220 ? `${text.slice(0, 220)}…` : text;
+  if (error instanceof LocalizedSidecarError) {
+    return msg.requestFailed(compact);
+  }
+
   const lower = compact.toLowerCase();
   if (lower.includes('401') || lower.includes('403') || lower.includes('invalid_api_key') || lower.includes('authentication') || lower.includes('unauthorized')) {
-    return `鉴权失败，请检查 API Key 或服务权限（${compact}）`;
+    return msg.authFailed(compact);
   }
   if (lower.includes('404') || lower.includes('model_not_found') || lower.includes('not found')) {
-    return `未找到对应接口或模型，请检查模型 ID 与接口地址（${compact}）`;
+    return msg.endpointOrModelNotFound(compact);
   }
-  if (lower.includes('429') || lower.includes('rate_limit') || lower.includes('insufficient_quota') || lower.includes('quota')) {
-    return `请求受限或账户额度不足（${compact}）`;
+  if (
+    lower.includes('402')
+    || lower.includes('429')
+    || lower.includes('payment required')
+    || lower.includes('insufficient balance')
+    || lower.includes('credit balance')
+    || lower.includes('billing')
+    || lower.includes('rate_limit')
+    || lower.includes('rate limit')
+    || lower.includes('too many requests')
+    || lower.includes('insufficient_quota')
+    || lower.includes('quota')
+  ) {
+    return msg.rateLimitedOrQuota(compact);
   }
-  if (lower.includes('econnrefused') || lower.includes('enotfound') || lower.includes('ehostunreach') || lower.includes('fetch failed') || lower.includes('connection error')) {
-    return `无法连接到模型服务，请确认网络或本地服务已启动（${compact}）`;
+  if (/(?<![:/\d])\b(?:500|502|503|504)\b/.test(lower) || lower.includes('internal server error') || lower.includes('bad gateway') || lower.includes('service unavailable') || lower.includes('server_error') || lower.includes('overloaded')) {
+    return msg.providerServiceError(compact);
+  }
+  if (lower.includes('econnrefused') || lower.includes('enotfound') || lower.includes('ehostunreach') || lower.includes('econnreset') || lower.includes('fetch failed') || lower.includes('connection error')) {
+    return msg.connectionFailed(compact);
   }
   if (lower.includes('timed out') || lower.includes('timeout') || lower.includes('etimedout')) {
-    return `连接模型服务超时，请稍后重试（${compact}）`;
+    return msg.requestTimedOut(compact);
   }
-  return `模型请求未完成：${compact}`;
+  return msg.requestFailed(compact);
 }

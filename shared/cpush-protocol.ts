@@ -1,5 +1,6 @@
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
 import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
+import type { AppLocale, CommitLanguage } from './language-protocol';
 import type { ModelFileSelection } from './model-protocol';
 
 export const CPUSH_PROTOCOL_VERSION = 1;
@@ -74,31 +75,55 @@ export interface CPushSessionSnapshot {
   autoCollapse?: boolean;
 }
 
+export interface CPushPlanGroup {
+  id: string;
+  fileIds: string[];
+  message: string;
+}
+
+export interface CPushConfirmedPlan {
+  groups: CPushPlanGroup[];
+  skippedFileIds: string[];
+}
+
+export interface CPushPreparedPlan {
+  summary: string;
+  groups: CPushPlanGroup[];
+  skippedFileIds: string[];
+}
+
 export interface StartCPushRequest {
   requestId: string;
   target: GitReadTarget;
   modelId: string;
   selections: ModelFileSelection[];
-  draft: string;
+  prompt: string;
+  confirmedPlan?: CPushConfirmedPlan;
+  locale?: AppLocale;
+  commitLanguage?: CommitLanguage;
 }
 
-export interface CommitAndPushRequest {
+export interface PlanCPushRequest {
   requestId: string;
   target: GitReadTarget;
+  modelId: string;
   selections: ModelFileSelection[];
-  message: string;
-  modelId?: string;
+  prompt: string;
+  locale?: AppLocale;
+  commitLanguage?: CommitLanguage;
 }
 
 export interface PullRebaseRequest {
   requestId: string;
   target: GitReadTarget;
   modelId?: string;
+  locale?: AppLocale;
 }
 
 export interface ReconcileCPushRequest {
   requestId: string;
   target: GitReadTarget;
+  locale?: AppLocale;
 }
 
 export interface RespondCPushRequest {
@@ -109,6 +134,7 @@ export interface RespondCPushRequest {
   optionId?: string;
   text?: string;
   modelId?: string;
+  locale?: AppLocale;
 }
 
 export interface CPushProgressEvent {
@@ -122,6 +148,7 @@ export interface CPushCommandReply {
   kind: 'cPush';
   requestId: string;
   session: CPushSessionSnapshot;
+  preparedPlan?: CPushPreparedPlan;
   repositorySnapshot?: GitRepositorySnapshot;
 }
 
@@ -161,16 +188,16 @@ function decodeUiMessage(value: unknown): CPushUiMessage {
     || typeof value.title !== 'string'
     || typeof value.description !== 'string'
     || !(value.scope === undefined || value.scope === null || typeof value.scope === 'string')) {
-    throw new Error('桌面层返回了无效的 C-Push 会话消息结构。');
+    throw new Error('Desktop returned an invalid C-Push session message structure.');
   }
   const files = value.files === undefined || value.files === null ? undefined : (() => {
-    if (!Array.isArray(value.files)) throw new Error('无效的 C-Push 文件引用列表。');
+    if (!Array.isArray(value.files)) throw new Error('Invalid C-Push file reference list.');
     return value.files.map((file) => {
       if (!isRecord(file)
         || typeof file.id !== 'string' || !file.id
         || typeof file.label !== 'string'
         || !(file.badge === undefined || file.badge === null || typeof file.badge === 'string')) {
-        throw new Error('无效的 C-Push 文件引用项。');
+        throw new Error('Invalid C-Push file reference item.');
       }
       return {
         id: file.id,
@@ -180,22 +207,22 @@ function decodeUiMessage(value: unknown): CPushUiMessage {
     });
   })();
   const commits = value.commits === undefined || value.commits === null ? undefined : (() => {
-    if (!Array.isArray(value.commits)) throw new Error('无效的 C-Push 提交摘要列表。');
+    if (!Array.isArray(value.commits)) throw new Error('Invalid C-Push commit summary list.');
     return value.commits.map((item) => {
       if (!isRecord(item) || typeof item.hash !== 'string' || typeof item.title !== 'string') {
-        throw new Error('无效的 C-Push 提交摘要项。');
+        throw new Error('Invalid C-Push commit summary item.');
       }
       return { hash: item.hash, title: item.title };
     });
   })();
   const options = value.options === undefined || value.options === null ? undefined : (() => {
-    if (!Array.isArray(value.options)) throw new Error('无效的 C-Push 选项列表。');
+    if (!Array.isArray(value.options)) throw new Error('Invalid C-Push option list.');
     return value.options.map((opt) => {
       if (!isRecord(opt)
         || typeof opt.id !== 'string' || !opt.id
         || typeof opt.label !== 'string' || !opt.label
         || !(opt.recommended === undefined || typeof opt.recommended === 'boolean')) {
-        throw new Error('无效的 C-Push 选项项。');
+        throw new Error('Invalid C-Push option item.');
       }
       return {
         id: opt.id,
@@ -209,7 +236,7 @@ function decodeUiMessage(value: unknown): CPushUiMessage {
       || typeof value.progress.completed !== 'number'
       || typeof value.progress.total !== 'number'
       || typeof value.progress.label !== 'string') {
-      throw new Error('无效的 C-Push 进度字段。');
+      throw new Error('Invalid C-Push progress field.');
     }
     return {
       completed: value.progress.completed,
@@ -248,14 +275,14 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
     || !Array.isArray(value.timeline)
     || !Array.isArray(value.qaLog)
     || !Array.isArray(value.commits)) {
-    throw new Error('桌面层返回了不合法或包含未预期字段的 C-Push 会话快照。');
+    throw new Error('Desktop returned an invalid or unexpected C-Push session snapshot.');
   }
   const message = value.message === null || value.message === undefined ? null : decodeUiMessage(value.message);
   const timeline: CPushTimelineItem[] = value.timeline.map((entry) => {
     if (!isRecord(entry)
       || (entry.state !== 'done' && entry.state !== 'active' && entry.state !== 'failed')
       || typeof entry.label !== 'string') {
-      throw new Error('无效的 C-Push 时间线条目。');
+      throw new Error('Invalid C-Push timeline entry.');
     }
     return { state: entry.state, label: entry.label };
   });
@@ -264,7 +291,7 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
       || typeof entry.questionId !== 'string'
       || typeof entry.question !== 'string'
       || typeof entry.answer !== 'string') {
-      throw new Error('无效的 C-Push 问答记录条目。');
+      throw new Error('Invalid C-Push Q&A log entry.');
     }
     return { questionId: entry.questionId, question: entry.question, answer: entry.answer };
   });
@@ -275,7 +302,7 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
       || typeof entry.title !== 'string'
       || typeof entry.branch !== 'string'
       || !isStringArray(entry.fileIds)) {
-      throw new Error('无效的 C-Push 已完成提交记录。');
+      throw new Error('Invalid C-Push landed commit entry.');
     }
     return {
       oid: entry.oid,
@@ -312,13 +339,13 @@ function decodeOptionalSnapshot(raw: unknown): GitRepositorySnapshot | undefined
     requestId: 'cpush-snapshot',
     snapshot: raw,
   });
-  if (!decoded.snapshot) throw new Error('无效的 C-Push 仓库快照回执。');
+  if (!decoded.snapshot) throw new Error('Invalid C-Push repository snapshot reply.');
   return decoded.snapshot;
 }
 
 export function decodeCPushProgressEvent(value: unknown): CPushProgressEvent {
   if (!isRecord(value) || value.protocolVersion !== CPUSH_PROTOCOL_VERSION) {
-    throw new Error('C-Push 进度事件协议版本不匹配。');
+    throw new Error('C-Push progress event protocol version mismatch.');
   }
   const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
   return {
@@ -328,19 +355,52 @@ export function decodeCPushProgressEvent(value: unknown): CPushProgressEvent {
   };
 }
 
+function decodePreparedPlan(raw: unknown): CPushPreparedPlan | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isRecord(raw)
+    || typeof raw.summary !== 'string'
+    || !Array.isArray(raw.groups)
+    || !isStringArray(raw.skippedFileIds)) {
+    throw new Error('Invalid C-Push prepared plan reply.');
+  }
+  const groups: CPushPlanGroup[] = raw.groups.map((item) => {
+    if (!isRecord(item)
+      || typeof item.id !== 'string' || !item.id.trim()
+      || !isStringArray(item.fileIds) || item.fileIds.length === 0
+      || typeof item.message !== 'string' || !item.message.trim()) {
+      throw new Error('Invalid C-Push prepared plan group entry.');
+    }
+    return {
+      id: item.id,
+      fileIds: item.fileIds,
+      message: item.message,
+    };
+  });
+  if (groups.length === 0 && raw.skippedFileIds.length === 0) {
+    throw new Error('C-Push prepared plan cannot be completely empty.');
+  }
+  return {
+    summary: raw.summary,
+    groups,
+    skippedFileIds: raw.skippedFileIds,
+  };
+}
+
 export function decodeCPushCommandReply(value: unknown): CPushCommandReply {
   if (!isRecord(value)
     || value.protocolVersion !== CPUSH_PROTOCOL_VERSION
     || value.kind !== 'cPush'
     || typeof value.requestId !== 'string' || !value.requestId) {
-    throw new Error('C-Push 命令回执协议不匹配。');
+    throw new Error('C-Push command reply protocol mismatch.');
   }
+  const preparedPlan = decodePreparedPlan(value.preparedPlan);
   const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
   return {
     protocolVersion: CPUSH_PROTOCOL_VERSION,
     kind: 'cPush',
     requestId: value.requestId,
     session: decodeCPushSessionSnapshot(value.session),
+    ...(preparedPlan ? { preparedPlan } : {}),
     ...(repositorySnapshot ? { repositorySnapshot } : {}),
   };
 }

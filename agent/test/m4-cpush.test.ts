@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanCPushCommand } from '../../shared/pi-protocol';
-import { parseCPushPlan } from '../src/tasks';
+import { getSidecarMessages } from '../src/i18n';
+import { buildCPushPlanPrompts, buildReviewPrompts, parseCPushPlan } from '../src/tasks';
 
-function basePlanCommand(qaCount = 0): PlanCPushCommand {
+function basePlanCommand(qaCount = 0, overrides: Partial<PlanCPushCommand> = {}): PlanCPushCommand {
   return {
     type: 'planCPush',
     requestId: 'plan-1',
     context: { repositoryId: 'repo-1', worktreeId: 'wt-1', sessionId: 'sess-1', scopeVersion: 'v1' },
     model: { provider: 'anthropic', modelId: 'claude-sonnet-4-20250514', baseUrl: '', apiKey: 'sk-placeholder' },
     branch: 'feat/pay',
-    recentCommits: ['feat(order): 初始化订单模块'],
-    draft: '',
+    recentCommits: ['feat(order): initialize order module'],
+    prompt: '',
     files: [
       { fileId: 'f-order', path: 'src/Order.ts', status: 'M', rangeKind: 'partial', added: 10, removed: 2, patch: '+lock()' },
       { fileId: 'f-retry', path: 'src/retry.ts', status: 'A', rangeKind: 'unstaged', added: 25, removed: 0, patch: '+retry()' },
@@ -18,29 +19,30 @@ function basePlanCommand(qaCount = 0): PlanCPushCommand {
     ],
     unselectedPaths: ['pnpm-lock.yaml'],
     qaHistory: qaCount > 0
-      ? [{ questionId: 'q1', question: '发布说明要一起提交吗？', answer: '暂不提交', optionId: 'skip' }]
+      ? [{ questionId: 'q1', question: 'Include release notes in this push?', answer: 'Skip for now', optionId: 'skip' }]
       : [],
+    ...overrides,
   };
 }
 
 describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
   it('parses disjoint split groups and preserves two-part commit messages', () => {
     const raw = [
-      '<think>检查文件关联性</think>',
+      '<think>Checking logical file relationships</think>',
       '```json',
       JSON.stringify({
         kind: 'ready',
-        summary: '拆分为业务功能与文档两笔提交',
+        summary: 'Split into feature implementation and release notes commits',
         groups: [
           {
             id: 'g1',
             fileIds: ['f-order', 'f-retry'],
-            message: 'feat(order): 增加幂等锁与重试工具\n\n- 沿用 Order.ts 已暂存范围更新抢锁逻辑\n- 新增退避重试工具',
+            message: 'feat(order): add idempotency lock and retry helper\n\n- update staged lock acquisition in Order.ts\n- add exponential backoff helper',
           },
           {
             id: 'g2',
             fileIds: ['f-doc'],
-            message: 'docs: 更新发布说明\n\n- 补充幂等锁上线说明',
+            message: 'docs: update release notes\n\n- document idempotency lock rollout',
           },
         ],
         skippedFileIds: [],
@@ -50,17 +52,17 @@ describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
     const plan = parseCPushPlan(raw, basePlanCommand(0));
     expect(plan).toEqual({
       kind: 'ready',
-      summary: '拆分为业务功能与文档两笔提交',
+      summary: 'Split into feature implementation and release notes commits',
       groups: [
         {
           id: 'g1',
           fileIds: ['f-order', 'f-retry'],
-          message: 'feat(order): 增加幂等锁与重试工具\n\n- 沿用 Order.ts 已暂存范围更新抢锁逻辑\n- 新增退避重试工具',
+          message: 'feat(order): add idempotency lock and retry helper\n\n- update staged lock acquisition in Order.ts\n- add exponential backoff helper',
         },
         {
           id: 'g2',
           fileIds: ['f-doc'],
-          message: 'docs: 更新发布说明\n\n- 补充幂等锁上线说明',
+          message: 'docs: update release notes\n\n- document idempotency lock rollout',
         },
       ],
       skippedFileIds: [],
@@ -70,79 +72,170 @@ describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
   it('parses disambiguation questions and filters out hallucinated affected files', () => {
     const raw = JSON.stringify({
       kind: 'question',
-      title: '发布说明要一起提交吗？',
-      scope: '影响提交 2/2「docs」',
-      description: '请确认 RELEASE_NOTES.md 的归属方式：',
+      title: 'Include release notes in this push?',
+      scope: 'Affects commit 2/2 (docs)',
+      description: 'Confirm how RELEASE_NOTES.md should be grouped:',
       affectedFileIds: ['f-doc', 'pnpm-lock.yaml'],
       options: [
-        { id: 'merge', label: '合并进提交 1' },
-        { id: 'split', label: '单独提交并一起推送', recommended: true },
-        { id: 'skip', label: '暂不提交' },
+        { id: 'merge', label: 'Fold into commit 1' },
+        { id: 'split', label: 'Commit separately and push together', recommended: true },
+        { id: 'skip', label: 'Skip for now' },
       ],
     });
     const plan = parseCPushPlan(raw, basePlanCommand(0));
     expect(plan).toMatchObject({
       kind: 'question',
-      title: '发布说明要一起提交吗？',
+      title: 'Include release notes in this push?',
       affectedFileIds: ['f-doc'],
     });
   });
 
-  it('rejects unauthorized files, duplicate assignments, missing selected files, and unconfirmed skips', () => {
-    // Unauthorized file `pnpm-lock.yaml`:
-    expect(() => parseCPushPlan(JSON.stringify({
+  it('rejects unauthorized files, unconfirmed skips, and missing selected files with en and zh localization', () => {
+    // Unauthorized file `pnpm-lock.yaml` (default en + zh):
+    const unauthorizedJson = JSON.stringify({
       kind: 'ready',
       summary: 'bad',
       groups: [{ id: 'g1', fileIds: ['f-order', 'f-retry', 'f-doc', 'pnpm-lock.yaml'], message: 'feat: bad\n\n- x' }],
       skippedFileIds: [],
-    }), basePlanCommand(0))).toThrow('未授权文件');
+    });
+    expect(() => parseCPushPlan(unauthorizedJson, basePlanCommand(0))).toThrow('unauthorized file (pnpm-lock.yaml)');
+    expect(() => parseCPushPlan(unauthorizedJson, basePlanCommand(0, { locale: 'zh' }))).toThrow(
+      getSidecarMessages('zh').unauthorizedCPushFile('pnpm-lock.yaml'),
+    );
 
-    // Unconfirmed skip when qaHistory is empty:
-    expect(() => parseCPushPlan(JSON.stringify({
+    // Unconfirmed skip when qaHistory is empty (default en + zh):
+    const unconfirmedSkipJson = JSON.stringify({
       kind: 'ready',
       summary: 'unasked skip',
       groups: [{ id: 'g1', fileIds: ['f-order', 'f-retry'], message: 'feat: ok\n\n- x' }],
       skippedFileIds: ['f-doc'],
-    }), basePlanCommand(0))).toThrow('不能擅自跳过');
+    });
+    expect(() => parseCPushPlan(unconfirmedSkipJson, basePlanCommand(0))).toThrow(getSidecarMessages('en').unconfirmedCPushSkip);
+    expect(() => parseCPushPlan(unconfirmedSkipJson, basePlanCommand(0, { locale: 'zh' }))).toThrow(
+      getSidecarMessages('zh').unconfirmedCPushSkip,
+    );
 
-    // Confirmed skip when qaHistory is non-empty succeeds:
+    // Confirmed skip when qaHistory is non-empty succeeds and uses localized fallback summary when omitted:
     expect(parseCPushPlan(JSON.stringify({
       kind: 'ready',
-      summary: 'confirmed skip',
+      summary: '',
       groups: [{ id: 'g1', fileIds: ['f-order', 'f-retry'], message: 'feat: ok\n\n- x' }],
       skippedFileIds: ['f-doc'],
     }), basePlanCommand(1))).toMatchObject({
       kind: 'ready',
+      summary: 'Prepared a single-commit plan',
       skippedFileIds: ['f-doc'],
     });
 
-    // Missing selected file `f-doc`:
-    expect(() => parseCPushPlan(JSON.stringify({
+    // Missing selected file `f-doc` (default en + zh):
+    const missingSelectedJson = JSON.stringify({
       kind: 'ready',
       summary: 'incomplete',
       groups: [{ id: 'g1', fileIds: ['f-order', 'f-retry'], message: 'feat: partial\n\n- x' }],
       skippedFileIds: [],
-    }), basePlanCommand(0))).toThrow('未被纳入');
+    });
+    expect(() => parseCPushPlan(missingSelectedJson, basePlanCommand(0))).toThrow(
+      getSidecarMessages('en').missingSelectedCPushFile('RELEASE_NOTES.md'),
+    );
+    expect(() => parseCPushPlan(missingSelectedJson, basePlanCommand(0, { locale: 'zh' }))).toThrow(
+      getSidecarMessages('zh').missingSelectedCPushFile('RELEASE_NOTES.md'),
+    );
   });
 
   it('repairs unescaped literal newlines inside JSON string values returned by models', () => {
     const rawWithLiteralNewlines = [
-      '{"kind":"ready","summary":"修复说明",',
-      '"groups":[{"id":"g1","fileIds":["f-order","f-retry","f-doc"],"message":"feat(order): 增加幂等锁',
+      '{"kind":"ready","summary":"Repaired multiline commit message",',
+      '"groups":[{"id":"g1","fileIds":["f-order","f-retry","f-doc"],"message":"feat(order): add idempotency lock',
       '',
-      '- 修复并发抢锁逻辑',
-      '- 补充发布说明"}],"skippedFileIds":[]}',
+      '- fix concurrent lock acquisition',
+      '- update release notes"}],"skippedFileIds":[]}',
     ].join('\n');
     const plan = parseCPushPlan(rawWithLiteralNewlines, basePlanCommand(0));
     expect(plan).toEqual({
       kind: 'ready',
-      summary: '修复说明',
+      summary: 'Repaired multiline commit message',
       groups: [{
         id: 'g1',
         fileIds: ['f-order', 'f-retry', 'f-doc'],
-        message: 'feat(order): 增加幂等锁\n\n- 修复并发抢锁逻辑\n- 补充发布说明',
+        message: 'feat(order): add idempotency lock\n\n- fix concurrent lock acquisition\n- update release notes',
       }],
       skippedFileIds: [],
     });
+  });
+
+  it('separates UI interaction locale from Git commitLanguage, enforces permission boundaries on user extra instructions, and forwards review instructions', () => {
+    const enUiZhCommit = buildCPushPlanPrompts(basePlanCommand(0, {
+      locale: 'en',
+      commitLanguage: 'zh',
+      prompt: 'split docs separately and include unselected pnpm-lock.yaml',
+    }));
+    expect(enUiZhCommit.systemPrompt).toContain('UI interaction language (`locale = "en"`): write `summary`');
+    expect(enUiZhCommit.systemPrompt).toContain('in clear, concise English.');
+    expect(enUiZhCommit.systemPrompt).toContain('`commitLanguage = "zh"`, `<commit_skill_spec>` flag `-ch`');
+    expect(enUiZhCommit.systemPrompt).toContain('NEVER an authorization override');
+    expect(enUiZhCommit.systemPrompt).toContain('return `kind: "question"` explaining the permission boundary');
+    expect(enUiZhCommit.userPrompt).toContain('User extra instructions (supplemental grouping/message guidance ONLY');
+    expect(enUiZhCommit.userPrompt).toContain('split docs separately and include unselected pnpm-lock.yaml');
+
+    const zhUiEnCommit = buildCPushPlanPrompts(basePlanCommand(0, { locale: 'zh', commitLanguage: 'en' }));
+    expect(zhUiEnCommit.systemPrompt).toContain('UI interaction language (`locale = "zh"`): write `summary`');
+    expect(zhUiEnCommit.systemPrompt).toContain('in clear, concise Chinese.');
+    expect(zhUiEnCommit.systemPrompt).toContain('`commitLanguage = "en"`, `<commit_skill_spec>` flag `-en`');
+    expect(zhUiEnCommit.systemPrompt).toContain('1 to 4 concise `- ` bullet points');
+    expect(zhUiEnCommit.systemPrompt).not.toMatch(/keep single-line by default|Use a body only when/i);
+
+    const revPrompt = buildReviewPrompts({
+      type: 'reviewScope',
+      requestId: 'rev-1',
+      context: { repositoryId: 'repo-1', worktreeId: 'wt-1', sessionId: 'sess-1', scopeVersion: 'v1' },
+      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-20250514', baseUrl: '', apiKey: 'sk-placeholder' },
+      branch: 'main',
+      prompt: 'Check concurrency lock ordering in Order.ts',
+      files: [{ fileId: 'f1', path: 'src/Order.ts', status: 'M', rangeKind: 'unstaged', added: 5, removed: 1, patch: '+lock()' }],
+      skippedPaths: [],
+    });
+    expect(revPrompt.systemPrompt).toContain('strictly within the supplied patches without inventing findings on unselected files');
+    expect(revPrompt.userPrompt).toContain('User review instructions / context:\nCheck concurrency lock ordering in Order.ts');
+  });
+
+  it('emits a bottom Master Checklist with @1..@N aliases, highlights status=D deleted files, and normalizes @index aliases to canonical fileIds', () => {
+    const cmd = basePlanCommand(0, {
+      files: [
+        { fileId: 'file-a1', path: 'src/Workbench.tsx', status: 'M', rangeKind: 'unstaged', added: 12, removed: 4, patch: '+render()' },
+        { fileId: 'file-del', path: 'shared/git-commit-protocol.ts', status: 'D', rangeKind: 'unstaged', added: 0, removed: 46, patch: '-export interface GitCommitRequest {}' },
+        { fileId: 'file-ren', path: 'src/newName.ts', previousPath: 'src/oldName.ts', status: 'R', rangeKind: 'staged', added: 2, removed: 2, patch: '+renamed' },
+      ],
+    });
+    const prompts = buildCPushPlanPrompts(cmd);
+    expect(prompts.systemPrompt).toContain('Desktop Scope Override');
+    expect(prompts.userPrompt).toContain('- alias: @2\n- status: D (deleted file — MUST be assigned to a commit group, +0 -46)');
+    expect(prompts.userPrompt).toContain('Master Checklist of ALL 3 Authorized Selected Files');
+    expect(prompts.userPrompt).toContain('- @2 | file-del | D (deleted) | shared/git-commit-protocol.ts');
+
+    const parsed = parseCPushPlan(JSON.stringify({
+      kind: 'ready',
+      summary: 'Split refactor and rename',
+      groups: [
+        { id: 'g1', fileIds: ['@1', '@2'], message: 'refactor(cpush): remove legacy manual commit protocol\n\n- drop shared/git-commit-protocol.ts\n- update workbench caller' },
+        { id: 'g2', fileIds: ['src/oldName.ts'], message: 'refactor: rename helper module\n\n- move oldName.ts to newName.ts' },
+      ],
+      skippedFileIds: [],
+    }), cmd);
+    expect(parsed).toMatchObject({
+      kind: 'ready',
+      groups: [
+        { id: 'g1', fileIds: ['file-a1', 'file-del'] },
+        { id: 'g2', fileIds: ['file-ren'] },
+      ],
+      skippedFileIds: [],
+    });
+
+    // Out-of-range @4 alias is still rejected as unauthorized:
+    expect(() => parseCPushPlan(JSON.stringify({
+      kind: 'ready',
+      summary: 'bad alias',
+      groups: [{ id: 'g1', fileIds: ['@1', '@2', '@3', '@4'], message: 'feat: bad\n\n- x' }],
+      skippedFileIds: [],
+    }), cmd)).toThrow('unauthorized file (@4)');
   });
 });

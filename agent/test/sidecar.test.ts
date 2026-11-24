@@ -96,9 +96,16 @@ describe('bundled Pi process', () => {
     expect(await probe.close()).toBe(0);
     expect(probe.events.some((event) => event.type === 'cancelled')).toBe(true);
   });
-  it('rejects a different scope, unknown commands and duplicate accepted identities', async () => {
+  it('rejects a different scope, unknown commands, invalid locales, and duplicate accepted identities', async () => {
     expect(() => decodeCommand(JSON.stringify({ type: 'probe', requestId: 'unsafe', context: { ...context('unsafe'), worktreeId: '/real/repository' } }))).toThrow('isolated');
     expect(() => decodeCommand(JSON.stringify({ type: 'shell', requestId: 'unsafe' }))).toThrow('Unknown');
+    expect(() => decodeCommand(JSON.stringify({
+      type: 'testConnection',
+      requestId: 'bad-locale',
+      context: { repositoryId: 'r', worktreeId: 'w', sessionId: 's', scopeVersion: 'v1' },
+      model: { provider: 'openai', modelId: 'gpt-4.1', baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test' },
+      locale: 'fr',
+    }))).toThrow('Invalid locale');
     const probe = spawnSidecar();
     await probe.waitFor((event) => event.type === 'ready');
     const command = { type: 'probe', requestId: 'duplicate', context: context('duplicate') };
