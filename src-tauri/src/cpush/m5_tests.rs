@@ -132,6 +132,7 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -513,6 +514,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await

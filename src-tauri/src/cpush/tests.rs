@@ -55,6 +55,7 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -242,6 +243,7 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -511,6 +513,7 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -656,6 +659,7 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -856,6 +860,7 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await

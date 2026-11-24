@@ -15,11 +15,12 @@ use cpush::{
 use foundation::lifecycle::{DesktopLifecycle, exit_after_cleanup};
 use foundation::pi::{PiEvent, PiPaths, PiSupervisor, ProbeReport};
 use models::{
+    local_auth::{LocalAuthOutcome, StaticLocalAuthenticator},
     smoke::ModelSmokeState,
     store::ModelStore,
     types::{
-        ModelIdRequest, ModelInput, ModelMutateReply, ModelSaveReply, ModelStreamEvent,
-        ModelTestReply, ReviewScopeReply, ReviewScopeRequest,
+        ModelIdRequest, ModelInput, ModelMutateReply, ModelRevealKeyReply, ModelSaveReply,
+        ModelStreamEvent, ModelTestReply, ReviewScopeReply, ReviewScopeRequest,
     },
 };
 use repository::{
@@ -380,6 +381,24 @@ async fn delete_model(
 }
 
 #[tauri::command]
+async fn reveal_model_api_key(
+    app: tauri::AppHandle,
+    models: State<'_, ModelStore>,
+    request: ModelIdRequest,
+) -> Result<ModelRevealKeyReply, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if app.state::<DesktopLifecycle>().ui_smoke {
+        models.use_isolated_keychain(
+            data_dir.join("picket-ui-smoke.keychain-db"),
+            "picket-ui-smoke-pw",
+        )?;
+    }
+    models
+        .reveal_model_api_key(&data_dir, &request.model_id, request.locale)
+        .await
+}
+
+#[tauri::command]
 async fn review_selected_scope(
     app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
@@ -527,6 +546,23 @@ fn start_model_smoke_server(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn set_smoke_local_auth(
+    app: tauri::AppHandle,
+    models: State<'_, ModelStore>,
+    outcome: String,
+) -> Result<(), String> {
+    if !app.state::<DesktopLifecycle>().ui_smoke {
+        return Err("Not running UI smoke mode".into());
+    }
+    let parsed = match outcome.as_str() {
+        "authenticated" => LocalAuthOutcome::Authenticated,
+        "cancelled" => LocalAuthOutcome::Cancelled,
+        other => LocalAuthOutcome::Failed(other.to_owned()),
+    };
+    models.set_authenticator(std::sync::Arc::new(StaticLocalAuthenticator::new(parsed)))
+}
+
+#[tauri::command]
 async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Result<(), String> {
     if !app.state::<DesktopLifecycle>().ui_smoke {
         return Err("Not running UI smoke mode".into());
@@ -552,14 +588,30 @@ async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Result<
     let cold_models = ModelStore::with_vault(cold_vault);
     let (restored_models, active_id, warn) = cold_models.restore(&data_dir).await?;
     let active_id = active_id.ok_or("Cold model restore lost activeModelId")?;
-    if restored_models.len() != 1 || warn.is_some() {
-        return Err("Cold model restore did not recover expected model catalog".into());
+    if restored_models.len() != 2
+        || warn.is_some()
+        || !restored_models
+            .iter()
+            .all(|m| m.shared_key_count == Some(2) && m.key_hint.is_some())
+    {
+        return Err(
+            "Cold model restore did not recover shared 2-model catalog with key hints".into(),
+        );
     }
-    let resolved = cold_models
-        .resolve_runtime_spec(&data_dir, &active_id)
-        .await?;
-    if resolved.api_key != secret {
-        return Err("Cold macOS Keychain lookup did not recover saved API key".into());
+    let active_model = restored_models
+        .iter()
+        .find(|m| m.id == active_id)
+        .ok_or("Active model missing from restored catalog")?;
+    if active_model.name != "Smoke Coder" {
+        return Err("Duplicating a model unexpectedly replaced activeModelId".into());
+    }
+    for item in &restored_models {
+        let resolved = cold_models
+            .resolve_runtime_spec(&data_dir, &item.id)
+            .await?;
+        if resolved.api_key != secret {
+            return Err("Cold macOS Keychain lookup did not recover shared API key".into());
+        }
     }
     let recorded = app.state::<ModelSmokeState>().requests()?;
     let expected_bearer = format!("Bearer {secret}");
@@ -826,12 +878,23 @@ async fn verify_restart_smoke(
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let (restored_models, active_id, warn) = models.restore(&data_dir).await?;
     let active_id = active_id.ok_or("Restart smoke lost activeModelId")?;
-    if restored_models.len() != 1 || warn.is_some() {
+    if restored_models.len() != 2
+        || warn.is_some()
+        || !restored_models
+            .iter()
+            .all(|m| m.shared_key_count == Some(2) && m.key_hint.is_some())
+    {
         return Err("Restart smoke failed to restore saved model catalog".into());
     }
     let resolved = models.resolve_runtime_spec(&data_dir, &active_id).await?;
     if !resolved.api_key.starts_with("smoke-token-") {
         return Err("Restart smoke Keychain lookup did not recover expected secret".into());
+    }
+    for item in &restored_models {
+        let peer_resolved = models.resolve_runtime_spec(&data_dir, &item.id).await?;
+        if peer_resolved.api_key != resolved.api_key {
+            return Err("Restart smoke lost shared Keychain credential across models".into());
+        }
     }
     let cold_store = RepositoryStore::default();
     let cold_persistence = WorkbenchPersistence::default();
@@ -938,6 +1001,7 @@ fn main() {
             save_model,
             select_model,
             delete_model,
+            reveal_model_api_key,
             review_selected_scope,
             cancel_model_request,
             plan_cpush,
@@ -946,6 +1010,7 @@ fn main() {
             pull_rebase_repository,
             reconcile_cpush_session,
             start_model_smoke_server,
+            set_smoke_local_auth,
             verify_model_m3_smoke,
             prepare_cpush_m4_smoke,
             verify_cpush_m4_smoke,

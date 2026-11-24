@@ -6,7 +6,10 @@ use std::{
     ffi::{CString, c_char, c_void},
     path::{Path, PathBuf},
     ptr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const KEYCHAIN_SERVICE: &str = "app.picket.desktop.model-credentials";
@@ -176,6 +179,9 @@ struct CustomKeychainConfig {
 pub struct CredentialVault {
     custom: Arc<Mutex<Option<CustomKeychainConfig>>>,
     io_lock: Arc<Mutex<()>>,
+    read_calls: Arc<AtomicU64>,
+    #[cfg(test)]
+    live_accounts: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl CredentialVault {
@@ -186,7 +192,20 @@ impl CredentialVault {
                 password: password.into(),
             }))),
             io_lock: Arc::new(Mutex::new(())),
+            read_calls: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            live_accounts: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
+    }
+
+    #[cfg(test)]
+    pub fn read_count(&self) -> u64 {
+        self.read_calls.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn live_account_count(&self) -> usize {
+        self.live_accounts.lock().unwrap().len()
     }
 
     pub fn set_keychain_file(
@@ -289,6 +308,11 @@ impl CredentialVault {
         let add_dict = cf_dictionary(&add_pairs)?;
         let status = unsafe { SecItemAdd(add_dict.as_ptr(), ptr::null_mut()) };
         if status == ERR_SEC_SUCCESS {
+            #[cfg(test)]
+            self.live_accounts
+                .lock()
+                .unwrap()
+                .insert(account.to_owned());
             return Ok(());
         }
         if status == ERR_SEC_DUPLICATE_ITEM {
@@ -308,6 +332,11 @@ impl CredentialVault {
             let update_dict = cf_dictionary(&[(unsafe { kSecValueData }, value_cf.as_ptr())])?;
             let update_status = unsafe { SecItemUpdate(query_dict.as_ptr(), update_dict.as_ptr()) };
             if update_status == ERR_SEC_SUCCESS {
+                #[cfg(test)]
+                self.live_accounts
+                    .lock()
+                    .unwrap()
+                    .insert(account.to_owned());
                 return Ok(());
             }
             return Err(format!(
@@ -320,6 +349,7 @@ impl CredentialVault {
     }
 
     pub fn get(&self, account: &str) -> Result<Option<String>, String> {
+        self.read_calls.fetch_add(1, Ordering::SeqCst);
         let _guard = self
             .io_lock
             .lock()
@@ -393,6 +423,8 @@ impl CredentialVault {
         let query_dict = cf_dictionary(&query_pairs)?;
         let status = unsafe { SecItemDelete(query_dict.as_ptr()) };
         if status == ERR_SEC_SUCCESS || status == ERR_SEC_ITEM_NOT_FOUND {
+            #[cfg(test)]
+            self.live_accounts.lock().unwrap().remove(account);
             Ok(())
         } else {
             Err(format!(

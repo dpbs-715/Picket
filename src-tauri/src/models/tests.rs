@@ -1,4 +1,10 @@
-use super::{keychain::CredentialVault, smoke::LocalModelSseServer, store::ModelStore, types::*};
+use super::{
+    keychain::CredentialVault,
+    local_auth::{LocalAuthOutcome, StaticLocalAuthenticator},
+    smoke::LocalModelSseServer,
+    store::ModelStore,
+    types::*,
+};
 use crate::{
     foundation::pi::{PiPaths, PiSupervisor},
     i18n::LanguageKind,
@@ -8,6 +14,7 @@ use crate::{
         types::{CommitSelection, ReadTarget},
     },
 };
+use std::sync::Arc;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 fn make_store(dir: &std::path::Path) -> ModelStore {
@@ -46,6 +53,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -69,6 +77,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 context_window: Some(32_768),
                 max_output_tokens: Some(4_096),
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -95,6 +104,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 context_window: Some(256_000),
                 max_output_tokens: Some(32_768),
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -163,6 +173,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 context_window: Some(128_000),
                 max_output_tokens: Some(16_384),
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -211,6 +222,7 @@ async fn keychain_encrypts_secrets_persists_across_cold_restart_and_deletes_clea
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -289,6 +301,7 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             context_window: None,
             max_output_tokens: None,
             locale: LanguageKind::En,
+            ..Default::default()
         })
         .unwrap_err();
         assert!(!err.is_empty(), "expected error for {bad_url}");
@@ -306,6 +319,7 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             context_window: None,
             max_output_tokens: None,
             locale: LanguageKind::En,
+            ..Default::default()
         })
         .is_err()
     );
@@ -322,6 +336,7 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             context_window: Some(16_384),
             max_output_tokens: Some(32_768),
             locale: LanguageKind::En,
+            ..Default::default()
         })
         .unwrap_err()
         .contains("cannot exceed context window")
@@ -340,6 +355,7 @@ async fn validates_provider_fields_corrupted_storage_and_unknown_wire_fields() {
             context_window: Some(16_384),
             max_output_tokens: Some(32_768),
             locale: LanguageKind::Zh,
+            ..Default::default()
         })
         .unwrap_err()
         .contains("\u{4e0d}\u{80fd}\u{8d85}\u{8fc7}\u{4e0a}\u{4e0b}\u{6587}\u{957f}\u{5ea6}")
@@ -408,6 +424,7 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                     context_window: None,
                     max_output_tokens: None,
                     locale: LanguageKind::En,
+                    ..Default::default()
                 },
             )
             .await
@@ -437,6 +454,7 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -459,6 +477,7 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
                 context_window: None,
                 max_output_tokens: None,
                 locale: LanguageKind::En,
+                ..Default::default()
             },
         )
         .await
@@ -663,5 +682,579 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
     assert_eq!(
         git(&fixture.root, &["show", ":part.txt"]).unwrap(),
         b"first=2\nsecond=1\n"
+    );
+}
+
+#[test]
+fn computes_key_hints_and_canonical_endpoints_safely() {
+    assert_eq!(compute_key_hint(""), "••••");
+    assert_eq!(compute_key_hint("short77"), "••••");
+    assert_eq!(compute_key_hint("12345678"), "…78");
+    assert_eq!(compute_key_hint("abcdefghijklmno"), "…no");
+    assert_eq!(compute_key_hint("0123456789abcdef"), "0123…cdef");
+    assert_eq!(
+        compute_key_hint("  fake-shared-key-alpha-9876  "),
+        "fake…9876"
+    );
+    assert_eq!(
+        compute_key_hint("\u{5bc6}\u{94a5}\u{6d4b}\u{8bd5}abcdefghijkl1234"),
+        "\u{5bc6}\u{94a5}\u{6d4b}\u{8bd5}…1234"
+    );
+
+    for len in 0..=64 {
+        let sample: String = (0..len)
+            .map(|idx| char::from(b'a' + (idx % 26) as u8))
+            .collect();
+        let hint = compute_key_hint(&sample);
+        let visible_chars = hint.chars().filter(|ch| *ch != '•' && *ch != '…').count();
+        assert!(
+            visible_chars <= len / 2,
+            "len={len} hint={hint} exposed {visible_chars} chars"
+        );
+    }
+
+    assert!(same_credential_endpoint(
+        ProviderKind::Openai,
+        None,
+        ProviderKind::Openai,
+        Some("https://ignored.example.com"),
+    ));
+    assert!(!same_credential_endpoint(
+        ProviderKind::Openai,
+        None,
+        ProviderKind::Deepseek,
+        None,
+    ));
+    assert!(same_credential_endpoint(
+        ProviderKind::Custom,
+        Some("https://API.Example.com/v1/"),
+        ProviderKind::Custom,
+        Some("https://api.example.com/v1"),
+    ));
+    assert!(!same_credential_endpoint(
+        ProviderKind::Custom,
+        Some("https://api.example.com/v1"),
+        ProviderKind::Custom,
+        Some("https://other.example.com/v1"),
+    ));
+}
+
+#[tokio::test]
+async fn shares_credentials_refcounts_deletes_updates_peers_enforces_endpoints_and_rolls_back_atomically()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let keychain_path = temp.path().join("picket-shared.keychain-db");
+    let vault = CredentialVault::with_keychain_file(keychain_path.clone(), "picket-shared-pw");
+    let store = ModelStore::with_vault(vault.clone());
+    let server = LocalModelSseServer::start().unwrap();
+    let paths = PiPaths::development();
+    let supervisor = PiSupervisor::default();
+
+    let fake_key_a = "fake-key-shared-gateway-0001";
+    let base_url_a = format!("{}/v1", server.base_url);
+
+    let created_a = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                name: "Gateway Primary".into(),
+                model_id: "coder-primary".into(),
+                base_url: format!("{base_url_a}/"),
+                api_key: fake_key_a.into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(created_a.model.key_hint.as_deref(), Some("fake…0001"));
+    assert_eq!(created_a.model.shared_key_count, Some(1));
+    assert_eq!(created_a.active_model_id, created_a.model.id);
+
+    // Cold restore must NOT read Keychain (`read_count() == 0`):
+    let cold_vault = CredentialVault::with_keychain_file(keychain_path, "picket-shared-pw");
+    let cold_store = ModelStore::with_vault(cold_vault.clone());
+    let (restored_initial, _, _) = cold_store.restore(temp.path()).await.unwrap();
+    assert_eq!(
+        cold_vault.read_count(),
+        0,
+        "Opening settings / restoring catalog must never read Keychain"
+    );
+    assert_eq!(restored_initial[0].key_hint.as_deref(), Some("fake…0001"));
+
+    // Duplicate B sharing A's key (whitespace/slash normalized URL, `keep_active_model: true`):
+    let normalized_match_url = format!("  {base_url_a}///  ");
+    let conn_shared = store
+        .test_connection_with_storage(
+            Some(temp.path()),
+            &paths,
+            &supervisor,
+            &ModelInput {
+                source_model_id: Some(created_a.model.id.clone()),
+                keep_active_model: true,
+                provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                name: "Gateway Primary Copy".into(),
+                model_id: "coder-fast".into(),
+                base_url: normalized_match_url.clone(),
+                api_key: String::new(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(conn_shared.summary.contains("coder-fast"));
+
+    let duplicated_b = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                source_model_id: Some(created_a.model.id.clone()),
+                keep_active_model: true,
+                provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                name: "Gateway Primary Copy".into(),
+                model_id: "coder-fast".into(),
+                base_url: normalized_match_url,
+                api_key: String::new(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        duplicated_b.active_model_id, created_a.model.id,
+        "Duplicating a model must not change activeModelId"
+    );
+    assert_eq!(duplicated_b.models.len(), 2);
+    assert!(
+        duplicated_b
+            .models
+            .iter()
+            .all(|m| m.shared_key_count == Some(2) && m.key_hint.as_deref() == Some("fake…0001"))
+    );
+
+    let disk_v2: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join("models.json")).unwrap())
+            .unwrap();
+    assert_eq!(disk_v2["version"], 2);
+    assert_eq!(disk_v2["credentials"].as_array().unwrap().len(), 1);
+    let cred_a = disk_v2["models"][0]["credentialRef"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cred_b = disk_v2["models"][1]["credentialRef"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(cred_a, cred_b);
+
+    // Endpoint mismatch when duplicating (URL or provider changed with blank key) is rejected on both test & save:
+    assert!(
+        store
+            .test_connection_with_storage(
+                Some(temp.path()),
+                &paths,
+                &supervisor,
+                &ModelInput {
+                    source_model_id: Some(created_a.model.id.clone()),
+                    provider: ProviderKind::Custom,
+                    name: "Wrong Host".into(),
+                    model_id: "coder-x".into(),
+                    base_url: "https://other-host.example.com/v1".into(),
+                    api_key: String::new(),
+                    locale: LanguageKind::En,
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .save_model(
+                temp.path(),
+                &ModelInput {
+                    source_model_id: Some(created_a.model.id.clone()),
+                    provider: ProviderKind::Custom,
+                    name: "Wrong Host".into(),
+                    model_id: "coder-x".into(),
+                    base_url: "https://other-host.example.com/v1".into(),
+                    api_key: String::new(),
+                    locale: LanguageKind::En,
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .save_model(
+                temp.path(),
+                &ModelInput {
+                    source_model_id: Some(created_a.model.id.clone()),
+                    provider: ProviderKind::Openai,
+                    name: "Wrong Provider".into(),
+                    model_id: "gpt-4.1".into(),
+                    base_url: String::new(),
+                    api_key: String::new(),
+                    locale: LanguageKind::En,
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .save_model(
+                temp.path(),
+                &ModelInput {
+                    source_model_id: Some("model-does-not-exist".into()),
+                    provider: ProviderKind::Custom,
+                    name: "Missing Source".into(),
+                    model_id: "coder-x".into(),
+                    base_url: base_url_a.clone(),
+                    api_key: String::new(),
+                    locale: LanguageKind::En,
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err()
+    );
+
+    // Edit shared model A with `UpdateAll` -> rotates key for BOTH A and B and removes old cred:
+    let fake_key_rotated_all = "fake-key-shared-gateway-2222";
+    let updated_all = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: Some(created_a.model.id.clone()),
+                shared_key_update_scope: Some(SharedKeyUpdateScope::UpdateAll),
+                provider: ProviderKind::Custom,
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                name: "Gateway Primary".into(),
+                model_id: "coder-primary".into(),
+                base_url: base_url_a.clone(),
+                api_key: fake_key_rotated_all.into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        updated_all
+            .models
+            .iter()
+            .all(|m| m.shared_key_count == Some(2) && m.key_hint.as_deref() == Some("fake…2222"))
+    );
+    assert_eq!(vault.get(&cred_a).unwrap(), None);
+    assert_eq!(
+        store
+            .resolve_runtime_spec(temp.path(), &duplicated_b.model.id)
+            .await
+            .unwrap()
+            .api_key,
+        fake_key_rotated_all
+    );
+
+    // Editing shared model B changing endpoint without a new key is rejected;
+    // changing endpoint WITH a new key forces `DetachCurrent` even if `UpdateAll` is sent:
+    assert!(
+        store
+            .save_model(
+                temp.path(),
+                &ModelInput {
+                    id: Some(duplicated_b.model.id.clone()),
+                    provider: ProviderKind::Custom,
+                    name: "Gateway Moved".into(),
+                    model_id: "coder-fast".into(),
+                    base_url: "https://moved-gateway.example.com/v1".into(),
+                    api_key: String::new(),
+                    locale: LanguageKind::En,
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err()
+    );
+    let fake_key_detached = "fake-key-detached-only-3333";
+    let after_endpoint_detach = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: Some(duplicated_b.model.id.clone()),
+                shared_key_update_scope: Some(SharedKeyUpdateScope::UpdateAll),
+                provider: ProviderKind::Custom,
+                name: "Gateway Moved".into(),
+                model_id: "coder-fast".into(),
+                base_url: "https://moved-gateway.example.com/v1".into(),
+                api_key: fake_key_detached.into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        after_endpoint_detach
+            .models
+            .iter()
+            .all(|m| m.shared_key_count == Some(1))
+    );
+    assert_eq!(
+        store
+            .resolve_runtime_spec(temp.path(), &created_a.model.id)
+            .await
+            .unwrap()
+            .api_key,
+        fake_key_rotated_all
+    );
+    assert_eq!(
+        store
+            .resolve_runtime_spec(temp.path(), &duplicated_b.model.id)
+            .await
+            .unwrap()
+            .api_key,
+        fake_key_detached
+    );
+
+    // Re-duplicate C from A (`shared_key_count == 2`), then test `DetachCurrent` on same endpoint & refcounted deletion:
+    let duplicated_c = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                source_model_id: Some(created_a.model.id.clone()),
+                keep_active_model: true,
+                provider: ProviderKind::Custom,
+                name: "Gateway Primary Copy 2".into(),
+                model_id: "coder-review".into(),
+                base_url: base_url_a.clone(),
+                api_key: String::new(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let duplicated_d = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                source_model_id: Some(created_a.model.id.clone()),
+                keep_active_model: true,
+                provider: ProviderKind::Custom,
+                name: "Gateway Primary Copy 3".into(),
+                model_id: "coder-plan".into(),
+                base_url: base_url_a.clone(),
+                api_key: String::new(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let a_peer_count = duplicated_d
+        .models
+        .iter()
+        .find(|m| m.id == created_a.model.id)
+        .unwrap()
+        .shared_key_count;
+    assert_eq!(a_peer_count, Some(3));
+
+    // Detach D on same endpoint:
+    let fake_key_d = "fake-key-only-d-model-4444";
+    let after_detach_d = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                id: Some(duplicated_d.model.id.clone()),
+                shared_key_update_scope: Some(SharedKeyUpdateScope::DetachCurrent),
+                provider: ProviderKind::Custom,
+                name: "Gateway Primary Copy 3".into(),
+                model_id: "coder-plan".into(),
+                base_url: base_url_a.clone(),
+                api_key: fake_key_d.into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(after_detach_d.model.shared_key_count, Some(1));
+    assert_eq!(
+        after_detach_d
+            .models
+            .iter()
+            .find(|m| m.id == created_a.model.id)
+            .unwrap()
+            .shared_key_count,
+        Some(2)
+    );
+
+    // Delete A -> C still shares the credential (`shared_key_count == 1`) and still resolves `fake_key_rotated_all`:
+    let shared_cred_ac = {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(temp.path().join("models.json")).unwrap())
+                .unwrap();
+        parsed["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == created_a.model.id)
+            .unwrap()["credentialRef"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let after_del_a = store
+        .delete_model(temp.path(), &created_a.model.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        after_del_a
+            .models
+            .iter()
+            .find(|m| m.id == duplicated_c.model.id)
+            .unwrap()
+            .shared_key_count,
+        Some(1)
+    );
+    assert_eq!(
+        vault.get(&shared_cred_ac).unwrap().as_deref(),
+        Some(fake_key_rotated_all)
+    );
+
+    // Delete C (the last holder of `shared_cred_ac`) -> Keychain item IS deleted!
+    let _ = store
+        .delete_model(temp.path(), &duplicated_c.model.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        vault.get(&shared_cred_ac).unwrap(),
+        None,
+        "Keychain item must be deleted once reference count drops to zero"
+    );
+
+    // Rollback test: if persisting `models.json` fails, newly written Keychain item is rolled back:
+    let accounts_before_rollback = vault.live_account_count();
+    let broken_dir = temp.path().join("unwritable-storage");
+    fs::create_dir_all(broken_dir.join("models.json")).unwrap();
+    let rollback_err = store
+        .save_model(
+            &broken_dir,
+            &ModelInput {
+                provider: ProviderKind::Openai,
+                name: "Should Roll Back".into(),
+                model_id: "gpt-4.1".into(),
+                base_url: String::new(),
+                api_key: "fake-key-must-rollback-5555".into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(!rollback_err.is_empty());
+    assert_eq!(
+        vault.live_account_count(),
+        accounts_before_rollback,
+        "Failed models.json write must roll back newly written Keychain item without orphans"
+    );
+    // Clean up remaining B and D and verify Keychain has zero residual `cred-` entries:
+    let _ = store
+        .delete_model(temp.path(), &duplicated_b.model.id)
+        .await
+        .unwrap();
+    let _ = store
+        .delete_model(temp.path(), &duplicated_d.model.id)
+        .await
+        .unwrap();
+    assert_eq!(vault.live_account_count(), 0);
+}
+
+#[tokio::test]
+async fn gates_reveal_model_api_key_behind_local_authentication_without_touching_keychain_on_cancel_or_failure()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let keychain_path = temp.path().join("picket-reveal.keychain-db");
+    let vault = CredentialVault::with_keychain_file(keychain_path, "picket-reveal-pw");
+    let auth = Arc::new(StaticLocalAuthenticator::new(LocalAuthOutcome::Cancelled));
+    let store = ModelStore::with_vault_and_authenticator(vault.clone(), auth.clone());
+
+    let fake_secret = "fake-reveal-key-secret-778899";
+    let saved = store
+        .save_model(
+            temp.path(),
+            &ModelInput {
+                provider: ProviderKind::Anthropic,
+                name: "Claude Reveal Test".into(),
+                model_id: "claude-sonnet-4-20250514".into(),
+                base_url: String::new(),
+                api_key: fake_secret.into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(vault.read_count(), 0);
+
+    // 1. Cancelled authentication -> does NOT read Keychain and does NOT include secret:
+    let cancelled = store
+        .reveal_model_api_key(temp.path(), &saved.model.id, LanguageKind::En)
+        .await
+        .unwrap();
+    assert_eq!(vault.read_count(), 0);
+    match &cancelled.result {
+        ModelRevealKeyOutcome::Cancelled { message } => {
+            assert!(!message.contains(fake_secret));
+        }
+        other => panic!("expected Cancelled, got {other:?}"),
+    }
+    let cancelled_json = serde_json::to_string(&cancelled).unwrap();
+    assert!(!cancelled_json.contains("apiKey"));
+    assert!(!cancelled_json.contains(fake_secret));
+
+    // 2. Failed authentication (Chinese locale) -> does NOT read Keychain and localizes reason:
+    auth.set_outcome(LocalAuthOutcome::Failed("Auth failed.".into()));
+    let failed = store
+        .reveal_model_api_key(temp.path(), &saved.model.id, LanguageKind::Zh)
+        .await
+        .unwrap();
+    assert_eq!(vault.read_count(), 0);
+    match &failed.result {
+        ModelRevealKeyOutcome::Failed { message } => {
+            assert_eq!(message, "Auth failed.");
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let calls = auth.calls();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].0.contains("Claude Reveal Test"));
+    assert_eq!(calls[0].1, LanguageKind::En);
+    assert!(calls[1].0.contains("Claude Reveal Test") && calls[1].0.contains("\u{67e5}\u{770b}"));
+    assert_eq!(calls[1].1, LanguageKind::Zh);
+
+    // 3. Authenticated -> reads Keychain once and returns full secret + keyHint:
+    auth.set_outcome(LocalAuthOutcome::Authenticated);
+    let revealed = store
+        .reveal_model_api_key(temp.path(), &saved.model.id, LanguageKind::En)
+        .await
+        .unwrap();
+    assert_eq!(vault.read_count(), 1);
+    assert_eq!(
+        revealed.result,
+        ModelRevealKeyOutcome::Authenticated {
+            api_key: fake_secret.into(),
+            key_hint: "fake…8899".into(),
+        }
     );
 }

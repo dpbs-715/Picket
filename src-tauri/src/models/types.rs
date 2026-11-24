@@ -102,6 +102,18 @@ pub struct SavedModelConfiguration {
     pub context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_key_count: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SharedKeyUpdateScope {
+    #[default]
+    UpdateAll,
+    DetachCurrent,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,6 +121,12 @@ pub struct SavedModelConfiguration {
 pub struct ModelInput {
     #[serde(default)]
     pub id: Option<String>,
+    #[serde(default)]
+    pub source_model_id: Option<String>,
+    #[serde(default)]
+    pub shared_key_update_scope: Option<SharedKeyUpdateScope>,
+    #[serde(default)]
+    pub keep_active_model: bool,
     pub provider: ProviderKind,
     #[serde(default)]
     pub api_format: Option<ApiFormatKind>,
@@ -122,6 +140,26 @@ pub struct ModelInput {
     pub max_output_tokens: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
+}
+
+impl Default for ModelInput {
+    fn default() -> Self {
+        Self {
+            id: None,
+            source_model_id: None,
+            shared_key_update_scope: None,
+            keep_active_model: false,
+            provider: ProviderKind::Anthropic,
+            api_format: None,
+            name: String::new(),
+            model_id: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            context_window: None,
+            max_output_tokens: None,
+            locale: LanguageKind::En,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -151,7 +189,29 @@ pub struct ModelTestReply {
 pub struct ModelSaveReply {
     pub protocol_version: u8,
     pub model: SavedModelConfiguration,
+    pub models: Vec<SavedModelConfiguration>,
     pub active_model_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModelRevealKeyOutcome {
+    Authenticated { api_key: String, key_hint: String },
+    Cancelled { message: String },
+    Failed { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRevealKeyReply {
+    pub protocol_version: u8,
+    pub model_id: String,
+    #[serde(flatten)]
+    pub result: ModelRevealKeyOutcome,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,6 +336,7 @@ pub fn validate_http_base_url(raw: &str, locale: LanguageKind) -> Result<String,
     Ok(trimmed.trim_end_matches('/').to_owned())
 }
 
+#[cfg(test)]
 pub fn validate_and_normalize_model_input(
     input: &ModelInput,
 ) -> Result<NormalizedModelInput, String> {
@@ -287,10 +348,10 @@ pub fn validate_and_normalize_model_input_with_options(
     allow_empty_key: bool,
 ) -> Result<NormalizedModelInput, String> {
     let locale = input.locale;
-    if let Some(raw) = &input.id
-        && (raw.trim().len() > 128 || raw.chars().any(char::is_control))
-    {
-        return Err(i18n::model_invalid_id_record_error(locale).into());
+    for raw in [&input.id, &input.source_model_id].into_iter().flatten() {
+        if raw.trim().len() > 128 || raw.chars().any(char::is_control) {
+            return Err(i18n::model_invalid_id_record_error(locale).into());
+        }
     }
 
     let model_id = input.model_id.trim();
@@ -353,4 +414,57 @@ pub fn validate_and_normalize_model_input_with_options(
         context_window,
         max_output_tokens,
     })
+}
+
+pub fn compute_key_hint(secret: &str) -> String {
+    let trimmed = secret.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    let len = chars.len();
+    if len < 8 {
+        return "••••".to_owned();
+    }
+    let max_visible = len / 2;
+    if len < 16 {
+        let suffix_len = 2usize.min(max_visible);
+        let suffix: String = chars[len - suffix_len..].iter().collect();
+        return format!("…{suffix}");
+    }
+    let suffix_len = 4usize.min(max_visible);
+    let prefix_len = 4usize.min(max_visible.saturating_sub(suffix_len));
+    let prefix: String = chars[..prefix_len].iter().collect();
+    let suffix: String = chars[len - suffix_len..].iter().collect();
+    format!("{prefix}…{suffix}")
+}
+
+pub fn canonical_endpoint_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let (scheme, rest) = if let Some(r) = trimmed.strip_prefix("https://") {
+        ("https://", r)
+    } else if let Some(r) = trimmed.strip_prefix("http://") {
+        ("http://", r)
+    } else {
+        return trimmed.to_ascii_lowercase();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = rest[..authority_end].to_ascii_lowercase();
+    let tail = &rest[authority_end..];
+    format!("{scheme}{authority}{tail}")
+}
+
+pub fn same_credential_endpoint(
+    a_provider: ProviderKind,
+    a_base_url: Option<&str>,
+    b_provider: ProviderKind,
+    b_base_url: Option<&str>,
+) -> bool {
+    if a_provider != b_provider {
+        return false;
+    }
+    if !a_provider.needs_url() {
+        return true;
+    }
+    match (a_base_url, b_base_url) {
+        (Some(a), Some(b)) => canonical_endpoint_url(a) == canonical_endpoint_url(b),
+        _ => false,
+    }
 }

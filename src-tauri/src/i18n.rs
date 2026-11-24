@@ -1696,6 +1696,57 @@ pub const fn model_review_cancelled_error(locale: LanguageKind) -> &'static str 
     )
 }
 
+pub fn model_reveal_auth_reason(locale: LanguageKind, model_name: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("reveal the saved API key for \"{model_name}\" in Picket"),
+        LanguageKind::Zh => format!("查看 Picket 中模型“{model_name}”已保存的完整 API Key"),
+    }
+}
+
+pub const fn model_reveal_auth_cancelled_message(locale: LanguageKind) -> &'static str {
+    tr(locale, "Authentication cancelled.", "已取消身份验证。")
+}
+
+pub const fn model_reveal_auth_failed_message(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Authentication failed; API key was not shown.",
+        "身份验证未通过，未显示密钥。",
+    )
+}
+
+pub const fn model_reveal_auth_unavailable_message(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "macOS authentication is unavailable on this device.",
+        "当前设备无法调用 macOS 身份验证。",
+    )
+}
+
+pub const fn model_source_not_found_error(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Source model no longer exists or has no saved API key; enter a new API key to save.",
+        "来源模型已不存在或缺少已保存密钥，请手动填写新密钥后再保存。",
+    )
+}
+
+pub const fn model_shared_key_endpoint_mismatch_error(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Provider or base URL changed; enter a new API key instead of reusing the existing key.",
+        "服务商或接口地址已变更，请填写新密钥后再保存。",
+    )
+}
+
+pub const fn model_reveal_no_key_error(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "This model does not have a saved API key in macOS Keychain.",
+        "该模型未在 macOS 系统钥匙串中保存 API Key。",
+    )
+}
+
 pub fn remote_fetch_failed_error(locale: LanguageKind, remote: &str, detail: &str) -> String {
     match locale {
         LanguageKind::En => format!("Cannot connect to remote {remote} to fetch refs ({detail})"),
