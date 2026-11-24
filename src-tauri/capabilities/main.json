@@ -3,5 +3,14 @@
   "identifier": "main",
   "description": "Local workbench only; no frontend shell or filesystem permissions.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-always-on-top", "core:window:allow-start-dragging"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-focus",
+    "notification:default"
+  ]
 }
