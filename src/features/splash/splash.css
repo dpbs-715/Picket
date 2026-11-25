@@ -1,0 +1,76 @@
+html,
+body,
+.splash-body,
+#splash-root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+.whale-stage {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  overflow: visible;
+}
+
+.whale-svg {
+  width: 220px;
+  height: 220px;
+  display: block;
+  overflow: visible;
+}
+
+/* Dual ambient + crisp shadow keeps the pure white whale legible over both dark and bright wallpapers. */
+.whale-body-shadow {
+  filter:
+    drop-shadow(0 8px 16px rgb(7 9 14 / 42%))
+    drop-shadow(0 1px 3px rgb(7 9 14 / 36%));
+}
+
+.whale-silhouette {
+  fill: url(#picket-whale-fill);
+  stroke: rgb(11 13 16 / 20%);
+  stroke-width: 12;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+.whale-eye {
+  fill: #101319;
+}
+
+.whale-ground-shadow {
+  fill: url(#picket-whale-shadow);
+}
+
+.whale-ripple-primary {
+  fill: none;
+  stroke: rgb(250 251 253 / 82%);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 4px rgb(129 140 248 / 45%));
+}
+
+.whale-ripple-secondary {
+  fill: none;
+  stroke: rgb(129 140 248 / 78%);
+  stroke-width: 1.25;
+  filter: drop-shadow(0 0 6px rgb(129 140 248 / 40%));
+}
+
+.whale-droplet {
+  fill: #fafbfd;
+  stroke: rgb(11 13 16 / 18%);
+  stroke-width: 0.75;
+  filter: drop-shadow(0 1px 4px rgb(129 140 248 / 55%));
+}

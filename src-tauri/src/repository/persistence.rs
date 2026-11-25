@@ -190,6 +190,13 @@ fn read_existing_valid(path: &Path) -> Option<StoredWorkbenchFile> {
     parse_workbench_bytes(&bytes)
 }
 
+/// Fast, read-only lookup of persisted window geometry & mode preferences for native startup
+/// pre-positioning before the main window becomes visible. Performs zero Git I/O.
+pub fn read_persisted_window_preferences(storage_dir: &Path) -> Option<PersistedWindowPreferences> {
+    let stored = read_existing_valid(&storage_dir.join(STORAGE_FILE))?;
+    stored.window_preferences
+}
+
 fn sanitize_repository_settings(
     entries: Vec<PersistedRepositorySettings>,
 ) -> Vec<PersistedRepositorySettings> {

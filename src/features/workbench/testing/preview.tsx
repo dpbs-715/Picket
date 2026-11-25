@@ -16,6 +16,8 @@ if (parameters.has('verify')) {
   });
 } else if (scenario === 'foundation') {
   void import('../../foundation/Foundation').then(({ Foundation }) => root.render(<Foundation />));
+} else if (scenario === 'splash') {
+  void import('./SplashPreview').then(({ SplashPreview }) => root.render(<SplashPreview />));
 } else {
   const selected: Scenario = scenarios.includes(scenario as Scenario) ? scenario as Scenario : 'question';
   const initial = fixture(selected);
