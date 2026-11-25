@@ -51,11 +51,12 @@ interface Props {
   onExpand(): void;
   onExpandTarget(target: CompactExpandTarget): void;
   onPin(): void;
+  onSettings(drawerWasOpen?: boolean): void;
   onPrimary(): void;
   onConfigureModel(): void;
   onOpenModelSettings(): void;
   onDismissNotice(): void;
-  onDesiredHeightChange?(height: number): void;
+  onDesiredHeightChange?(height: number, drawerOpen: boolean): void;
 }
 
 export function CompactBar(props: Props) {
@@ -152,7 +153,7 @@ export function CompactBar(props: Props) {
         WINDOW_DIMENSIONS.compactMaxHeight,
         Math.max(WINDOW_DIMENSIONS.compactMinHeight, measured),
       );
-      props.onDesiredHeightChange(clamped);
+      props.onDesiredHeightChange(clamped, effectiveDrawer !== 'none');
     }
   }, [
     effectiveDrawer,
@@ -251,6 +252,13 @@ export function CompactBar(props: Props) {
             disabled={props.pinBusy}
             onMouseDown={(event) => event.preventDefault()}
             onClick={props.onPin}
+          />
+          <IconButton
+            icon="settings"
+            label={t.header.settings}
+            disabled={props.pinBusy}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => props.onSettings(effectiveDrawer !== 'none')}
           />
         </div>
       </header>

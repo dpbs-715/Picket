@@ -54,10 +54,10 @@ async function checkDefaultWorkbench() {
   document.querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!.click();
   await waitForUi(() => !!document.querySelector('.overlay-heading h1'));
   if (document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left < 84) throw new Error('Settings overlaps native window controls');
-  [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Add First Model')!.click();
+  [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Add First Provider')!.click();
   await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 2);
-  if (document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left < 84) throw new Error('Model form overlaps native window controls');
-  document.querySelector<HTMLButtonElement>('button[aria-label="Close Add Model"]')!.click();
+  if (document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left < 84) throw new Error('Provider form overlaps native window controls');
+  document.querySelector<HTMLButtonElement>('button[aria-label="Close Add Provider"]')!.click();
   await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 1);
   document.querySelector<HTMLButtonElement>('button[aria-label="Close Settings"]')!.click();
   await waitForUi(() => !document.querySelector('.overlay'));
@@ -72,11 +72,31 @@ async function checkDefaultWorkbench() {
     if (wasPinned) {
       await window.setAlwaysOnTop(false);
     }
-    await waitForUi(() => !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)'), 'pin-initial-button');
+    await waitForUi(
+      () => !!document.querySelector('button[aria-label="Collapse to Compact Mode"]:not(:disabled)')
+        && !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)')
+        && !!document.querySelector('button[aria-label="Settings"]:not(:disabled)'),
+      'header-permanent-buttons-ready',
+    );
+    // 1. Pin in Full Mode toggles always-on-top only (never auto-collapses):
     document.querySelector<HTMLButtonElement>('button[aria-label="Pin Window"]')!.click();
     await waitForUi(
-      () => !!document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Unpin Window"]:not(:disabled)'),
-      'pin-entered-compact',
+      () => !document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Unpin Window"]:not(:disabled)'),
+      'pin-stayed-full',
+    );
+    const [pinnedInFull, pinnedFullSize] = await Promise.all([window.isAlwaysOnTop(), window.outerSize()]);
+    if (!pinnedInFull || Math.abs(pinnedFullSize.height / pinScale - initialLogicalHeight) > 2) {
+      throw new Error(`Pin in Full Mode did not keep full window height (pinned=${pinnedInFull}, h=${pinnedFullSize.height / pinScale})`);
+    }
+
+    // 2. Collapse button enters ~86px Compact Mode while keeping pinned=true and top-left anchored:
+    document.querySelector<HTMLButtonElement>('button[aria-label="Collapse to Compact Mode"]')!.click();
+    await waitForUi(
+      () => !!document.querySelector('.compact-bar')
+        && !!document.querySelector('button[aria-label="Expand Workbench"]:not(:disabled)')
+        && !!document.querySelector('button[aria-label="Unpin Window"]:not(:disabled)')
+        && !!document.querySelector('button[aria-label="Settings"]:not(:disabled)'),
+      'collapse-entered-compact',
     );
     const [compactPinned, compactOuterPos, compactOuterSize] = await Promise.all([
       window.isAlwaysOnTop(),
@@ -92,67 +112,77 @@ async function checkDefaultWorkbench() {
       || Math.abs(compactOuterPos.y - initialOuterPos.y) > 2
     ) {
       throw new Error(
-        `Pin -> Compact did not shrink height with fixed top-left (pinned=${compactPinned}, h=${compactLogicalHeight}, pos=${JSON.stringify(compactOuterPos)}, initialPos=${JSON.stringify(initialOuterPos)})`,
+        `Collapse -> Compact did not shrink height with fixed top-left (pinned=${compactPinned}, h=${compactLogicalHeight}, pos=${JSON.stringify(compactOuterPos)}, initialPos=${JSON.stringify(initialOuterPos)})`,
       );
     }
 
-    // Expand back to full workbench while staying pinned and keeping top-left anchored:
+    // 3. Unpin in Compact Mode toggles always-on-top off while staying in Compact Mode:
+    document.querySelector<HTMLButtonElement>('button[aria-label="Unpin Window"]')!.click();
+    await waitForUi(
+      () => !!document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)'),
+      'unpin-stayed-compact',
+    );
+    const [unpinnedInCompact, unpinnedCompactSize] = await Promise.all([window.isAlwaysOnTop(), window.outerSize()]);
+    if (unpinnedInCompact || unpinnedCompactSize.height / pinScale > 112) {
+      throw new Error(`Unpin in Compact Mode did not stay compact (pinned=${unpinnedInCompact}, h=${unpinnedCompactSize.height / pinScale})`);
+    }
+
+    // 4. Permanent Settings button in Compact Mode enlarges directly to standalone Settings (preserving unpinned, never flashing workbench); closing Settings restores compact geometry:
+    let sawWorkbenchInEmptyCompactSettings = false;
+    const emptyCompactSettingsObserver = new MutationObserver(() => {
+      if (document.querySelector('.workbench-content, .changes-panel, .lower-workspace, .action-footer')) {
+        sawWorkbenchInEmptyCompactSettings = true;
+      }
+    });
+    emptyCompactSettingsObserver.observe(document.body, { childList: true, subtree: true });
+    try {
+      document.querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!.click();
+      await waitForUi(
+        () => !document.querySelector('.compact-bar')
+          && !document.querySelector('.workbench-content')
+          && document.querySelector('main')?.getAttribute('data-surface') === 'standaloneSettings'
+          && !!document.querySelector('button[aria-label="Close Settings"]:not(:disabled)'),
+        'compact-settings-expanded',
+      );
+      const [settingsPinned, expandedOuterPos, expandedOuterSize] = await Promise.all([
+        window.isAlwaysOnTop(),
+        window.outerPosition(),
+        window.outerSize(),
+      ]);
+      const expandedLogicalHeight = expandedOuterSize.height / pinScale;
+      if (
+        settingsPinned
+        || Math.abs(expandedLogicalHeight - initialLogicalHeight) > 2
+        || Math.abs(expandedOuterPos.x - initialOuterPos.x) > 2
+        || Math.abs(expandedOuterPos.y - initialOuterPos.y) > 2
+      ) {
+        throw new Error(
+          `Settings from Compact did not restore full height with fixed top-left (pinned=${settingsPinned}, h=${expandedLogicalHeight}, pos=${JSON.stringify(expandedOuterPos)})`,
+        );
+      }
+      document.querySelector<HTMLButtonElement>('button[aria-label="Close Settings"]')!.click();
+      await waitForUi(
+        () => !document.querySelector('.overlay')
+          && !!document.querySelector('.compact-bar')
+          && !!document.querySelector('button[aria-label="Expand Workbench"]:not(:disabled)'),
+        'compact-settings-closed-back-to-compact',
+      );
+      const returnedCompactSize = await window.outerSize();
+      if (sawWorkbenchInEmptyCompactSettings) {
+        throw new Error('Compact -> Settings -> Compact flashed full workbench content');
+      }
+      if (returnedCompactSize.height / pinScale > 112) {
+        throw new Error(`Closing Settings opened from Compact did not return to Compact Mode (h=${returnedCompactSize.height / pinScale})`);
+      }
+    } finally {
+      emptyCompactSettingsObserver.disconnect();
+    }
+    // Expand back to Full Mode for the remaining smoke checks:
     document.querySelector<HTMLButtonElement>('button[aria-label="Expand Workbench"]')!.click();
     await waitForUi(
       () => !document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Collapse to Compact Mode"]:not(:disabled)'),
-      'compact-expanded-to-full',
+      'expand-back-to-full-for-smoke',
     );
-    const [expandedPinned, expandedOuterPos, expandedOuterSize] = await Promise.all([
-      window.isAlwaysOnTop(),
-      window.outerPosition(),
-      window.outerSize(),
-    ]);
-    const expandedLogicalHeight = expandedOuterSize.height / pinScale;
-    if (
-      !expandedPinned
-      || Math.abs(expandedLogicalHeight - initialLogicalHeight) > 2
-      || Math.abs(expandedOuterPos.x - initialOuterPos.x) > 2
-      || Math.abs(expandedOuterPos.y - initialOuterPos.y) > 2
-    ) {
-      throw new Error(
-        `Expand from Compact did not restore full height with fixed top-left (pinned=${expandedPinned}, h=${expandedLogicalHeight}, pos=${JSON.stringify(expandedOuterPos)})`,
-      );
-    }
-
-    // Collapse via header Collapse button (resets pinned preference back to compact):
-    document.querySelector<HTMLButtonElement>('button[aria-label="Collapse to Compact Mode"]')!.click();
-    await waitForUi(
-      () => !!document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Unpin Window"]:not(:disabled)'),
-      'full-collapsed-to-compact',
-    );
-    const [recollapsedPos, recollapsedSize] = await Promise.all([window.outerPosition(), window.outerSize()]);
-    if (
-      recollapsedSize.height / pinScale > 112
-      || Math.abs(recollapsedPos.x - initialOuterPos.x) > 2
-      || Math.abs(recollapsedPos.y - initialOuterPos.y) > 2
-    ) {
-      throw new Error('Collapse button shifted top-left or failed to shrink height');
-    }
-
-    // Unpin restores full workbench height and unpinned state:
-    document.querySelector<HTMLButtonElement>('button[aria-label="Unpin Window"]')!.click();
-    await waitForUi(
-      () => !document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)'),
-      'unpin-restored-full',
-    );
-    const [unpinnedNow, restoredPos, restoredSize] = await Promise.all([
-      window.isAlwaysOnTop(),
-      window.outerPosition(),
-      window.outerSize(),
-    ]);
-    if (
-      unpinnedNow
-      || Math.abs(restoredSize.height / pinScale - initialLogicalHeight) > 2
-      || Math.abs(restoredPos.x - initialOuterPos.x) > 2
-      || Math.abs(restoredPos.y - initialOuterPos.y) > 2
-    ) {
-      throw new Error('Unpin did not restore full window height or top-left position');
-    }
   } finally {
     await window.setAlwaysOnTop(wasPinned);
   }
@@ -343,20 +373,20 @@ async function checkModelAndPreviewPlanOperations() {
   };
   const findButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === label || item.getAttribute('aria-label') === label);
 
-  // Zero-model primary footer button opens AddModelForm directly:
+  // Zero-model primary footer button opens ProviderConnectionForm (mode=create) directly:
   const footerPrimary = document.querySelector<HTMLButtonElement>('.action-footer button.primary');
   if (!footerPrimary || !footerPrimary.textContent?.includes('Configure Model')) {
     throw new Error('Zero-model footer primary button did not display Configure Model');
   }
   footerPrimary.click();
-  await waitForUi(() => !!document.querySelector('.model-form'), 'm3-model-form-open');
+  await waitForUi(() => !!document.querySelector('.model-form[data-form-mode="create-provider"]'), 'm3-provider-form-open');
   findButton('Custom Compatible')!.click();
-  await waitForUi(() => !!document.querySelector('.model-form input[type="password"]'), 'm3-custom-provider');
-  const formInputs = [...document.querySelectorAll<HTMLInputElement>('.model-form input')];
-  setInput(formInputs[0], 'Smoke Coder');
-  setInput(formInputs[1], 'smoke-coder-v1');
-  setInput(formInputs[2], baseUrl);
-  setInput(formInputs[3], secret);
+  await waitForUi(() => !!document.querySelector('.model-form [data-field="api-key"]'), 'm3-custom-provider');
+  setInput(document.querySelector<HTMLInputElement>('.model-form [data-field="connection-name"]')!, 'Smoke Gateway');
+  setInput(document.querySelector<HTMLInputElement>('.model-form [data-field="base-url"]')!, baseUrl);
+  setInput(document.querySelector<HTMLInputElement>('.model-form [data-field="api-key"]')!, secret);
+  setInput(document.querySelector<HTMLInputElement>('.model-form [data-field="model-id"]')!, 'smoke-coder-v1');
+  setInput(document.querySelector<HTMLInputElement>('.model-form [data-field="model-name"]')!, 'Smoke Coder');
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   findButton('Test Connection')!.click();
@@ -370,14 +400,14 @@ async function checkModelAndPreviewPlanOperations() {
   findButton('Save & Use')!.click();
   await waitForUi(() => !document.querySelector('.overlay') && !!document.querySelector('.model-button'), 'm3-model-saved');
 
-  // Verify key hint, LocalAuthentication-gated reveal (cancel + authenticated + hide), and model duplication sharing key in real WKWebView:
+  // Verify provider card key hint, LocalAuthentication-gated reveal on Edit Connection, and adding a second child model in real WKWebView:
   const expectedHint = `smok…${secret.slice(-4)}`;
   findButton('Settings')!.click();
   await waitForUi(
-    () => (document.querySelector('.model-key-hint')?.textContent ?? '') === expectedHint,
+    () => (document.querySelector('.provider-card .model-key-hint')?.textContent ?? '') === expectedHint,
     'm3-settings-key-hint',
   );
-  findButton('Edit model Smoke Coder')!.click();
+  findButton('Edit connection Smoke Gateway')!.click();
   await waitForUi(() => !!findButton('Reveal saved API key'), 'm3-edit-reveal-button');
   await invoke('set_smoke_local_auth', { outcome: 'cancelled' });
   findButton('Reveal saved API key')!.click();
@@ -398,19 +428,25 @@ async function checkModelAndPreviewPlanOperations() {
   findButton('Cancel')!.click();
   await waitForUi(() => !document.querySelector('.model-form'), 'm3-edit-closed');
 
-  findButton('Duplicate model Smoke Coder')!.click();
-  await waitForUi(() => !!document.querySelector('.model-form'), 'm3-duplicate-open');
-  const dupInputs = [...document.querySelectorAll<HTMLInputElement>('.model-form input')];
-  if (dupInputs[0]?.value !== 'Smoke Coder Copy' || document.activeElement !== dupInputs[1]) {
-    throw new Error('Duplicate model form did not prefill Smoke Coder Copy or focus Model ID in WKWebView');
+  document.querySelector<HTMLButtonElement>('.provider-card .provider-add-model')!.click();
+  await waitForUi(() => !!document.querySelector('.model-form[data-form-mode="add-model"]'), 'm3-add-child-model-open');
+  const childModelIdInput = document.querySelector<HTMLInputElement>('.model-form [data-field="model-id"]')!;
+  const childModelNameInput = document.querySelector<HTMLInputElement>('.model-form [data-field="model-name"]')!;
+  if (document.activeElement !== childModelIdInput) {
+    throw new Error('Add child model form did not focus Model ID in WKWebView');
   }
+  setInput(childModelIdInput, 'smoke-coder-v2');
+  setInput(childModelNameInput, 'Smoke Reviewer');
+  await new Promise((resolve) => setTimeout(resolve, 0));
   findButton('Save')!.click();
   await waitForUi(
-    () => !document.querySelector('.model-form') && document.querySelectorAll('.model-row').length === 2,
-    'm3-duplicate-saved',
+    () => !document.querySelector('.model-form')
+      && document.querySelectorAll('.provider-card').length === 1
+      && document.querySelectorAll('.model-row').length === 2,
+    'm3-child-model-saved',
   );
   if (document.querySelector('.model-row.is-active strong')?.textContent !== 'Smoke Coder') {
-    throw new Error('Duplicating model unexpectedly changed activeModelId in WKWebView');
+    throw new Error('Adding child model unexpectedly changed activeModelId in WKWebView');
   }
   findButton('Close Settings')!.click();
   await waitForUi(() => !document.querySelector('.overlay'), 'm3-settings-closed');
@@ -538,9 +574,15 @@ export function registerUiSmoke() {
       await checkBranchOperations();
       await checkPersistenceOperations();
       await checkModelAndPreviewPlanOperations();
-      // Leave Pinned Compact Mode active before shutdown so Launch 2 verifies cold-process compact window restoration:
-      await waitForUi(() => !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)'), 'pre-shutdown-pin-ready');
+      // Leave both Pin and Compact Mode active before shutdown so Launch 2 verifies cold-process pinned compact window restoration:
+      await waitForUi(
+        () => !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)')
+          && !!document.querySelector('button[aria-label="Collapse to Compact Mode"]:not(:disabled)'),
+        'pre-shutdown-pin-ready',
+      );
       document.querySelector<HTMLButtonElement>('button[aria-label="Pin Window"]')!.click();
+      await waitForUi(() => !!document.querySelector('button[aria-label="Unpin Window"]:not(:disabled)'), 'pre-shutdown-pinned');
+      document.querySelector<HTMLButtonElement>('button[aria-label="Collapse to Compact Mode"]')!.click();
       await waitForUi(() => !!document.querySelector('.compact-bar'), 'pre-shutdown-compact-persisted');
       await new Promise((resolve) => setTimeout(resolve, 150));
       await runPiProbe('ui-complete', () => {});
@@ -565,15 +607,59 @@ export function registerUiSmoke() {
           && (document.querySelector('.compact-branch')?.textContent ?? '').includes('feat/branch-proof'),
         'restart-compact-bar-hydrated',
       );
-      const [coldPinned, coldSize, coldScale] = await Promise.all([
+      const [coldPinned, coldSize, coldPos, coldScale] = await Promise.all([
         win.isAlwaysOnTop(),
         win.outerSize(),
+        win.outerPosition(),
         win.scaleFactor(),
       ]);
       const coldHeight = coldSize.height / coldScale;
       if (!coldPinned || coldHeight < 80 || coldHeight > 112) {
         throw new Error(`Cold restart did not restore pinned compact window geometry (pinned=${coldPinned}, height=${coldHeight})`);
       }
+
+      // Path 1 real WKWebView verification: Compact -> Standalone Settings -> Compact without mounting/flashing full workbench:
+      let sawWorkbenchDuringCompactSettings = false;
+      const compactSettingsObserver = new MutationObserver(() => {
+        if (document.querySelector('.workbench-content, .changes-panel, .lower-workspace, .action-footer')) {
+          sawWorkbenchDuringCompactSettings = true;
+        }
+      });
+      compactSettingsObserver.observe(document.body, { childList: true, subtree: true });
+      try {
+        findButton('Settings')!.click();
+        await waitForUi(
+          () => document.querySelector('main')?.getAttribute('data-surface') === 'standaloneSettings'
+            && !!document.querySelector('[data-setting-group="editor"]')
+            && !!document.querySelector('button[aria-label="Close Settings"]:not(:disabled)')
+            && !document.querySelector('.workbench-content'),
+          'restart-compact-standalone-settings-open',
+        );
+        const settingsSize = await win.outerSize();
+        if (settingsSize.height / coldScale < 680) {
+          throw new Error(`Standalone Settings from Compact Mode did not enlarge window to full height (got ${settingsSize.height / coldScale})`);
+        }
+        findButton('Close Settings')!.click();
+        await waitForUi(
+          () => document.querySelector('main')?.getAttribute('data-surface') === 'compact'
+            && !!document.querySelector('.compact-bar')
+            && !document.querySelector('.overlay'),
+          'restart-compact-standalone-settings-closed',
+        );
+        const [returnedSize, returnedPos] = await Promise.all([win.outerSize(), win.outerPosition()]);
+        const returnedHeight = returnedSize.height / coldScale;
+        const posDriftX = Math.abs(returnedPos.x - coldPos.x) / coldScale;
+        const posDriftY = Math.abs(returnedPos.y - coldPos.y) / coldScale;
+        if (sawWorkbenchDuringCompactSettings) {
+          throw new Error('Compact -> Settings -> Compact mounted or flashed full workbench content in WKWebView');
+        }
+        if (returnedHeight < 80 || returnedHeight > 112 || posDriftX > 2 || posDriftY > 2) {
+          throw new Error(`Closing standalone Settings did not restore compact geometry (height=${returnedHeight}, drift=${posDriftX},${posDriftY})`);
+        }
+      } finally {
+        compactSettingsObserver.disconnect();
+      }
+
       findButton('Expand Workbench')!.click();
       await waitForUi(() => !document.querySelector('.compact-bar') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/branch-proof') === true, 'restart-repo-hydrated');
       const expandedSize = await win.outerSize();

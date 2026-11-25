@@ -2,12 +2,19 @@ import { act, createElement } from 'react';
 import type { CPushCommandReply } from '../../../../shared/cpush-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../../shared/ide-protocol';
-import type { ModelRevealKeyReply, ModelSaveReply, ReviewScopeReply } from '../../../../shared/model-protocol';
+import type {
+  ModelMutateReply,
+  ModelSaveReply,
+  ProviderRevealKeyReply,
+  ProviderSaveReply,
+  ProviderUpdateReply,
+  ReviewScopeReply,
+} from '../../../../shared/model-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
 import type { Root } from 'react-dom/client';
 import type { WindowController } from '../../../desktop/window';
 import { getMessages, LANGUAGE_OPTIONS } from '../../../i18n/messages';
-import type { ModelConfiguration } from '../../settings/modelProviders';
+import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
 import { Workbench } from '../Workbench';
 import { disconnectedBackend } from '../commands';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
@@ -90,18 +97,18 @@ export async function verifyWorkbench(root: Root) {
   type(promptArea, 'Extra instruction written before opening repository'); await tick();
   assert(button('Prompt').getAttribute('aria-expanded') === 'true', 'Non-empty prompt must mark Prompt toggle active');
   await clickElement(footerConfigBtn);
-  assert(!!document.querySelector('.model-form') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Clicking Configure Model in footer must open Add Model form with empty masked key');
+  assert(!!document.querySelector('.model-form[data-form-mode="create-provider"]') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Clicking Configure Model in footer must open Add Provider form with empty masked key');
   await click('Cancel');
-  assert(!document.querySelector('.overlay'), 'Cancelling Add Model opened from footer should return directly to workbench');
+  assert(!document.querySelector('.overlay'), 'Cancelling Add Provider opened from footer should return directly to workbench');
   await click('Settings');
   assert(
     document.querySelector('[data-setting-group="commit-language"] button[aria-pressed="true"]')?.textContent?.trim() === 'English'
       && document.querySelector('[data-setting-group="app-language"] button[aria-pressed="true"]')?.textContent?.trim() === 'English',
     'Default commit message language and app language must both be English',
   );
-  await click('Add First Model');
+  await click('Add First Provider');
   await click('Cancel');
-  assert(document.querySelector('[aria-label="Close Settings"]'), 'Cancelling Add Model opened from Settings should return to Settings');
+  assert(document.querySelector('[aria-label="Close Settings"]'), 'Cancelling Add Provider opened from Settings should return to Settings');
   await click('Close Settings');
   assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'Extra instruction written before opening repository', 'Opening and closing Settings must preserve extra instructions');
   await click('Clear Extra Instructions');
@@ -347,20 +354,22 @@ export async function verifyWorkbench(root: Root) {
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   checks.push('Single branch entry, IDEA-style Local/Remote collapsible menu, and Protected branch direct C-Push');
 
-  // 8. Provider fields, API Format select, token defaults, and disconnected model boundaries:
+  // 8. Provider connection fields, collapsible Advanced options (API Format + token defaults), and disconnected boundaries:
   await mount(fixture('no-model'));
-  await click('Settings'); await click('Add First Model');
+  await click('Settings'); await click('Add First Provider');
+  const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key storage info"]')!;
+  assert(
+    !!keyHelpTip && getComputedStyle(keyHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden'
+      && !document.querySelector('.model-form > p.help')
+      && !document.querySelector('select[aria-label="API Format"]'),
+    'Add Provider form should collapse Advanced fields by default, hide tooltip bubbles until hover/focus, and omit redundant footer paragraphs',
+  );
+  await clickElement(document.querySelector<HTMLButtonElement>('.advanced-toggle')!);
   const formatSelect = document.querySelector<HTMLSelectElement>('select[aria-label="API Format"]')!;
   const ctxInput = document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!;
   const maxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!;
   assert(formatSelect && formatSelect.value === 'anthropic-messages', 'Anthropic default API format should be anthropic-messages');
   assert(ctxInput.value === '200000' && maxOutInput.value === '16384', 'Anthropic default token limits should load from shared defaults');
-  const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key storage security"]')!;
-  assert(
-    !!keyHelpTip && getComputedStyle(keyHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden'
-      && !document.querySelector('.model-form > p.help'),
-    'Model form should hide tooltip bubbles until hover/focus and omit redundant footer paragraphs',
-  );
   await click('Custom Compatible');
   assert((formatSelect.value as string) === 'openai-completions', 'Custom Compatible default API format should be openai-completions');
   assert((ctxInput.value as string) === '128000' && (maxOutInput.value as string) === '16384', 'Custom Compatible should load its default token limits');
@@ -375,39 +384,86 @@ export async function verifyWorkbench(root: Root) {
   assert(document.querySelector('input[value="http://127.0.0.1:11434/v1"]'), 'Ollama default baseUrl mismatch');
   await click('Test Connection');
   assert(text().includes('no connection request was sent'), 'Disconnected preview must not fake successful model test');
-  await click('Save & Use');
-  assert(text().includes('no model or API key was saved'), 'Disconnected preview must not fake saved model');
+  await click('Save Anyway');
+  assert(text().includes('no configuration or API key was saved'), 'Disconnected preview must not fake saved provider');
   await click('Anthropic');
   assert(document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Switching providers leaked API key');
-  checks.push('Provider fields, API Format select, zero-model boundaries, and honest disconnected model errors');
+  checks.push('Provider connection fields, collapsible Advanced options, zero-model boundaries, and honest disconnected errors');
 
-  // 9. Shared model state across Settings and footer, model editing, and deleting down to zero:
+  // 9. Grouped provider cards, editing child model without key input, keeping empty connection on last model delete, deleting connection, and auto-activation:
   const modelCalls: WorkbenchCommand[] = [];
   let editedPayload: unknown;
-  await mount(fixture('typing'), {
+  const typingFixture = fixture('typing');
+  let mockConnections: ProviderConnection[] = typingFixture.connections.map((item) => ({ ...item }));
+  let mockModels: ModelConfiguration[] = typingFixture.models.map((item) => ({ ...item }));
+  let mockActiveModelId: string | null = typingFixture.activeModelId;
+  await mount(typingFixture, {
     ...disconnectedBackend,
-    async execute(command) { modelCalls.push(command); },
-    async saveModel(input) {
+    async execute(command): Promise<ModelMutateReply | void> {
+      modelCalls.push(command);
+      if (command.kind === 'deleteModel') {
+        mockModels = mockModels.filter((item) => item.id !== command.modelId);
+        if (mockActiveModelId === command.modelId) {
+          mockActiveModelId = mockModels[0]?.id ?? null;
+        }
+        return {
+          protocolVersion: 2,
+          connections: mockConnections.map((item) => ({ ...item })),
+          models: mockModels.map((item) => ({ ...item })),
+          activeModelId: mockActiveModelId,
+        };
+      }
+      if (command.kind === 'deleteProviderConnection') {
+        mockConnections = mockConnections.filter((item) => item.id !== command.connectionId);
+        mockModels = mockModels.filter((item) => item.connectionId !== command.connectionId);
+        if (!mockModels.some((item) => item.id === mockActiveModelId)) {
+          mockActiveModelId = mockModels[0]?.id ?? null;
+        }
+        return {
+          protocolVersion: 2,
+          connections: mockConnections.map((item) => ({ ...item })),
+          models: mockModels.map((item) => ({ ...item })),
+          activeModelId: mockActiveModelId,
+        };
+      }
+      return undefined;
+    },
+    async saveModel(input): Promise<ModelSaveReply> {
       editedPayload = input;
-      return {
-        id: input.id ?? 'new-id',
+      const parent = mockConnections.find((item) => item.id === input.connectionId)!;
+      const updated: ModelConfiguration = {
+        id: input.id ?? 'new-model-id',
+        connectionId: parent.id,
         name: input.name,
-        provider: input.provider,
+        provider: parent.provider,
         apiFormat: input.apiFormat,
         modelId: input.modelId,
         contextWindow: input.contextWindow,
         maxOutputTokens: input.maxOutputTokens,
-        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+        ...(parent.baseUrl ? { baseUrl: parent.baseUrl } : {}),
+      };
+      mockModels = input.id
+        ? mockModels.map((item) => (item.id === input.id ? updated : item))
+        : [...mockModels, updated];
+      if (!mockActiveModelId) mockActiveModelId = updated.id;
+      return {
+        protocolVersion: 2,
+        model: updated,
+        connections: mockConnections.map((item) => ({ ...item })),
+        models: mockModels.map((item) => ({ ...item })),
+        activeModelId: mockActiveModelId,
       };
     },
   });
   await click('Settings');
+  assert(document.querySelectorAll('.provider-card').length === 2, 'Settings should group models into 2 provider connection cards');
   const activeSelect = document.querySelector<HTMLButtonElement>('.model-row.is-active .model-select')!;
   assert(activeSelect && getComputedStyle(activeSelect).backgroundColor === 'rgba(0, 0, 0, 0)', 'Active model background should belong to .model-row card rather than inner button');
   await click('Edit model GPT-4.1');
-  assert(text().includes('Edit Model') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Edit Model must not prefill plaintext API key');
-  const editModelIdInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')].find((el) => el.value === 'gpt-4.1')!;
+  assert(text().includes('Edit Model') && !document.querySelector('input[type="password"]'), 'Edit Model must not show API Key input');
+  const editModelIdInput = document.querySelector<HTMLInputElement>('.model-form [data-field="model-id"]')!;
   type(editModelIdInput, 'gpt-4.1-mini'); await tick();
+  await clickElement(document.querySelector<HTMLButtonElement>('.advanced-toggle')!);
   const editCtxInput = document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!;
   const editMaxOutInput = document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!;
   type(editCtxInput, '256000');
@@ -419,43 +475,60 @@ export async function verifyWorkbench(root: Root) {
   });
   await click('Save Changes');
   assert(
-    !!editedPayload && (editedPayload as { id?: string; apiKey: string; apiFormat?: string }).id === 'test-gpt'
-      && (editedPayload as { apiKey: string }).apiKey === ''
+    !!editedPayload && (editedPayload as { id?: string; connectionId?: string; apiFormat?: string }).id === 'test-gpt'
+      && (editedPayload as { connectionId?: string }).connectionId === 'conn-openai'
       && (editedPayload as { apiFormat?: string }).apiFormat === 'openai-completions'
       && (editedPayload as { contextWindow?: number }).contextWindow === 256_000
       && (editedPayload as { maxOutputTokens?: number }).maxOutputTokens === 24_576
       && !!document.querySelector('[aria-label="Close Settings"]')
       && text().includes('gpt-4.1-mini')
       && text().includes('256K/24K'),
-    'Editing model with empty key should retain Keychain secret, return to Settings, and preserve custom token limits',
+    'Editing child model should keep connection intact, return to Settings, and preserve custom token limits',
   );
   await click('Delete model Claude Sonnet 4');
-  assert(text().includes('GPT-4.1') && !text().includes('Claude Sonnet 4'), 'Deleting active model did not fall back to remaining model');
+  assert(
+    text().includes('GPT-4.1')
+      && !text().includes('Claude Sonnet 4')
+      && text().includes('No models under this connection yet.')
+      && document.querySelectorAll('.provider-card').length === 2,
+    'Deleting the last model under Anthropic must keep the empty Anthropic connection card and fall back to GPT-4.1',
+  );
   assert(modelCalls.length === 1 && modelCalls[0].kind === 'deleteModel', 'Deleting or editing model triggered unexpected selectModel');
   await click('Close Settings');
   assert(button('GPT-4.1'), 'Settings and ActionFooter did not share active model');
-  await click('Settings'); await click('Delete model GPT-4.1');
-  assert(!!document.querySelector('.model-empty') && ![...document.querySelectorAll('.settings-content button')].some((item) => item.textContent?.trim() === 'Add Model'), 'Zero-model empty state should not duplicate header Add Model button');
+  await click('Settings');
+  await click('Delete connection Anthropic');
+  assert(!!document.querySelector('.provider-delete-confirm'), 'Deleting connection must show inline confirmation');
+  await click('Delete Connection');
+  assert(document.querySelectorAll('.provider-card').length === 1, 'Confirming delete must remove the provider connection card');
+  await click('Delete connection OpenAI');
+  await click('Delete Connection');
+  assert(!!document.querySelector('.model-empty') && ![...document.querySelectorAll('.settings-content button')].some((item) => item.textContent?.trim() === 'Provider'), 'Zero-connection empty state should not duplicate header Provider button');
   await click('Close Settings');
-  assert(!document.querySelector('.model-button') && button('Add Model'), 'Deleting last model left stale model dropdown');
-  checks.push('Shared model catalog, card model list, edit/delete isolation, and zero-model fallback');
+  assert(!document.querySelector('.model-button') && button('Add Model'), 'Deleting last connection left stale model dropdown');
+  checks.push('Grouped provider cards, child model editing, empty connection preservation, connection delete confirmation, and zero-model fallback');
 
-  await mount(fixture('no-model'), { ...disconnectedBackend, async saveModel(input) {
-    assert(input.apiKey === '' && input.provider === 'ollama' && input.locale === 'en', 'Hidden key must not enter saveModel request');
-    return { id: 'fixture-saved', name: input.name, provider: input.provider, modelId: input.modelId, baseUrl: input.baseUrl };
-  } });
-  await click('Settings'); await click('Add First Model'); await click('Ollama (Local)'); await click('Save & Use');
-  assert(!document.querySelector('.overlay') && button('Qwen 2.5 Coder'), 'Saving first model should close both overlays and activate model');
-  checks.push('Add Model save receipt, auto-activation, and return to workbench');
+  await mount(fixture('no-model'), {
+    ...disconnectedBackend,
+    async createProviderConnection(input): Promise<ProviderSaveReply> {
+      assert(input.apiKey === '' && input.provider === 'ollama' && input.locale === 'en', 'Hidden key must not enter createProviderConnection request');
+      const connection: ProviderConnection = { id: 'conn-ollama-saved', name: input.connectionName, provider: input.provider, baseUrl: input.baseUrl };
+      const model: ModelConfiguration = { id: 'fixture-saved', connectionId: connection.id, name: input.modelName, provider: input.provider, modelId: input.modelId, baseUrl: input.baseUrl };
+      return { protocolVersion: 2, connection, model, connections: [connection], models: [model], activeModelId: model.id };
+    },
+  });
+  await click('Settings'); await click('Add First Provider'); await click('Ollama (Local)'); await click('Save & Use');
+  assert(!document.querySelector('.overlay') && button('Qwen 2.5 Coder'), 'Saving first provider should close both overlays and activate model');
+  checks.push('Add Provider save receipt, auto-activation, and return to workbench');
 
-  const connections: { resolve: (description: string) => void }[] = [];
-  await mount(fixture('no-model'), { ...disconnectedBackend, testModel() { return new Promise((resolve) => connections.push({ resolve })); } });
-  await click('Settings'); await click('Add First Model'); await click('Ollama (Local)'); await click('Test Connection');
-  const modelInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')].find((input) => input.value === 'qwen2.5-coder:14b')!;
+  const pendingTests: { resolve: (description: string) => void }[] = [];
+  await mount(fixture('no-model'), { ...disconnectedBackend, testModel() { return new Promise((resolve) => pendingTests.push({ resolve })); } });
+  await click('Settings'); await click('Add First Provider'); await click('Ollama (Local)'); await click('Test Connection');
+  const modelInput = document.querySelector<HTMLInputElement>('.model-form [data-field="model-id"]')!;
   type(modelInput, 'changed-model'); await tick(); await click('Test Connection');
-  await act(async () => { connections[0].resolve('Stale connection test result'); });
+  await act(async () => { pendingTests[0].resolve('Stale connection test result'); });
   assert(!text().includes('Stale connection test result') && text().includes('Testing…'), 'Stale test result polluted updated form fields');
-  await act(async () => { connections[1].resolve('Fresh connection test result (fixture)'); });
+  await act(async () => { pendingTests[1].resolve('Fresh connection test result (fixture)'); });
   assert(text().includes('Fresh connection test result (fixture)'), 'Fresh connection result did not render');
   type(modelInput, 'changed-again'); await tick();
   assert(!text().includes('Fresh connection test result (fixture)'), 'Changing connection field did not clear previous test status');
@@ -476,7 +549,7 @@ export async function verifyWorkbench(root: Root) {
   document.documentElement.classList.add('native-titlebar');
   const compact = fixture('typing');
   compact.repositories[0].name = 'a-repository-with-a-very-long-name-that-must-truncate';
-  compact.models = []; compact.activeModelId = null;
+  compact.connections = []; compact.models = []; compact.activeModelId = null;
   await mount(compact);
   const firstRow = document.querySelector<HTMLElement>('.context-top')!;
   const repositoryButton = document.querySelector<HTMLButtonElement>('.repository-button')!;
@@ -492,8 +565,8 @@ export async function verifyWorkbench(root: Root) {
   assert(document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left >= 84, 'Settings title overlapped native window controls');
   const projectBadge = document.querySelector<HTMLElement>('.project-badge')!;
   assert(projectBadge && projectBadge.getBoundingClientRect().right <= innerWidth - 14, 'Long repository badge in Settings overflowed narrow window');
-  await click('Add First Model');
-  assert(document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left >= 84, 'Add Model title overlapped native window controls');
+  await click('Add First Provider');
+  assert(document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left >= 84, 'Add Provider title overlapped native window controls');
   assert(!document.querySelector('.overlay-heading button[data-tauri-drag-region]'), 'Overlay close button must not carry drag region');
   document.documentElement.classList.remove('native-titlebar');
   checks.push('Native titlebar inset clearance, long repository badge truncation, and overlay drag boundaries');
@@ -508,7 +581,8 @@ export async function verifyWorkbench(root: Root) {
     return reply;
   } };
   const emptyWithModel = fixture('empty');
-  emptyWithModel.models = [{ id: 'test-claude', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }];
+  emptyWithModel.connections = [{ id: 'conn-anthropic', name: 'Anthropic', provider: 'anthropic', keyHint: 'sk-a…test' }];
+  emptyWithModel.models = [{ id: 'test-claude', connectionId: 'conn-anthropic', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }];
   emptyWithModel.activeModelId = 'test-claude';
   await mount(emptyWithModel, reads);
   await click('+ Prompt');
@@ -883,7 +957,8 @@ export async function verifyWorkbench(root: Root) {
   await mount(m3State, {
     ...disconnectedBackend,
     async testModel(input) {
-      throw new Error(`Upstream auth error: Bearer ${input.apiKey} rejected`);
+      const secret = 'apiKey' in input ? input.apiKey : '';
+      throw new Error(`Upstream auth error: Bearer ${secret} rejected`);
     },
     async cancelRequest(requestId) { cancelledIds.push(requestId); },
     execute(command) {
@@ -897,7 +972,7 @@ export async function verifyWorkbench(root: Root) {
       return disconnectedBackend.execute(command);
     },
   });
-  await click('Settings'); await click('Add Model');
+  await click('Settings'); await click('Provider');
   const keyField = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
   type(keyField, 'sk-form-secret-5566'); await tick();
   await click('Test Connection');
@@ -1006,7 +1081,7 @@ export async function verifyWorkbench(root: Root) {
     async execute(command) {
       if (command.kind === 'review') {
         return {
-          protocolVersion: 1, kind: 'review', requestId: command.requestId, target: command.target,
+          protocolVersion: 2, kind: 'review', requestId: command.requestId, target: command.target,
           modelId: command.modelId, findings: [], skippedPaths: ['pnpm-lock.yaml (lockfile skipped by default)'], reviewedFileIds: [],
         };
       }
@@ -1128,7 +1203,8 @@ export async function verifyWorkbench(root: Root) {
   let reconcileCalls = 0;
   let pullCreatesConflict = false;
   const m5InitState = fixture('empty');
-  m5InitState.models = [{ id: 'test-claude', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }];
+  m5InitState.connections = [{ id: 'conn-anthropic', name: 'Anthropic', provider: 'anthropic', keyHint: 'sk-a…test' }];
+  m5InitState.models = [{ id: 'test-claude', connectionId: 'conn-anthropic', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }];
   m5InitState.activeModelId = 'test-claude';
   await mount(m5InitState, {
     ...reads,
@@ -1679,6 +1755,7 @@ export async function verifyWorkbench(root: Root) {
     let winPos = { ...initialPos };
     let winSize = { ...initialSize };
     let geometryListener: ((snap: { position: { x: number; y: number }; size: { width: number; height: number } }) => void) | undefined;
+    let pendingGate: { promise: Promise<void>; release: () => void } | null = null;
     const notifications: { title: string; body: string }[] = [];
     const history: { pinned: boolean; compactMode: boolean; pos: { x: number; y: number }; size: { width: number; height: number } }[] = [];
     const controller: WindowController = {
@@ -1686,12 +1763,21 @@ export async function verifyWorkbench(root: Root) {
       async readSnapshot() {
         return { pinned: winPinned, focused: true, scaleFactor: 2, position: { ...winPos }, size: { ...winSize } };
       },
+      async setPinned(nextPinned) {
+        winPinned = nextPinned;
+        return winPinned;
+      },
       async applyWindowMode(opts) {
         const previousPosition = { ...winPos };
         const previousSize = { ...winSize };
+        if (pendingGate) {
+          const gate = pendingGate;
+          pendingGate = null;
+          await gate.promise;
+        }
         winPinned = opts.pinned;
         winSize = opts.compactMode
-          ? { width: 400, height: opts.compactHeight ?? 86 }
+          ? { width: opts.compactWidth ?? 400, height: opts.compactHeight ?? 86 }
           : { width: opts.fullSize.width, height: opts.fullSize.height };
         if (opts.placement === 'restorePosition' && opts.targetPosition) {
           winPos = { ...opts.targetPosition };
@@ -1707,7 +1793,7 @@ export async function verifyWorkbench(root: Root) {
         };
       },
       async adjustCompactHeight(height) {
-        winSize = { width: 400, height };
+        winSize = { width: Math.max(400, winSize.width), height };
       },
       subscribeGeometry(listener) {
         geometryListener = listener;
@@ -1725,8 +1811,18 @@ export async function verifyWorkbench(root: Root) {
       getPos: () => ({ ...winPos }),
       getSize: () => ({ ...winSize }),
       getPinned: () => winPinned,
+      pauseNextApply() {
+        let release!: () => void;
+        const promise = new Promise<void>((resolve) => { release = resolve; });
+        pendingGate = { promise, release };
+        return release;
+      },
       dragTo(x: number, y: number) {
         winPos = { x, y };
+        geometryListener?.({ position: { ...winPos }, size: { ...winSize } });
+      },
+      resizeTo(width: number, height: number) {
+        winSize = { width, height };
         geometryListener?.({ position: { ...winPos }, size: { ...winSize } });
       },
     };
@@ -1747,6 +1843,10 @@ export async function verifyWorkbench(root: Root) {
     const compactDragSpacer = document.querySelector<HTMLElement>('.compact-drag-spacer')!;
     const expandBtn = button('Expand Workbench');
     const unpinBtn = button('Unpin Window');
+    const compactSettingsBtn = button('Settings');
+    const compactToolLabels = [...document.querySelectorAll<HTMLButtonElement>('.compact-tools .icon-button')].map(
+      (item) => item.getAttribute('aria-label'),
+    );
     assert(
       compactTop.getBoundingClientRect().height === 38
         && compactTop.hasAttribute('data-tauri-drag-region')
@@ -1756,16 +1856,19 @@ export async function verifyWorkbench(root: Root) {
         && compactDragSpacer.hasAttribute('data-tauri-drag-region')
         && !expandBtn.hasAttribute('data-tauri-drag-region')
         && !unpinBtn.hasAttribute('data-tauri-drag-region')
+        && !compactSettingsBtn.hasAttribute('data-tauri-drag-region')
         && compactRepoBtn.getBoundingClientRect().left >= 78
         && document.querySelector<HTMLElement>('.compact-repo')!.getBoundingClientRect().left >= 84
-        && unpinBtn.getBoundingClientRect().right <= 400
+        && compactSettingsBtn.getBoundingClientRect().right <= 400
         && expandBtn.getBoundingClientRect().width === 26
-        && !document.querySelector('[aria-label="Settings"]')
+        && unpinBtn.getBoundingClientRect().width === 26
+        && compactSettingsBtn.getBoundingClientRect().width === 26
+        && JSON.stringify(compactToolLabels) === JSON.stringify(['Expand Workbench', 'Unpin Window', 'Settings'])
         && !document.querySelector('[aria-label="C-Push Session History"]')
         && !document.querySelector('.prompt-textarea')
         && !document.querySelector('.compact-top .branch-tag')
         && compactRemoteBtn.textContent?.replace(/\s+/g, ' ').trim() === '\u21912 \u21931',
-      'Compact Row 1 must clear native traffic lights (84px), expose non-drag project/branch/remote triggers + middle drag spacer, omit outer Protected badge, hide History/Settings, and never push Expand/Pin off-screen',
+      'Compact Row 1 must clear native traffic lights (84px), show permanent Expand/Pin/Settings in order without overflow, hide History, and omit outer Protected badge',
     );
     const barHeight = document.querySelector<HTMLElement>('.compact-bar')!.getBoundingClientRect().height;
     assert(barHeight >= 82 && barHeight <= 94, `Expected collapsed 2-row compact bar height ~86px, got ${barHeight}`);
@@ -1799,10 +1902,28 @@ export async function verifyWorkbench(root: Root) {
     winMock2.controller,
   );
   await tick();
-  assert(!document.querySelector('[aria-label="Collapse to Compact Mode"]'), 'Unpinned full mode should not show Collapse button');
+  const fullToolLabels = [...document.querySelectorAll<HTMLButtonElement>('.header-tools .icon-button')].map(
+    (item) => item.getAttribute('aria-label'),
+  );
+  assert(
+    JSON.stringify(fullToolLabels) === JSON.stringify(['C-Push Session History', 'Collapse to Compact Mode', 'Pin Window', 'Settings']),
+    `Full mode header must always show History, Collapse, Pin, and Settings in order (got ${JSON.stringify(fullToolLabels)})`,
+  );
 
-  // Click Pin -> enters 2-row ~86px Compact Mode with top-left (210, 145) unchanged:
+  // Clicking Pin only toggles always-on-top while staying in Full Mode (height & position unchanged):
   await click('Pin Window');
+  await tick();
+  assert(
+    !document.querySelector('.compact-bar')
+      && winMock2.getPinned() === true
+      && winMock2.getPos().x === 210
+      && winMock2.getPos().y === 145
+      && winMock2.getSize().height === 700,
+    'Clicking Pin in Full Mode must only pin the window without auto-collapsing into Compact Mode',
+  );
+
+  // Clicking Collapse enters 2-row ~86px Compact Mode while keeping pinned=true and top-left (210, 145) unchanged:
+  await click('Collapse to Compact Mode');
   await tick();
   assert(
     !!document.querySelector('.compact-bar')
@@ -1812,7 +1933,7 @@ export async function verifyWorkbench(root: Root) {
       && winMock2.getPos().y === 145
       && winMock2.getSize().height >= 82
       && winMock2.getSize().height <= 94,
-    `Clicking Pin must enter ~86px 2-row Compact Mode with top-left coordinates unchanged (got size=${JSON.stringify(winMock2.getSize())})`,
+    `Clicking Collapse must enter ~86px 2-row Compact Mode with top-left coordinates unchanged (got size=${JSON.stringify(winMock2.getSize())})`,
   );
   // Short repo & branch buttons must hug tightly on the left instead of stretching across Row 1:
   const repoRect = document.querySelector<HTMLElement>('.compact-repo-button')!.getBoundingClientRect();
@@ -1978,7 +2099,7 @@ export async function verifyWorkbench(root: Root) {
     'Incoming question in Compact Mode must update Row 2 status & notify without auto-expanding',
   );
 
-  // Plain Expand button preserves pinned=true, top-left (210, 145), and prompt text, and remembers pinnedExpanded on re-pin:
+  // Plain Expand button preserves pinned=true, top-left (210, 145), and prompt text:
   await click('Expand Workbench');
   await tick();
   const fullPromptAfterExpand = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
@@ -1993,29 +2114,156 @@ export async function verifyWorkbench(root: Root) {
     'Expanding from Compact Mode must preserve pinned state, top-left position, and worktree prompt text',
   );
 
-  // Unpin then Pin again -> remembers manual expand preference (stays in Full Mode!):
+  // Unpin in Full Mode only unpins and stays in Full Mode; Collapse while unpinned enters unpinned Compact Mode:
   await click('Unpin Window');
   await tick();
-  assert(!winMock2.getPinned() && !document.querySelector('.compact-bar'), 'Unpin should stay in full mode');
-  await click('Pin Window');
-  await tick();
-  assert(winMock2.getPinned() && !document.querySelector('.compact-bar'), 'Re-pinning after manual expand must remember expanded state');
-
-  // Collapse via header Collapse button -> enters Compact Mode; drag compact bar to (860, 40); Unpin restores original fullPosition (210, 145) & fullSize (400, 700):
+  assert(!winMock2.getPinned() && !document.querySelector('.compact-bar'), 'Unpin in full mode should stay in full mode');
   await click('Collapse to Compact Mode');
   await tick();
-  assert(!!document.querySelector('.compact-bar') && winMock2.getSize().height <= 94, 'Header Collapse button must enter ~86px Compact Mode');
-  await act(async () => { winMock2.dragTo(860, 40); });
+  assert(
+    !!document.querySelector('.compact-bar')
+      && !winMock2.getPinned()
+      && winMock2.getSize().height <= 94,
+    'Collapse while unpinned must enter unpinned Compact Mode without forcing pin',
+  );
+
+  // Pin & Unpin while in Compact Mode only toggle pin without exiting Compact Mode:
+  await click('Pin Window');
   await tick();
+  assert(!!document.querySelector('.compact-bar') && winMock2.getPinned(), 'Pin in Compact Mode must stay in Compact Mode');
   await click('Unpin Window');
   await tick();
+  assert(!!document.querySelector('.compact-bar') && !winMock2.getPinned(), 'Unpin in Compact Mode must stay in Compact Mode');
+
+  // Path 1 (Compact -> Settings -> Compact): standalone Settings expands without EVER mounting .workbench-content / .changes-panel / .lower-workspace / .action-footer, and restores exact pre-settings compact size & position even if Settings was dragged:
+  await act(async () => {
+    winMock2.dragTo(260, 640);
+    winMock2.resizeTo(460, 88);
+  });
+  await tick();
+  const observedWorkbenchFlashes: string[] = [];
+  const recordFlashIfPresent = (stage: string) => {
+    if (document.querySelector('.workbench-content, .changes-panel, .lower-workspace, .action-footer')) {
+      observedWorkbenchFlashes.push(stage);
+    }
+  };
+  const flashObserver = new MutationObserver(() => recordFlashIfPresent('mutation'));
+  flashObserver.observe(document.body, { childList: true, subtree: true });
+  try {
+    const releaseOpenSettings = winMock2.pauseNextApply();
+    await click('Settings');
+    await tick();
+    // Mid-open (native resize still in flight): Settings is already mounted standalone, Close Settings is disabled until resize finishes, NO full workbench in DOM!
+    recordFlashIfPresent('mid-open');
+    assert(
+      document.querySelector('main')?.getAttribute('data-surface') === 'standaloneSettings'
+        && document.querySelector('main')?.getAttribute('data-window-transition') === 'resizing'
+        && !document.querySelector('.compact-bar')
+        && !document.querySelector('.workbench-content')
+        && !!document.querySelector('button[aria-label="Close Settings"]:disabled'),
+      'Opening Settings from Compact Mode must render standalone Settings immediately (with close guarded during resize) without mounting full workbench',
+    );
+    await act(async () => { releaseOpenSettings(); });
+    await tick();
+    recordFlashIfPresent('opened');
+    assert(
+      !document.querySelector('.compact-bar')
+        && !document.querySelector('.workbench-content')
+        && document.querySelector('main')?.getAttribute('data-window-transition') === 'idle'
+        && !winMock2.getPinned()
+        && winMock2.getSize().height === 700
+        && !!document.querySelector('button[aria-label="Close Settings"]:not(:disabled)'),
+      'Clicking Settings in Compact Mode must expand to Full Size and show standalone Settings while preserving pin state',
+    );
+
+    // Drag the Settings window elsewhere; closing must still restore the exact pre-settings compact position (260, 640) and size (460x88):
+    await act(async () => {
+      winMock2.dragTo(620, 90);
+    });
+    await tick();
+
+    const releaseCloseSettings = winMock2.pauseNextApply();
+    await click('Close Settings');
+    await tick();
+    // Mid-close (native shrink still in flight): standalone Settings stays mounted, NO full workbench flash!
+    recordFlashIfPresent('mid-close');
+    assert(
+      document.querySelector('main')?.getAttribute('data-surface') === 'standaloneSettings'
+        && !!document.querySelector('[aria-label="Close Settings"]')
+        && !document.querySelector('.workbench-content')
+        && !document.querySelector('.compact-bar'),
+      'Closing Settings opened from Compact Mode must keep Settings visible during resize and never flash full workbench',
+    );
+    await act(async () => { releaseCloseSettings(); });
+    await tick();
+    recordFlashIfPresent('closed');
+    assert(
+      observedWorkbenchFlashes.length === 0
+        && document.querySelector('main')?.getAttribute('data-surface') === 'compact'
+        && !document.querySelector('.overlay')
+        && !!document.querySelector('.compact-bar')
+        && !winMock2.getPinned()
+        && winMock2.getPos().x === 260
+        && winMock2.getPos().y === 640
+        && winMock2.getSize().width === 460
+        && winMock2.getSize().height <= 94,
+      `Closing Settings opened from Compact Mode must restore pre-settings compact size/position with zero workbench flashes (flashes=${JSON.stringify(observedWorkbenchFlashes)}, pos=${JSON.stringify(winMock2.getPos())}, size=${JSON.stringify(winMock2.getSize())})`,
+    );
+  } finally {
+    flashObserver.disconnect();
+  }
+
+  // Path 3 + Path 2 (Compact -> Full Workbench -> Settings -> Full Workbench -> Compact):
+  // Expanding to Full Workbench preserves repo, branch, selected files, and typed prompt;
+  // Opening/Closing Settings from Full Workbench keeps current window size & position completely untouched:
+  await click('Expand Workbench');
+  await tick();
+  await act(async () => {
+    winMock2.dragTo(310, 120);
+    winMock2.resizeTo(480, 620);
+  });
+  await tick();
+  const applyCountBeforeFullSettings = winMock2.history.length;
   assert(
-    !document.querySelector('.compact-bar')
-      && !winMock2.getPinned()
-      && winMock2.getPos().x === 210
-      && winMock2.getPos().y === 145
-      && winMock2.getSize().height === 700,
-    `Unpinning after dragging compact bar must restore full mode size & position (got pos=${JSON.stringify(winMock2.getPos())})`,
+    document.querySelector('main')?.getAttribute('data-surface') === 'workbench'
+      && (document.querySelector('.repository-button')?.textContent ?? '').includes('my-order-service')
+      && (document.querySelector('.branch-anchor > button')?.textContent ?? '').includes('feat/pay')
+      && document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value.includes('split release notes'),
+    'Compact -> Full Workbench must preserve active repository, branch, and typed prompt',
+  );
+  await click('Settings');
+  await tick();
+  assert(
+    winMock2.history.length === applyCountBeforeFullSettings
+      && document.querySelector('main')?.getAttribute('data-surface') === 'workbench'
+      && !!document.querySelector('.workbench-content')
+      && !!document.querySelector('[aria-label="Close Settings"]')
+      && winMock2.getPos().x === 310
+      && winMock2.getPos().y === 120
+      && winMock2.getSize().width === 480
+      && winMock2.getSize().height === 620,
+    'Opening Settings from Full Workbench must keep window size/position unchanged and overlay on workbench',
+  );
+  await click('Close Settings');
+  await tick();
+  assert(
+    winMock2.history.length === applyCountBeforeFullSettings
+      && !document.querySelector('.overlay')
+      && !!document.querySelector('.workbench-content')
+      && winMock2.getPos().x === 310
+      && winMock2.getPos().y === 120
+      && winMock2.getSize().width === 480
+      && winMock2.getSize().height === 620
+      && document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value.includes('split release notes'),
+    'Closing Settings opened from Full Workbench must return directly to workbench with unchanged size, position, and prompt',
+  );
+  await click('Collapse to Compact Mode');
+  await tick();
+  assert(
+    !!document.querySelector('.compact-bar')
+      && (document.querySelector('.compact-repo')?.textContent ?? '').includes('my-order-service')
+      && (document.querySelector('.compact-branch')?.textContent ?? '') === 'feat/pay',
+    'Collapsing back to Compact Mode must preserve active repository and branch',
   );
 
   // Row 2 click-to-expand jump targets:
@@ -2067,11 +2315,11 @@ export async function verifyWorkbench(root: Root) {
   );
   checks.push('Pinned Compact Mode: browser-preview boundary, 2-row ~86px layout, project & file drawers, ▸ jump targets, non-auto-expand, and background notifications');
 
-  // 18. Model key hints, authenticated full-key reveal (30s / toggle / blur / close auto-hide), duplicate sharing & endpoint guard, and shared-key editing:
+  // 18. Provider key hints, Edit Connection reveal (30s / toggle / blur / close auto-hide), key rotation impact, adding child models under a connection, and footer duplicate-name disambiguation:
   const fakeRevealedSecret = 'fake-revealed-gateway-secret-9001';
-  let revealOutcome: ModelRevealKeyReply = {
-    protocolVersion: 1,
-    modelId: 'm-gw-1',
+  let revealOutcome: ProviderRevealKeyReply = {
+    protocolVersion: 2,
+    connectionId: 'conn-gw',
     outcome: 'cancelled',
     message: 'Authentication cancelled.',
   };
@@ -2079,27 +2327,42 @@ export async function verifyWorkbench(root: Root) {
     revealCalls: 0,
     testCalls: [] as unknown[],
     failNextTestMessage: null as string | null,
-    saveCalls: [] as unknown[],
+    updateCalls: [] as unknown[],
+    saveModelCalls: [] as unknown[],
   };
   const getRevealCalls = () => tracker.revealCalls;
-  const getSaveCount = () => tracker.saveCalls.length;
   const persistedPayloads: WorkbenchSaveRequest[] = [];
+  let liveConnections: ProviderConnection[] = [
+    {
+      id: 'conn-gw',
+      name: 'Company Gateway',
+      provider: 'custom',
+      baseUrl: 'https://gw.example.com/v1',
+      keyHint: 'fake…9001',
+    },
+    {
+      id: 'conn-ollama',
+      name: 'Local Ollama',
+      provider: 'ollama',
+      baseUrl: 'http://127.0.0.1:11434/v1',
+    },
+  ];
   let liveModels: ModelConfiguration[] = [
     {
       id: 'm-gw-1',
-      name: 'Gateway Alpha',
+      connectionId: 'conn-gw',
+      name: 'Coder',
       provider: 'custom',
       apiFormat: 'openai-completions',
       modelId: 'coder-alpha',
       baseUrl: 'https://gw.example.com/v1',
       contextWindow: 128_000,
       maxOutputTokens: 16_384,
-      keyHint: 'fake…9001',
-      sharedKeyCount: 1,
     },
     {
       id: 'm-ollama',
-      name: 'Local Qwen',
+      connectionId: 'conn-ollama',
+      name: 'Coder',
       provider: 'ollama',
       apiFormat: 'openai-completions',
       modelId: 'qwen2.5-coder:14b',
@@ -2108,9 +2371,10 @@ export async function verifyWorkbench(root: Root) {
       maxOutputTokens: 4_096,
     },
   ];
-  let liveActiveModelId = 'm-gw-1';
+  let liveActiveModelId: string | null = 'm-gw-1';
 
   const credentialState = fixture('typing');
+  credentialState.connections = liveConnections.map((item) => ({ ...item }));
   credentialState.models = liveModels.map((item) => ({ ...item }));
   credentialState.activeModelId = liveActiveModelId;
 
@@ -2119,9 +2383,9 @@ export async function verifyWorkbench(root: Root) {
     async saveWorkbenchState(request) {
       persistedPayloads.push(request);
     },
-    async revealModelApiKey(modelId) {
+    async revealProviderApiKey(connectionId) {
       tracker.revealCalls += 1;
-      return { ...revealOutcome, modelId };
+      return { ...revealOutcome, connectionId };
     },
     async testModel(input) {
       tracker.testCalls.push(input);
@@ -2130,100 +2394,80 @@ export async function verifyWorkbench(root: Root) {
         tracker.failNextTestMessage = null;
         throw new Error(msg);
       }
-      return `Connected: ${input.provider} · ${input.modelId} (12 ms)`;
+      const modelId = 'modelId' in input && input.modelId ? input.modelId : 'coder-alpha';
+      return `Connected: ${modelId} (12 ms)`;
+    },
+    async updateProviderConnection(input): Promise<ProviderUpdateReply> {
+      tracker.updateCalls.push(input);
+      const nextHint = input.apiKey ? `fake…${input.apiKey.slice(-4)}` : undefined;
+      liveConnections = liveConnections.map((conn) =>
+        conn.id === input.connectionId
+          ? { ...conn, name: input.name, ...(nextHint ? { keyHint: nextHint } : {}) }
+          : conn,
+      );
+      const updated = liveConnections.find((conn) => conn.id === input.connectionId)!;
+      return {
+        protocolVersion: 2,
+        connection: updated,
+        connections: liveConnections.map((item) => ({ ...item })),
+        models: liveModels.map((item) => ({ ...item })),
+        activeModelId: liveActiveModelId,
+      };
     },
     async saveModel(input): Promise<ModelSaveReply> {
-      tracker.saveCalls.push(input);
-      if (input.id) {
-        const updateAll = input.sharedKeyUpdateScope !== 'detachCurrent';
-        const nextHint = input.apiKey ? `fake…${input.apiKey.slice(-4)}` : undefined;
-        liveModels = liveModels.map((item) => {
-          if (item.id === input.id) {
-            return {
-              ...item,
-              name: input.name,
-              provider: input.provider,
-              apiFormat: input.apiFormat,
-              modelId: input.modelId,
-              baseUrl: input.baseUrl || undefined,
-              contextWindow: input.contextWindow,
-              maxOutputTokens: input.maxOutputTokens,
-              ...(nextHint ? { keyHint: nextHint } : {}),
-              ...(input.sharedKeyUpdateScope === 'detachCurrent' ? { sharedKeyCount: 1 } : {}),
-            };
-          }
-          if (input.apiKey && updateAll && item.keyHint) {
-            return { ...item, keyHint: nextHint };
-          }
-          if (input.apiKey && input.sharedKeyUpdateScope === 'detachCurrent' && item.keyHint) {
-            return { ...item, sharedKeyCount: Math.max(1, (item.sharedKeyCount ?? 2) - 1) };
-          }
-          return item;
-        });
-        const updated = liveModels.find((item) => item.id === input.id)!;
-        return {
-          protocolVersion: 1,
-          model: updated,
-          models: liveModels.map((item) => ({ ...item })),
-          activeModelId: liveActiveModelId,
-        };
-      }
-
-      const createdId = `m-dup-${tracker.saveCalls.length}`;
-      const sharesSource = !!input.sourceModelId && !input.apiKey;
-      if (sharesSource) {
-        liveModels = liveModels.map((item) =>
-          item.id === input.sourceModelId
-            ? { ...item, sharedKeyCount: (item.sharedKeyCount ?? 1) + 1 }
-            : item,
-        );
-      }
-      const sourceEntry = liveModels.find((item) => item.id === input.sourceModelId);
-      const created: ModelConfiguration = {
-        id: createdId,
+      tracker.saveModelCalls.push(input);
+      const parent = liveConnections.find((item) => item.id === input.connectionId)!;
+      const savedModel: ModelConfiguration = {
+        id: input.id ?? `m-child-${tracker.saveModelCalls.length}`,
+        connectionId: parent.id,
         name: input.name,
-        provider: input.provider,
+        provider: parent.provider,
         apiFormat: input.apiFormat,
         modelId: input.modelId,
-        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+        ...(parent.baseUrl ? { baseUrl: parent.baseUrl } : {}),
         contextWindow: input.contextWindow,
         maxOutputTokens: input.maxOutputTokens,
-        ...(sharesSource && sourceEntry?.keyHint
-          ? { keyHint: sourceEntry.keyHint, sharedKeyCount: sourceEntry.sharedKeyCount }
-          : input.apiKey
-            ? { keyHint: `fake…${input.apiKey.slice(-4)}`, sharedKeyCount: 1 }
-            : {}),
       };
-      liveModels = [...liveModels, created];
-      if (!input.keepActiveModel) {
-        liveActiveModelId = createdId;
-      }
+      liveModels = input.id
+        ? liveModels.map((item) => (item.id === input.id ? savedModel : item))
+        : [...liveModels, savedModel];
+      if (!liveActiveModelId) liveActiveModelId = savedModel.id;
       return {
-        protocolVersion: 1,
-        model: created,
+        protocolVersion: 2,
+        model: savedModel,
+        connections: liveConnections.map((item) => ({ ...item })),
         models: liveModels.map((item) => ({ ...item })),
         activeModelId: liveActiveModelId,
       };
     },
   });
 
-  // Opening Settings displays `keyHint` for key-bearing models without reading Keychain:
-  await click('Settings');
-  const modelRows = [...document.querySelectorAll<HTMLElement>('.model-row')];
+  // Footer disambiguates duplicate model names across connections as `<Connection Name> / <Model Name>`:
   assert(
-    modelRows.length === 2
-      && (modelRows[0].querySelector('.model-key-hint')?.textContent ?? '') === 'fake…9001'
-      && !modelRows[1].querySelector('.model-key-hint')
-      && getRevealCalls() === 0,
-    'Settings model list must show keyHint only for models needing a key without invoking Keychain reveal',
+    (document.querySelector('.model-button')?.textContent ?? '').includes('Company Gateway / Coder'),
+    'ActionFooter must disambiguate duplicate model display names across connections',
   );
 
-  // Edit form shows keyHint + Eye button; Cancelled auth shows short notice without revealing secret:
-  await click('Edit model Gateway Alpha');
+  // Opening Settings displays `keyHint` on provider cards without calling revealProviderApiKey:
+  await click('Settings');
+  const providerCards = [...document.querySelectorAll<HTMLElement>('.provider-card')];
   assert(
-    (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001'
+    providerCards.length === 2
+      && (providerCards[0].querySelector('.model-key-hint')?.textContent ?? '') === 'fake…9001'
+      && !providerCards[1].querySelector('.model-key-hint')
+      && getRevealCalls() === 0,
+    'Settings provider list must show keyHint only for key-bearing connections without invoking reveal',
+  );
+
+  // Edit Connection shows immutable provider/URL + keyHint + Eye reveal button; Cancelled auth shows short notice without revealing secret:
+  await click('Edit connection Company Gateway');
+  assert(
+    !!document.querySelector('.model-form[data-form-mode="edit-provider"]')
+      && text().includes('https://gw.example.com/v1')
+      && !document.querySelector('[data-field="base-url"]')
+      && (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001'
       && !!document.querySelector('button[aria-label="Reveal saved API key"]'),
-    'Edit model form must display keyHint and Reveal button next to API Key input',
+    'Edit Connection form must lock baseUrl as read-only identity and display keyHint + Reveal button',
   );
   await click('Reveal saved API key');
   await tick();
@@ -2237,8 +2481,8 @@ export async function verifyWorkbench(root: Root) {
 
   // Authenticated reveal: verify exact 30,000ms timer registration + 30s auto-hide + password input untouched + zero persistence leak:
   revealOutcome = {
-    protocolVersion: 1,
-    modelId: 'm-gw-1',
+    protocolVersion: 2,
+    connectionId: 'conn-gw',
     outcome: 'authenticated',
     apiKey: fakeRevealedSecret,
     keyHint: 'fake…9001',
@@ -2296,131 +2540,64 @@ export async function verifyWorkbench(root: Root) {
   assert(!text().includes(fakeRevealedSecret), 'Closing form must clear revealed key');
   assert(!JSON.stringify(persistedPayloads).includes(fakeRevealedSecret), 'Revealed API key must never enter persisted workbench payloads');
 
-  // Duplicate model: prefill, Display Name "Copy", focus in Model ID, endpoint guard, auto-test on changed modelId, and Save Anyway:
-  await click('Duplicate model Gateway Alpha');
+  // Add second child model under Company Gateway: Model ID autofocus, Test Connection failure -> Save Anyway, preserves activeModelId:
+  const addChildBtn = document.querySelector<HTMLButtonElement>('.provider-card[data-connection-id="conn-gw"] .provider-add-model')!;
+  await clickElement(addChildBtn);
   await tick();
-  const dupFormInputs = [...document.querySelectorAll<HTMLInputElement>('.model-form input')];
-  const dupNameInput = dupFormInputs[0];
-  const dupModelIdInput = dupFormInputs[1];
-  const dupUrlInput = dupFormInputs[2];
+  const childModelIdInput = document.querySelector<HTMLInputElement>('.model-form[data-form-mode="add-model"] [data-field="model-id"]')!;
+  const childModelNameInput = document.querySelector<HTMLInputElement>('.model-form[data-form-mode="add-model"] [data-field="model-name"]')!;
   assert(
-    text().includes('Duplicate Model')
-      && dupNameInput.value === 'Gateway Alpha Copy'
-      && dupModelIdInput.value === 'coder-alpha'
-      && document.activeElement === dupModelIdInput
-      && (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001'
-      && !document.querySelector('button[aria-label="Reveal saved API key"]'),
-    'Duplicate form must prefill non-secret fields, focus Model ID, show source keyHint, and omit Reveal button',
+    !!childModelIdInput
+      && document.activeElement === childModelIdInput
+      && !document.querySelector('.model-form input[type="password"]')
+      && !document.querySelector('.model-form [data-field="base-url"]'),
+    'Add Model under existing connection must focus Model ID and omit API Key / Base URL fields',
   );
-
-  // Changing Base URL blocks sharing and shows inline explanation:
-  type(dupUrlInput, 'https://different-gateway.example.com/v1'); await tick();
-  assert(
-    text().includes('Provider or base URL changed; enter a new API key.')
-      && !document.querySelector('.model-form .model-key-hint'),
-    'Changing Base URL in Duplicate form must require a new API key and explain why inline',
-  );
-  await click('Save');
-  assert(getSaveCount() === 0 && text().includes('Enter an API key'), 'Duplicate with changed URL and blank key must block save');
-
-  // Restoring normalized equivalent URL re-enables source key sharing; changing Model ID triggers auto-test + Save Anyway fallback:
-  type(dupUrlInput, 'https://GW.EXAMPLE.COM/v1/');
-  type(dupModelIdInput, 'coder-beta');
+  type(childModelIdInput, 'coder-beta');
+  type(childModelNameInput, 'Coder Beta');
   await tick();
-  assert(
-    !text().includes('Provider or base URL changed; enter a new API key.')
-      && (document.querySelector('.model-form .model-key-hint')?.textContent ?? '') === 'fake…9001',
-    'Normalized matching Base URL must re-enable source key sharing',
-  );
   tracker.testCalls = [];
   tracker.failNextTestMessage = 'Model coder-beta temporarily unreachable';
-  await click('Save');
+  await click('Test Connection');
   await tick();
   assert(
     tracker.testCalls.length === 1
-      && getSaveCount() === 0
+      && (tracker.testCalls[0] as { kind?: string; connectionId?: string }).kind === 'connectionModel'
+      && (tracker.testCalls[0] as { connectionId?: string }).connectionId === 'conn-gw'
       && text().includes('Model coder-beta temporarily unreachable')
       && !!button('Save Anyway'),
-    'Saving duplicated model with modified Model ID must auto-run connection test and offer Save Anyway on failure',
+    'Failed child model Test Connection must show error and turn submit button into Save Anyway',
   );
   await click('Save Anyway');
   await tick();
   assert(
-    getSaveCount() === 1
-      && (tracker.saveCalls[0] as { sourceModelId?: string; keepActiveModel?: boolean; apiKey?: string }).sourceModelId === 'm-gw-1'
-      && (tracker.saveCalls[0] as { keepActiveModel?: boolean }).keepActiveModel === true
-      && (tracker.saveCalls[0] as { apiKey?: string }).apiKey === ''
+    tracker.saveModelCalls.length === 1
       && !!document.querySelector('#settings-models-section')
       && !document.querySelector('.model-form')
-      && document.querySelector('.model-row.is-active strong')?.textContent === 'Gateway Alpha',
-    'Save Anyway must save duplicated model with sourceModelId, stay in Settings, and keep original activeModelId',
+      && document.querySelectorAll('.provider-card[data-connection-id="conn-gw"] .model-row').length === 2
+      && document.querySelector('.model-row.is-active strong')?.textContent === 'Coder',
+    'Save Anyway must add child model under Company Gateway, stay in Settings, and keep original activeModelId',
   );
 
-  // Duplicate numbering increments to "Copy 2" when "Gateway Alpha Copy" already exists:
-  await click('Duplicate model Gateway Alpha');
+  // Rotating connection API key shows child-count impact notice (`Applies to all 2 models under this connection.`):
+  await click('Edit connection Company Gateway');
+  await tick();
+  const rotateKeyInput = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
+  type(rotateKeyInput, 'fake-new-connection-secret-2222');
   await tick();
   assert(
-    document.querySelectorAll<HTMLInputElement>('.model-form input')[0].value === 'Gateway Alpha Copy 2',
-    'Duplicate display name must increment to Copy 2 when Copy already exists',
+    text().includes('Applies to all 2 models under this connection.'),
+    'Entering a new key in Edit Connection must display child model impact notice',
   );
-  await click('Cancel');
-
-  // Keyless Ollama model duplicates directly without API key prompt:
-  await click('Duplicate model Local Qwen');
-  await tick();
-  await click('Save');
-  await tick();
-  assert(getSaveCount() === 2 && text().includes('Local Qwen Copy'), 'Keyless Ollama duplicate must save directly');
-
-  // Editing a shared-key model (`sharedKeyCount: 2`): radio options (`updateAll` default vs `detachCurrent`) and endpoint-change detach:
-  await click('Edit model Gateway Alpha');
-  await tick();
-  assert(!document.querySelector('.shared-key-scope'), 'Blank API key when editing shared model must not show scope radio options');
-  const sharedKeyInput = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
-  type(sharedKeyInput, 'fake-new-shared-secret-2222');
-  await tick();
-  const scopeRadios = [...document.querySelectorAll<HTMLInputElement>('.shared-key-scope input[type="radio"]')];
-  assert(
-    scopeRadios.length === 2
-      && scopeRadios[0].checked
-      && text().includes('Update all 2 models sharing this key')
-      && text().includes('Use new key for this model only'),
-    'Entering new key on shared model must display count-only radio options with Update all selected by default',
-  );
-  const sharedUrlInput = [...document.querySelectorAll<HTMLInputElement>('.model-form input')][2];
-  type(sharedUrlInput, 'https://moved-endpoint.example.com/v1');
-  await tick();
-  assert(
-    !document.querySelector('.shared-key-scope')
-      && text().includes('Provider or base URL changed; enter a new API key.'),
-    'Changing Base URL on shared model must hide peer-update radio options and apply new key only to current model',
-  );
-  type(sharedUrlInput, 'https://gw.example.com/v1');
-  await tick();
-  assert(document.querySelectorAll('.shared-key-scope input[type="radio"]').length === 2, 'Restoring Base URL restores shared scope radio options');
   await click('Save Changes');
   await tick();
   assert(
-    (tracker.saveCalls.at(-1) as { sharedKeyUpdateScope?: string }).sharedKeyUpdateScope === 'updateAll'
-      && [...document.querySelectorAll('.model-key-hint')].every((el) => el.textContent === 'fake…2222'),
-    'Saving shared model with default Update all must update keyHint across all sharing models',
-  );
-
-  // Detach single model from shared credential (`detachCurrent`):
-  await click('Edit model Gateway Alpha Copy');
-  await tick();
-  type(document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!, 'fake-detached-secret-3333');
-  await tick();
-  const detachRadio = document.querySelector<HTMLInputElement>('.shared-key-scope input[value="detachCurrent"]')!;
-  await act(async () => { detachRadio.click(); });
-  await click('Save Changes');
-  await tick();
-  assert(
-    (tracker.saveCalls.at(-1) as { sharedKeyUpdateScope?: string }).sharedKeyUpdateScope === 'detachCurrent',
-    'Selecting Use new key for this model only must send sharedKeyUpdateScope=detachCurrent',
+    tracker.updateCalls.length === 1
+      && (document.querySelector('.provider-card[data-connection-id="conn-gw"] .model-key-hint')?.textContent ?? '') === 'fake…2222',
+    'Saving rotated connection key must update connection keyHint in Settings',
   );
   await click('Close Settings');
-  checks.push('Model key hints, authenticated full-key reveal & 4 auto-hide rules, duplicate sharing & endpoint guard, and shared-key editing');
+  checks.push('Provider key hints, authenticated full-key reveal & 4 auto-hide rules, child model creation, connection key rotation impact, and duplicate-name disambiguation');
 
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',

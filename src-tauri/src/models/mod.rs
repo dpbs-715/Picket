@@ -1,5 +1,5 @@
+pub mod credentials;
 pub mod defaults;
-pub mod keychain;
 pub mod local_auth;
 pub mod smoke;
 pub mod store;

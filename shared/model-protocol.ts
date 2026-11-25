@@ -1,7 +1,7 @@
 import type { GitReadTarget } from './git-read-protocol';
 import type { AppLocale } from './language-protocol';
 
-export const MODEL_PROTOCOL_VERSION = 1;
+export const MODEL_PROTOCOL_VERSION = 2;
 
 export const MODEL_PROVIDER_IDS = ['anthropic', 'openai', 'deepseek', 'ollama', 'custom'] as const;
 export type ModelProviderId = typeof MODEL_PROVIDER_IDS[number];
@@ -9,11 +9,17 @@ export type ModelProviderId = typeof MODEL_PROVIDER_IDS[number];
 export const MODEL_API_FORMATS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
 export type ModelApiFormat = typeof MODEL_API_FORMATS[number];
 
-export const SHARED_KEY_UPDATE_SCOPES = ['updateAll', 'detachCurrent'] as const;
-export type SharedKeyUpdateScope = typeof SHARED_KEY_UPDATE_SCOPES[number];
+export interface SavedProviderConnection {
+  id: string;
+  name: string;
+  provider: ModelProviderId;
+  baseUrl?: string;
+  keyHint?: string;
+}
 
 export interface SavedModelConfiguration {
   id: string;
+  connectionId: string;
   name: string;
   provider: ModelProviderId;
   apiFormat?: ModelApiFormat;
@@ -21,25 +27,68 @@ export interface SavedModelConfiguration {
   baseUrl?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
-  keyHint?: string;
-  sharedKeyCount?: number;
 }
 
-export interface ModelInputPayload {
-  id?: string;
-  sourceModelId?: string;
-  sharedKeyUpdateScope?: SharedKeyUpdateScope;
-  keepActiveModel?: boolean;
+export interface CreateProviderConnectionInput {
   provider: ModelProviderId;
-  apiFormat?: ModelApiFormat;
-  name: string;
-  modelId: string;
+  connectionName: string;
   baseUrl: string;
   apiKey: string;
+  modelName: string;
+  modelId: string;
+  apiFormat?: ModelApiFormat;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  keepActiveModel?: boolean;
+  locale?: AppLocale;
+}
+
+export interface UpdateProviderConnectionInput {
+  connectionId: string;
+  name: string;
+  apiKey: string;
+  locale?: AppLocale;
+}
+
+export interface SaveModelInput {
+  id?: string;
+  connectionId: string;
+  name: string;
+  modelId: string;
+  apiFormat?: ModelApiFormat;
   contextWindow?: number;
   maxOutputTokens?: number;
   locale?: AppLocale;
 }
+
+export type TestConnectionInput =
+  | {
+      kind: 'newConnection';
+      provider: ModelProviderId;
+      baseUrl: string;
+      apiKey: string;
+      modelId: string;
+      apiFormat?: ModelApiFormat;
+      contextWindow?: number;
+      maxOutputTokens?: number;
+      locale?: AppLocale;
+    }
+  | {
+      kind: 'connectionModel';
+      connectionId: string;
+      modelId: string;
+      apiFormat?: ModelApiFormat;
+      contextWindow?: number;
+      maxOutputTokens?: number;
+      locale?: AppLocale;
+    }
+  | {
+      kind: 'existingConnection';
+      connectionId: string;
+      apiKey: string;
+      modelId?: string;
+      locale?: AppLocale;
+    };
 
 export interface ModelTestReply {
   protocolVersion: typeof MODEL_PROTOCOL_VERSION;
@@ -49,30 +98,49 @@ export interface ModelTestReply {
   latencyMs: number;
 }
 
+export interface ProviderSaveReply {
+  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
+  connection: SavedProviderConnection;
+  model: SavedModelConfiguration;
+  connections: SavedProviderConnection[];
+  models: SavedModelConfiguration[];
+  activeModelId: string;
+}
+
+export interface ProviderUpdateReply {
+  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
+  connection: SavedProviderConnection;
+  connections: SavedProviderConnection[];
+  models: SavedModelConfiguration[];
+  activeModelId: string | null;
+}
+
 export interface ModelSaveReply {
   protocolVersion: typeof MODEL_PROTOCOL_VERSION;
   model: SavedModelConfiguration;
+  connections: SavedProviderConnection[];
   models: SavedModelConfiguration[];
   activeModelId: string;
 }
 
 export interface ModelMutateReply {
   protocolVersion: typeof MODEL_PROTOCOL_VERSION;
+  connections: SavedProviderConnection[];
   models: SavedModelConfiguration[];
   activeModelId: string | null;
 }
 
-export type ModelRevealKeyReply =
+export type ProviderRevealKeyReply =
   | {
       protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-      modelId: string;
+      connectionId: string;
       outcome: 'authenticated';
       apiKey: string;
       keyHint: string;
     }
   | {
       protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-      modelId: string;
+      connectionId: string;
       outcome: 'cancelled' | 'failed';
       message: string;
     };
@@ -137,8 +205,24 @@ export function isModelApiFormat(value: unknown): value is ModelApiFormat {
   return typeof value === 'string' && (MODEL_API_FORMATS as readonly string[]).includes(value);
 }
 
-export function isSharedKeyUpdateScope(value: unknown): value is SharedKeyUpdateScope {
-  return typeof value === 'string' && (SHARED_KEY_UPDATE_SCOPES as readonly string[]).includes(value);
+export function decodeSavedProviderConnection(value: unknown): SavedProviderConnection {
+  if (!record(value)
+    || 'apiKey' in value
+    || 'credentialRef' in value
+    || typeof value.id !== 'string' || !value.id
+    || typeof value.name !== 'string' || !value.name
+    || !isModelProviderId(value.provider)
+    || !(value.baseUrl === undefined || value.baseUrl === null || typeof value.baseUrl === 'string')
+    || !(value.keyHint === undefined || value.keyHint === null || (typeof value.keyHint === 'string' && value.keyHint.length > 0 && value.keyHint.length <= 32 && !hasControlChars(value.keyHint)))) {
+    throw new Error('Provider connection protocol mismatch or unexpected fields.');
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    provider: value.provider,
+    ...(typeof value.baseUrl === 'string' && value.baseUrl ? { baseUrl: value.baseUrl } : {}),
+    ...(typeof value.keyHint === 'string' ? { keyHint: value.keyHint } : {}),
+  };
 }
 
 export function decodeSavedModelConfiguration(value: unknown): SavedModelConfiguration {
@@ -146,19 +230,19 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     || 'apiKey' in value
     || 'credentialRef' in value
     || typeof value.id !== 'string' || !value.id
+    || typeof value.connectionId !== 'string' || !value.connectionId
     || typeof value.name !== 'string' || !value.name
     || !isModelProviderId(value.provider)
     || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
     || typeof value.modelId !== 'string' || !value.modelId
     || !(value.baseUrl === undefined || value.baseUrl === null || typeof value.baseUrl === 'string')
     || !(value.contextWindow === undefined || value.contextWindow === null || (typeof value.contextWindow === 'number' && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0))
-    || !(value.maxOutputTokens === undefined || value.maxOutputTokens === null || (typeof value.maxOutputTokens === 'number' && Number.isSafeInteger(value.maxOutputTokens) && value.maxOutputTokens > 0))
-    || !(value.keyHint === undefined || value.keyHint === null || (typeof value.keyHint === 'string' && value.keyHint.length > 0 && value.keyHint.length <= 32 && !hasControlChars(value.keyHint)))
-    || !(value.sharedKeyCount === undefined || value.sharedKeyCount === null || (typeof value.sharedKeyCount === 'number' && Number.isSafeInteger(value.sharedKeyCount) && value.sharedKeyCount >= 1))) {
+    || !(value.maxOutputTokens === undefined || value.maxOutputTokens === null || (typeof value.maxOutputTokens === 'number' && Number.isSafeInteger(value.maxOutputTokens) && value.maxOutputTokens > 0))) {
     throw new Error('Model configuration protocol mismatch or unexpected fields.');
   }
   return {
     id: value.id,
+    connectionId: value.connectionId,
     name: value.name,
     provider: value.provider,
     ...(isModelApiFormat(value.apiFormat) ? { apiFormat: value.apiFormat } : {}),
@@ -166,8 +250,6 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     ...(typeof value.baseUrl === 'string' && value.baseUrl ? { baseUrl: value.baseUrl } : {}),
     ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
     ...(typeof value.maxOutputTokens === 'number' ? { maxOutputTokens: value.maxOutputTokens } : {}),
-    ...(typeof value.keyHint === 'string' ? { keyHint: value.keyHint } : {}),
-    ...(typeof value.sharedKeyCount === 'number' ? { sharedKeyCount: value.sharedKeyCount } : {}),
   };
 }
 
@@ -207,20 +289,69 @@ export function decodeModelTestReply(value: unknown): ModelTestReply {
   };
 }
 
+export function decodeProviderSaveReply(value: unknown): ProviderSaveReply {
+  if (!record(value)
+    || value.protocolVersion !== MODEL_PROTOCOL_VERSION
+    || 'apiKey' in value
+    || 'credentialRef' in value
+    || !Array.isArray(value.connections)
+    || !Array.isArray(value.models)
+    || typeof value.activeModelId !== 'string' || !value.activeModelId) {
+    throw new Error('Provider connection save reply mismatch.');
+  }
+  const connection = decodeSavedProviderConnection(value.connection);
+  const model = decodeSavedModelConfiguration(value.model);
+  const connections = value.connections.map(decodeSavedProviderConnection);
+  const models = value.models.map(decodeSavedModelConfiguration);
+  return {
+    protocolVersion: MODEL_PROTOCOL_VERSION,
+    connection,
+    model,
+    connections,
+    models,
+    activeModelId: value.activeModelId,
+  };
+}
+
+export function decodeProviderUpdateReply(value: unknown): ProviderUpdateReply {
+  if (!record(value)
+    || value.protocolVersion !== MODEL_PROTOCOL_VERSION
+    || 'apiKey' in value
+    || 'credentialRef' in value
+    || !Array.isArray(value.connections)
+    || !Array.isArray(value.models)
+    || !(value.activeModelId === null || typeof value.activeModelId === 'string')) {
+    throw new Error('Provider connection update reply mismatch.');
+  }
+  const connection = decodeSavedProviderConnection(value.connection);
+  const connections = value.connections.map(decodeSavedProviderConnection);
+  const models = value.models.map(decodeSavedModelConfiguration);
+  return {
+    protocolVersion: MODEL_PROTOCOL_VERSION,
+    connection,
+    connections,
+    models,
+    activeModelId: value.activeModelId,
+  };
+}
+
 export function decodeModelSaveReply(value: unknown): ModelSaveReply {
   if (!record(value)
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || 'apiKey' in value
     || 'credentialRef' in value
+    || !Array.isArray(value.connections)
     || !Array.isArray(value.models)
     || typeof value.activeModelId !== 'string' || !value.activeModelId) {
     throw new Error('Model save reply mismatch.');
   }
   const model = decodeSavedModelConfiguration(value.model);
+  const connections = value.connections.map(decodeSavedProviderConnection);
   const models = value.models.map(decodeSavedModelConfiguration);
   return {
     protocolVersion: MODEL_PROTOCOL_VERSION,
     model,
+    connections,
     models,
     activeModelId: value.activeModelId,
   };
@@ -231,29 +362,36 @@ export function decodeModelMutateReply(value: unknown): ModelMutateReply {
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || 'apiKey' in value
     || 'credentialRef' in value
+    || !Array.isArray(value.connections)
     || !Array.isArray(value.models)
     || !(value.activeModelId === null || typeof value.activeModelId === 'string')) {
     throw new Error('Model mutation reply mismatch.');
   }
+  const connections = value.connections.map(decodeSavedProviderConnection);
   const models = value.models.map(decodeSavedModelConfiguration);
-  return { protocolVersion: MODEL_PROTOCOL_VERSION, models, activeModelId: value.activeModelId };
+  return {
+    protocolVersion: MODEL_PROTOCOL_VERSION,
+    connections,
+    models,
+    activeModelId: value.activeModelId,
+  };
 }
 
-export function decodeModelRevealKeyReply(value: unknown): ModelRevealKeyReply {
+export function decodeProviderRevealKeyReply(value: unknown): ProviderRevealKeyReply {
   if (!record(value)
     || value.protocolVersion !== MODEL_PROTOCOL_VERSION
     || 'credentialRef' in value
-    || typeof value.modelId !== 'string' || !value.modelId) {
-    throw new Error('Model reveal key reply mismatch.');
+    || typeof value.connectionId !== 'string' || !value.connectionId) {
+    throw new Error('Provider reveal key reply mismatch.');
   }
   if (value.outcome === 'authenticated') {
     if (typeof value.apiKey !== 'string' || !value.apiKey
       || typeof value.keyHint !== 'string' || !value.keyHint || hasControlChars(value.keyHint)) {
-      throw new Error('Authenticated model reveal reply is missing valid key fields.');
+      throw new Error('Authenticated provider reveal reply is missing valid key fields.');
     }
     return {
       protocolVersion: MODEL_PROTOCOL_VERSION,
-      modelId: value.modelId,
+      connectionId: value.connectionId,
       outcome: 'authenticated',
       apiKey: value.apiKey,
       keyHint: value.keyHint,
@@ -261,16 +399,16 @@ export function decodeModelRevealKeyReply(value: unknown): ModelRevealKeyReply {
   }
   if (value.outcome === 'cancelled' || value.outcome === 'failed') {
     if ('apiKey' in value || typeof value.message !== 'string' || !value.message) {
-      throw new Error('Non-authenticated model reveal reply must not include apiKey.');
+      throw new Error('Non-authenticated provider reveal reply must not include apiKey.');
     }
     return {
       protocolVersion: MODEL_PROTOCOL_VERSION,
-      modelId: value.modelId,
+      connectionId: value.connectionId,
       outcome: value.outcome,
       message: value.message,
     };
   }
-  throw new Error('Unknown model reveal outcome.');
+  throw new Error('Unknown provider reveal outcome.');
 }
 
 export function decodeReviewScopeReply(value: unknown): ReviewScopeReply {

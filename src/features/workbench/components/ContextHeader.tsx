@@ -12,12 +12,11 @@ interface Props {
   worktree?: Worktree;
   repository?: Repository;
   pinned: boolean;
-  showCollapse?: boolean;
   opening: boolean;
   branchBusy: boolean;
   pullBusy?: boolean;
   pinBusy: boolean;
-  onCollapse?(): void;
+  onCollapse(): void;
   onPin(): void;
   onSettings(): void;
   onOpenRepository(): void;
@@ -82,15 +81,13 @@ export function ContextHeader(props: Props) {
             })}
           </Popover>}
         </div>
-        {props.showCollapse && props.onCollapse && (
-          <IconButton
-            icon="collapse"
-            label={t.header.collapseWindow}
-            disabled={props.pinBusy}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => { close(); props.onCollapse?.(); }}
-          />
-        )}
+        <IconButton
+          icon="collapse"
+          label={t.header.collapseWindow}
+          disabled={props.pinBusy}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => { close(); props.onCollapse(); }}
+        />
         <IconButton icon="pin" label={props.pinned ? t.header.unpinWindow : t.header.pinWindow} aria-pressed={props.pinned} disabled={props.pinBusy} onMouseDown={(event) => event.preventDefault()} onClick={props.onPin} />
         <IconButton icon="settings" label={t.header.settings} onClick={() => { close(); props.onSettings(); }} />
       </div>

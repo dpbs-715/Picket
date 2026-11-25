@@ -792,7 +792,7 @@ pub fn cpush_step_stale_file_error(locale: LanguageKind, path: &str) -> String {
 }
 
 // ============================================================================
-// Models, Validation & Keychain (`models/**`)
+// Models, Validation & Credentials (`models/**`)
 // ============================================================================
 
 pub fn provider_label(locale: LanguageKind, provider: ProviderKind) -> &'static str {
@@ -1616,11 +1616,27 @@ pub const fn model_not_found_edit_error(locale: LanguageKind) -> &'static str {
     )
 }
 
-pub const fn model_keychain_secret_missing_edit_error(locale: LanguageKind) -> &'static str {
+pub const fn provider_not_found_error(locale: LanguageKind) -> &'static str {
     tr(
         locale,
-        "Existing API key for this model was not found in macOS Keychain; please enter the API Key again.",
-        "该模型在 macOS 系统钥匙串中的原密钥已不存在，请重新填写 API Key。",
+        "The provider connection does not exist or was deleted.",
+        "该供应商连接不存在或已被删除。",
+    )
+}
+
+pub const fn provider_limit_reached_error(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Saved provider connection count reached the maximum limit; delete unused connections first.",
+        "已保存的供应商连接数量已达上限，请先删除不再使用的连接。",
+    )
+}
+
+pub const fn provider_test_needs_model_error(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Add at least one model under this connection before testing it.",
+        "请先在该连接下至少添加一个模型后再测试连接。",
     )
 }
 
@@ -1664,19 +1680,11 @@ pub const fn model_active_missing_runtime_error(locale: LanguageKind) -> &'stati
     )
 }
 
-pub const fn model_missing_cred_ref_error(locale: LanguageKind) -> &'static str {
+pub const fn model_missing_stored_key_error(locale: LanguageKind) -> &'static str {
     tr(
         locale,
-        "Model is missing its macOS Keychain credential reference; delete and re-add it in Settings. Draft and selection were preserved.",
-        "该模型缺少系统钥匙串凭据引用，请在设置中删除后重新添加；草稿与选择已保留。",
-    )
-}
-
-pub const fn model_missing_keychain_key_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "API Key for this model is missing from macOS Keychain; delete and re-add the model in Settings. Draft and selection were preserved.",
-        "该模型在 macOS 系统钥匙串中的 API Key 已缺失，请在设置中删除后重新添加模型；草稿与选择已保留。",
+        "API key for this provider connection is missing from ~/.picket/credentials.json; update the key in Settings. Draft and selection were preserved.",
+        "该供应商连接在 ~/.picket/credentials.json 中的 API Key 已缺失，请在设置中重新填写密钥；草稿与选择已保留。",
     )
 }
 
@@ -1696,10 +1704,12 @@ pub const fn model_review_cancelled_error(locale: LanguageKind) -> &'static str 
     )
 }
 
-pub fn model_reveal_auth_reason(locale: LanguageKind, model_name: &str) -> String {
+pub fn model_reveal_auth_reason(locale: LanguageKind, connection_name: &str) -> String {
     match locale {
-        LanguageKind::En => format!("reveal the saved API key for \"{model_name}\" in Picket"),
-        LanguageKind::Zh => format!("查看 Picket 中模型“{model_name}”已保存的完整 API Key"),
+        LanguageKind::En => format!("reveal the saved API key for \"{connection_name}\" in Picket"),
+        LanguageKind::Zh => {
+            format!("查看 Picket 中供应商连接“{connection_name}”已保存的完整 API Key")
+        }
     }
 }
 
@@ -1723,27 +1733,11 @@ pub const fn model_reveal_auth_unavailable_message(locale: LanguageKind) -> &'st
     )
 }
 
-pub const fn model_source_not_found_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Source model no longer exists or has no saved API key; enter a new API key to save.",
-        "来源模型已不存在或缺少已保存密钥，请手动填写新密钥后再保存。",
-    )
-}
-
-pub const fn model_shared_key_endpoint_mismatch_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Provider or base URL changed; enter a new API key instead of reusing the existing key.",
-        "服务商或接口地址已变更，请填写新密钥后再保存。",
-    )
-}
-
 pub const fn model_reveal_no_key_error(locale: LanguageKind) -> &'static str {
     tr(
         locale,
-        "This model does not have a saved API key in macOS Keychain.",
-        "该模型未在 macOS 系统钥匙串中保存 API Key。",
+        "This provider connection does not use an API key.",
+        "该供应商连接不需要保存 API Key。",
     )
 }
 

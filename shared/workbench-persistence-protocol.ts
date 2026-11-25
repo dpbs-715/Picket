@@ -6,8 +6,8 @@ import { isGitEditorId } from './ide-protocol';
 import type { GitEditorId } from './ide-protocol';
 import { isAppLocale } from './language-protocol';
 import type { AppLocale, CommitLanguage } from './language-protocol';
-import { decodeSavedModelConfiguration } from './model-protocol';
-import type { SavedModelConfiguration } from './model-protocol';
+import { decodeSavedModelConfiguration, decodeSavedProviderConnection } from './model-protocol';
+import type { SavedModelConfiguration, SavedProviderConnection } from './model-protocol';
 
 export const WORKBENCH_PERSISTENCE_PROTOCOL_VERSION = 2;
 
@@ -84,6 +84,7 @@ export interface WorkbenchRestoreReply {
   emptyPrompt: string;
   worktrees: PersistedWorktreeState[];
   snapshots: GitRepositorySnapshot[];
+  connections?: SavedProviderConnection[];
   models?: SavedModelConfiguration[];
   activeModelId?: string | null;
   cPushSessions?: CPushSessionSnapshot[];
@@ -182,6 +183,10 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
     if (!decoded.snapshot) return fail();
     snapshots.push(decoded.snapshot);
   }
+  const connections = value.connections === undefined ? undefined : (() => {
+    if (!Array.isArray(value.connections)) return fail();
+    return value.connections.map(decodeSavedProviderConnection);
+  })();
   const models = value.models === undefined ? undefined : (() => {
     if (!Array.isArray(value.models)) return fail();
     return value.models.map(decodeSavedModelConfiguration);
@@ -229,6 +234,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
     emptyPrompt: value.emptyPrompt,
     worktrees: value.worktrees as PersistedWorktreeState[],
     snapshots,
+    ...(connections !== undefined ? { connections } : {}),
     ...(models !== undefined ? { models } : {}),
     ...(value.activeModelId !== undefined ? { activeModelId: value.activeModelId } : {}),
     ...(cPushSessions !== undefined ? { cPushSessions } : {}),

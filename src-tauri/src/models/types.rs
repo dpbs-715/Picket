@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const MODEL_PROTOCOL_VERSION: u8 = 1;
+pub const MODEL_PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -89,51 +89,99 @@ impl ProviderKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SavedModelConfiguration {
+pub struct SavedProviderConnection {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedModelConfiguration {
+    pub id: String,
+    pub connection_id: String,
+    pub name: String,
+    pub provider: ProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_format: Option<ApiFormatKind>,
     pub model_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_hint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shared_key_count: Option<u32>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SharedKeyUpdateScope {
-    #[default]
-    UpdateAll,
-    DetachCurrent,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ModelInput {
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub source_model_id: Option<String>,
-    #[serde(default)]
-    pub shared_key_update_scope: Option<SharedKeyUpdateScope>,
-    #[serde(default)]
-    pub keep_active_model: bool,
+pub struct CreateProviderConnectionInput {
     pub provider: ProviderKind,
     #[serde(default)]
+    pub connection_name: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model_name: String,
+    pub model_id: String,
+    #[serde(default)]
     pub api_format: Option<ApiFormatKind>,
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub keep_active_model: bool,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+}
+
+impl Default for CreateProviderConnectionInput {
+    fn default() -> Self {
+        Self {
+            provider: ProviderKind::Anthropic,
+            connection_name: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model_name: String::new(),
+            model_id: String::new(),
+            api_format: None,
+            context_window: None,
+            max_output_tokens: None,
+            keep_active_model: false,
+            locale: LanguageKind::En,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateProviderConnectionInput {
+    pub connection_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveModelInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub connection_id: String,
+    #[serde(default)]
     pub name: String,
     pub model_id: String,
-    pub base_url: String,
-    pub api_key: String,
+    #[serde(default)]
+    pub api_format: Option<ApiFormatKind>,
     #[serde(default)]
     pub context_window: Option<u32>,
     #[serde(default)]
@@ -142,34 +190,71 @@ pub struct ModelInput {
     pub locale: LanguageKind,
 }
 
-impl Default for ModelInput {
-    fn default() -> Self {
-        Self {
-            id: None,
-            source_model_id: None,
-            shared_key_update_scope: None,
-            keep_active_model: false,
-            provider: ProviderKind::Anthropic,
-            api_format: None,
-            name: String::new(),
-            model_id: String::new(),
-            base_url: String::new(),
-            api_key: String::new(),
-            context_window: None,
-            max_output_tokens: None,
-            locale: LanguageKind::En,
-        }
-    }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TestConnectionInput {
+    NewConnection {
+        provider: ProviderKind,
+        #[serde(default)]
+        base_url: String,
+        #[serde(default)]
+        api_key: String,
+        model_id: String,
+        #[serde(default)]
+        api_format: Option<ApiFormatKind>,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        max_output_tokens: Option<u32>,
+        #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        locale: LanguageKind,
+    },
+    ConnectionModel {
+        connection_id: String,
+        model_id: String,
+        #[serde(default)]
+        api_format: Option<ApiFormatKind>,
+        #[serde(default)]
+        context_window: Option<u32>,
+        #[serde(default)]
+        max_output_tokens: Option<u32>,
+        #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        locale: LanguageKind,
+    },
+    ExistingConnection {
+        connection_id: String,
+        #[serde(default)]
+        api_key: String,
+        #[serde(default)]
+        model_id: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        locale: LanguageKind,
+    },
 }
 
 #[derive(Clone, Debug)]
-pub struct NormalizedModelInput {
+pub struct NormalizedNewConnection {
     pub provider: ProviderKind,
-    pub api_format: ApiFormatKind,
-    pub name: String,
-    pub model_id: String,
+    pub connection_name: String,
     pub base_url: Option<String>,
     pub api_key: String,
+    pub model_name: String,
+    pub model_id: String,
+    pub api_format: ApiFormatKind,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct NormalizedModelFields {
+    pub name: String,
+    pub model_id: String,
+    pub api_format: ApiFormatKind,
     pub context_window: u32,
     pub max_output_tokens: u32,
 }
@@ -186,9 +271,31 @@ pub struct ModelTestReply {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderSaveReply {
+    pub protocol_version: u8,
+    pub connection: SavedProviderConnection,
+    pub model: SavedModelConfiguration,
+    pub connections: Vec<SavedProviderConnection>,
+    pub models: Vec<SavedModelConfiguration>,
+    pub active_model_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUpdateReply {
+    pub protocol_version: u8,
+    pub connection: SavedProviderConnection,
+    pub connections: Vec<SavedProviderConnection>,
+    pub models: Vec<SavedModelConfiguration>,
+    pub active_model_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelSaveReply {
     pub protocol_version: u8,
     pub model: SavedModelConfiguration,
+    pub connections: Vec<SavedProviderConnection>,
     pub models: Vec<SavedModelConfiguration>,
     pub active_model_id: String,
 }
@@ -199,7 +306,7 @@ pub struct ModelSaveReply {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum ModelRevealKeyOutcome {
+pub enum ProviderRevealKeyOutcome {
     Authenticated { api_key: String, key_hint: String },
     Cancelled { message: String },
     Failed { message: String },
@@ -207,17 +314,18 @@ pub enum ModelRevealKeyOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelRevealKeyReply {
+pub struct ProviderRevealKeyReply {
     pub protocol_version: u8,
-    pub model_id: String,
+    pub connection_id: String,
     #[serde(flatten)]
-    pub result: ModelRevealKeyOutcome,
+    pub result: ProviderRevealKeyOutcome,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMutateReply {
     pub protocol_version: u8,
+    pub connections: Vec<SavedProviderConnection>,
     pub models: Vec<SavedModelConfiguration>,
     pub active_model_id: Option<String>,
 }
@@ -226,6 +334,14 @@ pub struct ModelMutateReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelIdRequest {
     pub model_id: String,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionIdRequest {
+    pub connection_id: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
 }
@@ -336,32 +452,68 @@ pub fn validate_http_base_url(raw: &str, locale: LanguageKind) -> Result<String,
     Ok(trimmed.trim_end_matches('/').to_owned())
 }
 
-#[cfg(test)]
-pub fn validate_and_normalize_model_input(
-    input: &ModelInput,
-) -> Result<NormalizedModelInput, String> {
-    validate_and_normalize_model_input_with_options(input, false)
+pub fn validate_record_id(raw: &str, locale: LanguageKind) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 || trimmed.chars().any(char::is_control) {
+        return Err(i18n::model_invalid_id_record_error(locale).into());
+    }
+    Ok(trimmed.to_owned())
 }
 
-pub fn validate_and_normalize_model_input_with_options(
-    input: &ModelInput,
-    allow_empty_key: bool,
-) -> Result<NormalizedModelInput, String> {
-    let locale = input.locale;
-    for raw in [&input.id, &input.source_model_id].into_iter().flatten() {
-        if raw.trim().len() > 128 || raw.chars().any(char::is_control) {
-            return Err(i18n::model_invalid_id_record_error(locale).into());
-        }
+pub fn validate_connection_name(
+    raw: &str,
+    provider: ProviderKind,
+    locale: LanguageKind,
+) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(i18n::provider_label(locale, provider).to_owned());
     }
+    if trimmed.chars().count() > 128 || trimmed.chars().any(char::is_control) {
+        return Err(i18n::model_display_name_invalid_error(locale).into());
+    }
+    Ok(trimmed.to_owned())
+}
 
-    let model_id = input.model_id.trim();
+pub fn validate_api_key(
+    raw: &str,
+    needs_key: bool,
+    allow_empty: bool,
+    locale: LanguageKind,
+) -> Result<String, String> {
+    if !needs_key {
+        return Ok(String::new());
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        if allow_empty {
+            return Ok(String::new());
+        }
+        return Err(i18n::model_api_key_required_error(locale).into());
+    }
+    if trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
+        return Err(i18n::model_api_key_invalid_error(locale).into());
+    }
+    Ok(trimmed.to_owned())
+}
+
+pub fn validate_model_fields(
+    provider: ProviderKind,
+    raw_name: &str,
+    raw_model_id: &str,
+    raw_api_format: Option<ApiFormatKind>,
+    raw_context_window: Option<u32>,
+    raw_max_output_tokens: Option<u32>,
+    locale: LanguageKind,
+) -> Result<NormalizedModelFields, String> {
+    let model_id = raw_model_id.trim();
     if model_id.is_empty() {
         return Err(i18n::model_id_required_error(locale).into());
     }
     if model_id.len() > 256 || model_id.chars().any(char::is_control) {
         return Err(i18n::model_id_invalid_error(locale).into());
     }
-    let name_trimmed = input.name.trim();
+    let name_trimmed = raw_name.trim();
     let name = if name_trimmed.is_empty() {
         model_id.to_owned()
     } else {
@@ -370,49 +522,51 @@ pub fn validate_and_normalize_model_input_with_options(
         }
         name_trimmed.to_owned()
     };
+    let api_format = raw_api_format.unwrap_or_else(|| provider.default_api_format());
+    let (default_context_window, default_max_output_tokens) =
+        resolve_default_token_limits(provider, Some(api_format));
+    let context_window = raw_context_window.unwrap_or(default_context_window);
+    let max_output_tokens = raw_max_output_tokens.unwrap_or(default_max_output_tokens);
+    validate_token_limits(context_window, max_output_tokens, locale)?;
+    Ok(NormalizedModelFields {
+        name,
+        model_id: model_id.to_owned(),
+        api_format,
+        context_window,
+        max_output_tokens,
+    })
+}
 
+pub fn validate_new_connection(
+    input: &CreateProviderConnectionInput,
+) -> Result<NormalizedNewConnection, String> {
+    let locale = input.locale;
+    let connection_name = validate_connection_name(&input.connection_name, input.provider, locale)?;
     let base_url = if input.provider.needs_url() {
         Some(validate_http_base_url(&input.base_url, locale)?)
     } else {
         None
     };
-
-    let api_key = if input.provider.needs_key() {
-        let trimmed = input.api_key.trim();
-        if trimmed.is_empty() {
-            if allow_empty_key {
-                String::new()
-            } else {
-                return Err(i18n::model_api_key_required_error(locale).into());
-            }
-        } else {
-            if trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-                return Err(i18n::model_api_key_invalid_error(locale).into());
-            }
-            trimmed.to_owned()
-        }
-    } else {
-        String::new()
-    };
-
-    let api_format = input
-        .api_format
-        .unwrap_or_else(|| input.provider.default_api_format());
-    let (default_context_window, default_max_output_tokens) =
-        resolve_default_token_limits(input.provider, Some(api_format));
-    let context_window = input.context_window.unwrap_or(default_context_window);
-    let max_output_tokens = input.max_output_tokens.unwrap_or(default_max_output_tokens);
-    validate_token_limits(context_window, max_output_tokens, locale)?;
-
-    Ok(NormalizedModelInput {
+    let api_key = validate_api_key(&input.api_key, input.provider.needs_key(), false, locale)?;
+    let model = validate_model_fields(
+        input.provider,
+        &input.model_name,
+        &input.model_id,
+        input.api_format,
+        input.context_window,
+        input.max_output_tokens,
+        locale,
+    )?;
+    Ok(NormalizedNewConnection {
         provider: input.provider,
-        api_format,
-        name,
-        model_id: model_id.to_owned(),
+        connection_name,
         base_url,
         api_key,
-        context_window,
-        max_output_tokens,
+        model_name: model.name,
+        model_id: model.model_id,
+        api_format: model.api_format,
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
     })
 }
 
@@ -434,37 +588,4 @@ pub fn compute_key_hint(secret: &str) -> String {
     let prefix: String = chars[..prefix_len].iter().collect();
     let suffix: String = chars[len - suffix_len..].iter().collect();
     format!("{prefix}…{suffix}")
-}
-
-pub fn canonical_endpoint_url(raw: &str) -> String {
-    let trimmed = raw.trim().trim_end_matches('/');
-    let (scheme, rest) = if let Some(r) = trimmed.strip_prefix("https://") {
-        ("https://", r)
-    } else if let Some(r) = trimmed.strip_prefix("http://") {
-        ("http://", r)
-    } else {
-        return trimmed.to_ascii_lowercase();
-    };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = rest[..authority_end].to_ascii_lowercase();
-    let tail = &rest[authority_end..];
-    format!("{scheme}{authority}{tail}")
-}
-
-pub fn same_credential_endpoint(
-    a_provider: ProviderKind,
-    a_base_url: Option<&str>,
-    b_provider: ProviderKind,
-    b_base_url: Option<&str>,
-) -> bool {
-    if a_provider != b_provider {
-        return false;
-    }
-    if !a_provider.needs_url() {
-        return true;
-    }
-    match (a_base_url, b_base_url) {
-        (Some(a), Some(b)) => canonical_endpoint_url(a) == canonical_endpoint_url(b),
-        _ => false,
-    }
 }

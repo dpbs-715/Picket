@@ -12,29 +12,34 @@ vi.mock('@tauri-apps/api/core', () => ({
 import { desktopWorkbenchBackend } from './repositories';
 import {
   decodeModelMutateReply,
-  decodeModelRevealKeyReply,
   decodeModelSaveReply,
   decodeModelTestReply,
+  decodeProviderRevealKeyReply,
+  decodeProviderSaveReply,
   decodeReviewScopeReply,
+  MODEL_PROTOCOL_VERSION,
 } from '../../shared/model-protocol';
 import { decodeWorkbenchRestoreReply } from '../../shared/workbench-persistence-protocol';
 import { emptyWorkbench, workbenchReducer } from '../features/workbench/state/workbench';
 
-describe('M3 desktop model protocol, C-Push plan preview, and security boundaries', () => {
+describe('M3 desktop model protocol, provider connections, and security boundaries', () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
 
-  it('rejects any model or restore reply that leaks apiKey or credentialRef', () => {
+  it('rejects any provider, model, or restore reply that leaks apiKey or credentialRef', () => {
     expect(() => decodeModelSaveReply({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       activeModelId: 'm1',
-      model: { id: 'm1', name: 'Claude', provider: 'anthropic', modelId: 'claude', apiKey: 'sk-leak' },
+      connections: [{ id: 'c1', name: 'Anthropic', provider: 'anthropic', keyHint: 'sk-a…1111' }],
+      model: { id: 'm1', connectionId: 'c1', name: 'Claude', provider: 'anthropic', modelId: 'claude', apiKey: 'sk-leak' },
+      models: [{ id: 'm1', connectionId: 'c1', name: 'Claude', provider: 'anthropic', modelId: 'claude' }],
     })).toThrow();
     expect(() => decodeModelMutateReply({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       activeModelId: 'm1',
-      models: [{ id: 'm1', name: 'Claude', provider: 'anthropic', modelId: 'claude', credentialRef: 'cred-1' }],
+      connections: [{ id: 'c1', name: 'Anthropic', provider: 'anthropic', credentialRef: 'cred-1' }],
+      models: [{ id: 'm1', connectionId: 'c1', name: 'Claude', provider: 'anthropic', modelId: 'claude' }],
     })).toThrow();
     expect(() => decodeWorkbenchRestoreReply({
       protocolVersion: 2,
@@ -44,66 +49,62 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
       worktrees: [],
       snapshots: [],
       warning: null,
-      models: [{ id: 'm1', name: 'GPT', provider: 'openai', modelId: 'gpt-4.1', apiKey: 'sk-leak' }],
+      connections: [{ id: 'c1', name: 'OpenAI', provider: 'openai', apiKey: 'sk-leak' }],
+      models: [{ id: 'm1', connectionId: 'c1', name: 'GPT', provider: 'openai', modelId: 'gpt-4.1' }],
       activeModelId: 'm1',
     })).toThrow();
-    expect(() => decodeModelRevealKeyReply({
-      protocolVersion: 1,
-      modelId: 'm1',
+    expect(() => decodeProviderRevealKeyReply({
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      connectionId: 'c1',
       outcome: 'cancelled',
       message: 'Cancelled',
       apiKey: 'fake-leak-on-cancel',
     })).toThrow();
-    expect(() => decodeModelRevealKeyReply({
-      protocolVersion: 1,
-      modelId: 'm1',
+    expect(() => decodeProviderRevealKeyReply({
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      connectionId: 'c1',
       outcome: 'authenticated',
       apiKey: 'fake-revealed-key-0001',
       keyHint: 'fake…0001',
       credentialRef: 'cred-leak',
     })).toThrow();
-    expect(decodeModelRevealKeyReply({
-      protocolVersion: 1,
-      modelId: 'm1',
+    expect(decodeProviderRevealKeyReply({
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      connectionId: 'c1',
       outcome: 'authenticated',
       apiKey: 'fake-revealed-key-0001',
       keyHint: 'fake…0001',
     })).toEqual({
-      protocolVersion: 1,
-      modelId: 'm1',
+      protocolVersion: MODEL_PROTOCOL_VERSION,
+      connectionId: 'c1',
       outcome: 'authenticated',
       apiKey: 'fake-revealed-key-0001',
       keyHint: 'fake…0001',
     });
-    expect(decodeModelSaveReply({
-      protocolVersion: 1,
+    expect(decodeProviderSaveReply({
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       activeModelId: 'm1',
-      model: {
-        id: 'm2',
-        name: 'GPT Copy',
-        provider: 'openai',
-        modelId: 'gpt-4.1-mini',
-        keyHint: 'fake…0001',
-        sharedKeyCount: 2,
-      },
+      connection: { id: 'c1', name: 'Company Gateway', provider: 'custom', baseUrl: 'https://gw.example.com/v1', keyHint: 'fake…0001' },
+      model: { id: 'm1', connectionId: 'c1', name: 'Fast Model', provider: 'custom', modelId: 'team-fast', baseUrl: 'https://gw.example.com/v1' },
+      connections: [{ id: 'c1', name: 'Company Gateway', provider: 'custom', baseUrl: 'https://gw.example.com/v1', keyHint: 'fake…0001' }],
       models: [
-        { id: 'm1', name: 'GPT', provider: 'openai', modelId: 'gpt-4.1', keyHint: 'fake…0001', sharedKeyCount: 2 },
-        { id: 'm2', name: 'GPT Copy', provider: 'openai', modelId: 'gpt-4.1-mini', keyHint: 'fake…0001', sharedKeyCount: 2 },
+        { id: 'm1', connectionId: 'c1', name: 'Fast Model', provider: 'custom', modelId: 'team-fast', baseUrl: 'https://gw.example.com/v1' },
+        { id: 'm2', connectionId: 'c1', name: 'Review Model', provider: 'custom', modelId: 'team-review', baseUrl: 'https://gw.example.com/v1' },
       ],
     }).models).toHaveLength(2);
   });
 
   it('strictly verifies request identity, prompt/locale/commitLanguage forwarding, and scope tokens', async () => {
     invokeMock.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       provider: 'anthropic',
       modelId: 'claude-sonnet-4-20250514',
       summary: 'Connected: Anthropic · claude-sonnet-4-20250514 (85 ms)',
       latencyMs: 85,
     });
     const testSummary = await desktopWorkbenchBackend.testModel({
+      kind: 'newConnection',
       provider: 'anthropic',
-      name: 'Claude',
       modelId: 'claude-sonnet-4-20250514',
       baseUrl: '',
       apiKey: 'sk-ant-1',
@@ -113,15 +114,15 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
 
     // Mismatched provider on testModel is rejected:
     invokeMock.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       provider: 'openai',
       modelId: 'claude-sonnet-4-20250514',
       summary: 'wrong',
       latencyMs: 10,
     });
     await expect(desktopWorkbenchBackend.testModel({
+      kind: 'newConnection',
       provider: 'anthropic',
-      name: 'Claude',
       modelId: 'claude-sonnet-4-20250514',
       baseUrl: '',
       apiKey: 'sk-ant-1',
@@ -198,7 +199,7 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
     });
 
     invokeMock.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       kind: 'review',
       requestId: 'rev-ok',
       target,
@@ -223,7 +224,7 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
 
     // Wrong target on review reply is rejected:
     invokeMock.mockResolvedValueOnce({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       kind: 'review',
       requestId: 'rev-bad-target',
       target: { ...target, worktreeId: 'other-wt' },
@@ -243,14 +244,14 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
     })).rejects.toThrow('mismatch');
 
     expect(decodeModelTestReply({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       provider: 'ollama',
       modelId: 'qwen2.5-coder:14b',
       summary: 'ok',
       latencyMs: 5,
     }).provider).toBe('ollama');
     expect(() => decodeReviewScopeReply({
-      protocolVersion: 1,
+      protocolVersion: MODEL_PROTOCOL_VERSION,
       kind: 'review',
       requestId: 'r1',
       target,
@@ -261,7 +262,7 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
     })).toThrow();
   });
 
-  it('restores saved model catalog and activeModelId on startup hydration', () => {
+  it('restores saved connections, models, and activeModelId on startup hydration', () => {
     const restored = decodeWorkbenchRestoreReply({
       protocolVersion: 2,
       editor: 'idea',
@@ -270,10 +271,12 @@ describe('M3 desktop model protocol, C-Push plan preview, and security boundarie
       worktrees: [],
       snapshots: [],
       warning: null,
-      models: [{ id: 'm-claude', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }],
+      connections: [{ id: 'conn-1', name: 'Anthropic', provider: 'anthropic', keyHint: 'sk-a…9999' }],
+      models: [{ id: 'm-claude', connectionId: 'conn-1', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }],
       activeModelId: 'm-claude',
     });
     const hydrated = workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored });
+    expect(hydrated.connections).toHaveLength(1);
     expect(hydrated.models).toHaveLength(1);
     expect(hydrated.activeModelId).toBe('m-claude');
   });

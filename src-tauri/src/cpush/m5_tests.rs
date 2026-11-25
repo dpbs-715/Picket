@@ -5,10 +5,9 @@ use crate::{
     foundation::pi::{PiCPushCommitGroup, PiPaths, PiSupervisor},
     i18n::LanguageKind,
     models::{
-        keychain::CredentialVault,
         smoke::LocalModelSseServer,
         store::ModelStore,
-        types::{ModelInput, ProviderKind},
+        types::{CreateProviderConnectionInput, ProviderKind},
     },
     repository::{
         RepositoryStore,
@@ -108,10 +107,8 @@ impl BareRemotePair {
     }
 }
 
-fn make_models(dir: &Path) -> ModelStore {
-    let vault =
-        CredentialVault::with_keychain_file(dir.join("m5-test.keychain-db"), "m5-test-keychain-pw");
-    ModelStore::with_vault(vault)
+fn make_models(_dir: &Path) -> ModelStore {
+    ModelStore::default()
 }
 
 #[tokio::test]
@@ -119,18 +116,15 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
     let temp = tempfile::tempdir().unwrap();
     let models = make_models(temp.path());
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Ollama,
-                api_format: None,
-                name: "Local Planner".into(),
-                model_id: "qwen2.5-coder:14b".into(),
+                connection_name: "Local Ollama".into(),
                 base_url: "http://127.0.0.1:11434/v1".into(),
                 api_key: String::new(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "Local Planner".into(),
+                model_id: "qwen2.5-coder:14b".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },
@@ -501,18 +495,15 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     let models = make_models(temp.path());
     let server = LocalModelSseServer::start().unwrap();
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Custom,
-                api_format: None,
-                name: "M5 Resolver".into(),
-                model_id: "resolver-v1".into(),
+                connection_name: "M5 Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-m5-secret-7788".into(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "M5 Resolver".into(),
+                model_id: "resolver-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },

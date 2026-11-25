@@ -92,19 +92,21 @@ export function Popover({ title, onClose, children, className = '' }: { title: s
   return <div ref={ref} role="dialog" aria-label={title} className={`popover ${className}`}>{children}</div>;
 }
 
-export function Overlay({ title, children, onClose, covered = false }: { title: string; children: ReactNode; onClose: () => void; covered?: boolean }) {
+export function Overlay({ title, children, onClose, covered = false, closeDisabled = false }: { title: string; children: ReactNode; onClose: () => void; covered?: boolean; closeDisabled?: boolean }) {
   const { t } = useI18n();
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
   const latestClose = useRef(onClose);
   latestClose.current = onClose;
+  const latestCloseDisabled = useRef(closeDisabled);
+  latestCloseDisabled.current = closeDisabled;
   useEffect(() => {
     if (covered) return;
     const previousFocus = document.activeElement;
     const panel = ref.current!;
     const autofocusTarget = panel.querySelector<HTMLElement>('[data-autofocus]:not(:disabled)');
     const initialTarget = autofocusTarget
-      ?? panel.querySelector<HTMLElement>('button:not([data-help-tip]), input, select, [tabindex="0"]:not([data-help-tip])')
+      ?? panel.querySelector<HTMLElement>('button:not([data-help-tip]):not(:disabled), input, select, [tabindex="0"]:not([data-help-tip])')
       ?? panel;
     initialTarget.focus();
     if (autofocusTarget instanceof HTMLInputElement) {
@@ -112,7 +114,11 @@ export function Overlay({ title, children, onClose, covered = false }: { title: 
       try { autofocusTarget.setSelectionRange(end, end); } catch { /* ignore unsupported input types */ }
     }
     const trap = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); latestClose.current(); return; }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!latestCloseDisabled.current) latestClose.current();
+        return;
+      }
       if (event.key !== 'Tab') return;
       const focusable = [...panel.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea, [tabindex="0"]')].filter((element) => element.getClientRects().length);
       const first = focusable[0], last = focusable.at(-1);
@@ -126,7 +132,7 @@ export function Overlay({ title, children, onClose, covered = false }: { title: 
     };
   }, [covered]);
   return <div ref={ref} className="overlay" role="dialog" aria-modal={!covered} aria-labelledby={id} tabIndex={-1} inert={covered}>
-    <div className="overlay-heading" data-tauri-drag-region><h1 id={id} data-tauri-drag-region>{title}</h1><IconButton icon="close" label={t.common.closeOverlay(title)} onClick={onClose} /></div>
+    <div className="overlay-heading" data-tauri-drag-region><h1 id={id} data-tauri-drag-region>{title}</h1><IconButton icon="close" label={t.common.closeOverlay(title)} disabled={closeDisabled} onClick={onClose} /></div>
     {children}
   </div>;
 }

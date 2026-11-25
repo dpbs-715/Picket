@@ -106,7 +106,7 @@ export function createIsolatedModelRuntime(spec: PiProviderSpec, locale: AppLoca
         name: `${spec.provider} key`,
         resolve: async ({ signal }) => {
           signal.throwIfAborted();
-          return { auth: { apiKey: effectiveKey }, source: requiresKey ? 'keychain' : 'local' };
+          return { auth: { apiKey: effectiveKey }, source: requiresKey ? 'local-credentials' : 'local' };
         },
       },
     },

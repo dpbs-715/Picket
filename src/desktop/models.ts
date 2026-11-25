@@ -2,17 +2,24 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type { AppLocale } from '../../shared/language-protocol';
 import {
   decodeModelMutateReply,
-  decodeModelRevealKeyReply,
   decodeModelSaveReply,
   decodeModelTestReply,
+  decodeProviderRevealKeyReply,
+  decodeProviderSaveReply,
+  decodeProviderUpdateReply,
   decodeReviewScopeReply,
+  type CreateProviderConnectionInput,
   type ModelFileSelection,
-  type ModelInputPayload,
   type ModelMutateReply,
-  type ModelRevealKeyReply,
   type ModelSaveReply,
   type ModelStreamEvent,
+  type ProviderRevealKeyReply,
+  type ProviderSaveReply,
+  type ProviderUpdateReply,
   type ReviewScopeReply,
+  type SaveModelInput,
+  type TestConnectionInput,
+  type UpdateProviderConnectionInput,
 } from '../../shared/model-protocol';
 import type { GitReadTarget } from '../../shared/git-read-protocol';
 import { getMessages } from '../i18n/messages';
@@ -24,17 +31,58 @@ function sameTarget(a: GitReadTarget, b: GitReadTarget): boolean {
     && a.scopeVersion === b.scopeVersion;
 }
 
-export async function testDesktopModelConnection(input: ModelInputPayload): Promise<string> {
+export async function testDesktopModelConnection(input: TestConnectionInput): Promise<string> {
   const reply = decodeModelTestReply(await invoke('test_model_connection', { input }));
-  if (reply.provider !== input.provider || reply.modelId !== input.modelId.trim()) {
+  if (input.kind === 'newConnection'
+    && (reply.provider !== input.provider || reply.modelId !== input.modelId.trim())) {
+    throw new Error(getMessages(input.locale).desktop.modelTestMismatch);
+  }
+  if (input.kind === 'connectionModel' && reply.modelId !== input.modelId.trim()) {
     throw new Error(getMessages(input.locale).desktop.modelTestMismatch);
   }
   return reply.summary;
 }
 
-export async function saveDesktopModel(input: ModelInputPayload): Promise<ModelSaveReply> {
+export async function createDesktopProviderConnection(
+  input: CreateProviderConnectionInput,
+): Promise<ProviderSaveReply> {
+  const reply = decodeProviderSaveReply(await invoke('create_provider_connection', { input }));
+  if (reply.connection.provider !== input.provider
+    || reply.model.connectionId !== reply.connection.id
+    || reply.model.modelId !== input.modelId.trim()) {
+    throw new Error(getMessages(input.locale).desktop.modelSaveMismatch);
+  }
+  return reply;
+}
+
+export async function updateDesktopProviderConnection(
+  input: UpdateProviderConnectionInput,
+): Promise<ProviderUpdateReply> {
+  const reply = decodeProviderUpdateReply(await invoke('update_provider_connection', { input }));
+  if (reply.connection.id !== input.connectionId) {
+    throw new Error(getMessages(input.locale).desktop.modelSaveMismatch);
+  }
+  return reply;
+}
+
+export async function deleteDesktopProviderConnection(
+  connectionId: string,
+  locale?: AppLocale,
+): Promise<ModelMutateReply> {
+  const reply = decodeModelMutateReply(
+    await invoke('delete_provider_connection', {
+      request: { connectionId, ...(locale ? { locale } : {}) },
+    }),
+  );
+  if (reply.connections.some((conn) => conn.id === connectionId)) {
+    throw new Error(getMessages(locale).desktop.modelDeleteFailed);
+  }
+  return reply;
+}
+
+export async function saveDesktopModel(input: SaveModelInput): Promise<ModelSaveReply> {
   const reply = decodeModelSaveReply(await invoke('save_model', { input }));
-  if (reply.model.provider !== input.provider || reply.model.modelId !== input.modelId.trim()) {
+  if (reply.model.connectionId !== input.connectionId || reply.model.modelId !== input.modelId.trim()) {
     throw new Error(getMessages(input.locale).desktop.modelSaveMismatch);
   }
   return reply;
@@ -56,16 +104,19 @@ export async function deleteDesktopModel(modelId: string, locale?: AppLocale): P
   return reply;
 }
 
-export async function revealDesktopModelApiKey(modelId: string, locale?: AppLocale): Promise<ModelRevealKeyReply> {
-  const reply = decodeModelRevealKeyReply(
-    await invoke('reveal_model_api_key', {
+export async function revealDesktopProviderApiKey(
+  connectionId: string,
+  locale?: AppLocale,
+): Promise<ProviderRevealKeyReply> {
+  const reply = decodeProviderRevealKeyReply(
+    await invoke('reveal_provider_api_key', {
       request: {
-        modelId,
+        connectionId,
         ...(locale ? { locale } : {}),
       },
     }),
   );
-  if (reply.modelId !== modelId) {
+  if (reply.connectionId !== connectionId) {
     throw new Error(getMessages(locale).desktop.modelRevealMismatch);
   }
   return reply;

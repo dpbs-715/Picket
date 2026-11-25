@@ -14,13 +14,15 @@ describe('Workbench static rendering', () => {
     if (scenario === 'compact') {
       expect(html).toContain('aria-label="Compact Workbench"');
       expect(html).toContain('aria-label="Expand Workbench"');
+      expect(html).toContain('aria-label="Settings"');
       expect(html).not.toContain('prompt-textarea');
       expect(html).not.toContain('aria-label="Changed Files"');
       expect(html).not.toContain('role="tablist"');
-      expect(html).not.toContain('aria-label="Settings"');
       expect(html).not.toContain('aria-label="C-Push Session History"');
     } else {
       expect(html).toContain('aria-label="Changed Files"');
+      expect(html).toContain('aria-label="Collapse to Compact Mode"');
+      expect(html).toContain('aria-label="Settings"');
       expect(html).toContain('role="tablist"');
     }
     expect(html).not.toContain('action-dropdown');

@@ -1,9 +1,9 @@
-//! Persistent non-secret model catalog (`models.json` v2) paired with macOS Keychain
-//! (`CredentialVault`), `LocalAuthentication`, reference-counted shared credentials,
-//! and Pi Core task execution.
+//! Persistent non-secret model catalog (`~/.picket/models.json` v3: provider connections
+//! and child models) paired with `~/.picket/credentials.json` (`CredentialStore`),
+//! macOS `LocalAuthentication` for on-demand key reveal, and Pi Core task execution.
 use super::{
+    credentials::CredentialStore,
     defaults::resolve_default_token_limits,
-    keychain::CredentialVault,
     local_auth::{LocalAuthOutcome, LocalAuthenticator, MacOsLocalAuthenticator},
     types::*,
 };
@@ -17,11 +17,11 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     io::Write,
     os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -30,72 +30,83 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
-const STORAGE_VERSION: u8 = 2;
+const STORAGE_VERSION: u8 = 3;
 const MODELS_FILE: &str = "models.json";
+const MAX_STORED_CONNECTIONS: usize = 32;
 const MAX_STORED_MODELS: usize = 64;
 const TEST_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(50);
 const AI_TASK_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StoredCredentialRecord {
+struct StoredConnectionRecord {
     id: String,
+    name: String,
+    provider: ProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     key_hint: Option<String>,
+}
+
+impl StoredConnectionRecord {
+    fn to_public(&self) -> SavedProviderConnection {
+        SavedProviderConnection {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            provider: self.provider,
+            base_url: self.base_url.clone(),
+            key_hint: if self.provider.needs_key() {
+                self.key_hint.clone()
+            } else {
+                None
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredModelRecord {
     id: String,
+    connection_id: String,
     name: String,
-    provider: ProviderKind,
+    model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_format: Option<ApiFormatKind>,
-    model_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credential_ref: Option<String>,
 }
 
 impl StoredModelRecord {
-    fn effective_api_format(&self) -> ApiFormatKind {
+    fn effective_api_format(&self, provider: ProviderKind) -> ApiFormatKind {
         self.api_format
-            .unwrap_or_else(|| self.provider.default_api_format())
+            .unwrap_or_else(|| provider.default_api_format())
     }
 
-    fn effective_token_limits(&self) -> (u32, u32) {
-        let format = self.effective_api_format();
-        let (default_ctx, default_max_out) =
-            resolve_default_token_limits(self.provider, Some(format));
+    fn effective_token_limits(&self, provider: ProviderKind) -> (u32, u32) {
+        let format = self.effective_api_format(provider);
+        let (default_ctx, default_max_out) = resolve_default_token_limits(provider, Some(format));
         (
             self.context_window.unwrap_or(default_ctx),
             self.max_output_tokens.unwrap_or(default_max_out),
         )
     }
 
-    fn to_public(
-        &self,
-        key_hint: Option<String>,
-        shared_key_count: Option<u32>,
-    ) -> SavedModelConfiguration {
-        let (context_window, max_output_tokens) = self.effective_token_limits();
+    fn to_public(&self, conn: &StoredConnectionRecord) -> SavedModelConfiguration {
+        let (context_window, max_output_tokens) = self.effective_token_limits(conn.provider);
         SavedModelConfiguration {
             id: self.id.clone(),
+            connection_id: self.connection_id.clone(),
             name: self.name.clone(),
-            provider: self.provider,
-            api_format: Some(self.effective_api_format()),
+            provider: conn.provider,
+            api_format: Some(self.effective_api_format(conn.provider)),
             model_id: self.model_id.clone(),
-            base_url: self.base_url.clone(),
+            base_url: conn.base_url.clone(),
             context_window: Some(context_window),
             max_output_tokens: Some(max_output_tokens),
-            key_hint,
-            shared_key_count,
         }
     }
 }
@@ -105,8 +116,7 @@ impl StoredModelRecord {
 struct StoredModelsFile {
     version: u8,
     active_model_id: Option<String>,
-    #[serde(default)]
-    credentials: Vec<StoredCredentialRecord>,
+    connections: Vec<StoredConnectionRecord>,
     models: Vec<StoredModelRecord>,
 }
 
@@ -115,91 +125,34 @@ impl StoredModelsFile {
         Self {
             version: STORAGE_VERSION,
             active_model_id: None,
-            credentials: Vec::new(),
+            connections: Vec::new(),
             models: Vec::new(),
         }
     }
 
-    fn set_credential_hint(&mut self, cred_id: &str, hint: String) {
-        if let Some(existing) = self.credentials.iter_mut().find(|item| item.id == cred_id) {
-            existing.key_hint = Some(hint);
-        } else {
-            self.credentials.push(StoredCredentialRecord {
-                id: cred_id.to_owned(),
-                key_hint: Some(hint),
-            });
-        }
+    fn connection(&self, connection_id: &str) -> Option<&StoredConnectionRecord> {
+        self.connections.iter().find(|c| c.id == connection_id)
     }
 
-    fn has_credential_hint(&self, cred_id: &str) -> bool {
-        self.credentials
+    fn public_connections(&self) -> Vec<SavedProviderConnection> {
+        self.connections
             .iter()
-            .any(|item| item.id == cred_id && item.key_hint.is_some())
-    }
-
-    fn reconcile_credentials(&mut self) {
-        let referenced: HashSet<&str> = self
-            .models
-            .iter()
-            .filter(|model| model.provider.needs_key())
-            .filter_map(|model| model.credential_ref.as_deref())
-            .collect();
-        self.credentials
-            .retain(|cred| referenced.contains(cred.id.as_str()));
-        let mut known: HashSet<String> = self
-            .credentials
-            .iter()
-            .map(|cred| cred.id.clone())
-            .collect();
-        for model in &self.models {
-            if model.provider.needs_key()
-                && let Some(cred_id) = model.credential_ref.as_deref()
-                && known.insert(cred_id.to_owned())
-            {
-                self.credentials.push(StoredCredentialRecord {
-                    id: cred_id.to_owned(),
-                    key_hint: None,
-                });
-            }
-        }
-    }
-
-    fn credential_ref_count(&self, cred_id: &str) -> usize {
-        self.models
-            .iter()
-            .filter(|model| {
-                model.provider.needs_key() && model.credential_ref.as_deref() == Some(cred_id)
-            })
-            .count()
+            .map(StoredConnectionRecord::to_public)
+            .collect()
     }
 
     fn public_models(&self) -> Vec<SavedModelConfiguration> {
-        let mut counts: HashMap<&str, u32> = HashMap::new();
-        for model in &self.models {
-            if model.provider.needs_key()
-                && let Some(cred_id) = model.credential_ref.as_deref()
-            {
-                *counts.entry(cred_id).or_insert(0) += 1;
-            }
-        }
-        let hints: HashMap<&str, Option<&str>> = self
-            .credentials
+        let by_id: HashMap<&str, &StoredConnectionRecord> = self
+            .connections
             .iter()
-            .map(|cred| (cred.id.as_str(), cred.key_hint.as_deref()))
+            .map(|c| (c.id.as_str(), c))
             .collect();
-
         self.models
             .iter()
-            .map(|model| {
-                if model.provider.needs_key()
-                    && let Some(cred_id) = model.credential_ref.as_deref()
-                {
-                    let hint = hints.get(cred_id).and_then(|item| *item).map(str::to_owned);
-                    let count = counts.get(cred_id).copied();
-                    model.to_public(hint, count)
-                } else {
-                    model.to_public(None, None)
-                }
+            .filter_map(|model| {
+                by_id
+                    .get(model.connection_id.as_str())
+                    .map(|conn| model.to_public(conn))
             })
             .collect()
     }
@@ -230,9 +183,16 @@ impl ResolvedRuntimeSpec {
     }
 }
 
+pub struct RestoredCatalog {
+    pub connections: Vec<SavedProviderConnection>,
+    pub models: Vec<SavedModelConfiguration>,
+    pub active_model_id: Option<String>,
+    pub warning: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ModelStore {
-    vault: CredentialVault,
+    credentials: CredentialStore,
     authenticator: Arc<Mutex<Arc<dyn LocalAuthenticator>>>,
     gate: Arc<tokio::sync::Mutex<()>>,
     counter: Arc<AtomicU64>,
@@ -241,7 +201,10 @@ pub struct ModelStore {
 
 impl Default for ModelStore {
     fn default() -> Self {
-        Self::with_vault(CredentialVault::default())
+        Self::with_credentials_and_authenticator(
+            CredentialStore::default(),
+            Arc::new(MacOsLocalAuthenticator),
+        )
     }
 }
 
@@ -278,6 +241,11 @@ fn read_models_file(
     };
     match serde_json::from_slice::<StoredModelsFile>(&bytes) {
         Ok(mut parsed) if parsed.version == STORAGE_VERSION => {
+            let conn_ids: std::collections::HashSet<&str> =
+                parsed.connections.iter().map(|c| c.id.as_str()).collect();
+            parsed
+                .models
+                .retain(|model| conn_ids.contains(model.connection_id.as_str()));
             if parsed
                 .active_model_id
                 .as_ref()
@@ -285,7 +253,6 @@ fn read_models_file(
             {
                 parsed.active_model_id = parsed.models.first().map(|m| m.id.clone());
             }
-            parsed.reconcile_credentials();
             Ok((parsed, None))
         }
         _ => Ok((
@@ -317,21 +284,22 @@ fn write_models_file_atomic(storage_dir: &Path, payload: &StoredModelsFile) -> R
 }
 
 impl ModelStore {
-    pub fn with_vault(vault: CredentialVault) -> Self {
-        Self::with_vault_and_authenticator(vault, Arc::new(MacOsLocalAuthenticator))
-    }
-
-    pub fn with_vault_and_authenticator(
-        vault: CredentialVault,
+    pub fn with_credentials_and_authenticator(
+        credentials: CredentialStore,
         authenticator: Arc<dyn LocalAuthenticator>,
     ) -> Self {
         Self {
-            vault,
+            credentials,
             authenticator: Arc::new(Mutex::new(authenticator)),
             gate: Arc::new(tokio::sync::Mutex::new(())),
             counter: Arc::new(AtomicU64::new(0)),
             endpoint_overrides: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    #[cfg(test)]
+    pub fn credentials_store(&self) -> &CredentialStore {
+        &self.credentials
     }
 
     pub fn set_authenticator(
@@ -350,14 +318,6 @@ impl ModelStore {
             .lock()
             .map(|guard| Arc::clone(&*guard))
             .map_err(|_| "Authenticator lock is unavailable".to_string())
-    }
-
-    pub fn use_isolated_keychain(
-        &self,
-        path: PathBuf,
-        password: impl Into<String>,
-    ) -> Result<(), String> {
-        self.vault.set_keychain_file(path, password)
     }
 
     #[cfg(test)]
@@ -380,10 +340,7 @@ impl ModelStore {
         provider.default_base_url().to_owned()
     }
 
-    pub async fn restore(
-        &self,
-        storage_dir: &Path,
-    ) -> Result<(Vec<SavedModelConfiguration>, Option<String>, Option<String>), String> {
+    pub async fn restore(&self, storage_dir: &Path) -> Result<RestoredCatalog, String> {
         self.restore_with_locale(storage_dir, LanguageKind::En)
             .await
     }
@@ -392,281 +349,304 @@ impl ModelStore {
         &self,
         storage_dir: &Path,
         locale: LanguageKind,
-    ) -> Result<(Vec<SavedModelConfiguration>, Option<String>, Option<String>), String> {
+    ) -> Result<RestoredCatalog, String> {
         let _guard = self.gate.lock().await;
         let (stored, warning) = read_models_file(storage_dir, locale)?;
-        Ok((stored.public_models(), stored.active_model_id, warning))
+        Ok(RestoredCatalog {
+            connections: stored.public_connections(),
+            models: stored.public_models(),
+            active_model_id: stored.active_model_id,
+            warning,
+        })
+    }
+
+    pub async fn create_provider_connection(
+        &self,
+        storage_dir: &Path,
+        input: &CreateProviderConnectionInput,
+    ) -> Result<ProviderSaveReply, String> {
+        let locale = input.locale;
+        let normalized = validate_new_connection(input)?;
+        let _guard = self.gate.lock().await;
+        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        if stored.connections.len() >= MAX_STORED_CONNECTIONS {
+            return Err(i18n::provider_limit_reached_error(locale).into());
+        }
+        if stored.models.len() >= MAX_STORED_MODELS {
+            return Err(i18n::model_limit_reached_error(locale).into());
+        }
+
+        let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let conn_id = short_token("conn", seq, &normalized.connection_name);
+        let model_id = short_token("model", seq, &normalized.model_id);
+        let key_hint = if normalized.provider.needs_key() {
+            self.credentials
+                .put(storage_dir, &conn_id, &normalized.api_key)?;
+            Some(compute_key_hint(&normalized.api_key))
+        } else {
+            None
+        };
+
+        let conn_record = StoredConnectionRecord {
+            id: conn_id.clone(),
+            name: normalized.connection_name,
+            provider: normalized.provider,
+            base_url: normalized.base_url,
+            key_hint,
+        };
+        let model_record = StoredModelRecord {
+            id: model_id.clone(),
+            connection_id: conn_id.clone(),
+            name: normalized.model_name,
+            model_id: normalized.model_id,
+            api_format: Some(normalized.api_format),
+            context_window: Some(normalized.context_window),
+            max_output_tokens: Some(normalized.max_output_tokens),
+        };
+        let public_conn = conn_record.to_public();
+        let public_model = model_record.to_public(&conn_record);
+
+        stored.connections.push(conn_record);
+        stored.models.push(model_record);
+        if !input.keep_active_model || stored.active_model_id.is_none() {
+            stored.active_model_id = Some(model_id.clone());
+        }
+
+        if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
+            if normalized.provider.needs_key() {
+                let _ = self.credentials.delete(storage_dir, &conn_id);
+            }
+            return Err(i18n::model_save_aborted_error(locale, &error, false));
+        }
+
+        let active_id = stored.active_model_id.clone().unwrap_or(model_id);
+        Ok(ProviderSaveReply {
+            protocol_version: MODEL_PROTOCOL_VERSION,
+            connection: public_conn,
+            model: public_model,
+            connections: stored.public_connections(),
+            models: stored.public_models(),
+            active_model_id: active_id,
+        })
+    }
+
+    pub async fn update_provider_connection(
+        &self,
+        storage_dir: &Path,
+        input: &UpdateProviderConnectionInput,
+    ) -> Result<ProviderUpdateReply, String> {
+        let locale = input.locale;
+        let conn_id = validate_record_id(&input.connection_id, locale)?;
+        let _guard = self.gate.lock().await;
+        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let Some(index) = stored.connections.iter().position(|c| c.id == conn_id) else {
+            return Err(i18n::provider_not_found_error(locale).into());
+        };
+        let existing = stored.connections[index].clone();
+        let next_name = validate_connection_name(&input.name, existing.provider, locale)?;
+        let next_key =
+            validate_api_key(&input.api_key, existing.provider.needs_key(), true, locale)?;
+
+        let mut previous_secret_for_rollback: Option<Option<String>> = None;
+        let next_hint = if existing.provider.needs_key() && !next_key.is_empty() {
+            let prev = self.credentials.get(storage_dir, &conn_id)?;
+            self.credentials.put(storage_dir, &conn_id, &next_key)?;
+            previous_secret_for_rollback = Some(prev);
+            Some(compute_key_hint(&next_key))
+        } else {
+            existing.key_hint.clone()
+        };
+
+        let updated = StoredConnectionRecord {
+            id: existing.id.clone(),
+            name: next_name,
+            provider: existing.provider,
+            base_url: existing.base_url.clone(),
+            key_hint: next_hint,
+        };
+        let public_conn = updated.to_public();
+        stored.connections[index] = updated;
+
+        if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
+            if let Some(prev_opt) = previous_secret_for_rollback {
+                match prev_opt {
+                    Some(prev_secret) => {
+                        let _ = self.credentials.put(storage_dir, &conn_id, &prev_secret);
+                    }
+                    None => {
+                        let _ = self.credentials.delete(storage_dir, &conn_id);
+                    }
+                }
+            }
+            return Err(i18n::model_save_aborted_error(locale, &error, true));
+        }
+
+        Ok(ProviderUpdateReply {
+            protocol_version: MODEL_PROTOCOL_VERSION,
+            connection: public_conn,
+            connections: stored.public_connections(),
+            models: stored.public_models(),
+            active_model_id: stored.active_model_id,
+        })
+    }
+
+    pub async fn delete_provider_connection_with_locale(
+        &self,
+        storage_dir: &Path,
+        connection_id: &str,
+        locale: LanguageKind,
+    ) -> Result<ModelMutateReply, String> {
+        let conn_id = validate_record_id(connection_id, locale)?;
+        let _guard = self.gate.lock().await;
+        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let Some(index) = stored.connections.iter().position(|c| c.id == conn_id) else {
+            return Err(i18n::provider_not_found_error(locale).into());
+        };
+        let removed_conn = stored.connections.remove(index);
+        stored.models.retain(|m| m.connection_id != conn_id);
+        if stored
+            .active_model_id
+            .as_ref()
+            .is_some_and(|active| !stored.models.iter().any(|m| &m.id == active))
+        {
+            stored.active_model_id = stored.models.first().map(|m| m.id.clone());
+        }
+        write_models_file_atomic(storage_dir, &stored)?;
+        if removed_conn.provider.needs_key() {
+            let _ = self.credentials.delete(storage_dir, &conn_id);
+        }
+        Ok(ModelMutateReply {
+            protocol_version: MODEL_PROTOCOL_VERSION,
+            connections: stored.public_connections(),
+            models: stored.public_models(),
+            active_model_id: stored.active_model_id,
+        })
     }
 
     pub async fn save_model(
         &self,
         storage_dir: &Path,
-        input: &ModelInput,
+        input: &SaveModelInput,
     ) -> Result<ModelSaveReply, String> {
         let locale = input.locale;
+        let conn_id = validate_record_id(&input.connection_id, locale)?;
         let _guard = self.gate.lock().await;
         let (mut stored, _) = read_models_file(storage_dir, locale)?;
-        let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let Some(conn) = stored.connection(&conn_id).cloned() else {
+            return Err(i18n::provider_not_found_error(locale).into());
+        };
+        let normalized = validate_model_fields(
+            conn.provider,
+            &input.name,
+            &input.model_id,
+            input.api_format,
+            input.context_window,
+            input.max_output_tokens,
+            locale,
+        )?;
 
         if let Some(target_id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let target_id = validate_record_id(target_id, locale)?;
             let Some(index) = stored.models.iter().position(|m| m.id == target_id) else {
                 return Err(i18n::model_not_found_edit_error(locale).into());
             };
-            let existing = stored.models[index].clone();
-            let existing_peer_count = existing
-                .credential_ref
-                .as_deref()
-                .map(|cred_id| stored.credential_ref_count(cred_id))
-                .unwrap_or(0);
-            let normalized = validate_and_normalize_model_input_with_options(
-                input,
-                existing.credential_ref.is_some(),
-            )?;
-            let endpoint_changed = !same_credential_endpoint(
-                existing.provider,
-                existing.base_url.as_deref(),
-                normalized.provider,
-                normalized.base_url.as_deref(),
-            );
-
-            let mut newly_written_cred: Option<String> = None;
-            let mut obsolete_cred: Option<String> = None;
-            let mut update_all_old_cred: Option<(String, String)> = None;
-
-            let next_credential_ref = if normalized.provider.needs_key() {
-                if !normalized.api_key.is_empty() {
-                    let new_account = short_token("cred", seq, &existing.id);
-                    self.vault.put(&new_account, &normalized.api_key)?;
-                    newly_written_cred = Some(new_account.clone());
-                    stored.set_credential_hint(&new_account, compute_key_hint(&normalized.api_key));
-
-                    let scope = input.shared_key_update_scope.unwrap_or_default();
-                    let update_all_peers = existing_peer_count > 1
-                        && !endpoint_changed
-                        && scope == SharedKeyUpdateScope::UpdateAll;
-                    if update_all_peers {
-                        if let Some(old_cred) = existing.credential_ref.clone() {
-                            update_all_old_cred = Some((old_cred.clone(), new_account.clone()));
-                            obsolete_cred = Some(old_cred);
-                        }
-                    } else if existing_peer_count <= 1 {
-                        obsolete_cred = existing.credential_ref.clone();
-                    }
-                    Some(new_account)
-                } else {
-                    if existing_peer_count > 1 && endpoint_changed {
-                        return Err(i18n::model_shared_key_endpoint_mismatch_error(locale).into());
-                    }
-                    let old_account = existing
-                        .credential_ref
-                        .as_deref()
-                        .ok_or_else(|| i18n::model_api_key_required_error(locale))?;
-                    let Some(secret) = self.vault.get(old_account)? else {
-                        return Err(i18n::model_keychain_secret_missing_edit_error(locale).into());
-                    };
-                    if !stored.has_credential_hint(old_account) {
-                        stored.set_credential_hint(old_account, compute_key_hint(&secret));
-                    }
-                    existing.credential_ref.clone()
-                }
-            } else {
-                if existing_peer_count <= 1 {
-                    obsolete_cred = existing.credential_ref.clone();
-                }
-                None
-            };
-
+            if stored.models[index].connection_id != conn_id {
+                return Err(i18n::provider_not_found_error(locale).into());
+            }
             let updated = StoredModelRecord {
-                id: existing.id.clone(),
+                id: target_id.clone(),
+                connection_id: conn_id,
                 name: normalized.name,
-                provider: normalized.provider,
-                api_format: Some(normalized.api_format),
                 model_id: normalized.model_id,
-                base_url: normalized.base_url,
+                api_format: Some(normalized.api_format),
                 context_window: Some(normalized.context_window),
                 max_output_tokens: Some(normalized.max_output_tokens),
-                credential_ref: next_credential_ref.clone(),
             };
+            let public_model = updated.to_public(&conn);
             stored.models[index] = updated;
-            if let Some((old_cred, new_cred)) = update_all_old_cred {
-                for peer in &mut stored.models {
-                    if peer.provider.needs_key()
-                        && peer.credential_ref.as_deref() == Some(old_cred.as_str())
-                    {
-                        peer.credential_ref = Some(new_cred.clone());
-                    }
-                }
-            }
-            stored.reconcile_credentials();
             if stored.active_model_id.is_none() {
-                stored.active_model_id = Some(existing.id.clone());
+                stored.active_model_id = Some(target_id.clone());
             }
-
-            if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
-                if let Some(account) = newly_written_cred {
-                    let _ = self.vault.delete(&account);
-                }
-                return Err(i18n::model_save_aborted_error(locale, &error, true));
-            }
-            if let Some(old_account) = obsolete_cred
-                && stored.credential_ref_count(&old_account) == 0
-            {
-                let _ = self.vault.delete(&old_account);
-            }
-
-            let public_models = stored.public_models();
-            let public = public_models
-                .iter()
-                .find(|m| m.id == existing.id)
-                .cloned()
-                .ok_or_else(|| i18n::model_not_found_edit_error(locale).to_owned())?;
-            let active_id = stored
-                .active_model_id
-                .clone()
-                .unwrap_or_else(|| existing.id.clone());
+            write_models_file_atomic(storage_dir, &stored)
+                .map_err(|error| i18n::model_save_aborted_error(locale, &error, true))?;
+            let active_id = stored.active_model_id.clone().unwrap_or(target_id);
             return Ok(ModelSaveReply {
                 protocol_version: MODEL_PROTOCOL_VERSION,
-                model: public,
-                models: public_models,
+                model: public_model,
+                connections: stored.public_connections(),
+                models: stored.public_models(),
                 active_model_id: active_id,
             });
         }
 
-        let source_id = input
-            .source_model_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let allow_empty_key =
-            source_id.is_some() && input.provider.needs_key() && input.api_key.trim().is_empty();
-        let normalized = validate_and_normalize_model_input_with_options(input, allow_empty_key)?;
         if stored.models.len() >= MAX_STORED_MODELS {
             return Err(i18n::model_limit_reached_error(locale).into());
         }
-
+        let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let id = short_token("model", seq, &normalized.model_id);
-        let mut newly_written_cred: Option<String> = None;
-        let credential_ref = if normalized.provider.needs_key() {
-            if !normalized.api_key.is_empty() {
-                let account = short_token("cred", seq, &id);
-                self.vault.put(&account, &normalized.api_key)?;
-                stored.set_credential_hint(&account, compute_key_hint(&normalized.api_key));
-                newly_written_cred = Some(account.clone());
-                Some(account)
-            } else {
-                let src_id = source_id.ok_or_else(|| i18n::model_api_key_required_error(locale))?;
-                let source = stored
-                    .models
-                    .iter()
-                    .find(|m| m.id == src_id)
-                    .cloned()
-                    .ok_or_else(|| i18n::model_source_not_found_error(locale))?;
-                if !same_credential_endpoint(
-                    source.provider,
-                    source.base_url.as_deref(),
-                    normalized.provider,
-                    normalized.base_url.as_deref(),
-                ) {
-                    return Err(i18n::model_shared_key_endpoint_mismatch_error(locale).into());
-                }
-                let src_cred = source
-                    .credential_ref
-                    .ok_or_else(|| i18n::model_source_not_found_error(locale))?;
-                let Some(secret) = self.vault.get(&src_cred)? else {
-                    return Err(i18n::model_source_not_found_error(locale).into());
-                };
-                if !stored.has_credential_hint(&src_cred) {
-                    stored.set_credential_hint(&src_cred, compute_key_hint(&secret));
-                }
-                Some(src_cred)
-            }
-        } else {
-            None
-        };
-
         let record = StoredModelRecord {
             id: id.clone(),
+            connection_id: conn_id,
             name: normalized.name,
-            provider: normalized.provider,
-            api_format: Some(normalized.api_format),
             model_id: normalized.model_id,
-            base_url: normalized.base_url,
+            api_format: Some(normalized.api_format),
             context_window: Some(normalized.context_window),
             max_output_tokens: Some(normalized.max_output_tokens),
-            credential_ref,
         };
+        let public_model = record.to_public(&conn);
         stored.models.push(record);
-        stored.reconcile_credentials();
-
-        let preserve_active = input.keep_active_model || source_id.is_some();
-        if !preserve_active || stored.active_model_id.is_none() {
+        // Adding a model under an existing connection preserves activeModelId unless none was active.
+        if stored.active_model_id.is_none() {
             stored.active_model_id = Some(id.clone());
         }
-
-        if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
-            if let Some(account) = newly_written_cred {
-                let _ = self.vault.delete(&account);
-            }
-            return Err(i18n::model_save_aborted_error(locale, &error, false));
-        }
-
-        let public_models = stored.public_models();
-        let public = public_models
-            .iter()
-            .find(|m| m.id == id)
-            .cloned()
-            .ok_or_else(|| "Saved model missing from catalog".to_string())?;
+        write_models_file_atomic(storage_dir, &stored)
+            .map_err(|error| i18n::model_save_aborted_error(locale, &error, false))?;
         let active_id = stored.active_model_id.clone().unwrap_or(id);
-
         Ok(ModelSaveReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
-            model: public,
-            models: public_models,
+            model: public_model,
+            connections: stored.public_connections(),
+            models: stored.public_models(),
             active_model_id: active_id,
         })
     }
 
-    pub async fn reveal_model_api_key(
+    pub async fn reveal_provider_api_key(
         &self,
         storage_dir: &Path,
-        model_id: &str,
+        connection_id: &str,
         locale: LanguageKind,
-    ) -> Result<ModelRevealKeyReply, String> {
-        let trimmed = model_id.trim();
-        if trimmed.is_empty() {
-            return Err(i18n::model_select_missing_id_error(locale).into());
-        }
-        let model_name = {
+    ) -> Result<ProviderRevealKeyReply, String> {
+        let conn_id = validate_record_id(connection_id, locale)?;
+        let conn_name = {
             let _guard = self.gate.lock().await;
             let (stored, _) = read_models_file(storage_dir, locale)?;
-            let record = stored
-                .models
-                .iter()
-                .find(|m| m.id == trimmed)
-                .ok_or_else(|| i18n::model_selected_not_found_error(locale))?;
-            if !record.provider.needs_key() || record.credential_ref.is_none() {
+            let conn = stored
+                .connection(&conn_id)
+                .ok_or_else(|| i18n::provider_not_found_error(locale))?;
+            if !conn.provider.needs_key() {
                 return Err(i18n::model_reveal_no_key_error(locale).into());
             }
-            record.name.clone()
+            conn.name.clone()
         };
 
         let authenticator = self.current_authenticator()?;
-        let reason = i18n::model_reveal_auth_reason(locale, &model_name);
+        let reason = i18n::model_reveal_auth_reason(locale, &conn_name);
         match authenticator.authenticate(&reason, locale).await {
             LocalAuthOutcome::Cancelled => {
-                return Ok(ModelRevealKeyReply {
+                return Ok(ProviderRevealKeyReply {
                     protocol_version: MODEL_PROTOCOL_VERSION,
-                    model_id: trimmed.to_owned(),
-                    result: ModelRevealKeyOutcome::Cancelled {
+                    connection_id: conn_id,
+                    result: ProviderRevealKeyOutcome::Cancelled {
                         message: i18n::model_reveal_auth_cancelled_message(locale).into(),
                     },
                 });
             }
             LocalAuthOutcome::Failed(message) => {
-                return Ok(ModelRevealKeyReply {
+                return Ok(ProviderRevealKeyReply {
                     protocol_version: MODEL_PROTOCOL_VERSION,
-                    model_id: trimmed.to_owned(),
-                    result: ModelRevealKeyOutcome::Failed { message },
+                    connection_id: conn_id,
+                    result: ProviderRevealKeyOutcome::Failed { message },
                 });
             }
             LocalAuthOutcome::Authenticated => {}
@@ -674,31 +654,25 @@ impl ModelStore {
 
         let _guard = self.gate.lock().await;
         let (mut stored, _) = read_models_file(storage_dir, locale)?;
-        let record = stored
-            .models
-            .iter()
-            .find(|m| m.id == trimmed)
-            .ok_or_else(|| i18n::model_selected_not_found_error(locale))?;
-        if !record.provider.needs_key() {
+        let Some(index) = stored.connections.iter().position(|c| c.id == conn_id) else {
+            return Err(i18n::provider_not_found_error(locale).into());
+        };
+        if !stored.connections[index].provider.needs_key() {
             return Err(i18n::model_reveal_no_key_error(locale).into());
         }
-        let cred_id = record
-            .credential_ref
-            .clone()
-            .ok_or_else(|| i18n::model_missing_cred_ref_error(locale))?;
         let secret = self
-            .vault
-            .get(&cred_id)?
-            .ok_or_else(|| i18n::model_missing_keychain_key_error(locale))?;
+            .credentials
+            .get(storage_dir, &conn_id)?
+            .ok_or_else(|| i18n::model_missing_stored_key_error(locale))?;
         let hint = compute_key_hint(&secret);
-        if !stored.has_credential_hint(&cred_id) {
-            stored.set_credential_hint(&cred_id, hint.clone());
+        if stored.connections[index].key_hint.as_deref() != Some(hint.as_str()) {
+            stored.connections[index].key_hint = Some(hint.clone());
             let _ = write_models_file_atomic(storage_dir, &stored);
         }
-        Ok(ModelRevealKeyReply {
+        Ok(ProviderRevealKeyReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
-            model_id: trimmed.to_owned(),
-            result: ModelRevealKeyOutcome::Authenticated {
+            connection_id: conn_id,
+            result: ProviderRevealKeyOutcome::Authenticated {
                 api_key: secret,
                 key_hint: hint,
             },
@@ -734,6 +708,7 @@ impl ModelStore {
         write_models_file_atomic(storage_dir, &stored)?;
         Ok(ModelMutateReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
+            connections: stored.public_connections(),
             models: stored.public_models(),
             active_model_id: stored.active_model_id,
         })
@@ -764,21 +739,15 @@ impl ModelStore {
         let Some(index) = stored.models.iter().position(|model| model.id == trimmed) else {
             return Err(i18n::model_delete_not_found_error(locale).into());
         };
-        let removed = stored.models.remove(index);
+        // Removing even the last model keeps the parent connection and its saved key intact.
+        stored.models.remove(index);
         if stored.active_model_id.as_deref() == Some(trimmed) {
             stored.active_model_id = stored.models.first().map(|model| model.id.clone());
         }
-        let still_referenced = removed
-            .credential_ref
-            .as_deref()
-            .is_some_and(|cred_id| stored.credential_ref_count(cred_id) > 0);
-        stored.reconcile_credentials();
         write_models_file_atomic(storage_dir, &stored)?;
-        if !still_referenced && let Some(account) = removed.credential_ref {
-            let _ = self.vault.delete(&account);
-        }
         Ok(ModelMutateReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
+            connections: stored.public_connections(),
             models: stored.public_models(),
             active_model_id: stored.active_model_id,
         })
@@ -806,22 +775,21 @@ impl ModelStore {
             .iter()
             .find(|model| model.id == model_id)
             .ok_or_else(|| i18n::model_active_missing_runtime_error(locale))?;
-        let api_key = if record.provider.needs_key() {
-            let account = record
-                .credential_ref
-                .as_deref()
-                .ok_or_else(|| i18n::model_missing_cred_ref_error(locale))?;
-            self.vault
-                .get(account)?
-                .ok_or_else(|| i18n::model_missing_keychain_key_error(locale))?
+        let conn = stored
+            .connection(&record.connection_id)
+            .ok_or_else(|| i18n::provider_not_found_error(locale))?;
+        let api_key = if conn.provider.needs_key() {
+            self.credentials
+                .get(storage_dir, &conn.id)?
+                .ok_or_else(|| i18n::model_missing_stored_key_error(locale))?
         } else {
             String::new()
         };
-        let base_url = self.effective_base_url(record.provider, record.base_url.as_deref());
-        let (context_window, max_output_tokens) = record.effective_token_limits();
+        let base_url = self.effective_base_url(conn.provider, conn.base_url.as_deref());
+        let (context_window, max_output_tokens) = record.effective_token_limits(conn.provider);
         Ok(ResolvedRuntimeSpec {
-            provider: record.provider,
-            api_format: record.effective_api_format(),
+            provider: conn.provider,
+            api_format: record.effective_api_format(conn.provider),
             model_id: record.model_id.clone(),
             base_url,
             api_key,
@@ -830,94 +798,196 @@ impl ModelStore {
         })
     }
 
-    #[cfg(test)]
-    pub async fn test_connection(
-        &self,
-        paths: &PiPaths,
-        supervisor: &PiSupervisor,
-        input: &ModelInput,
-    ) -> Result<ModelTestReply, String> {
-        self.test_connection_with_storage(None, paths, supervisor, input)
-            .await
-    }
-
     pub async fn test_connection_with_storage(
         &self,
-        storage_dir: Option<&Path>,
+        storage_dir: &Path,
         paths: &PiPaths,
         supervisor: &PiSupervisor,
-        input: &ModelInput,
+        input: &TestConnectionInput,
     ) -> Result<ModelTestReply, String> {
-        let locale = input.locale;
-        let candidate_base_url = if input.provider.needs_url() {
-            Some(validate_http_base_url(&input.base_url, locale)?)
-        } else {
-            None
-        };
-        let mut stored_api_key: Option<String> = None;
-        if input.api_key.trim().is_empty()
-            && input.provider.needs_key()
-            && let Some(dir) = storage_dir
-        {
-            let _guard = self.gate.lock().await;
-            let (stored, _) = read_models_file(dir, locale)?;
-            if let Some(target_id) = input.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                if let Some(existing) = stored.models.iter().find(|m| m.id == target_id)
-                    && let Some(account) = existing.credential_ref.as_deref()
-                {
-                    let peer_count = stored.credential_ref_count(account);
-                    if peer_count > 1
-                        && !same_credential_endpoint(
-                            existing.provider,
-                            existing.base_url.as_deref(),
-                            input.provider,
-                            candidate_base_url.as_deref(),
-                        )
-                    {
-                        return Err(i18n::model_shared_key_endpoint_mismatch_error(locale).into());
-                    }
-                    stored_api_key = self.vault.get(account)?;
-                }
-            } else if let Some(src_id) = input
-                .source_model_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                let source = stored
-                    .models
-                    .iter()
-                    .find(|m| m.id == src_id)
-                    .ok_or_else(|| i18n::model_source_not_found_error(locale))?;
-                if !same_credential_endpoint(
-                    source.provider,
-                    source.base_url.as_deref(),
-                    input.provider,
-                    candidate_base_url.as_deref(),
-                ) {
-                    return Err(i18n::model_shared_key_endpoint_mismatch_error(locale).into());
-                }
-                let src_cred = source
-                    .credential_ref
-                    .as_deref()
-                    .ok_or_else(|| i18n::model_source_not_found_error(locale))?;
-                stored_api_key = Some(
-                    self.vault
-                        .get(src_cred)?
-                        .ok_or_else(|| i18n::model_source_not_found_error(locale))?,
-                );
+        let (locale, spec) = match input {
+            TestConnectionInput::NewConnection {
+                provider,
+                base_url,
+                api_key,
+                model_id,
+                api_format,
+                context_window,
+                max_output_tokens,
+                locale,
+            } => {
+                let valid_url = if provider.needs_url() {
+                    Some(validate_http_base_url(base_url, *locale)?)
+                } else {
+                    None
+                };
+                let valid_key = validate_api_key(api_key, provider.needs_key(), false, *locale)?;
+                let model = validate_model_fields(
+                    *provider,
+                    "",
+                    model_id,
+                    *api_format,
+                    *context_window,
+                    *max_output_tokens,
+                    *locale,
+                )?;
+                let effective_url = self.effective_base_url(*provider, valid_url.as_deref());
+                (
+                    *locale,
+                    ResolvedRuntimeSpec {
+                        provider: *provider,
+                        api_format: model.api_format,
+                        model_id: model.model_id,
+                        base_url: effective_url,
+                        api_key: valid_key,
+                        context_window: model.context_window,
+                        max_output_tokens: model.max_output_tokens,
+                    },
+                )
             }
-        }
-        let normalized =
-            validate_and_normalize_model_input_with_options(input, stored_api_key.is_some())?;
-        let effective_key = if normalized.api_key.is_empty() {
-            stored_api_key.unwrap_or_default()
-        } else {
-            normalized.api_key
+            TestConnectionInput::ConnectionModel {
+                connection_id,
+                model_id,
+                api_format,
+                context_window,
+                max_output_tokens,
+                locale,
+            } => {
+                let conn_id = validate_record_id(connection_id, *locale)?;
+                let (conn, api_key) = {
+                    let _guard = self.gate.lock().await;
+                    let (stored, _) = read_models_file(storage_dir, *locale)?;
+                    let conn = stored
+                        .connection(&conn_id)
+                        .cloned()
+                        .ok_or_else(|| i18n::provider_not_found_error(*locale))?;
+                    let key = if conn.provider.needs_key() {
+                        self.credentials
+                            .get(storage_dir, &conn.id)?
+                            .ok_or_else(|| i18n::model_missing_stored_key_error(*locale))?
+                    } else {
+                        String::new()
+                    };
+                    (conn, key)
+                };
+                let model = validate_model_fields(
+                    conn.provider,
+                    "",
+                    model_id,
+                    *api_format,
+                    *context_window,
+                    *max_output_tokens,
+                    *locale,
+                )?;
+                let effective_url =
+                    self.effective_base_url(conn.provider, conn.base_url.as_deref());
+                (
+                    *locale,
+                    ResolvedRuntimeSpec {
+                        provider: conn.provider,
+                        api_format: model.api_format,
+                        model_id: model.model_id,
+                        base_url: effective_url,
+                        api_key,
+                        context_window: model.context_window,
+                        max_output_tokens: model.max_output_tokens,
+                    },
+                )
+            }
+            TestConnectionInput::ExistingConnection {
+                connection_id,
+                api_key,
+                model_id,
+                locale,
+            } => {
+                let conn_id = validate_record_id(connection_id, *locale)?;
+                let (conn, chosen_model, effective_key) = {
+                    let _guard = self.gate.lock().await;
+                    let (stored, _) = read_models_file(storage_dir, *locale)?;
+                    let conn = stored
+                        .connection(&conn_id)
+                        .cloned()
+                        .ok_or_else(|| i18n::provider_not_found_error(*locale))?;
+                    let candidate_key =
+                        validate_api_key(api_key, conn.provider.needs_key(), true, *locale)?;
+                    let effective_key = if !conn.provider.needs_key() {
+                        String::new()
+                    } else if !candidate_key.is_empty() {
+                        candidate_key
+                    } else {
+                        self.credentials
+                            .get(storage_dir, &conn.id)?
+                            .ok_or_else(|| i18n::model_missing_stored_key_error(*locale))?
+                    };
+                    let child = if let Some(requested_id) =
+                        model_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    {
+                        stored
+                            .models
+                            .iter()
+                            .find(|m| m.connection_id == conn_id && m.model_id == requested_id)
+                            .cloned()
+                            .or_else(|| {
+                                stored
+                                    .models
+                                    .iter()
+                                    .find(|m| m.connection_id == conn_id)
+                                    .cloned()
+                            })
+                    } else {
+                        stored
+                            .models
+                            .iter()
+                            .find(|m| m.connection_id == conn_id)
+                            .cloned()
+                    };
+                    (conn, child, effective_key)
+                };
+                let (target_model_id, api_format, context_window, max_output_tokens) =
+                    if let Some(child) = chosen_model {
+                        let format = child.effective_api_format(conn.provider);
+                        let (ctx, max_out) = child.effective_token_limits(conn.provider);
+                        (child.model_id, format, ctx, max_out)
+                    } else if let Some(explicit) =
+                        model_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    {
+                        let normalized = validate_model_fields(
+                            conn.provider,
+                            "",
+                            explicit,
+                            None,
+                            None,
+                            None,
+                            *locale,
+                        )?;
+                        (
+                            normalized.model_id,
+                            normalized.api_format,
+                            normalized.context_window,
+                            normalized.max_output_tokens,
+                        )
+                    } else {
+                        return Err(i18n::provider_test_needs_model_error(*locale).into());
+                    };
+                let effective_url =
+                    self.effective_base_url(conn.provider, conn.base_url.as_deref());
+                (
+                    *locale,
+                    ResolvedRuntimeSpec {
+                        provider: conn.provider,
+                        api_format,
+                        model_id: target_model_id,
+                        base_url: effective_url,
+                        api_key: effective_key,
+                        context_window,
+                        max_output_tokens,
+                    },
+                )
+            }
         };
-        let base_url = self.effective_base_url(normalized.provider, normalized.base_url.as_deref());
+
         let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let request_id = short_token("testconn", seq, &normalized.model_id);
+        let request_id = short_token("testconn", seq, &spec.model_id);
         let context = RequestContext {
             repository_id: "settings".into(),
             worktree_id: "settings".into(),
@@ -927,15 +997,7 @@ impl ModelStore {
         let command = PiCommand::TestConnection {
             request_id: request_id.clone(),
             context: context.clone(),
-            model: PiProviderSpec {
-                provider: normalized.provider.as_id(),
-                api_format: Some(normalized.api_format.as_id()),
-                model_id: normalized.model_id.clone(),
-                base_url,
-                api_key: effective_key.clone(),
-                context_window: Some(normalized.context_window),
-                max_output_tokens: Some(normalized.max_output_tokens),
-            },
+            model: spec.to_pi_spec(),
             locale,
         };
         let started_at = Instant::now();
@@ -946,7 +1008,7 @@ impl ModelStore {
                 context,
                 &command,
                 TEST_CONNECTION_IDLE_TIMEOUT,
-                Some(&effective_key),
+                Some(&spec.api_key),
                 |_| Ok(()),
             )
             .await?;
@@ -956,12 +1018,12 @@ impl ModelStore {
                 let _ = text.len();
                 Ok(ModelTestReply {
                     protocol_version: MODEL_PROTOCOL_VERSION,
-                    provider: normalized.provider,
-                    model_id: normalized.model_id.clone(),
+                    provider: spec.provider,
+                    model_id: spec.model_id.clone(),
                     summary: i18n::model_connection_summary(
                         locale,
-                        normalized.provider,
-                        &normalized.model_id,
+                        spec.provider,
+                        &spec.model_id,
                         latency_ms,
                     ),
                     latency_ms,

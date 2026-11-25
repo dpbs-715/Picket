@@ -234,6 +234,8 @@ pub struct WorkbenchRestoreReply {
     pub worktrees: Vec<PersistedWorktreeState>,
     pub snapshots: Vec<RepositorySnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections: Option<Vec<crate::models::types::SavedProviderConnection>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<crate::models::types::SavedModelConfiguration>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_model_id: Option<Option<String>>,

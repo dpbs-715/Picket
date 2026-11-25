@@ -16,8 +16,10 @@ function openedWorkbench() {
   let state = workbenchReducer(emptyWorkbench(), { type: 'repositoryReadStarted', key: 'open', requestId: 'open-1' });
   state = workbenchReducer(state, { type: 'repositoryReadFinished', key: 'open', reply: repositoryReply('open-1') });
   return workbenchReducer(state, {
-    type: 'modelSaved',
-    model: { id: 'model-1', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' },
+    type: 'catalogSynced',
+    connections: [{ id: 'conn-1', name: 'Anthropic', provider: 'anthropic' }],
+    models: [{ id: 'model-1', connectionId: 'conn-1', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' }],
+    activeModelId: 'model-1',
   });
 }
 

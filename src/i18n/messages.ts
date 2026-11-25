@@ -197,7 +197,7 @@ export interface Messages {
   footer: {
     addModel: string;
     selectModelTitle: string;
-    addModelMenuItem: string;
+    manageModelsMenuItem: string;
   };
   compact: {
     expandWindow: string;
@@ -250,14 +250,22 @@ export interface Messages {
     commitLanguageTip(hasRepository: boolean): string;
     appLanguage: string;
     modelsHeading: string;
-    addModel: string;
+    addProvider: string;
+    addChildModel: string;
     noModelsConfigured: string;
-    addFirstModel: string;
+    addFirstProvider: string;
     activeModelBadge: string;
-    duplicateModelLabel(name: string): string;
+    connectionModelCount(count: number): string;
+    emptyConnectionHint: string;
+    toggleConnectionLabel(name: string, expanded: boolean): string;
+    editConnectionLabel(name: string): string;
+    deleteConnectionLabel(name: string): string;
+    deleteConnectionConfirm(name: string, modelCount: number, includesActive: boolean): string;
+    confirmDeleteConnection: string;
     editModelLabel(name: string): string;
     deleteModelLabel(name: string): string;
     modelDetailTitle(params: {
+      connectionName: string;
       providerLabel: string;
       formatShort: string;
       modelId: string;
@@ -267,11 +275,20 @@ export interface Messages {
     }): string;
   };
   modelForm: {
-    addTitle: string;
-    editTitle: string;
-    duplicateTitle: string;
-    duplicateNameSuffix: string;
+    addProviderTitle: string;
+    editConnectionTitle: string;
+    addModelTitle: string;
+    editModelTitle: string;
     providerLegend: string;
+    connectionSectionHeading: string;
+    firstModelSectionHeading: string;
+    connectionNameLabel: string;
+    connectionNamePlaceholder: string;
+    parentConnectionLabel: string;
+    connectionIdentityLockedNote: string;
+    rotateKeyImpactNote(count: number): string;
+    testNeedsModelHint: string;
+    advancedToggle: string;
     apiFormatLabel: string;
     displayNameLabel: string;
     displayNamePlaceholder: string;
@@ -280,16 +297,12 @@ export interface Messages {
     apiKeyTipLabel: string;
     apiKeyTipText: string;
     apiKeyKeepPlaceholder: string;
-    apiKeySharePlaceholder: string;
     apiKeyEnterPlaceholder: string;
-    endpointChangedKeyNotice: string;
     revealApiKeyLabel: string;
     hideApiKeyLabel: string;
     revealingApiKeyLabel: string;
     revealedKeyReadonlyLabel: string;
     revealKeyErrorFallback: string;
-    sharedKeyUpdateAll(count: number): string;
-    sharedKeyDetachCurrent: string;
     contextWindowLabel: string;
     contextWindowTipLabel: string;
     contextWindowTipText(defaultValue: number): string;
@@ -301,7 +314,7 @@ export interface Messages {
     testConnection: string;
     saving: string;
     saveChanges: string;
-    saveDuplicate: string;
+    saveModel: string;
     saveAnyway: string;
     saveAndUse: string;
     testErrorFallback: string;
@@ -632,7 +645,7 @@ const en: Messages = {
   footer: {
     addModel: 'Add Model',
     selectModelTitle: 'Select Model',
-    addModelMenuItem: 'Add Model…',
+    manageModelsMenuItem: 'Manage Models…',
   },
   compact: {
     expandWindow: 'Expand Workbench',
@@ -687,40 +700,56 @@ const en: Messages = {
       `Controls the summary and bullet language for previewed commit plans and C-Push commits in ${hasRepository ? 'this project' : 'new projects'}. Conventional Commit prefixes (feat, fix, etc.) stay in English.`,
     appLanguage: 'App Language',
     modelsHeading: 'Models',
-    addModel: 'Add Model',
+    addProvider: 'Provider',
+    addChildModel: 'Model',
     noModelsConfigured: 'No models configured yet',
-    addFirstModel: 'Add First Model',
+    addFirstProvider: 'Add First Provider',
     activeModelBadge: 'Active',
-    duplicateModelLabel: (name) => `Duplicate model ${name}`,
+    connectionModelCount: (count) => `${count} model${count === 1 ? '' : 's'}`,
+    emptyConnectionHint: 'No models under this connection yet.',
+    toggleConnectionLabel: (name, expanded) => `${expanded ? 'Collapse' : 'Expand'} connection ${name}`,
+    editConnectionLabel: (name) => `Edit connection ${name}`,
+    deleteConnectionLabel: (name) => `Delete connection ${name}`,
+    deleteConnectionConfirm: (name, modelCount, includesActive) => {
+      if (modelCount === 0) return `Delete connection "${name}" and its saved key?`;
+      const activePart = includesActive ? ' (includes active model)' : '';
+      return `Delete connection "${name}" along with ${modelCount} model${modelCount === 1 ? '' : 's'}${activePart} and its saved key?`;
+    },
+    confirmDeleteConnection: 'Delete Connection',
     editModelLabel: (name) => `Edit model ${name}`,
     deleteModelLabel: (name) => `Delete model ${name}`,
-    modelDetailTitle: ({ providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
-      `${providerLabel} (${formatShort}) · ${modelId} · Context ${contextWindow} / Max output ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
+    modelDetailTitle: ({ connectionName, providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
+      `${connectionName} · ${providerLabel} (${formatShort}) · ${modelId} · Context ${contextWindow} / Max output ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
   },
   modelForm: {
-    addTitle: 'Add Model',
-    editTitle: 'Edit Model',
-    duplicateTitle: 'Duplicate Model',
-    duplicateNameSuffix: 'Copy',
+    addProviderTitle: 'Add Provider',
+    editConnectionTitle: 'Edit Connection',
+    addModelTitle: 'Add Model',
+    editModelTitle: 'Edit Model',
     providerLegend: 'Provider',
+    connectionSectionHeading: 'Connection',
+    firstModelSectionHeading: 'First Model',
+    connectionNameLabel: 'Connection Name',
+    connectionNamePlaceholder: 'Defaults to provider name when empty',
+    parentConnectionLabel: 'Connection',
+    connectionIdentityLockedNote: 'Provider type and base URL identify this connection. Create a new provider connection to use a different endpoint.',
+    rotateKeyImpactNote: (count) => `Applies to all ${count} model${count === 1 ? '' : 's'} under this connection.`,
+    testNeedsModelHint: 'Add at least one model under this connection before testing.',
+    advancedToggle: 'Advanced',
     apiFormatLabel: 'API Format',
     displayNameLabel: 'Display Name',
     displayNamePlaceholder: 'Defaults to Model ID when empty',
     modelIdLabel: 'Model ID',
     baseUrlLabel: 'Base URL',
-    apiKeyTipLabel: 'API Key storage security',
-    apiKeyTipText: 'Stored only in macOS Keychain; never written to plain config files or logs.',
-    apiKeyKeepPlaceholder: 'Leave empty to keep existing Keychain key, or enter a new key',
-    apiKeySharePlaceholder: 'Leave empty to share source key, or enter a new key',
+    apiKeyTipLabel: 'API Key storage info',
+    apiKeyTipText: 'Stored locally in ~/.picket/credentials.json (0600 permissions); never written to models.json, logs, or ordinary UI state.',
+    apiKeyKeepPlaceholder: 'Leave empty to keep saved key, or enter a new key',
     apiKeyEnterPlaceholder: 'Enter API key',
-    endpointChangedKeyNotice: 'Provider or base URL changed; enter a new API key.',
     revealApiKeyLabel: 'Reveal saved API key',
     hideApiKeyLabel: 'Hide API key',
     revealingApiKeyLabel: 'Authenticating…',
     revealedKeyReadonlyLabel: 'Saved API key (read-only)',
     revealKeyErrorFallback: 'Unable to reveal API key.',
-    sharedKeyUpdateAll: (count) => `Update all ${count} models sharing this key`,
-    sharedKeyDetachCurrent: 'Use new key for this model only',
     contextWindowLabel: 'Context Window',
     contextWindowTipLabel: 'Context window info',
     contextWindowTipText: (defaultValue) =>
@@ -734,11 +763,11 @@ const en: Messages = {
     testConnection: 'Test Connection',
     saving: 'Saving…',
     saveChanges: 'Save Changes',
-    saveDuplicate: 'Save',
+    saveModel: 'Save',
     saveAnyway: 'Save Anyway',
     saveAndUse: 'Save & Use',
     testErrorFallback: 'Connection test did not complete. Check base URL, model ID, or network; input preserved.',
-    saveErrorFallback: 'Model save did not complete. No model or key was saved; input preserved.',
+    saveErrorFallback: 'Save did not complete. No configuration or key was written; input preserved.',
     validation: {
       missingModelId: 'Enter a model ID',
       missingBaseUrl: 'Enter a base URL',
@@ -807,8 +836,8 @@ const en: Messages = {
     disconnectedModelOrCPush: 'Model and C-Push services are not connected in browser preview; prompt and selection are preserved.',
     disconnectedGit: 'Desktop Git service is not connected in browser preview; no commits, pushes, or repository changes were made, and prompt and selection are preserved.',
     disconnectedTestModel: 'Desktop model service is not connected; no connection request was sent, and input is preserved.',
-    disconnectedSaveModel: 'System Keychain is not connected in browser preview; no model or API key was saved, and input is preserved.',
-    disconnectedRevealModelKey: 'System authentication is unavailable in browser preview; no API key was read.',
+    disconnectedSaveModel: 'Desktop credential storage is not connected in browser preview; no configuration or API key was saved, and input is preserved.',
+    disconnectedRevealModelKey: 'System authentication and desktop credential storage are unavailable in browser preview; no API key was read.',
     browserPinUnsupported: 'Window pinning is unavailable in browser preview. Run pnpm desktop dev to open the desktop app.',
     browserWindowUnsupported: 'Window resizing and pinning are unavailable in browser preview; compact layout is previewed inside the page.',
     cPushPlanMismatch: 'C-Push plan reply target or request identity mismatch; ignored reply.',
@@ -1085,7 +1114,7 @@ const zh: Messages = {
   footer: {
     addModel: '添加模型',
     selectModelTitle: '选择模型',
-    addModelMenuItem: '添加模型…',
+    manageModelsMenuItem: '管理模型…',
   },
   compact: {
     expandWindow: '展开完整工作台',
@@ -1139,41 +1168,57 @@ const zh: Messages = {
     commitLanguageTip: (hasRepository) =>
       `控制${hasRepository ? '当前项目' : '新打开项目'}预生成计划与 C-Push 拆分提交的标题描述及要点语言；Conventional Commit 前缀（如 feat、fix）保持英文。`,
     appLanguage: '界面语言',
-    modelsHeading: '模型管理',
-    addModel: '添加模型',
+    modelsHeading: '模型设置',
+    addProvider: '供应商',
+    addChildModel: '模型',
     noModelsConfigured: '尚未配置可用模型',
-    addFirstModel: '添加第一个模型',
+    addFirstProvider: '添加第一个供应商',
     activeModelBadge: '当前使用',
-    duplicateModelLabel: (name) => `复制模型 ${name}`,
+    connectionModelCount: (count) => `${count} 个模型`,
+    emptyConnectionHint: '该连接下还没有模型。',
+    toggleConnectionLabel: (name, expanded) => `${expanded ? '收起' : '展开'}供应商连接 ${name}`,
+    editConnectionLabel: (name) => `编辑连接 ${name}`,
+    deleteConnectionLabel: (name) => `删除连接 ${name}`,
+    deleteConnectionConfirm: (name, modelCount, includesActive) => {
+      if (modelCount === 0) return `确认删除连接“${name}”及其已保存密钥？`;
+      const activePart = includesActive ? '（含当前使用模型）' : '';
+      return `确认删除连接“${name}”、其下 ${modelCount} 个模型${activePart}及已保存密钥？`;
+    },
+    confirmDeleteConnection: '确认删除连接',
     editModelLabel: (name) => `编辑模型 ${name}`,
     deleteModelLabel: (name) => `删除模型 ${name}`,
-    modelDetailTitle: ({ providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
-      `${providerLabel}（${formatShort}）· ${modelId} · 上下文 ${contextWindow} / 最大输出 ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
+    modelDetailTitle: ({ connectionName, providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
+      `${connectionName} · ${providerLabel}（${formatShort}）· ${modelId} · 上下文 ${contextWindow} / 最大输出 ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
   },
   modelForm: {
-    addTitle: '添加模型',
-    editTitle: '编辑模型',
-    duplicateTitle: '复制模型',
-    duplicateNameSuffix: '副本',
-    providerLegend: '提供商',
+    addProviderTitle: '添加供应商',
+    editConnectionTitle: '编辑连接',
+    addModelTitle: '添加模型',
+    editModelTitle: '编辑模型',
+    providerLegend: '供应商模板',
+    connectionSectionHeading: '连接信息',
+    firstModelSectionHeading: '首个模型',
+    connectionNameLabel: '连接名称',
+    connectionNamePlaceholder: '为空时使用供应商名称',
+    parentConnectionLabel: '所属连接',
+    connectionIdentityLockedNote: '供应商类型与接口地址为当前连接身份；如需更换目标地址，请新建一条连接。',
+    rotateKeyImpactNote: (count) => `将用于这条连接下的 ${count} 个模型。`,
+    testNeedsModelHint: '请先在该连接下至少添加一个模型后再测试连接。',
+    advancedToggle: '高级选项',
     apiFormatLabel: '接口格式',
     displayNameLabel: '显示名称',
     displayNamePlaceholder: '为空时使用模型 ID',
     modelIdLabel: '模型 ID',
     baseUrlLabel: '接口地址（Base URL）',
-    apiKeyTipLabel: 'API Key 安全存储说明',
-    apiKeyTipText: '密钥仅存入 macOS 系统钥匙串，不写入普通配置文件或日志。',
-    apiKeyKeepPlaceholder: '留空则保留原钥匙串密钥；输入新值则替换',
-    apiKeySharePlaceholder: '留空则共用原密钥；输入新值则单独保存',
+    apiKeyTipLabel: 'API Key 存储说明',
+    apiKeyTipText: '密钥以 0600 权限保存在本机 ~/.picket/credentials.json，不写入 models.json、日志或常规界面状态。',
+    apiKeyKeepPlaceholder: '留空则保留原密钥；输入新值则替换',
     apiKeyEnterPlaceholder: '输入密钥',
-    endpointChangedKeyNotice: '服务商或接口地址已变更，请填写新密钥。',
     revealApiKeyLabel: '显示已保存的完整密钥',
     hideApiKeyLabel: '隐藏完整密钥',
     revealingApiKeyLabel: '正在验证身份…',
     revealedKeyReadonlyLabel: '当前已保存密钥（只读）',
     revealKeyErrorFallback: '无法显示完整密钥。',
-    sharedKeyUpdateAll: (count) => `更新所有共用此密钥的 ${count} 个模型`,
-    sharedKeyDetachCurrent: '只让当前模型使用新密钥',
     contextWindowLabel: '上下文长度',
     contextWindowTipLabel: '上下文长度说明',
     contextWindowTipText: (defaultValue) =>
@@ -1187,11 +1232,11 @@ const zh: Messages = {
     testConnection: '测试连接',
     saving: '保存中…',
     saveChanges: '保存修改',
-    saveDuplicate: '保存',
+    saveModel: '保存',
     saveAnyway: '仍然保存',
     saveAndUse: '保存并使用',
     testErrorFallback: '连接测试未完成，请检查接口地址、模型 ID 或网络连接；输入已保留。',
-    saveErrorFallback: '保存模型未完成，没有保存模型或密钥；输入已保留。',
+    saveErrorFallback: '保存未完成，没有写入配置或密钥；输入已保留。',
     validation: {
       missingModelId: '请填写模型 ID',
       missingBaseUrl: '请填写接口地址',
@@ -1257,8 +1302,8 @@ const zh: Messages = {
     disconnectedModelOrCPush: '当前环境未连接桌面模型或 C-Push 服务，此操作尚未接入浏览器预览；提示词和选择已保留。',
     disconnectedGit: '当前环境未连接桌面 Git 服务，此操作尚未接入浏览器预览；不会提交、推送或修改仓库，提示词和选择已保留。',
     disconnectedTestModel: '当前环境未连接桌面模型服务，未发送连接请求；输入已保留。',
-    disconnectedSaveModel: '当前环境未连接系统钥匙串，没有保存模型或密钥；输入已保留。',
-    disconnectedRevealModelKey: '当前环境未连接系统身份验证与钥匙串，无法显示密钥。',
+    disconnectedSaveModel: '当前环境未连接桌面凭据服务，没有保存配置或密钥；输入已保留。',
+    disconnectedRevealModelKey: '当前环境未连接系统身份验证与本地凭据服务，无法显示密钥。',
     browserPinUnsupported: '浏览器预览不能设置窗口置顶。请使用 pnpm desktop dev 打开桌面应用。',
     browserWindowUnsupported: '浏览器预览不支持调整原生窗口大小或置顶；当前仅在页面内预览紧凑布局。',
     cPushPlanMismatch: 'C-Push 预生成计划回执的目标或请求身份不匹配，已忽略该回执。',

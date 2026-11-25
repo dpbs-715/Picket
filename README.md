@@ -62,7 +62,7 @@ It pauses to ask only when a real decision is needed, leaving unselected files, 
 - **Safe by default**: Picket never auto-force-pushes, discards uncommitted work, or silently rewrites published remote history.
 
 ### Pinned Compact Mode & IDE-First Workflow
-- **Designed to stay beside your IDE**: Keep Picket pinned on top, or collapse it into **Pinned Compact Mode** — a minimal 2-row floating bar (`400 × ~86`) with quick drawers for switching projects, switching branches, pulling & rebasing, and toggling files.
+- **Designed to stay beside your IDE**: Toggle **Compact Mode** (`400 × ~86` floating 2-row bar with quick drawers for projects, branches, remote pull & rebase, and file selection), **Always-on-Top Pin**, and **Settings** independently at any time from the permanent top-right toolbar.
 - **Unobtrusive notifications**: When Picket is unfocused, native macOS notifications alert you only when your input is needed (decisions, conflicts, or push failures) without stealing focus or resizing the window.
 - **Seamless external IDE integration**: Auto-detects installed editors (`IntelliJ IDEA`, `RustRover`, `WebStorm`, `VS Code`, `Cursor`) to open files, diffs, staged diffs, review lines, and conflict merges.
 - **Bilingual experience**: Instant **English** / **简体中文** UI switching, plus per-project **Preferred Editor** and **Commit Message Language** settings (Conventional Commit prefixes like `feat` and `fix` remain in English).
@@ -91,13 +91,13 @@ It pauses to ask only when a real decision is needed, leaving unselected files, 
 
 ### Model Providers
 
-Picket uses your own API keys or local Ollama server through an isolated bundled Pi Core runtime.
+Configure each provider connection once (base URL & API key), then add as many models under that connection as you need. Picket connects through an isolated bundled Pi Core runtime.
 
 | Provider | Default API Format | Notes |
 | --- | --- | --- |
-| **Anthropic** | Anthropic Messages (`/v1/messages`) | API key stored in macOS Keychain |
+| **Anthropic** | Anthropic Messages (`/v1/messages`) | API key stored in `~/.picket/credentials.json` (`0600`) |
 | **OpenAI** | OpenAI Responses (`/responses`) | Also supports Chat Completions |
-| **DeepSeek** | OpenAI Chat Completions (`/chat/completions`) | API key stored in macOS Keychain |
+| **DeepSeek** | OpenAI Chat Completions (`/chat/completions`) | API key stored in `~/.picket/credentials.json` (`0600`) |
 | **Ollama (Local)** | OpenAI Chat Completions (`/chat/completions`) | Connects to local server (e.g. `http://127.0.0.1:11434/v1`), no API key required |
 | **Custom Compatible** | Configurable | Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages |
 
@@ -113,8 +113,8 @@ Picket automatically detects installed IDEs on macOS and lets you pick a preferr
 
 ## Security & Privacy
 
-- **macOS Keychain storage**: API keys are stored exclusively in the macOS Keychain — never in plaintext config files, logs, or frontend state.
-- **Shared keys & authenticated reveal**: Duplicate a model configuration to share an existing Keychain credential without re-entering the key. Viewing a saved full key requires macOS device authentication (**Touch ID** or login password) and automatically hides after 30 seconds or when the window loses focus.
+- **Isolated local data & credentials (`~/.picket/`)**: All Picket data lives under `~/.picket/` (`0700` directory, `0600` files). API keys are stored strictly in a dedicated `~/.picket/credentials.json` (`0600`) file keyed by provider connection — never written to `models.json`, `workbench-state.json`, session history, logs, or frontend state, and without repeated macOS Keychain prompts across ad-hoc test builds.
+- **Configure a provider once, add models on demand**: Child models inherit their parent connection's endpoint and API key automatically without re-entering secrets; rotating a connection key updates every model under that connection at once. Viewing a saved full key in **Edit Connection** still requires macOS device authentication (**Touch ID** or login password) and automatically hides after 30 seconds or when the window loses focus.
 - **Zero hidden credentials**: Picket starts with zero repositories and zero models; it never reads shell environment keys or external developer logins.
 - **Controlled local Git execution**: All Git writes are verified and executed by the native Rust desktop layer — models never run arbitrary shell commands against your repository.
 - **Uses your existing Git auth**: Remote push and fetch reuse your existing local Git / SSH credentials with no extra account login required.

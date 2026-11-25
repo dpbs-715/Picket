@@ -28,6 +28,7 @@ export interface WindowGeometrySnapshot {
 export interface ApplyWindowModeOptions {
   pinned: boolean;
   compactMode: boolean;
+  compactWidth?: number;
   compactHeight?: number;
   fullSize: WindowSize;
   placement: 'anchorTopLeft' | 'restorePosition';
@@ -66,6 +67,7 @@ export interface NativeWindowEnvironment {
 export interface WindowController {
   readonly isDesktopWindow: boolean;
   readSnapshot(): Promise<WindowGeometrySnapshot | null>;
+  setPinned(pinned: boolean, locale?: AppLocale): Promise<boolean>;
   applyWindowMode(options: ApplyWindowModeOptions): Promise<AppliedWindowGeometry>;
   adjustCompactHeight(height: number, locale?: AppLocale): Promise<void>;
   subscribeGeometry?(listener: (snapshot: { position: WindowPosition; size: WindowSize }) => void): () => void;
@@ -75,6 +77,14 @@ export interface WindowController {
 
 const TITLEBAR_VISIBLE_HEIGHT = 38;
 const MIN_VISIBLE_HORIZONTAL_OVERLAP = 80;
+
+export function normalizeCompactWidth(width?: number): number {
+  if (!width || !Number.isFinite(width)) return WINDOW_DIMENSIONS.compactWidth;
+  return Math.min(
+    WINDOW_DIMENSIONS.maxStoredDimension,
+    Math.max(WINDOW_DIMENSIONS.compactWidth, Math.round(width)),
+  );
+}
 
 export function clampCompactHeight(height: number): number {
   if (!Number.isFinite(height)) return WINDOW_DIMENSIONS.compactDefaultHeight;
@@ -203,9 +213,10 @@ export async function applyWindowModeWith(
   await win.setAlwaysOnTop(options.pinned);
 
   if (options.compactMode) {
+    const compactWidth = normalizeCompactWidth(options.compactWidth);
     const compactHeight = clampCompactHeight(options.compactHeight ?? WINDOW_DIMENSIONS.compactDefaultHeight);
     const targetSize: WindowSize = {
-      width: WINDOW_DIMENSIONS.compactWidth,
+      width: compactWidth,
       height: compactHeight,
     };
     await win.setMinSize(new LogicalSize(WINDOW_DIMENSIONS.compactWidth, WINDOW_DIMENSIONS.compactMinHeight));
@@ -268,10 +279,11 @@ export async function adjustCompactHeightWith(
     win.innerSize(),
   ]);
   const scale = scaleRaw > 0 ? scaleRaw : 1;
+  const currentWidth = normalizeCompactWidth(Math.round(beforeInnerSize.width / scale));
   const currentHeight = Math.round(beforeInnerSize.height / scale);
   if (Math.abs(currentHeight - targetHeight) <= 1) return;
   await win.setMinSize(new LogicalSize(WINDOW_DIMENSIONS.compactWidth, WINDOW_DIMENSIONS.compactMinHeight));
-  await win.setSize(new LogicalSize(WINDOW_DIMENSIONS.compactWidth, targetHeight));
+  await win.setSize(new LogicalSize(currentWidth, targetHeight));
   await win.setPosition(new PhysicalPosition(beforeOuterPos.x, beforeOuterPos.y));
 }
 
@@ -301,6 +313,12 @@ export function createDesktopWindowController(): WindowController {
     async readSnapshot() {
       if (!isTauri()) return null;
       return readWindowSnapshotWith(tauriEnvironment);
+    },
+    async setPinned(pinned, locale = DEFAULT_APP_LOCALE) {
+      if (!isTauri()) {
+        throw new Error(getMessages(locale).desktop.browserPinUnsupported);
+      }
+      return runProgrammatic(() => setWindowPinned(pinned, locale));
     },
     async applyWindowMode(options) {
       if (!isTauri()) {

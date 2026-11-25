@@ -19,8 +19,10 @@ use models::{
     smoke::ModelSmokeState,
     store::ModelStore,
     types::{
-        ModelIdRequest, ModelInput, ModelMutateReply, ModelRevealKeyReply, ModelSaveReply,
-        ModelStreamEvent, ModelTestReply, ReviewScopeReply, ReviewScopeRequest,
+        ConnectionIdRequest, CreateProviderConnectionInput, ModelIdRequest, ModelMutateReply,
+        ModelSaveReply, ModelStreamEvent, ModelTestReply, ProviderRevealKeyReply,
+        ProviderSaveReply, ProviderUpdateReply, ReviewScopeReply, ReviewScopeRequest,
+        SaveModelInput, TestConnectionInput, UpdateProviderConnectionInput,
     },
 };
 use repository::{
@@ -38,6 +40,17 @@ use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
 struct RepositoryPicker(tokio::sync::Mutex<()>);
+
+fn picket_data_dir() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Unable to resolve HOME directory for ~/.picket storage".to_string())?;
+    let home_path = std::path::PathBuf::from(home);
+    if !home_path.is_absolute() {
+        return Err("HOME environment variable must be an absolute path".to_string());
+    }
+    Ok(home_path.join(".picket"))
+}
 
 fn runtime_paths(app: &tauri::AppHandle) -> Result<PiPaths, String> {
     if cfg!(debug_assertions) {
@@ -170,7 +183,6 @@ async fn refresh_repository(
 
 #[tauri::command]
 async fn set_repository_local_keep(
-    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     persistence: State<'_, WorkbenchPersistence>,
     request: LocalKeepRequest,
@@ -184,7 +196,7 @@ async fn set_repository_local_keep(
             request.locale,
         )
         .await?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let removed_selection_paths = if request.keep {
         request.paths.as_slice()
     } else {
@@ -255,19 +267,13 @@ async fn load_workbench_state(
     models: State<'_, ModelStore>,
     cpush: State<'_, CPushCoordinator>,
 ) -> Result<WorkbenchRestoreReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let lifecycle = app.state::<DesktopLifecycle>();
-    if lifecycle.ui_smoke {
-        models.use_isolated_keychain(
-            data_dir.join("picket-ui-smoke.keychain-db"),
-            "picket-ui-smoke-pw",
-        )?;
-        if !lifecycle.restart_smoke {
-            let (_, editor_bin) = app
-                .state::<repository::smoke::SmokeState>()
-                .path_and_editor_bin()?;
-            launcher.set_search_dirs(Some(vec![editor_bin]))?;
-        }
+    if lifecycle.ui_smoke && !lifecycle.restart_smoke {
+        let (_, editor_bin) = app
+            .state::<repository::smoke::SmokeState>()
+            .path_and_editor_bin()?;
+        launcher.set_search_dirs(Some(vec![editor_bin]))?;
     }
     let mut restored = persistence.restore(&data_dir, &store).await?;
     if lifecycle.restart_smoke
@@ -290,12 +296,13 @@ async fn load_workbench_state(
     }
     restored.installed_editors = Some(installed);
 
-    let (saved_models, active_model_id, model_warning) = models
+    let catalog = models
         .restore_with_locale(&data_dir, restored.locale)
         .await?;
-    restored.models = Some(saved_models);
-    restored.active_model_id = Some(active_model_id);
-    if let Some(m_warn) = model_warning {
+    restored.connections = Some(catalog.connections);
+    restored.models = Some(catalog.models);
+    restored.active_model_id = Some(catalog.active_model_id);
+    if let Some(m_warn) = catalog.warning {
         restored.warning = Some(match restored.warning {
             Some(existing) => format!("{existing} {m_warn}"),
             None => m_warn,
@@ -319,44 +326,59 @@ async fn test_model_connection(
     app: tauri::AppHandle,
     models: State<'_, ModelStore>,
     supervisor: State<'_, PiSupervisor>,
-    input: ModelInput,
+    input: TestConnectionInput,
 ) -> Result<ModelTestReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if app.state::<DesktopLifecycle>().ui_smoke {
-        models.use_isolated_keychain(
-            data_dir.join("picket-ui-smoke.keychain-db"),
-            "picket-ui-smoke-pw",
-        )?;
-    }
+    let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
     models
-        .test_connection_with_storage(Some(&data_dir), &paths, &supervisor, &input)
+        .test_connection_with_storage(&data_dir, &paths, &supervisor, &input)
+        .await
+}
+
+#[tauri::command]
+async fn create_provider_connection(
+    models: State<'_, ModelStore>,
+    input: CreateProviderConnectionInput,
+) -> Result<ProviderSaveReply, String> {
+    let data_dir = picket_data_dir()?;
+    models.create_provider_connection(&data_dir, &input).await
+}
+
+#[tauri::command]
+async fn update_provider_connection(
+    models: State<'_, ModelStore>,
+    input: UpdateProviderConnectionInput,
+) -> Result<ProviderUpdateReply, String> {
+    let data_dir = picket_data_dir()?;
+    models.update_provider_connection(&data_dir, &input).await
+}
+
+#[tauri::command]
+async fn delete_provider_connection(
+    models: State<'_, ModelStore>,
+    request: ConnectionIdRequest,
+) -> Result<ModelMutateReply, String> {
+    let data_dir = picket_data_dir()?;
+    models
+        .delete_provider_connection_with_locale(&data_dir, &request.connection_id, request.locale)
         .await
 }
 
 #[tauri::command]
 async fn save_model(
-    app: tauri::AppHandle,
     models: State<'_, ModelStore>,
-    input: ModelInput,
+    input: SaveModelInput,
 ) -> Result<ModelSaveReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if app.state::<DesktopLifecycle>().ui_smoke {
-        models.use_isolated_keychain(
-            data_dir.join("picket-ui-smoke.keychain-db"),
-            "picket-ui-smoke-pw",
-        )?;
-    }
+    let data_dir = picket_data_dir()?;
     models.save_model(&data_dir, &input).await
 }
 
 #[tauri::command]
 async fn select_model(
-    app: tauri::AppHandle,
     models: State<'_, ModelStore>,
     request: ModelIdRequest,
 ) -> Result<ModelMutateReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     models
         .select_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
@@ -364,37 +386,23 @@ async fn select_model(
 
 #[tauri::command]
 async fn delete_model(
-    app: tauri::AppHandle,
     models: State<'_, ModelStore>,
     request: ModelIdRequest,
 ) -> Result<ModelMutateReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if app.state::<DesktopLifecycle>().ui_smoke {
-        models.use_isolated_keychain(
-            data_dir.join("picket-ui-smoke.keychain-db"),
-            "picket-ui-smoke-pw",
-        )?;
-    }
+    let data_dir = picket_data_dir()?;
     models
         .delete_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
 }
 
 #[tauri::command]
-async fn reveal_model_api_key(
-    app: tauri::AppHandle,
+async fn reveal_provider_api_key(
     models: State<'_, ModelStore>,
-    request: ModelIdRequest,
-) -> Result<ModelRevealKeyReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    if app.state::<DesktopLifecycle>().ui_smoke {
-        models.use_isolated_keychain(
-            data_dir.join("picket-ui-smoke.keychain-db"),
-            "picket-ui-smoke-pw",
-        )?;
-    }
+    request: ConnectionIdRequest,
+) -> Result<ProviderRevealKeyReply, String> {
+    let data_dir = picket_data_dir()?;
     models
-        .reveal_model_api_key(&data_dir, &request.model_id, request.locale)
+        .reveal_provider_api_key(&data_dir, &request.connection_id, request.locale)
         .await
 }
 
@@ -407,7 +415,7 @@ async fn review_selected_scope(
     request: ReviewScopeRequest,
     on_event: Channel<ModelStreamEvent>,
 ) -> Result<ReviewScopeReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
     models
         .review_scope(&data_dir, &paths, &supervisor, &store, &request, |event| {
@@ -435,7 +443,7 @@ async fn plan_cpush(
     request: PlanCPushRequest,
     on_event: Channel<CPushProgressEvent>,
 ) -> Result<CPushCommandReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
     cpush
         .plan_cpush(
@@ -463,7 +471,7 @@ async fn start_cpush(
     request: StartCPushRequest,
     on_event: Channel<CPushProgressEvent>,
 ) -> Result<CPushCommandReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
     cpush
         .start_cpush(
@@ -491,7 +499,7 @@ async fn respond_cpush(
     request: RespondCPushRequest,
     on_event: Channel<CPushProgressEvent>,
 ) -> Result<CPushCommandReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
     cpush
         .respond_cpush(
@@ -511,13 +519,12 @@ async fn respond_cpush(
 
 #[tauri::command]
 async fn pull_rebase_repository(
-    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     cpush: State<'_, CPushCoordinator>,
     request: PullRebaseRequest,
     on_event: Channel<CPushProgressEvent>,
 ) -> Result<CPushCommandReply, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     cpush
         .pull_rebase(&data_dir, &store, &request, |event| {
             let _ = on_event.send(event);
@@ -528,12 +535,11 @@ async fn pull_rebase_repository(
 
 #[tauri::command]
 async fn reconcile_cpush_session(
-    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     cpush: State<'_, CPushCoordinator>,
     request: ReconcileCPushRequest,
 ) -> Result<Option<CPushProgressEvent>, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     cpush.reconcile_worktree(&data_dir, &store, &request).await
 }
 
@@ -567,50 +573,49 @@ async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Result<
     if !app.state::<DesktopLifecycle>().ui_smoke {
         return Err("Not running UI smoke mode".into());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let models_raw = std::fs::read_to_string(data_dir.join("models.json"))
         .map_err(|e| format!("Missing models.json in UI smoke: {e}"))?;
     if models_raw.contains(&secret) || models_raw.contains("apiKey") {
         return Err("models.json leaked secret or apiKey field".into());
     }
-    let kc_bytes = std::fs::read(data_dir.join("picket-ui-smoke.keychain-db"))
-        .map_err(|e| format!("Missing isolated macOS keychain file: {e}"))?;
-    if kc_bytes
-        .windows(secret.len())
-        .any(|window| window == secret.as_bytes())
-    {
-        return Err("Keychain database contained unencrypted secret bytes".into());
+    let creds_path = data_dir.join("credentials.json");
+    let creds_raw = std::fs::read_to_string(&creds_path)
+        .map_err(|e| format!("Missing credentials.json in UI smoke: {e}"))?;
+    if !creds_raw.contains(&secret) {
+        return Err("credentials.json did not persist provider secret".into());
     }
-    let cold_vault = models::keychain::CredentialVault::with_keychain_file(
-        data_dir.join("picket-ui-smoke.keychain-db"),
-        "picket-ui-smoke-pw",
-    );
-    let cold_models = ModelStore::with_vault(cold_vault);
-    let (restored_models, active_id, warn) = cold_models.restore(&data_dir).await?;
-    let active_id = active_id.ok_or("Cold model restore lost activeModelId")?;
-    if restored_models.len() != 2
-        || warn.is_some()
-        || !restored_models
-            .iter()
-            .all(|m| m.shared_key_count == Some(2) && m.key_hint.is_some())
+    let cold_models = ModelStore::default();
+    let restored = cold_models.restore(&data_dir).await?;
+    let active_id = restored
+        .active_model_id
+        .ok_or("Cold model restore lost activeModelId")?;
+    if restored.connections.len() != 1
+        || restored.models.len() != 2
+        || restored.warning.is_some()
+        || restored.connections[0].key_hint.is_none()
     {
         return Err(
-            "Cold model restore did not recover shared 2-model catalog with key hints".into(),
+            "Cold model restore did not recover 1 provider connection + 2 child models with key hint"
+                .into(),
         );
     }
-    let active_model = restored_models
+    let active_model = restored
+        .models
         .iter()
         .find(|m| m.id == active_id)
         .ok_or("Active model missing from restored catalog")?;
     if active_model.name != "Smoke Coder" {
-        return Err("Duplicating a model unexpectedly replaced activeModelId".into());
+        return Err(
+            "Adding a second model under connection unexpectedly replaced activeModelId".into(),
+        );
     }
-    for item in &restored_models {
+    for item in &restored.models {
         let resolved = cold_models
             .resolve_runtime_spec(&data_dir, &item.id)
             .await?;
         if resolved.api_key != secret {
-            return Err("Cold macOS Keychain lookup did not recover shared API key".into());
+            return Err("Cold credentials.json lookup did not recover connection API key".into());
         }
     }
     let recorded = app.state::<ModelSmokeState>().requests()?;
@@ -650,7 +655,7 @@ async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Result<
         "{}",
         serde_json::json!({
             "type": "uiSmokeModelProof",
-            "keychainEncryptedAndRestored": true,
+            "credentialsPersistedAndRestored": true,
             "partialScopePreviewPlanVerified": true,
             "lockfileFilteredReviewVerified": true
         })
@@ -677,7 +682,7 @@ async fn verify_cpush_m4_smoke(
     }
     app.state::<repository::smoke::SmokeState>()
         .verify_cpush()?;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let cpush_raw = std::fs::read_to_string(data_dir.join("cpush-sessions.json"))
         .map_err(|e| format!("Missing cpush-sessions.json in UI smoke: {e}"))?;
     if cpush_raw.contains(&secret)
@@ -742,12 +747,11 @@ fn verify_m5_conflict_smoke(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn save_workbench_state(
-    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     persistence: State<'_, WorkbenchPersistence>,
     request: WorkbenchSaveRequest,
 ) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     persistence.save(&data_dir, &store, request).await
 }
 
@@ -810,7 +814,7 @@ async fn verify_repository_persistence_smoke(app: tauri::AppHandle) -> Result<()
     if !app.state::<DesktopLifecycle>().ui_smoke {
         return Err("Not running repository persistence smoke mode".into());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = picket_data_dir()?;
     let mut last_error = String::from("Missing persisted workbench-state.json");
     for attempt in 0..8 {
         if attempt > 0 {
@@ -875,25 +879,26 @@ async fn verify_restart_smoke(
     if !app.state::<DesktopLifecycle>().restart_smoke {
         return Err("Not running restart smoke mode".into());
     }
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let (restored_models, active_id, warn) = models.restore(&data_dir).await?;
-    let active_id = active_id.ok_or("Restart smoke lost activeModelId")?;
-    if restored_models.len() != 2
-        || warn.is_some()
-        || !restored_models
-            .iter()
-            .all(|m| m.shared_key_count == Some(2) && m.key_hint.is_some())
+    let data_dir = picket_data_dir()?;
+    let restored = models.restore(&data_dir).await?;
+    let active_id = restored
+        .active_model_id
+        .ok_or("Restart smoke lost activeModelId")?;
+    if restored.connections.len() != 1
+        || restored.models.len() != 2
+        || restored.warning.is_some()
+        || restored.connections[0].key_hint.is_none()
     {
-        return Err("Restart smoke failed to restore saved model catalog".into());
+        return Err("Restart smoke failed to restore saved provider & model catalog".into());
     }
     let resolved = models.resolve_runtime_spec(&data_dir, &active_id).await?;
     if !resolved.api_key.starts_with("smoke-token-") {
-        return Err("Restart smoke Keychain lookup did not recover expected secret".into());
+        return Err("Restart smoke credentials lookup did not recover expected secret".into());
     }
-    for item in &restored_models {
+    for item in &restored.models {
         let peer_resolved = models.resolve_runtime_spec(&data_dir, &item.id).await?;
         if peer_resolved.api_key != resolved.api_key {
-            return Err("Restart smoke lost shared Keychain credential across models".into());
+            return Err("Restart smoke lost connection credential across child models".into());
         }
     }
     let cold_store = RepositoryStore::default();
@@ -911,7 +916,7 @@ async fn verify_restart_smoke(
         serde_json::json!({
             "type": "uiSmokeRestartProof",
             "coldProcessRepositoryHydrated": true,
-            "coldProcessKeychainModelHydrated": true,
+            "coldProcessModelCatalogHydrated": true,
             "coldProcessSessionHistoryHydrated": true,
             "coldProcessCompactWindowHydrated": true
         })
@@ -998,10 +1003,13 @@ fn main() {
             load_workbench_state,
             save_workbench_state,
             test_model_connection,
+            create_provider_connection,
+            update_provider_connection,
+            delete_provider_connection,
             save_model,
             select_model,
             delete_model,
-            reveal_model_api_key,
+            reveal_provider_api_key,
             review_selected_scope,
             cancel_model_request,
             plan_cpush,

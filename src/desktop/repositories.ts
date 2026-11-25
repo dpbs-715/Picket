@@ -16,12 +16,15 @@ import {
 } from './cpush';
 import {
   cancelDesktopModelRequest,
+  createDesktopProviderConnection,
   deleteDesktopModel,
-  revealDesktopModelApiKey,
+  deleteDesktopProviderConnection,
+  revealDesktopProviderApiKey,
   reviewDesktopScope,
   saveDesktopModel,
   selectDesktopModel,
   testDesktopModelConnection,
+  updateDesktopProviderConnection,
 } from './models';
 
 const eventSubscribers = new Set<(event: WorkbenchEvent) => void>();
@@ -33,8 +36,10 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
   ...disconnectedBackend,
   repositoryReadsAvailable: true,
   testModel: testDesktopModelConnection,
+  createProviderConnection: createDesktopProviderConnection,
+  updateProviderConnection: updateDesktopProviderConnection,
   saveModel: saveDesktopModel,
-  revealModelApiKey: revealDesktopModelApiKey,
+  revealProviderApiKey: revealDesktopProviderApiKey,
   cancelRequest: cancelDesktopModelRequest,
   subscribe(receive) {
     eventSubscribers.add(receive);
@@ -63,6 +68,9 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
     }
     if (command.kind === 'deleteModel') {
       return deleteDesktopModel(command.modelId, command.locale);
+    }
+    if (command.kind === 'deleteProviderConnection') {
+      return deleteDesktopProviderConnection(command.connectionId, command.locale);
     }
     if (command.kind === 'review') {
       if (!command.selections?.length || command.selections.length !== command.fileIds.length

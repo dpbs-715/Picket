@@ -156,9 +156,13 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
       },
     ],
     activeWorktreeId: tree.worktreeId,
+    connections: [
+      { id: 'conn-anthropic', name: 'Anthropic', provider: 'anthropic', keyHint: 'sk-a…1024' },
+      { id: 'conn-openai', name: 'OpenAI', provider: 'openai', keyHint: 'sk-p…8842' },
+    ],
     models: [
-      { id: 'test-claude', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' },
-      { id: 'test-gpt', name: 'GPT-4.1', provider: 'openai', modelId: 'gpt-4.1' },
+      { id: 'test-claude', connectionId: 'conn-anthropic', name: 'Claude Sonnet 4', provider: 'anthropic', modelId: 'claude-sonnet-4-20250514' },
+      { id: 'test-gpt', connectionId: 'conn-openai', name: 'GPT-4.1', provider: 'openai', modelId: 'gpt-4.1' },
     ],
     activeModelId: 'test-claude',
   };
@@ -302,6 +306,7 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
       }];
       break;
     case 'no-model':
+      state.connections = [];
       state.models = [];
       state.activeModelId = null;
       tree.prompt = { text: '', revision: 0 };

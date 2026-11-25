@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
-import { WINDOW_DIMENSIONS } from '../../../shared/workbench-persistence-protocol';
 import {
+  WINDOW_DIMENSIONS,
+  type WindowPosition,
+  type WindowSize,
+} from '../../../shared/workbench-persistence-protocol';
+import {
+  clampCompactHeight,
   desktopWindowController,
+  normalizeCompactWidth,
   normalizeFullWindowSize,
   type WindowController,
 } from '../../desktop/window';
 import { getMessages, I18nProvider } from '../../i18n';
 import { Icon, IconButton } from '../../ui/controls';
-import { AddModelForm } from '../settings/AddModelForm';
-import type { ModelConfiguration } from '../settings/modelProviders';
+import { ModelEntryForm } from '../settings/ModelEntryForm';
+import type { ModelConfiguration, ProviderConnection } from '../settings/modelProviders';
+import { ProviderConnectionForm } from '../settings/ProviderConnectionForm';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { disconnectedBackend } from './commands';
 import type { WorkbenchBackend, WorkbenchCommand } from './commands';
@@ -33,13 +40,16 @@ import {
   isModelErrorText,
   isPlanOutdated,
   orderedMessages,
+  resolveWorkbenchPresentation,
   selectedFiles,
   splitPath,
   targetOf,
   workbenchReducer,
   type CompactExpandTarget,
   type Message,
+  type SettingsReturnTarget,
   type WorkbenchState,
+  type WorkbenchSurface,
   type Worktree,
 } from './state/workbench';
 import './workbench.css';
@@ -55,7 +65,26 @@ interface NoticeItem {
   showModelSettings?: boolean;
 }
 
-type PendingModeFocus = { kind: CompactExpandTarget | 'addModel' | 'modelSettings' };
+type PendingModeFocus = { kind: CompactExpandTarget | 'addModel' };
+
+interface CompactReturnSnapshot {
+  position: WindowPosition;
+  size: WindowSize;
+}
+
+interface SettingsSession {
+  returnTo: SettingsReturnTarget;
+  focusModels: boolean;
+  /** Captured immediately before expanding from compact mode so closing Settings restores exact compact size & position. */
+  compactSnapshot?: CompactReturnSnapshot;
+}
+
+type ModelOverlayState =
+  | { kind: 'closed' }
+  | { kind: 'createProvider'; keepActiveModel?: boolean }
+  | { kind: 'editProvider'; connection: ProviderConnection }
+  | { kind: 'addModel'; connection: ProviderConnection }
+  | { kind: 'editModel'; connection: ProviderConnection; model: ModelConfiguration };
 
 export function Workbench({
   initialState,
@@ -63,9 +92,11 @@ export function Workbench({
   windowController = desktopWindowController,
 }: Props) {
   const [state, dispatch] = useReducer(workbenchReducer, initialState, (initial) => initial ?? emptyWorkbench());
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [focusModelsInSettings, setFocusModelsInSettings] = useState(false);
-  const [modelForm, setModelForm] = useState<{ open: false } | { open: true; editing?: ModelConfiguration; duplicating?: ModelConfiguration }>({ open: false });
+  const [settingsSession, setSettingsSession] = useState<SettingsSession | null>(null);
+  const settingsSessionRef = useRef<SettingsSession | null>(null);
+  settingsSessionRef.current = settingsSession;
+  const [modelOverlay, setModelOverlay] = useState<ModelOverlayState>({ kind: 'closed' });
+  const modelOverlayOpen = modelOverlay.kind !== 'closed';
   const [emptyTab, setEmptyTab] = useState<'commit' | 'review'>('commit');
   const [promptOpen, setPromptOpen] = useState(false);
   const promptFocusRequestedRef = useRef(false);
@@ -75,9 +106,9 @@ export function Workbench({
   const cancelledRequests = useRef(new Set<string>());
   const latestLocalKeepRequestByRepo = useRef<Record<string, string>>({});
   const [pinBusy, setPinBusy] = useState(false);
-  const [unpinnedCompactPref, setUnpinnedCompactPref] = useState(() => Boolean(initialState?.windowPrefs.compactMode && !initialState.windowPrefs.pinned));
   const pinInFlight = useRef(false);
   const desiredCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
+  const collapsedCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
   const pendingModeFocusRef = useRef<PendingModeFocus | null>(null);
   const previousSessionStatusRef = useRef<Record<string, Worktree['sessionStatus']> | null>(null);
   const [hydrated, setHydrated] = useState(() => !!initialState || !backend.loadWorkbenchState);
@@ -91,6 +122,10 @@ export function Workbench({
   const t = getMessages(state.locale);
   const pinned = state.windowPrefs.pinned;
   const compactMode = state.windowPrefs.compactMode;
+  const presentation = resolveWorkbenchPresentation(compactMode, settingsSession?.returnTo ?? null);
+  const settingsOpen = presentation.showSettings;
+  const activeSurfaceRef = useRef<WorkbenchSurface>(presentation.surface);
+  activeSurfaceRef.current = presentation.surface;
   const worktree = state.worktrees.find((tree) => tree.worktreeId === state.activeWorktreeId);
   const repository = state.repositories.find((repository) => repository.id === worktree?.repositoryId);
   const viewKey = worktree?.worktreeId ?? 'empty';
@@ -122,9 +157,153 @@ export function Workbench({
     return !!commitPanelRef.current && commitPanelRef.current.contains(active) && active.tagName === 'TEXTAREA';
   }
 
-  function openModelSettings() {
-    setFocusModelsInSettings(true);
-    setSettingsOpen(true);
+  function openSettingsFromWorkbench(focusModels = false) {
+    const next: SettingsSession = { returnTo: 'workbench', focusModels };
+    settingsSessionRef.current = next;
+    setSettingsSession(next);
+  }
+
+  async function openSettingsFromCompact(options: { focusModels?: boolean; drawerWasOpen?: boolean } = {}) {
+    if (pinInFlight.current || activeSurfaceRef.current !== 'compact') return;
+    const currentPrefs = latestState.current.windowPrefs;
+    const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
+
+    if (!windowController.isDesktopWindow) {
+      try {
+        await windowController.applyWindowMode({
+          pinned: currentPrefs.pinned,
+          compactMode: false,
+          fullSize,
+          placement: 'anchorTopLeft',
+          locale: state.locale,
+        });
+      } catch (error) {
+        notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
+      }
+      return;
+    }
+
+    const focusModels = Boolean(options.focusModels);
+    const fallbackCompactHeight = clampCompactHeight(collapsedCompactHeightRef.current);
+    const provisionalSession: SettingsSession = {
+      returnTo: 'compact',
+      focusModels,
+      ...(currentPrefs.compactPosition
+        ? {
+            compactSnapshot: {
+              position: currentPrefs.compactPosition,
+              size: { width: WINDOW_DIMENSIONS.compactWidth, height: fallbackCompactHeight },
+            },
+          }
+        : {}),
+    };
+
+    pinInFlight.current = true;
+    setPinBusy(true);
+    // Switch surface directly to standalone Settings BEFORE enlarging the window so neither
+    // a stretched CompactBar nor the full workbench content can ever flash during expansion.
+    settingsSessionRef.current = provisionalSession;
+    setSettingsSession(provisionalSession);
+
+    try {
+      const applied = await windowController.applyWindowMode({
+        pinned: currentPrefs.pinned,
+        compactMode: false,
+        fullSize,
+        placement: 'anchorTopLeft',
+        locale: state.locale,
+      });
+      const compactSize: WindowSize = {
+        width: normalizeCompactWidth(applied.previousSize.width),
+        height: options.drawerWasOpen
+          ? fallbackCompactHeight
+          : clampCompactHeight(applied.previousSize.height),
+      };
+      const settledSession: SettingsSession = {
+        returnTo: 'compact',
+        focusModels,
+        compactSnapshot: {
+          position: applied.previousPosition,
+          size: compactSize,
+        },
+      };
+      settingsSessionRef.current = settledSession;
+      setSettingsSession(settledSession);
+      dispatch({
+        type: 'windowPreferencesUpdated',
+        preferences: {
+          ...latestState.current.windowPrefs,
+          pinned: applied.pinned,
+          compactMode: true,
+          compactPosition: applied.previousPosition,
+        },
+      });
+    } catch (error) {
+      settingsSessionRef.current = null;
+      setSettingsSession(null);
+      notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
+    } finally {
+      pinInFlight.current = false;
+      setPinBusy(false);
+    }
+  }
+
+  async function closeSettings() {
+    const session = settingsSessionRef.current;
+    if (!session) return;
+
+    if (session.returnTo === 'workbench') {
+      settingsSessionRef.current = null;
+      setSettingsSession(null);
+      return;
+    }
+
+    if (pinInFlight.current) return;
+    const currentPrefs = latestState.current.windowPrefs;
+    const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
+    const snapshot = session.compactSnapshot;
+    const targetPosition = snapshot?.position ?? currentPrefs.compactPosition;
+    const targetWidth = normalizeCompactWidth(snapshot?.size.width);
+    const targetHeight = clampCompactHeight(snapshot?.size.height ?? collapsedCompactHeightRef.current);
+
+    pinInFlight.current = true;
+    setPinBusy(true);
+    try {
+      // Shrink and move back to pre-settings compact geometry FIRST while standalone Settings
+      // remains mounted, then swap directly to CompactBar without ever mounting full workbench.
+      const applied = await windowController.applyWindowMode({
+        pinned: currentPrefs.pinned,
+        compactMode: true,
+        compactWidth: targetWidth,
+        compactHeight: targetHeight,
+        fullSize,
+        placement: targetPosition ? 'restorePosition' : 'anchorTopLeft',
+        ...(targetPosition ? { targetPosition } : {}),
+        locale: state.locale,
+      });
+      desiredCompactHeightRef.current = applied.size.height;
+      collapsedCompactHeightRef.current = applied.size.height;
+      setModelOverlay({ kind: 'closed' });
+      settingsSessionRef.current = null;
+      setSettingsSession(null);
+      dispatch({
+        type: 'windowPreferencesUpdated',
+        preferences: {
+          ...latestState.current.windowPrefs,
+          pinned: applied.pinned,
+          compactMode: true,
+          compactPosition: applied.position,
+        },
+      });
+    } catch (error) {
+      setModelOverlay({ kind: 'closed' });
+      settingsSessionRef.current = null;
+      setSettingsSession(null);
+      notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
+    } finally {
+      pinInFlight.current = false;
+      setPinBusy(false);
+    }
   }
 
   useLayoutEffect(() => {
@@ -179,7 +358,7 @@ export function Workbench({
     if (pendingFocus.kind === 'repo') {
       document.querySelector<HTMLElement>('.repository-open-button, .repository-button')?.focus();
     }
-  }, [compactMode]);
+  }, [presentation.surface]);
 
   useEffect(() => backend.subscribe?.((event) => dispatch({ type: 'event', event })), [backend]);
   useEffect(() => {
@@ -273,7 +452,7 @@ export function Workbench({
       }).catch(() => {});
     }
     const unsubscribeGeometry = windowController.subscribeGeometry?.((observed) => {
-      if (!mounted) return;
+      if (!mounted || settingsSessionRef.current?.returnTo === 'compact') return;
       dispatch({ type: 'windowGeometryObserved', position: observed.position, size: observed.size });
     });
     const unsubscribeTap = windowController.subscribeNotificationTap?.(() => {
@@ -395,79 +574,35 @@ export function Workbench({
     }));
   }
 
-  const handleDesiredCompactHeight = useCallback((height: number) => {
+  const handleDesiredCompactHeight = useCallback((height: number, drawerOpen = false) => {
     desiredCompactHeightRef.current = height;
-    if (!latestState.current.windowPrefs.compactMode || !windowController.isDesktopWindow || pinInFlight.current) {
+    if (!drawerOpen) {
+      collapsedCompactHeightRef.current = height;
+    }
+    if (activeSurfaceRef.current !== 'compact' || !windowController.isDesktopWindow || pinInFlight.current) {
       return;
     }
     void windowController.adjustCompactHeight(height, latestState.current.locale).catch(() => {});
   }, [windowController]);
 
-  function captureModeSwitchFocus(overrideTarget?: CompactExpandTarget | 'addModel' | 'modelSettings') {
+  function captureModeSwitchFocus(overrideTarget?: CompactExpandTarget | 'addModel') {
     pendingModeFocusRef.current = overrideTarget ? { kind: overrideTarget } : null;
   }
 
   async function togglePin() {
     if (pinInFlight.current) return;
     const currentPrefs = latestState.current.windowPrefs;
-    const nextPrefs = computeNextPinPreferences(currentPrefs, !currentPrefs.pinned);
-    const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
-    const draggedInCompact = !nextPrefs.pinned
-      && currentPrefs.compactMode
-      && !!currentPrefs.fullPosition
-      && !!currentPrefs.compactPosition
-      && (
-        currentPrefs.compactPosition.x !== currentPrefs.fullPosition.x
-        || currentPrefs.compactPosition.y !== currentPrefs.fullPosition.y
-      );
+    const nextPinned = !currentPrefs.pinned;
 
     pinInFlight.current = true;
     setPinBusy(true);
     try {
-      const applied = await windowController.applyWindowMode({
-        pinned: nextPrefs.pinned,
-        compactMode: nextPrefs.compactMode,
-        compactHeight: WINDOW_DIMENSIONS.compactDefaultHeight,
-        fullSize,
-        placement: draggedInCompact ? 'restorePosition' : 'anchorTopLeft',
-        targetPosition: draggedInCompact ? currentPrefs.fullPosition : undefined,
-        locale: state.locale,
-      });
-      captureModeSwitchFocus();
-      if (!nextPrefs.pinned) {
-        setUnpinnedCompactPref(false);
-      }
-      if (nextPrefs.compactMode) {
-        desiredCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
-        setSettingsOpen(false);
-        setFocusModelsInSettings(false);
-        setModelForm({ open: false });
-      } else {
-        desiredCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
-      }
+      const appliedPinned = await windowController.setPinned(nextPinned, state.locale);
       pinInFlight.current = false;
       setPinBusy(false);
       dispatch({
         type: 'windowPreferencesUpdated',
-        preferences: {
-          ...nextPrefs,
-          pinned: applied.pinned,
-          fullSize: !currentPrefs.compactMode && nextPrefs.compactMode
-            ? normalizeFullWindowSize(applied.previousSize)
-            : !nextPrefs.compactMode
-              ? normalizeFullWindowSize(applied.size)
-              : fullSize,
-          fullPosition: !currentPrefs.compactMode && nextPrefs.compactMode
-            ? applied.previousPosition
-            : !nextPrefs.compactMode
-              ? applied.position
-              : currentPrefs.fullPosition,
-          compactPosition: nextPrefs.compactMode
-            ? applied.position
-            : currentPrefs.compactMode
-              ? applied.previousPosition
-              : currentPrefs.compactPosition,
-        },
+        preferences: computeNextPinPreferences(latestState.current.windowPrefs, appliedPinned),
       });
     } catch (error) {
       pinInFlight.current = false;
@@ -494,10 +629,11 @@ export function Workbench({
         locale: state.locale,
       });
       desiredCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
+      collapsedCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
       captureModeSwitchFocus();
-      setSettingsOpen(false);
-      setFocusModelsInSettings(false);
-      setModelForm({ open: false });
+      settingsSessionRef.current = null;
+      setSettingsSession(null);
+      setModelOverlay({ kind: 'closed' });
       pinInFlight.current = false;
       setPinBusy(false);
       dispatch({
@@ -517,8 +653,8 @@ export function Workbench({
     }
   }
 
-  async function expandFromCompact(target?: CompactExpandTarget | 'addModel' | 'modelSettings') {
-    if (pinInFlight.current || !latestState.current.windowPrefs.compactMode) return;
+  async function expandFromCompact(target?: CompactExpandTarget | 'addModel') {
+    if (pinInFlight.current || activeSurfaceRef.current !== 'compact') return;
     const currentPrefs = latestState.current.windowPrefs;
     const nextPrefs = computeNextCompactPreferences(currentPrefs, false);
     const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
@@ -534,18 +670,14 @@ export function Workbench({
         locale: state.locale,
       });
       desiredCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
+      collapsedCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
       captureModeSwitchFocus(target);
-      if (!nextPrefs.pinned) {
-        setUnpinnedCompactPref(true);
-      }
       if (target === 'dock' && worktree) {
         dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded: true });
       } else if (target === 'plan') {
         setTab('commit');
       } else if (target === 'addModel') {
-        setModelForm({ open: true });
-      } else if (target === 'modelSettings') {
-        openModelSettings();
+        openConfigureModel();
       }
       pinInFlight.current = false;
       setPinBusy(false);
@@ -582,9 +714,14 @@ export function Workbench({
     if (branching) dispatch({ type: 'repositoryBranchStarted', repositoryId: branching.target.repositoryId, requestId: branching.requestId });
     try {
       const reply = await backend.execute(command);
-      if (command.kind === 'selectModel' || command.kind === 'deleteModel') {
-        if (reply && typeof reply === 'object' && 'models' in reply) {
-          dispatch({ type: 'modelsSynced', models: reply.models, activeModelId: reply.activeModelId });
+      if (command.kind === 'selectModel' || command.kind === 'deleteModel' || command.kind === 'deleteProviderConnection') {
+        if (reply && typeof reply === 'object' && 'models' in reply && 'connections' in reply) {
+          dispatch({
+            type: 'catalogSynced',
+            connections: reply.connections,
+            models: reply.models,
+            activeModelId: reply.activeModelId,
+          });
         }
         return true;
       }
@@ -773,7 +910,7 @@ export function Workbench({
           ...(reading.kind === 'refresh' ? { worktreeId: reading.target.worktreeId, error: message } : {}),
         });
       }
-      const modelRelatedCommand = ['planCPush', 'review', 'cPush', 'respond', 'selectModel', 'deleteModel'].includes(command.kind);
+      const modelRelatedCommand = ['planCPush', 'review', 'cPush', 'respond', 'selectModel', 'deleteModel', 'deleteProviderConnection'].includes(command.kind);
       notify(message, targetKey, modelRelatedCommand && isModelErrorText(message));
       return false;
     } finally { inFlight.current.delete(key); setPending([...inFlight.current]); }
@@ -886,12 +1023,26 @@ export function Workbench({
       });
     }
   }
+  function openConfigureModel() {
+    if (latestState.current.connections.length === 0) {
+      setModelOverlay({ kind: 'createProvider' });
+    } else {
+      openSettingsFromWorkbench(true);
+    }
+  }
+  function openConfigureModelFromCompact() {
+    if (latestState.current.connections.length === 0) {
+      void expandFromCompact('addModel');
+    } else {
+      void openSettingsFromCompact({ focusModels: true });
+    }
+  }
   function primary() {
     if (!model && (!worktree || !isActiveSession(worktree))) {
       if (compactMode) {
-        void expandFromCompact('addModel');
+        openConfigureModelFromCompact();
       } else {
-        setModelForm({ open: true });
+        openConfigureModel();
       }
       return;
     }
@@ -974,6 +1125,11 @@ export function Workbench({
   async function deleteModel(id: string) {
     if (await execute({ kind: 'deleteModel', modelId: id, locale: state.locale })) dispatch({ type: 'modelDeleted', modelId: id });
   }
+  async function deleteProviderConnection(connectionId: string) {
+    if (await execute({ kind: 'deleteProviderConnection', connectionId, locale: state.locale })) {
+      dispatch({ type: 'providerDeleted', connectionId });
+    }
+  }
   const highCount = worktree?.review.findings.filter((finding) => finding.severity === 'high').length ?? 0;
   const suggestionCount = (worktree?.review.findings.length ?? 0) - highCount;
   const noFilesReviewed = worktree?.review.reviewedFileIds !== undefined && worktree.review.reviewedFileIds.length === 0 && (worktree.review.skippedPaths.length ?? 0) > 0;
@@ -991,8 +1147,14 @@ export function Workbench({
   const activeNotice = feedback[viewKey];
 
   return <I18nProvider locale={state.locale}>
-    <main className={`workbench ${compactMode ? 'workbench-compact' : ''}`} aria-label={t.workbench.ariaLabel}>
-      {compactMode ? (
+    <main
+      className={`workbench ${presentation.windowSizeMode === 'compact' ? 'workbench-compact' : ''}`}
+      data-surface={presentation.surface}
+      data-window-size={presentation.windowSizeMode}
+      data-window-transition={pinBusy ? 'resizing' : 'idle'}
+      aria-label={t.workbench.ariaLabel}
+    >
+      {presentation.surface === 'compact' && (
         <CompactBar
           state={state}
           repository={repository}
@@ -1015,231 +1177,279 @@ export function Workbench({
           onExpand={() => void expandFromCompact()}
           onExpandTarget={(target) => void expandFromCompact(target)}
           onPin={() => void togglePin()}
+          onSettings={(drawerWasOpen) => void openSettingsFromCompact({ focusModels: false, drawerWasOpen })}
           onPrimary={primary}
-          onConfigureModel={() => void expandFromCompact('addModel')}
-          onOpenModelSettings={() => void expandFromCompact('modelSettings')}
+          onConfigureModel={openConfigureModelFromCompact}
+          onOpenModelSettings={() => void openSettingsFromCompact({ focusModels: true })}
           onDismissNotice={() => notify('')}
           onDesiredHeightChange={handleDesiredCompactHeight}
         />
-      ) : (
-        <>
-          <div className="workbench-content" inert={settingsOpen || modelForm.open}>
-            <ContextHeader
-              key={`header:${viewKey}`}
-              state={state}
-              worktree={worktree}
-              repository={repository}
-              opening={opening}
-              branchBusy={branchBusy}
-              pullBusy={pullBusy}
-              pinned={pinned}
-              showCollapse={pinned || unpinnedCompactPref}
-              pinBusy={pinBusy}
-              onCollapse={() => void collapseToCompact()}
-              onPin={() => void togglePin()}
-              onSettings={() => { setFocusModelsInSettings(false); setSettingsOpen(true); }}
-              onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
-              onSwitch={switchWorktree}
-              onBranch={async (kind, branch) => worktree ? execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
-              onPull={() => { if (worktree) void execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
-            />
-            {activeNotice?.text && (
-              <div className="operation-notice" role="alert">
-                <span className="operation-notice-body">
-                  <Icon name="alert" className="operation-notice-icon" />
-                  <span>{activeNotice.text}</span>
-                </span>
-                <div className="operation-notice-actions">
-                  {activeNotice.showModelSettings && (
-                    <button type="button" className="secondary operation-notice-action" onClick={openModelSettings}>
-                      {t.workbench.openModelSettingsAction}
-                    </button>
-                  )}
-                  <IconButton icon="close" label={t.common.dismissNotice} onClick={() => notify('')} />
-                </div>
-              </div>
-            )}
-            <ChangesPanel
-              worktree={worktree}
-              editorShort={editorShort}
-              opening={opening}
-              repositoryReadsAvailable={!!backend.repositoryReadsAvailable}
-              onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
-              onSelect={(fileId) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
-              onSelectAll={() => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
-              onSelectFiles={(fileIds) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
-              onSetLocalKeep={setLocalKeep}
-              onOpenFile={openFile}
-              onReview={() => setTab('review')}
-              refreshing={refreshing}
-              onRefresh={() => { if (worktree) void execute({ kind: 'refresh', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }); }}
-            />
-            <section className="lower-workspace" aria-label={t.workbench.lowerWorkspaceLabel}>
-              <div className="tab-workspace" inert={!!worktree?.dockExpanded}>
-                <div className="tab-heading"><div className="tab-list" role="tablist" aria-label={t.workbench.workspaceTabsLabel}>
-                  <button type="button" id="commit-tab" role="tab" aria-selected={tab === 'commit'} aria-controls="commit-panel" tabIndex={tab === 'commit' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('review'); document.getElementById('review-tab')?.focus(); } }} onClick={() => setTab('commit')}>
-                    {t.commit.tabLabel}
-                    {worktree?.requests.plan
-                      ? <span className="small muted">{t.commit.planningBadge}</span>
-                      : worktree?.plan
-                        ? <span className={`small ${planOutdated ? 'warning' : 'muted'}`}>{planOutdated ? t.commit.planOutdatedBadge : t.commit.planCountBadge(worktree.plan.groups.length)}</span>
-                        : null}
+      )}
+      {presentation.mountWorkbenchContent && (
+        <div className="workbench-content" inert={settingsOpen || modelOverlayOpen}>
+          <ContextHeader
+            key={`header:${viewKey}`}
+            state={state}
+            worktree={worktree}
+            repository={repository}
+            opening={opening}
+            branchBusy={branchBusy}
+            pullBusy={pullBusy}
+            pinned={pinned}
+            pinBusy={pinBusy}
+            onCollapse={() => void collapseToCompact()}
+            onPin={() => void togglePin()}
+            onSettings={() => openSettingsFromWorkbench(false)}
+            onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
+            onSwitch={switchWorktree}
+            onBranch={async (kind, branch) => worktree ? execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
+            onPull={() => { if (worktree) void execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
+          />
+          {activeNotice?.text && (
+            <div className="operation-notice" role="alert">
+              <span className="operation-notice-body">
+                <Icon name="alert" className="operation-notice-icon" />
+                <span>{activeNotice.text}</span>
+              </span>
+              <div className="operation-notice-actions">
+                {activeNotice.showModelSettings && (
+                  <button type="button" className="secondary operation-notice-action" onClick={() => openSettingsFromWorkbench(true)}>
+                    {t.workbench.openModelSettingsAction}
                   </button>
-                  <button type="button" id="review-tab" role="tab" aria-selected={tab === 'review'} aria-controls="review-panel" tabIndex={tab === 'review' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('commit'); document.getElementById('commit-tab')?.focus(); } }} onClick={() => setTab('review')}>{t.review.tabLabel}{reviewLabel && <span className={`small ${highCount ? 'danger' : 'muted'}`}>{reviewLabel}</span>}</button>
-                </div><div className="row">
-                  {tab === 'review' && worktree?.review.status === 'done' && <IconButton icon="refresh" label={t.review.reReviewLabel} disabled={!canUseModel} onClick={() => void runReview()} />}
-                  <button
-                    type="button"
-                    className={`prompt-toggle ${showPromptBox ? 'is-open' : ''} ${promptText ? 'has-text' : ''}`}
-                    aria-expanded={showPromptBox}
-                    onClick={() => {
-                      if (showPromptBox && !promptText) {
-                        setPromptOpen(false);
-                      } else {
-                        promptFocusRequestedRef.current = true;
-                        setPromptOpen(true);
-                        textareaRef.current?.focus();
-                      }
-                    }}
-                  >
-                    {promptText ? (
-                      <>
-                        <span className="prompt-dot" aria-hidden="true" />
-                        {t.commit.promptActiveToggle}
-                      </>
-                    ) : (
-                      t.commit.promptToggle
-                    )}
-                  </button>
-                </div></div>
-                {showPromptBox && (
-                  <div className="prompt-box">
-                    <textarea
-                      ref={textareaRef}
-                      className="prompt-textarea"
-                      aria-label={t.commit.promptLabel}
-                      rows={2}
-                      value={promptText}
-                      onChange={(event) => dispatch({ type: 'prompt', worktreeId: worktree?.worktreeId ?? null, text: event.target.value })}
-                      placeholder={t.commit.promptPlaceholder}
-                      spellCheck={false}
-                    />
-                    <IconButton
-                      icon="close"
-                      label={promptText ? t.commit.clearPromptLabel : t.commit.hidePromptLabel}
-                      onClick={() => {
-                        if (promptText) {
-                          dispatch({ type: 'clearPrompt', worktreeId: worktree?.worktreeId ?? null });
-                        }
-                        setPromptOpen(false);
-                      }}
-                    />
-                  </div>
                 )}
-                <div role="tabpanel" id={tab === 'commit' ? 'commit-panel' : 'review-panel'} aria-labelledby={tab === 'commit' ? 'commit-tab' : 'review-tab'} className="tab-panel">
-                  {tab === 'commit' ? (
-                    <CommitPanel
-                      files={worktree?.files ?? []}
-                      plan={worktree?.plan}
-                      planOutdated={planOutdated}
-                      hasWorktree={!!worktree}
-                      hasModel={!!model}
-                      canPlan={canPlan}
-                      planning={!!worktree?.requests.plan}
-                      panelRef={commitPanelRef}
-                      onPlan={() => void runPlan()}
-                      onCancelPlan={() => cancelModel('plan')}
-                      onEditPlanGroup={(groupId, message) => { if (worktree) dispatch({ type: 'planGroupEdited', worktreeId: worktree.worktreeId, groupId, message }); }}
-                      onClearPlan={() => { if (worktree) dispatch({ type: 'planCleared', worktreeId: worktree.worktreeId }); }}
-                      onConfigureModel={() => setModelForm({ open: true })}
-                    />
-                  ) : (
-                    <ReviewPanel
-                      worktree={worktree}
-                      hasModel={!!model}
-                      canReview={canUseModel}
-                      onReview={(changedOnly) => void runReview(changedOnly)}
-                      onCancel={() => cancelModel('review')}
-                      onAddModel={() => setModelForm({ open: true })}
-                      onOpenModelSettings={openModelSettings}
-                      onOpenFile={openFile}
-                    />
-                  )}
-                </div>
+                <IconButton icon="close" label={t.common.dismissNotice} onClick={() => notify('')} />
               </div>
-              {worktree && <MessageDock worktree={worktree} busy={busy} editorShort={editorShort} onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })} onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })} onRespond={(message, answer) => void respond(message, answer)} onOpenFile={openFile} onReview={() => setTab('review')} />}
-            </section>
-            <ActionFooter key={`footer:${viewKey}`} worktree={worktree} models={state.models} activeModelId={state.activeModelId} busy={busy} onAddModel={() => setModelForm({ open: true })} onSelectModel={(id) => void selectModel(id)} onPrimary={primary} />
-          </div>
-          {settingsOpen && (
-            <SettingsPanel
-              locale={state.locale}
-              repositoryName={repository?.name}
-              editor={activeEditor}
-              commitLanguage={activeCommitLanguage}
-              installedEditors={state.installedEditors}
-              models={state.models}
-              activeModelId={state.activeModelId}
-              onLocale={(locale) => dispatch({ type: 'locale', locale })}
-              onEditor={(nextEditor) => dispatch({ type: 'editor', editor: nextEditor, repositoryId: worktree?.repositoryId ?? null })}
-              onCommitLanguage={(commitLanguage) => dispatch({ type: 'commitLanguage', commitLanguage, repositoryId: worktree?.repositoryId ?? null })}
-              onSelectModel={(id) => void selectModel(id)}
-              onDuplicateModel={(target) => setModelForm({ open: true, duplicating: target })}
-              onEditModel={(target) => setModelForm({ open: true, editing: target })}
-              onDeleteModel={(id) => void deleteModel(id)}
-              covered={modelForm.open}
-              error={activeNotice?.text}
-              focusModels={focusModelsInSettings}
-              onClose={() => { setFocusModelsInSettings(false); setSettingsOpen(false); }}
-              onAddModel={() => setModelForm({ open: true })}
-            />
+            </div>
           )}
-          {modelForm.open && (
-            <AddModelForm
-              key={
-                modelForm.editing
-                  ? `edit:${modelForm.editing.id}`
-                  : modelForm.duplicating
-                    ? `dup:${modelForm.duplicating.id}`
-                    : 'new'
-              }
-              initialModel={modelForm.editing}
-              sourceModel={modelForm.duplicating}
-              existingModels={state.models}
-              onClose={() => setModelForm({ open: false })}
-              test={(input) => backend.testModel({ ...input, locale: state.locale })}
-              save={(input) => backend.saveModel({ ...input, locale: state.locale })}
-              revealApiKey={
-                backend.revealModelApiKey
-                  ? (modelId) => backend.revealModelApiKey!(modelId, state.locale)
-                  : undefined
-              }
-              onKeyHintResolved={(modelId, keyHint) => dispatch({ type: 'modelKeyHintSynced', modelId, keyHint })}
-              onSaved={(savedOutcome) => {
-                const wasEditing = !!modelForm.editing;
-                const wasDuplicating = !!modelForm.duplicating;
-                if ('models' in savedOutcome) {
-                  dispatch({
-                    type: 'modelsSynced',
-                    models: savedOutcome.models,
-                    activeModelId: savedOutcome.activeModelId,
-                  });
-                } else {
-                  dispatch({
-                    type: 'modelSaved',
-                    model: savedOutcome,
-                    keepActiveModel: wasDuplicating,
-                  });
-                }
-                setModelForm({ open: false });
-                if (!wasEditing && !wasDuplicating) {
-                  setFocusModelsInSettings(false);
-                  setSettingsOpen(false);
-                }
-              }}
-            />
-          )}
-        </>
+          <ChangesPanel
+            worktree={worktree}
+            editorShort={editorShort}
+            opening={opening}
+            repositoryReadsAvailable={!!backend.repositoryReadsAvailable}
+            onOpenRepository={() => void execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
+            onSelect={(fileId) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
+            onSelectAll={() => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
+            onSelectFiles={(fileIds) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
+            onSetLocalKeep={setLocalKeep}
+            onOpenFile={openFile}
+            onReview={() => setTab('review')}
+            refreshing={refreshing}
+            onRefresh={() => { if (worktree) void execute({ kind: 'refresh', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }); }}
+          />
+          <section className="lower-workspace" aria-label={t.workbench.lowerWorkspaceLabel}>
+            <div className="tab-workspace" inert={!!worktree?.dockExpanded}>
+              <div className="tab-heading"><div className="tab-list" role="tablist" aria-label={t.workbench.workspaceTabsLabel}>
+                <button type="button" id="commit-tab" role="tab" aria-selected={tab === 'commit'} aria-controls="commit-panel" tabIndex={tab === 'commit' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('review'); document.getElementById('review-tab')?.focus(); } }} onClick={() => setTab('commit')}>
+                  {t.commit.tabLabel}
+                  {worktree?.requests.plan
+                    ? <span className="small muted">{t.commit.planningBadge}</span>
+                    : worktree?.plan
+                      ? <span className={`small ${planOutdated ? 'warning' : 'muted'}`}>{planOutdated ? t.commit.planOutdatedBadge : t.commit.planCountBadge(worktree.plan.groups.length)}</span>
+                      : null}
+                </button>
+                <button type="button" id="review-tab" role="tab" aria-selected={tab === 'review'} aria-controls="review-panel" tabIndex={tab === 'review' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('commit'); document.getElementById('commit-tab')?.focus(); } }} onClick={() => setTab('review')}>{t.review.tabLabel}{reviewLabel && <span className={`small ${highCount ? 'danger' : 'muted'}`}>{reviewLabel}</span>}</button>
+              </div><div className="row">
+                {tab === 'review' && worktree?.review.status === 'done' && <IconButton icon="refresh" label={t.review.reReviewLabel} disabled={!canUseModel} onClick={() => void runReview()} />}
+                <button
+                  type="button"
+                  className={`prompt-toggle ${showPromptBox ? 'is-open' : ''} ${promptText ? 'has-text' : ''}`}
+                  aria-expanded={showPromptBox}
+                  onClick={() => {
+                    if (showPromptBox && !promptText) {
+                      setPromptOpen(false);
+                    } else {
+                      promptFocusRequestedRef.current = true;
+                      setPromptOpen(true);
+                      textareaRef.current?.focus();
+                    }
+                  }}
+                >
+                  {promptText ? (
+                    <>
+                      <span className="prompt-dot" aria-hidden="true" />
+                      {t.commit.promptActiveToggle}
+                    </>
+                  ) : (
+                    t.commit.promptToggle
+                  )}
+                </button>
+              </div></div>
+              {showPromptBox && (
+                <div className="prompt-box">
+                  <textarea
+                    ref={textareaRef}
+                    className="prompt-textarea"
+                    aria-label={t.commit.promptLabel}
+                    rows={2}
+                    value={promptText}
+                    onChange={(event) => dispatch({ type: 'prompt', worktreeId: worktree?.worktreeId ?? null, text: event.target.value })}
+                    placeholder={t.commit.promptPlaceholder}
+                    spellCheck={false}
+                  />
+                  <IconButton
+                    icon="close"
+                    label={promptText ? t.commit.clearPromptLabel : t.commit.hidePromptLabel}
+                    onClick={() => {
+                      if (promptText) {
+                        dispatch({ type: 'clearPrompt', worktreeId: worktree?.worktreeId ?? null });
+                      }
+                      setPromptOpen(false);
+                    }}
+                  />
+                </div>
+              )}
+              <div role="tabpanel" id={tab === 'commit' ? 'commit-panel' : 'review-panel'} aria-labelledby={tab === 'commit' ? 'commit-tab' : 'review-tab'} className="tab-panel">
+                {tab === 'commit' ? (
+                  <CommitPanel
+                    files={worktree?.files ?? []}
+                    plan={worktree?.plan}
+                    planOutdated={planOutdated}
+                    hasWorktree={!!worktree}
+                    hasModel={!!model}
+                    canPlan={canPlan}
+                    planning={!!worktree?.requests.plan}
+                    panelRef={commitPanelRef}
+                    onPlan={() => void runPlan()}
+                    onCancelPlan={() => cancelModel('plan')}
+                    onEditPlanGroup={(groupId, message) => { if (worktree) dispatch({ type: 'planGroupEdited', worktreeId: worktree.worktreeId, groupId, message }); }}
+                    onClearPlan={() => { if (worktree) dispatch({ type: 'planCleared', worktreeId: worktree.worktreeId }); }}
+                    onConfigureModel={openConfigureModel}
+                  />
+                ) : (
+                  <ReviewPanel
+                    worktree={worktree}
+                    hasModel={!!model}
+                    canReview={canUseModel}
+                    onReview={(changedOnly) => void runReview(changedOnly)}
+                    onCancel={() => cancelModel('review')}
+                    onAddModel={openConfigureModel}
+                    onOpenModelSettings={() => openSettingsFromWorkbench(true)}
+                    onOpenFile={openFile}
+                  />
+                )}
+              </div>
+            </div>
+            {worktree && <MessageDock worktree={worktree} busy={busy} editorShort={editorShort} onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })} onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })} onRespond={(message, answer) => void respond(message, answer)} onOpenFile={openFile} onReview={() => setTab('review')} />}
+          </section>
+          <ActionFooter
+            key={`footer:${viewKey}`}
+            worktree={worktree}
+            connections={state.connections}
+            models={state.models}
+            activeModelId={state.activeModelId}
+            busy={busy}
+            onConfigureModel={openConfigureModel}
+            onManageModels={() => openSettingsFromWorkbench(true)}
+            onSelectModel={(id) => void selectModel(id)}
+            onPrimary={primary}
+          />
+        </div>
+      )}
+      {presentation.showSettings && (
+        <SettingsPanel
+          locale={state.locale}
+          repositoryName={repository?.name}
+          editor={activeEditor}
+          commitLanguage={activeCommitLanguage}
+          installedEditors={state.installedEditors}
+          connections={state.connections}
+          models={state.models}
+          activeModelId={state.activeModelId}
+          onLocale={(locale) => dispatch({ type: 'locale', locale })}
+          onEditor={(nextEditor) => dispatch({ type: 'editor', editor: nextEditor, repositoryId: worktree?.repositoryId ?? null })}
+          onCommitLanguage={(commitLanguage) => dispatch({ type: 'commitLanguage', commitLanguage, repositoryId: worktree?.repositoryId ?? null })}
+          onSelectModel={(id) => void selectModel(id)}
+          onAddProvider={() => setModelOverlay({ kind: 'createProvider', keepActiveModel: state.models.length > 0 })}
+          onEditProvider={(connection) => setModelOverlay({ kind: 'editProvider', connection })}
+          onDeleteProvider={(connectionId) => void deleteProviderConnection(connectionId)}
+          onAddModel={(connection) => setModelOverlay({ kind: 'addModel', connection })}
+          onEditModel={(connection, target) => setModelOverlay({ kind: 'editModel', connection, model: target })}
+          onDeleteModel={(id) => void deleteModel(id)}
+          covered={modelOverlayOpen}
+          closeDisabled={pinBusy && settingsSession?.returnTo === 'compact'}
+          error={activeNotice?.text}
+          focusModels={settingsSession?.focusModels ?? false}
+          onClose={() => void closeSettings()}
+        />
+      )}
+      {presentation.surface !== 'compact' && modelOverlay.kind === 'createProvider' && (
+        <ProviderConnectionForm
+          key="create-provider"
+          mode="create"
+          keepActiveModel={modelOverlay.keepActiveModel}
+          onClose={() => setModelOverlay({ kind: 'closed' })}
+          test={(input) => backend.testModel({ ...input, locale: state.locale })}
+          create={(input) => backend.createProviderConnection({ ...input, locale: state.locale })}
+          onCreated={(reply) => {
+            const closeSettingsAfter = !modelOverlay.keepActiveModel;
+            dispatch({
+              type: 'catalogSynced',
+              connections: reply.connections,
+              models: reply.models,
+              activeModelId: reply.activeModelId,
+            });
+            setModelOverlay({ kind: 'closed' });
+            if (closeSettingsAfter) {
+              void closeSettings();
+            }
+          }}
+        />
+      )}
+      {presentation.surface !== 'compact' && modelOverlay.kind === 'editProvider' && (
+        <ProviderConnectionForm
+          key={`edit-provider:${modelOverlay.connection.id}`}
+          mode="edit"
+          connection={
+            state.connections.find((c) => c.id === modelOverlay.connection.id)
+            ?? modelOverlay.connection
+          }
+          childModels={state.models.filter((m) => m.connectionId === modelOverlay.connection.id)}
+          onClose={() => setModelOverlay({ kind: 'closed' })}
+          test={(input) => backend.testModel({ ...input, locale: state.locale })}
+          update={(input) => backend.updateProviderConnection({ ...input, locale: state.locale })}
+          revealApiKey={
+            backend.revealProviderApiKey
+              ? (connectionId) => backend.revealProviderApiKey!(connectionId, state.locale)
+              : undefined
+          }
+          onKeyHintResolved={(connectionId, keyHint) =>
+            dispatch({ type: 'providerKeyHintSynced', connectionId, keyHint })}
+          onUpdated={(reply) => {
+            dispatch({
+              type: 'catalogSynced',
+              connections: reply.connections,
+              models: reply.models,
+              activeModelId: reply.activeModelId,
+            });
+            setModelOverlay({ kind: 'closed' });
+          }}
+        />
+      )}
+      {presentation.surface !== 'compact' && (modelOverlay.kind === 'addModel' || modelOverlay.kind === 'editModel') && (
+        <ModelEntryForm
+          key={
+            modelOverlay.kind === 'editModel'
+              ? `edit-model:${modelOverlay.model.id}`
+              : `add-model:${modelOverlay.connection.id}`
+          }
+          connection={
+            state.connections.find((c) => c.id === modelOverlay.connection.id)
+            ?? modelOverlay.connection
+          }
+          initialModel={modelOverlay.kind === 'editModel' ? modelOverlay.model : undefined}
+          onClose={() => setModelOverlay({ kind: 'closed' })}
+          test={(input) => backend.testModel({ ...input, locale: state.locale })}
+          save={(input) => backend.saveModel({ ...input, locale: state.locale })}
+          onSaved={(reply) => {
+            dispatch({
+              type: 'catalogSynced',
+              connections: reply.connections,
+              models: reply.models,
+              activeModelId: reply.activeModelId,
+            });
+            setModelOverlay({ kind: 'closed' });
+          }}
+        />
       )}
     </main>
   </I18nProvider>;

@@ -1,4 +1,4 @@
-import type { ModelConfiguration } from '../../settings/modelProviders';
+import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
 import type {
   CPushCommandReply,
   CPushLandedCommit,
@@ -147,6 +147,7 @@ export interface WorkbenchState {
   worktrees: Worktree[];
   activeWorktreeId: string | null;
   emptyPrompt: string;
+  connections: ProviderConnection[];
   models: ModelConfiguration[];
   activeModelId: string | null;
   locale: AppLocale;
@@ -170,6 +171,49 @@ export const editors = [
 ] as const;
 export type EditorId = typeof editors[number]['id'];
 
+export type SettingsReturnTarget = 'compact' | 'workbench';
+export type WorkbenchSurface = 'compact' | 'workbench' | 'standaloneSettings';
+export type WindowSizeMode = 'compact' | 'full';
+
+export interface WorkbenchPresentation {
+  /** Which primary UI surface should be rendered inside the desktop window. */
+  surface: WorkbenchSurface;
+  /** Target native window frame size category ('compact' vs 'full'). */
+  windowSizeMode: WindowSizeMode;
+  /** Whether the full workbench content (file list, tabs, footer) should be mounted in the DOM. */
+  mountWorkbenchContent: boolean;
+  /** Whether SettingsPanel should be rendered (standalone or overlaid on the workbench). */
+  showSettings: boolean;
+}
+
+export function resolveWorkbenchPresentation(
+  compactMode: boolean,
+  settingsReturnTo: SettingsReturnTarget | null,
+): WorkbenchPresentation {
+  if (settingsReturnTo === 'compact') {
+    return {
+      surface: 'standaloneSettings',
+      windowSizeMode: 'full',
+      mountWorkbenchContent: false,
+      showSettings: true,
+    };
+  }
+  if (compactMode) {
+    return {
+      surface: 'compact',
+      windowSizeMode: 'compact',
+      mountWorkbenchContent: false,
+      showSettings: false,
+    };
+  }
+  return {
+    surface: 'workbench',
+    windowSizeMode: 'full',
+    mountWorkbenchContent: true,
+    showSettings: settingsReturnTo === 'workbench',
+  };
+}
+
 export function defaultWindowPreferences(): PersistedWindowPreferences {
   return {
     pinned: false,
@@ -186,17 +230,9 @@ export function computeNextPinPreferences(
   current: PersistedWindowPreferences,
   nextPinned: boolean,
 ): PersistedWindowPreferences {
-  if (nextPinned) {
-    return {
-      ...current,
-      pinned: true,
-      compactMode: !current.pinnedExpanded,
-    };
-  }
   return {
     ...current,
-    pinned: false,
-    compactMode: false,
+    pinned: nextPinned,
   };
 }
 
@@ -207,7 +243,6 @@ export function computeNextCompactPreferences(
   return {
     ...current,
     compactMode: nextCompactMode,
-    pinnedExpanded: current.pinned ? !nextCompactMode : current.pinnedExpanded,
   };
 }
 
@@ -217,6 +252,7 @@ export function emptyWorkbench(): WorkbenchState {
     worktrees: [],
     activeWorktreeId: null,
     emptyPrompt: '',
+    connections: [],
     models: [],
     activeModelId: null,
     locale: DEFAULT_APP_LOCALE,
@@ -353,7 +389,8 @@ export function isModelErrorText(message: string): boolean {
     || lower.includes('model request')
     || lower.includes('model provider')
     || lower.includes('selected model')
-    || lower.includes('keychain')
+    || lower.includes('credentials.json')
+    || lower.includes('provider connection')
     || message.includes('\u9274\u6743')
     || message.includes('\u989d\u5ea6')
     || message.includes('\u8bf7\u6c42\u8fc7\u4e8e\u9891\u7e41')
@@ -361,7 +398,7 @@ export function isModelErrorText(message: string): boolean {
     || message.includes('\u8fde\u63a5\u6a21\u578b')
     || message.includes('\u6a21\u578b\u8bf7\u6c42')
     || message.includes('\u63a5\u53e3\u5730\u5740')
-    || message.includes('\u94a5\u5319\u4e32')
+    || message.includes('\u4f9b\u5e94\u5546\u8fde\u63a5')
     || message.includes('\u5f53\u524d\u9009\u4e2d\u7684\u6a21\u578b');
 }
 
@@ -530,11 +567,11 @@ export type WorkbenchAction =
   | { type: 'windowPreferencesUpdated'; preferences: PersistedWindowPreferences }
   | { type: 'windowSnapshotSynced'; pinned: boolean; position: WindowPosition; size: WindowSize }
   | { type: 'windowGeometryObserved'; position: WindowPosition; size: WindowSize }
-  | { type: 'modelSaved'; model: ModelConfiguration; keepActiveModel?: boolean }
-  | { type: 'modelKeyHintSynced'; modelId: string; keyHint: string }
+  | { type: 'catalogSynced'; connections: ProviderConnection[]; models: ModelConfiguration[]; activeModelId: string | null }
+  | { type: 'providerKeyHintSynced'; connectionId: string; keyHint: string }
   | { type: 'modelSelected'; modelId: string }
   | { type: 'modelDeleted'; modelId: string }
-  | { type: 'modelsSynced'; models: ModelConfiguration[]; activeModelId: string | null }
+  | { type: 'providerDeleted'; connectionId: string }
   | { type: 'event'; event: WorkbenchEvent };
 
 function updateWorktreeSelection(worktree: Worktree, selectedIds: string[]): Worktree {
@@ -829,35 +866,34 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     }
     return { ...state, defaultCommitLanguage: action.commitLanguage, settingsModified: true };
   }
-  if (action.type === 'modelsSynced') return { ...state, models: action.models, activeModelId: action.activeModelId };
-  if (action.type === 'modelKeyHintSynced') {
+  if (action.type === 'catalogSynced') {
     return {
       ...state,
-      models: state.models.map((model) =>
-        model.id === action.modelId ? { ...model, keyHint: action.keyHint } : model,
-      ),
+      connections: action.connections,
+      models: action.models,
+      activeModelId: action.activeModelId,
     };
   }
-  if (action.type === 'modelSaved') {
-    const exists = state.models.some((model) => model.id === action.model.id);
-    return exists
-      ? {
-          ...state,
-          models: state.models.map((model) => (model.id === action.model.id ? action.model : model)),
-          activeModelId: state.activeModelId ?? action.model.id,
-        }
-      : {
-          ...state,
-          models: [...state.models, action.model],
-          activeModelId: action.keepActiveModel
-            ? (state.activeModelId ?? action.model.id)
-            : action.model.id,
-        };
+  if (action.type === 'providerKeyHintSynced') {
+    return {
+      ...state,
+      connections: state.connections.map((conn) =>
+        conn.id === action.connectionId ? { ...conn, keyHint: action.keyHint } : conn,
+      ),
+    };
   }
   if (action.type === 'modelSelected') return state.models.some((model) => model.id === action.modelId) ? { ...state, activeModelId: action.modelId } : state;
   if (action.type === 'modelDeleted') {
     const models = state.models.filter((model) => model.id !== action.modelId);
     return { ...state, models, activeModelId: state.activeModelId === action.modelId ? models[0]?.id ?? null : state.activeModelId };
+  }
+  if (action.type === 'providerDeleted') {
+    const connections = state.connections.filter((conn) => conn.id !== action.connectionId);
+    const models = state.models.filter((model) => model.connectionId !== action.connectionId);
+    const activeModelId = models.some((model) => model.id === state.activeModelId)
+      ? state.activeModelId
+      : models[0]?.id ?? null;
+    return { ...state, connections, models, activeModelId };
   }
   if (action.type === 'switch') {
     if (!state.worktrees.some((worktree) => worktree.worktreeId === action.worktreeId)) return state;

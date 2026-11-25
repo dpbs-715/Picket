@@ -490,6 +490,11 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
   const persistedByWorktree = new Map(restored.worktrees.map((item) => [item.worktreeId, item]));
   const cPushByWorktree = new Map((restored.cPushSessions ?? []).map((item) => [item.worktreeId, item]));
   const userEditedEmpty = state.emptyPrompt.length > 0;
+  const hydratedConnections = restored.connections === undefined
+    ? state.connections
+    : state.connections.length > 0
+      ? [...restored.connections.filter((item) => !state.connections.some((existing) => existing.id === item.id)), ...state.connections]
+      : restored.connections;
   const hydratedModels = restored.models === undefined
     ? state.models
     : state.models.length > 0
@@ -561,6 +566,7 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
     windowPrefs: state.settingsModified ? state.windowPrefs : restoredWindowPrefs,
     ...(installedEditors !== undefined ? { installedEditors } : {}),
     emptyPrompt: userEditedEmpty ? state.emptyPrompt : restored.emptyPrompt,
+    connections: hydratedConnections,
     models: hydratedModels,
     activeModelId: hydratedActiveModelId,
   };

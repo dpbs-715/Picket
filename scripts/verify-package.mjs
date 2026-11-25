@@ -58,6 +58,10 @@ function verifyBundleNoDemoOrSecretLeaks(bundleDir, distDir) {
 }
 
 function verifyAppDataSecurity(appDataDir) {
+  if (!existsSync(appDataDir)) throw new Error(`Expected Picket data directory missing after UI smoke: ${appDataDir}`);
+  const dirMode = statSync(appDataDir).mode & 0o777;
+  if (dirMode !== 0o700) throw new Error(`Picket data directory does not have strict 0700 mode (got ${dirMode.toString(8)})`);
+
   for (const filename of ['workbench-state.json', 'models.json', 'cpush-sessions.json']) {
     const full = join(appDataDir, filename);
     if (!existsSync(full)) throw new Error(`Expected persisted file missing after UI smoke: ${filename}`);
@@ -68,6 +72,17 @@ function verifyAppDataSecurity(appDataDir) {
       if (raw.includes(forbidden)) {
         throw new Error(`Persisted file ${filename} leaked sensitive token/secret marker: ${forbidden}`);
       }
+    }
+  }
+
+  const credentialsFile = join(appDataDir, 'credentials.json');
+  if (!existsSync(credentialsFile)) throw new Error('Expected persisted credentials.json missing after UI smoke');
+  const credMode = statSync(credentialsFile).mode & 0o777;
+  if (credMode !== 0o600) throw new Error(`Persisted file credentials.json does not have strict 0600 mode (got ${credMode.toString(8)})`);
+  const credsRaw = readFileSync(credentialsFile, 'utf8');
+  for (const forbidden of ['commitToken', 'branchToken']) {
+    if (credsRaw.includes(forbidden)) {
+      throw new Error(`Persisted file credentials.json leaked sensitive token marker: ${forbidden}`);
     }
   }
 }
@@ -121,8 +136,8 @@ try {
       throw new Error('IDE staged diff export or workbench persistence cold restore did not pass');
     }
     const modelM3 = events.find((event) => event.type === 'uiSmokeModelProof');
-    if (!modelM3?.keychainEncryptedAndRestored || !modelM3.partialScopePreviewPlanVerified || !modelM3.lockfileFilteredReviewVerified) {
-      throw new Error('M3 macOS Keychain encryption, scoped preview plan, or lockfile-filtered review did not pass');
+    if (!modelM3?.credentialsPersistedAndRestored || !modelM3.partialScopePreviewPlanVerified || !modelM3.lockfileFilteredReviewVerified) {
+      throw new Error('M3 local credentials persistence, scoped preview plan, or lockfile-filtered review did not pass');
     }
     const cpushM4 = events.find((event) => event.type === 'uiSmokeCPushProof');
     if (!cpushM4?.splitCommitsVerified || !cpushM4.unselectedStagedPreserved || !cpushM4.sessionPersistedAndRestored) {
@@ -135,7 +150,7 @@ try {
     if (children.length !== 2) throw new Error('WebView IPC / close-window verification did not pass');
     for (const child of children) assertGone(child.pid);
 
-    verifyAppDataSecurity(join(home, 'Library/Application Support/dev.picket.desktop'));
+    verifyAppDataSecurity(join(home, '.picket'));
 
     // Launch 2: Brand-new OS process against the same HOME verifying real cross-process cold restart:
     const restartRun = launch('--foundation-restart-smoke');
@@ -144,7 +159,7 @@ try {
     const restartProof = restartEvents.find((event) => event.type === 'uiSmokeRestartProof');
     if (restartExit?.status !== 'passed'
       || !restartProof?.coldProcessRepositoryHydrated
-      || !restartProof.coldProcessKeychainModelHydrated
+      || !restartProof.coldProcessModelCatalogHydrated
       || !restartProof.coldProcessSessionHistoryHydrated
       || !restartProof.coldProcessCompactWindowHydrated) {
       throw new Error(`Cold OS process restart verification failed: ${restartRun.stderr || JSON.stringify(restartEvents)}`);
@@ -166,7 +181,7 @@ try {
       unstagedAndUnselectedPreservedAfterCommit: true,
       ideStagedDiffExportVerified: true,
       workbenchPersistenceColdRestoreVerified: true,
-      keychainModelEncryptedAndRestoredVerified: true,
+      localCredentialsPersistedAndRestoredVerified: true,
       piPreviewPlanAndReviewVerified: true,
       cPushSplitAndSessionVerified: true,
       m5RemotePushAndConflictMergeVerified: true,

@@ -18,6 +18,7 @@ import {
   normalChanges,
   orderedMessages,
   primaryAction,
+  resolveWorkbenchPresentation,
   scopeSummary,
   selectedFiles,
   selectedLocalKeepChanges,
@@ -371,8 +372,8 @@ describe('Background events and prompt/plan preservation', () => {
   });
 });
 
-describe('Pinned Compact Mode state transitions, status summaries, and non-auto-expand invariants', () => {
-  it('defaults to compact on Pin, remembers manual expand while pinned, resets on manual collapse, and exits compact on Unpin', () => {
+describe('Compact Mode and Pin state transitions, status summaries, and non-auto-expand invariants', () => {
+  it('keeps Pin and Compact Mode toggles completely independent across all four combinations', () => {
     let prefs = defaultWindowPreferences();
     expect(prefs).toEqual({
       pinned: false,
@@ -381,29 +382,25 @@ describe('Pinned Compact Mode state transitions, status summaries, and non-auto-
       fullSize: { width: 400, height: 700 },
     });
 
-    // 1. Clicking Pin enters compactMode by default:
+    // 1. Pinning stays in Full Mode without changing compactMode:
     prefs = computeNextPinPreferences(prefs, true);
-    expect(prefs).toMatchObject({ pinned: true, compactMode: true, pinnedExpanded: false });
+    expect(prefs).toMatchObject({ pinned: true, compactMode: false });
 
-    // 2. Manually expanding while pinned remembers pinnedExpanded = true without unpinning:
-    prefs = computeNextCompactPreferences(prefs, false);
-    expect(prefs).toMatchObject({ pinned: true, compactMode: false, pinnedExpanded: true });
-
-    // 3. Unpinning exits compact mode while preserving pinnedExpanded = true:
-    prefs = computeNextPinPreferences(prefs, false);
-    expect(prefs).toMatchObject({ pinned: false, compactMode: false, pinnedExpanded: true });
-
-    // 4. Next Pin remembers expanded preference (stays compactMode = false):
-    prefs = computeNextPinPreferences(prefs, true);
-    expect(prefs).toMatchObject({ pinned: true, compactMode: false, pinnedExpanded: true });
-
-    // 5. Manually collapsing while pinned enters compactMode = true and resets pinnedExpanded = false:
+    // 2. Collapsing enters Compact Mode while preserving pinned = true:
     prefs = computeNextCompactPreferences(prefs, true);
-    expect(prefs).toMatchObject({ pinned: true, compactMode: true, pinnedExpanded: false });
+    expect(prefs).toMatchObject({ pinned: true, compactMode: true });
 
-    // 6. Unpinning from compact mode exits compact mode:
+    // 3. Unpinning stays in Compact Mode without forcing Full Mode:
     prefs = computeNextPinPreferences(prefs, false);
-    expect(prefs).toMatchObject({ pinned: false, compactMode: false, pinnedExpanded: false });
+    expect(prefs).toMatchObject({ pinned: false, compactMode: true });
+
+    // 4. Expanding returns to Full Mode while preserving pinned = false:
+    prefs = computeNextCompactPreferences(prefs, false);
+    expect(prefs).toMatchObject({ pinned: false, compactMode: false });
+
+    // 5. Collapsing while unpinned enters Compact Mode without forcing pinned = true:
+    prefs = computeNextCompactPreferences(prefs, true);
+    expect(prefs).toMatchObject({ pinned: false, compactMode: true });
   });
 
   it('tracks full and compact window positions independently and never overwrites fullSize while compact', () => {
@@ -545,6 +542,40 @@ describe('Pinned Compact Mode state transitions, status summaries, and non-auto-
       tone: 'danger',
       label: 'Status unavailable \u25b8',
       expandTarget: 'changes',
+    });
+  });
+
+  it('decouples window size mode, rendered surface, and settings return target cleanly', () => {
+    // 1. Compact bar (settings closed):
+    expect(resolveWorkbenchPresentation(true, null)).toEqual({
+      surface: 'compact',
+      windowSizeMode: 'compact',
+      mountWorkbenchContent: false,
+      showSettings: false,
+    });
+
+    // 2. Settings opened from Compact Mode: full-sized window, standalone Settings, NEVER mounts workbench content:
+    expect(resolveWorkbenchPresentation(true, 'compact')).toEqual({
+      surface: 'standaloneSettings',
+      windowSizeMode: 'full',
+      mountWorkbenchContent: false,
+      showSettings: true,
+    });
+
+    // 3. Full Workbench (settings closed):
+    expect(resolveWorkbenchPresentation(false, null)).toEqual({
+      surface: 'workbench',
+      windowSizeMode: 'full',
+      mountWorkbenchContent: true,
+      showSettings: false,
+    });
+
+    // 4. Settings opened from Full Workbench: full-sized window, Settings overlaid on mounted workbench content:
+    expect(resolveWorkbenchPresentation(false, 'workbench')).toEqual({
+      surface: 'workbench',
+      windowSizeMode: 'full',
+      mountWorkbenchContent: true,
+      showSettings: true,
     });
   });
 });

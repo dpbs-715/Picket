@@ -3,10 +3,9 @@ use crate::{
     foundation::pi::{PiCPushCommitGroup, PiPaths, PiSupervisor},
     i18n::LanguageKind,
     models::{
-        keychain::CredentialVault,
         smoke::LocalModelSseServer,
         store::ModelStore,
-        types::{ModelInput, ProviderKind},
+        types::{CreateProviderConnectionInput, ProviderKind},
     },
     repository::{
         RepositoryStore,
@@ -16,12 +15,8 @@ use crate::{
 };
 use std::{fs, os::unix::fs::PermissionsExt};
 
-fn make_models(dir: &std::path::Path) -> ModelStore {
-    let vault = CredentialVault::with_keychain_file(
-        dir.join("cpush-test.keychain-db"),
-        "cpush-test-keychain-pw",
-    );
-    ModelStore::with_vault(vault)
+fn make_models(_dir: &std::path::Path) -> ModelStore {
+    ModelStore::default()
 }
 
 fn text_git(root: &std::path::Path, args: &[&str]) -> String {
@@ -42,18 +37,15 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
     let server = LocalModelSseServer::start().unwrap();
     let secret = "sk-cpush-secret-never-persist-1122";
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Custom,
-                api_format: None,
-                name: "CPush Planner".into(),
-                model_id: "planner-v1".into(),
+                connection_name: "CPush Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: secret.into(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "CPush Planner".into(),
+                model_id: "planner-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },
@@ -230,18 +222,15 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
     let models = make_models(temp.path());
     let server = LocalModelSseServer::start().unwrap();
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Custom,
-                api_format: None,
-                name: "CPush Planner".into(),
-                model_id: "planner-v1".into(),
+                connection_name: "CPush Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-cpush-split-9900".into(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "CPush Planner".into(),
+                model_id: "planner-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },
@@ -500,18 +489,15 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
     let models = make_models(temp.path());
     let server = LocalModelSseServer::start().unwrap();
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Custom,
-                api_format: None,
-                name: "CPush Planner".into(),
-                model_id: "planner-v1".into(),
+                connection_name: "CPush Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-dotenv-test-key".into(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "CPush Planner".into(),
+                model_id: "planner-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },
@@ -646,18 +632,15 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
     let models = make_models(temp.path());
     let server = LocalModelSseServer::start().unwrap();
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Custom,
-                api_format: None,
-                name: "CPush LocalKeep Planner".into(),
-                model_id: "planner-v1".into(),
+                connection_name: "CPush Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-cpush-local-keep-7788".into(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "CPush LocalKeep Planner".into(),
+                model_id: "planner-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },
@@ -847,18 +830,15 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
     let models = make_models(temp.path());
     let server = LocalModelSseServer::start().unwrap();
     let saved = models
-        .save_model(
+        .create_provider_connection(
             temp.path(),
-            &ModelInput {
-                id: None,
+            &CreateProviderConnectionInput {
                 provider: ProviderKind::Custom,
-                api_format: None,
-                name: "CPush Preview Planner".into(),
-                model_id: "planner-v1".into(),
+                connection_name: "CPush Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
                 api_key: "sk-preview-plan-key".into(),
-                context_window: None,
-                max_output_tokens: None,
+                model_name: "CPush Preview Planner".into(),
+                model_id: "planner-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
             },

@@ -62,7 +62,7 @@
 - **绝不越界**：永不自动强制推送（`--force`）、永不丢弃用户未提交改动、永不静默改写已发布的远端历史。
 
 ### 置顶紧凑模式与 IDE 联动
-- **贴合 IDE 侧边使用**：默认紧凑竖屏窗口，支持窗口置顶，也可一键收起为 **置顶紧凑模式**——精简为约 `400 × 86` 的两行悬浮条，随时展开抽屉切换项目、切换分支、拉取并变基或增减勾选文件。
+- **贴合 IDE 侧边使用**：完整模式与紧凑模式右上角常驻「紧凑模式切换 / 置顶 / 设置」三键，窗口置顶与收起为约 `400 × 86` 两行紧凑条各自独立控制，紧凑模式下可随时展开抽屉切换项目、切换分支、拉取并变基或增减勾选文件。
 - **不打扰的后台通知**：窗口未聚焦时，仅在需要你处理（待决定、代码冲突或推送失败）时发送原生 macOS 通知，绝不抢占输入焦点或自动放大窗口。
 - **无缝联动外部 IDE**：自动检测本机已安装的编辑器（`IntelliJ IDEA`、`RustRover`、`WebStorm`、`VS Code`、`Cursor`），双击或点击链接即可直接打开文件、Diff、已暂存 Diff、审查行号与冲突合并视图。
 - **双语与按项目定制**：支持 **English**（默认）与 **简体中文** 界面即时切换；支持按项目独立设置 **首选编辑器** 与 **提交说明语言**（Conventional Commit 的 `feat`、`fix` 等前缀保持英文）。
@@ -91,13 +91,13 @@
 
 ### 模型提供商
 
-Picket 通过隔离的随包 Pi Core 运行时调用你自己配置的云端 API 或本地 Ollama 服务。
+每个供应商连接只需配置一次（接口地址与 API Key），随后可在该连接下按需添加任意模型。Picket 通过隔离的随包 Pi Core 运行时发起调用。
 
 | 提供商 | 默认接口格式 | 说明 |
 | --- | --- | --- |
-| **Anthropic** | Anthropic Messages (`/v1/messages`) | API Key 加密存于 macOS 钥匙串 |
+| **Anthropic** | Anthropic Messages (`/v1/messages`) | API Key 以 `0600` 权限存于 `~/.picket/credentials.json` |
 | **OpenAI** | OpenAI Responses (`/responses`) | 同时支持 Chat Completions |
-| **DeepSeek** | OpenAI Chat Completions (`/chat/completions`) | API Key 加密存于 macOS 钥匙串 |
+| **DeepSeek** | OpenAI Chat Completions (`/chat/completions`) | API Key 以 `0600` 权限存于 `~/.picket/credentials.json` |
 | **Ollama（本地）** | OpenAI Chat Completions (`/chat/completions`) | 连接本地服务（如 `http://127.0.0.1:11434/v1`），无需 API Key |
 | **自定义兼容** | 可自由选择 | 支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages |
 
@@ -113,8 +113,8 @@ Picket 自动识别本机已安装的以下编辑器，并支持按项目独立�
 
 ## 安全与隐私
 
-- **macOS 系统钥匙串存储**：API Key 仅加密保存在 macOS 系统钥匙串中，绝不写入明文配置文件、日志或前端状态。
-- **密钥共用与身份验证查看**：复制已有模型配置时可直接共用钥匙串密钥，无需重复粘贴；查看已保存的完整密钥须通过 macOS 本机身份验证（**触控 ID** 或系统登录密码），并在 30 秒后或窗口失焦时自动隐藏并清除内存。
+- **统一的 `~/.picket/` 本地数据与凭据隔离**：Picket 所有配置统一保存在 `~/.picket/`（目录 `0700`，文件 `0600`）。API Key 单独存放在 `~/.picket/credentials.json`（`0600` 仅本机用户可读），绝不写入 `models.json`、`workbench-state.json`、会话历史、日志或前端状态，同时避免无签名测试版升级时反复触发 macOS 钥匙串授权弹窗。
+- **供应商配一次，模型按需添加**：同一连接下的子模型自动复用连接地址与 API Key，新增或编辑模型无需重复粘贴密钥；轮换连接密钥时该连接下所有模型立即生效。在 **编辑连接** 中查看已保存的完整密钥仍须通过 macOS 本机身份验证（**触控 ID** 或系统登录密码），并在 30 秒后或窗口失焦时自动隐藏并清除内存。
 - **零隐式凭据**：首次启动处于零仓库、零模型的干净状态，绝不偷偷读取环境变量中的密钥或开发者本地其他工具登录态。
 - **受控的本地 Git 执行**：所有 Git 写入操作均由原生 Rust 桌面层核对并执行，模型无法直接对仓库执行任意 Shell 命令。
 - **复用现有 Git 认证**：远端拉取与推送直接复用本机已有的 Git / SSH 配置，无需额外登录第三方账号。

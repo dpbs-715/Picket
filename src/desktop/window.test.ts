@@ -6,6 +6,7 @@ import {
   applyWindowModeWith,
   clampCompactHeight,
   desktopWindowController,
+  normalizeCompactWidth,
   resolveVisibleWindowPosition,
   setWindowPinned,
   type MonitorWorkArea,
@@ -147,6 +148,42 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
     expect(mock.getOuterPos()).toEqual({ x: 241, y: 183 });
   });
 
+  it('restores custom compact width, height, and saved position after temporarily expanding for standalone Settings', async () => {
+    const mock = createMockWindowEnv({
+      outerPos: { x: 420, y: 1200 },
+      innerSize: { width: 920, height: 180 },
+      scaleFactor: 2,
+    });
+
+    // 1. Expand from compact (460x90 logical at 210,600) to full size for Settings:
+    const opened = await applyWindowModeWith(mock.env, {
+      pinned: false,
+      compactMode: false,
+      fullSize: { width: 400, height: 700 },
+      placement: 'anchorTopLeft',
+    });
+    expect(opened.previousPosition).toEqual({ x: 210, y: 600 });
+    expect(opened.previousSize).toEqual({ width: 460, height: 90 });
+    expect(opened.size).toEqual({ width: 400, height: 700 });
+
+    // 2. Restore exact pre-settings compact width, height, and logical position:
+    const restored = await applyWindowModeWith(mock.env, {
+      pinned: false,
+      compactMode: true,
+      compactWidth: normalizeCompactWidth(opened.previousSize.width),
+      compactHeight: clampCompactHeight(opened.previousSize.height),
+      fullSize: { width: 400, height: 700 },
+      placement: 'restorePosition',
+      targetPosition: opened.previousPosition,
+    });
+    expect(restored.size).toEqual({ width: 460, height: 90 });
+    expect(restored.position).toEqual({ x: 210, y: 600 });
+
+    // 3. Drawer height adjustment preserves custom compact width (460) instead of snapping back to 400:
+    await adjustCompactHeightWith(mock.env, 210);
+    expect(mock.getInnerSize()).toEqual({ width: 920, height: 420 });
+  });
+
   it('falls back to primary monitor work area when saved position belongs to a disconnected display', () => {
     const laptop: MonitorWorkArea = { x: 0, y: 25, width: 1512, height: 945 };
     const externalRight: MonitorWorkArea = { x: 1512, y: 0, width: 2560, height: 1440 };
@@ -168,6 +205,7 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
 
   it('reports explicit unsupported errors instead of faking native window operations in browser preview', async () => {
     await expect(setWindowPinned(true, 'en')).rejects.toThrow(/unavailable in browser preview/i);
+    await expect(desktopWindowController.setPinned(true, 'en')).rejects.toThrow(/unavailable in browser preview/i);
     await expect(
       desktopWindowController.applyWindowMode({
         pinned: true,
