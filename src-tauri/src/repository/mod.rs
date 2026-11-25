@@ -182,24 +182,33 @@ impl RepositoryStore {
         }
         let dir_name = label(&directory, locale);
         let reader = self.inner.reader.with_locale(locale);
-        let root = match reader
-            .text(&directory, &["rev-parse", "--show-toplevel"])
-            .await
-        {
-            Ok(root) => root,
-            Err(err) => {
-                if reader.cancelled() {
-                    return Err(err);
-                }
-                let is_bare = reader
-                    .text(&directory, &["rev-parse", "--is-bare-repository"])
-                    .await
-                    .is_ok_and(|out| out.trim() == "true");
-                if is_bare {
-                    return Err(i18n::open_bare_repo_error(locale, &dir_name));
-                }
-                return Err(i18n::open_not_git_repo_error(locale, &dir_name));
+        let toplevel = reader
+            .run(&directory, &["rev-parse", "--show-toplevel"])
+            .await?;
+        let root = if toplevel.success {
+            let mut text = String::from_utf8(toplevel.bytes)
+                .map_err(|_| i18n::parse_non_utf8_path_error(locale).to_string())?;
+            if text.ends_with('\n') {
+                text.pop();
             }
+            text
+        } else {
+            if toplevel.code == Some(129) {
+                let detail = String::from_utf8_lossy(&toplevel.stderr).trim().to_owned();
+                return Err(if detail.is_empty() {
+                    "Git invocation failed with usage error (exit 129)".into()
+                } else {
+                    format!("Git invocation failed (exit 129): {detail}")
+                });
+            }
+            let is_bare = reader
+                .text(&directory, &["rev-parse", "--is-bare-repository"])
+                .await
+                .is_ok_and(|out| out.trim() == "true");
+            if is_bare {
+                return Err(i18n::open_bare_repo_error(locale, &dir_name));
+            }
+            return Err(i18n::open_not_git_repo_error(locale, &dir_name));
         };
         let root = fs::canonicalize(root)
             .map_err(|_| "Git working directory is inaccessible".to_string())?;

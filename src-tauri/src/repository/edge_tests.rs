@@ -191,6 +191,16 @@ async fn missing_partial_clone_objects_are_not_downloaded_on_read() {
         .run(&partial, &["cat-file", "blob", "HEAD:part.txt"])
         .await
         .unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(!result.success);
+    assert_ne!(
+        result.code,
+        Some(129),
+        "GitReader must not fail with CLI usage error: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown option"),
+        "GitReader passed unsupported CLI flag: {stderr}"
+    );
     assert_eq!(list_missing(), before);
 }

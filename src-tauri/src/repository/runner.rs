@@ -204,7 +204,6 @@ impl GitReader {
             .current_dir(root)
             .args([
                 "--no-pager",
-                "--no-lazy-fetch",
                 "--no-optional-locks",
                 "-c",
                 "core.fsmonitor=false",
@@ -252,7 +251,11 @@ impl GitReader {
         } else {
             15
         };
+        // Use `GIT_NO_LAZY_FETCH=1` instead of the Git 2.45+ `--no-lazy-fetch` CLI flag so
+        // Apple Git 2.39.x on macOS 14/15 never aborts with exit code 129 (`unknown option`),
+        // while `GIT_ALLOW_PROTOCOL=""` also blocks promisor fetches on older Git releases.
         command
+            .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_ALLOW_PROTOCOL", allow_protocol)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_TERMINAL_PROMPT", "0")
