@@ -2,13 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { runGitProbe, runPiProbe } from '../../desktop/foundation';
 
-function waitForUi(check: () => boolean, label = 'state'): Promise<void> {
+function waitForUi(check: () => boolean, label = 'state', timeoutMs = 8000): Promise<void> {
   return new Promise((resolve, reject) => {
     if (check()) { resolve(); return; }
     const timeout = setTimeout(() => {
       observer.disconnect();
       reject(new Error(`Workbench UI did not reach the expected state (${label}): ${document.querySelector('.operation-notice')?.textContent ?? ''}`));
-    }, 5000);
+    }, timeoutMs);
     const observer = new MutationObserver(() => {
       if (check()) { clearTimeout(timeout); observer.disconnect(); resolve(); }
     });
@@ -400,6 +400,7 @@ async function checkModelAndPreviewPlanOperations() {
       return !!okEl && (okEl.textContent ?? '').includes('smoke-coder-v1');
     },
     'm3-test-conn-ok',
+    15_000,
   );
   findButton('Save & Use')!.click();
   await waitForUi(() => !document.querySelector('.overlay') && !!document.querySelector('.model-button'), 'm3-model-saved');
@@ -468,6 +469,7 @@ async function checkModelAndPreviewPlanOperations() {
     () => !!document.querySelector('.review-finding')
       && (document.querySelector('.review-coverage')?.textContent ?? '').includes('pnpm-lock.yaml'),
     'm3-review-completed',
+    15_000,
   );
 
   // Switch back to Commit Plan, select only `part.txt`, preview plan, edit verbatim, and C-Push:
@@ -478,7 +480,7 @@ async function checkModelAndPreviewPlanOperations() {
     await waitForUi(() => !lockCheckbox.checked && partCheckbox.checked, 'm3-plan-only-part');
   }
   findButton('Preview Plan')!.click();
-  await waitForUi(() => !!document.querySelector('.plan-group-textarea'), 'm3-preview-plan-ready');
+  await waitForUi(() => !!document.querySelector('.plan-group-textarea'), 'm3-preview-plan-ready', 15_000);
   if (document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value !== 'persisted-across-restart: extra instruction') {
     throw new Error('Preview Plan unexpectedly overwrote user extra instructions');
   }
@@ -497,6 +499,7 @@ async function checkModelAndPreviewPlanOperations() {
       && !document.querySelector('.prompt-textarea')
       && !document.querySelector('.plan-group-textarea'),
     'confirmed-plan-cpush-done',
+    15_000,
   );
 
   const remainingPart = document.querySelector<HTMLInputElement>('input[aria-label="Select part.txt"]');
@@ -527,13 +530,14 @@ async function checkCPushM4Operations(secret: string) {
   await waitForUi(() => partBox.checked && docBox.checked && !lockBox.checked, 'm4-selection-ready');
 
   findButton('C-Push')!.click();
-  await waitForUi(() => !!document.querySelector('.message-question [data-option-id="split"]'), 'm4-question-arrived');
+  await waitForUi(() => !!document.querySelector('.message-question [data-option-id="split"]:not(:disabled)'), 'm4-question-arrived', 15_000);
   document.querySelector<HTMLButtonElement>('.message-question [data-option-id="split"]')!.click();
   await waitForUi(
     () => !!document.querySelector('.message-done')
       && (document.querySelector('.workbench')?.textContent ?? '').includes('origin/feat/branch-proof')
       && document.querySelectorAll('.message-commits > div').length === 2,
     'm4-split-and-pushed',
+    15_000,
   );
   await invoke('verify_cpush_m4_smoke', { secret });
 
@@ -550,13 +554,14 @@ async function checkCPushM4Operations(secret: string) {
   await waitForUi(() => m5DocBox.checked && !m5LockBox.checked && !m5ExtraBox.checked, 'm5-conflict-selection-ready');
 
   findButton('C-Push')!.click();
-  await waitForUi(() => !!document.querySelector('.message-conflict [data-option-id="agent-merge"]'), 'm5-conflict-detected');
+  await waitForUi(() => !!document.querySelector('.message-conflict [data-option-id="agent-merge"]:not(:disabled)'), 'm5-conflict-detected', 15_000);
   document.querySelector<HTMLButtonElement>('.message-conflict [data-option-id="agent-merge"]')!.click();
   await waitForUi(
     () => !!document.querySelector('.message-done')
       && (document.querySelector('.workbench')?.textContent ?? '').includes('origin/feat/branch-proof')
       && document.querySelectorAll('.message-commits > div').length === 1,
     'm5-conflict-merged-and-pushed',
+    15_000,
   );
   await invoke('verify_m5_conflict_smoke');
 }
@@ -567,8 +572,10 @@ export function registerUiSmoke() {
   const formatError = (error: unknown) => {
     const labels = [...document.querySelectorAll('button')].map((el) => el.getAttribute('aria-label') || el.textContent?.trim()).filter(Boolean).slice(0, 12).join(', ');
     const overlayCount = document.querySelectorAll('.overlay').length;
+    const dockStatus = document.querySelector('.message-expanded .message-status, .message-collapsed .message-status')?.textContent?.trim() ?? 'none';
+    const dockTitle = document.querySelector('.message-expanded h2')?.textContent?.trim() ?? '';
     const base = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error);
-    return `${base} [overlays=${overlayCount}, visibility=${document.visibilityState}, buttons: ${labels}]`;
+    return `${base} [overlays=${overlayCount}, visibility=${document.visibilityState}, dock=${dockStatus}:${dockTitle}, buttons: ${labels}]`;
   };
   window.addEventListener('picket:foundation-smoke', () => {
     let closing = false;

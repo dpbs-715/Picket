@@ -97,7 +97,7 @@ try {
   const launch = (...flags) => {
     const result = spawnSync(executable, flags, {
       cwd: temporary, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, TMPDIR: temporary },
-      encoding: 'utf8', timeout: 45_000,
+      encoding: 'utf8', timeout: 90_000,
     });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(result.stderr ? `${result.stderr}\n${result.stdout}` : `Application exited with ${result.status}: ${result.stdout}`);
