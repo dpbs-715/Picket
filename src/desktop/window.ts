@@ -79,6 +79,7 @@ export interface AppliedWindowGeometry {
 export interface NativeWindowHandle {
   isAlwaysOnTop(): Promise<boolean>;
   setAlwaysOnTop(alwaysOnTop: boolean): Promise<void>;
+  setVisibleOnAllWorkspaces?(visible: boolean): Promise<void>;
   isFocused(): Promise<boolean>;
   setFocus(): Promise<void>;
   scaleFactor(): Promise<number>;
@@ -94,6 +95,7 @@ export interface NativeWindowHandle {
 export interface NativeWindowEnvironment {
   window(): NativeWindowHandle;
   monitors(): Promise<{ available: MonitorWorkArea[]; primary?: MonitorWorkArea }>;
+  setPinned?(pinned: boolean): Promise<boolean>;
   animateFrame?(request: AnimateWindowFrameRequest): Promise<AnimateWindowFrameReply>;
   prefersReducedMotion?(): boolean;
 }
@@ -197,9 +199,25 @@ const tauriEnvironment: NativeWindowEnvironment = {
       primary: primary ? monitorToLogicalWorkArea(primary) : undefined,
     };
   },
+  setPinned: (pinned) => invoke<boolean>('set_window_pinned', { pinned }),
   animateFrame: (request) => invoke<AnimateWindowFrameReply>('animate_window_frame', { request }),
   prefersReducedMotion,
 };
+
+export async function setWindowPinnedWith(
+  env: NativeWindowEnvironment,
+  pinned: boolean,
+): Promise<boolean> {
+  if (env.setPinned) {
+    return env.setPinned(pinned);
+  }
+  const win = env.window();
+  await win.setAlwaysOnTop(pinned);
+  if (win.setVisibleOnAllWorkspaces) {
+    await win.setVisibleOnAllWorkspaces(pinned);
+  }
+  return win.isAlwaysOnTop();
+}
 
 export async function readWindowSnapshotWith(env: NativeWindowEnvironment): Promise<WindowGeometrySnapshot> {
   const win = env.window();
@@ -295,6 +313,9 @@ export async function applyWindowModeWith(
   };
 
   await win.setAlwaysOnTop(options.pinned);
+  if (win.setVisibleOnAllWorkspaces) {
+    await win.setVisibleOnAllWorkspaces(options.pinned);
+  }
 
   if (options.compactMode) {
     const compactWidth = normalizeCompactWidth(options.compactWidth);
@@ -518,7 +539,5 @@ export async function readWindowPinned(): Promise<boolean> {
 
 export async function setWindowPinned(pinned: boolean, locale: AppLocale = DEFAULT_APP_LOCALE): Promise<boolean> {
   if (!isTauri()) throw new Error(getMessages(locale).desktop.browserPinUnsupported);
-  const window = getCurrentWindow();
-  await window.setAlwaysOnTop(pinned);
-  return window.isAlwaysOnTop();
+  return setWindowPinnedWith(tauriEnvironment, pinned);
 }

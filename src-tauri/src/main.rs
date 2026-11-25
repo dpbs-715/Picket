@@ -995,6 +995,14 @@ fn open_release_page(request: OpenReleasePageRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn read_smoke_window_spaces_state(app: tauri::AppHandle) -> Result<bool, String> {
+    if !app.state::<DesktopLifecycle>().ui_smoke {
+        return Err("Not running UI smoke mode".into());
+    }
+    window_motion::read_main_window_visible_on_all_spaces(&app).await
+}
+
+#[tauri::command]
 fn fail_ui_smoke(app: tauri::AppHandle, message: String) -> Result<(), String> {
     if !app.state::<DesktopLifecycle>().ui_smoke {
         return Err("Not running UI smoke mode".into());
@@ -1055,7 +1063,9 @@ fn main() {
             cancel_pi_probe,
             run_git_probe,
             close_smoke_window,
+            read_smoke_window_spaces_state,
             fail_ui_smoke,
+            window_motion::set_window_pinned,
             window_motion::animate_window_frame,
             get_update_status,
             check_for_update,

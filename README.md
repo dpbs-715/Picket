@@ -62,7 +62,7 @@ It pauses to ask only when a real decision is needed, leaving unselected files, 
 - **Safe by default**: Picket never auto-force-pushes, discards uncommitted work, or silently rewrites published remote history.
 
 ### Pinned Compact Mode & IDE-First Workflow
-- **Designed to stay beside your IDE**: Toggle **Compact Mode** (`400 × ~86` floating 2-row bar with quick drawers for projects, branches, remote pull & rebase, and file selection), **Always-on-Top Pin**, and **Settings** independently at any time from the permanent top-right toolbar.
+- **Designed to stay beside your IDE**: Toggle **Compact Mode** (`400 × ~86` floating 2-row bar with quick drawers for projects, branches, remote pull & rebase, and file selection), **Always-on-Top Pin** (follows you across macOS Desktop Spaces), and **Settings** independently at any time from the permanent top-right toolbar.
 - **Unobtrusive notifications**: When Picket is unfocused, native macOS notifications alert you only when your input is needed (decisions, conflicts, or push failures) without stealing focus or resizing the window.
 - **Seamless external IDE integration**: Auto-detects installed editors (`IntelliJ IDEA`, `RustRover`, `WebStorm`, `VS Code`, `Cursor`) to open files, diffs, staged diffs, review lines, and conflict merges.
 - **Bilingual experience**: Instant **English** / **简体中文** UI switching, plus per-project **Preferred Editor** and **Commit Message Language** settings (Conventional Commit prefixes like `feat` and `fix` remain in English).

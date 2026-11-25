@@ -11,6 +11,20 @@ const MAX_WINDOW_DIMENSION: f64 = 16_384.0;
 const MAX_COORDINATE_ABS: f64 = 65_536.0;
 const MAX_DURATION_MS: u32 = 600;
 const FRAME_EPSILON: f64 = 0.5;
+const NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+const NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
+
+/// Compute the next macOS `NSWindow.collectionBehavior` bitmask for cross-Space visibility.
+/// Clears mutually exclusive `MoveToActiveSpace` when enabling `CanJoinAllSpaces`, while
+/// preserving unrelated window behaviors (such as `FullScreenPrimary` and `Managed`).
+fn next_collection_behavior(current: usize, visible_on_all_spaces: bool) -> usize {
+    if visible_on_all_spaces {
+        (current & !NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE)
+            | NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+    } else {
+        current & !NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -340,6 +354,42 @@ mod macos {
         unsafe { f(ns_window, sel, frame, 1, 0) };
     }
 
+    unsafe fn window_collection_behavior(ns_window: *mut c_void) -> usize {
+        let sel = unsafe { sel_registerName(c"collectionBehavior".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void) -> usize =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel) }
+    }
+
+    unsafe fn set_window_visible_on_all_spaces(ns_window: *mut c_void, visible: bool) {
+        let current = unsafe { window_collection_behavior(ns_window) };
+        let next = next_collection_behavior(current, visible);
+        if next != current {
+            let sel = unsafe { sel_registerName(c"setCollectionBehavior:".as_ptr()) };
+            let f: unsafe extern "C" fn(*mut c_void, *const c_void, usize) =
+                unsafe { mem::transmute(objc_msgSend as *const ()) };
+            unsafe { f(ns_window, sel, next) };
+        }
+    }
+
+    unsafe fn is_window_visible_on_all_spaces(ns_window: *mut c_void) -> bool {
+        (unsafe { window_collection_behavior(ns_window) }
+            & NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES)
+            != 0
+    }
+
+    fn apply_pinned_on_main(
+        window: &tauri::WebviewWindow,
+        ns_window: *mut c_void,
+        pinned: bool,
+    ) -> Result<bool, String> {
+        window
+            .set_always_on_top(pinned)
+            .map_err(|e| e.to_string())?;
+        unsafe { set_window_visible_on_all_spaces(ns_window, pinned) };
+        window.is_always_on_top().map_err(|e| e.to_string())
+    }
+
     unsafe fn primary_screen_height(ns_window: *mut c_void) -> f64 {
         let ns_screen_cls = unsafe { objc_getClass(c"NSScreen".as_ptr()) };
         if !ns_screen_cls.is_null() {
@@ -515,17 +565,14 @@ mod macos {
             .run_on_main_thread(move || {
                 let _pool = AutoreleasePoolGuard::new();
                 let result = (|| -> Result<(), String> {
-                    if let Some(pinned) = req.pinned {
-                        win_for_main
-                            .set_always_on_top(pinned)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    let effective_pinned =
-                        win_for_main.is_always_on_top().map_err(|e| e.to_string())?;
                     let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
                     if ns_window.is_null() {
                         return Err("Native NSWindow pointer is unavailable".into());
                     }
+                    let effective_pinned = match req.pinned {
+                        Some(pinned) => apply_pinned_on_main(&win_for_main, ns_window, pinned)?,
+                        None => win_for_main.is_always_on_top().map_err(|e| e.to_string())?,
+                    };
 
                     let before_frame = unsafe { window_frame(ns_window) };
                     let before_content = unsafe { window_content_rect(ns_window, before_frame) };
@@ -737,11 +784,72 @@ mod macos {
             animated: false,
         })
     }
+
+    pub async fn set_main_window_pinned(
+        window: tauri::WebviewWindow,
+        pinned: bool,
+    ) -> Result<bool, String> {
+        let (tx, rx) = oneshot::channel::<Result<bool, String>>();
+        let win_for_main = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _pool = AutoreleasePoolGuard::new();
+                let result = (|| -> Result<bool, String> {
+                    let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
+                    if ns_window.is_null() {
+                        return Err("Native NSWindow pointer is unavailable".into());
+                    }
+                    apply_pinned_on_main(&win_for_main, ns_window, pinned)
+                })();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "Window pin task did not run on main thread".to_string())?
+    }
+
+    pub async fn read_main_window_visible_on_all_spaces(
+        window: tauri::WebviewWindow,
+    ) -> Result<bool, String> {
+        let (tx, rx) = oneshot::channel::<Result<bool, String>>();
+        let win_for_main = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _pool = AutoreleasePoolGuard::new();
+                let result = (|| -> Result<bool, String> {
+                    let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
+                    if ns_window.is_null() {
+                        return Err("Native NSWindow pointer is unavailable".into());
+                    }
+                    Ok(unsafe { is_window_visible_on_all_spaces(ns_window) })
+                })();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "Window spaces inspection task did not run on main thread".to_string())?
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod fallback {
     use super::*;
+
+    pub async fn set_main_window_pinned(
+        window: tauri::WebviewWindow,
+        pinned: bool,
+    ) -> Result<bool, String> {
+        window
+            .set_always_on_top(pinned)
+            .map_err(|e| e.to_string())?;
+        window.is_always_on_top().map_err(|e| e.to_string())
+    }
+
+    pub async fn read_main_window_visible_on_all_spaces(
+        _window: tauri::WebviewWindow,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
 
     pub async fn animate_main_window(
         window: tauri::WebviewWindow,
@@ -810,6 +918,39 @@ mod fallback {
             },
             animated: false,
         })
+    }
+}
+
+#[tauri::command]
+pub async fn set_window_pinned(app: tauri::AppHandle, pinned: bool) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_main_window_pinned(window, pinned).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::set_main_window_pinned(window, pinned).await
+    }
+}
+
+pub async fn read_main_window_visible_on_all_spaces(
+    app: &tauri::AppHandle,
+) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::read_main_window_visible_on_all_spaces(window).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::read_main_window_visible_on_all_spaces(window).await
     }
 }
 
@@ -988,5 +1129,37 @@ mod tests {
             r#"{"width":400,"height":700,"minWidth":400,"minHeight":480,"placement":"anchorTopLeft","durationMs":185,"extra":"nope"}"#,
         );
         assert!(bad_wire.is_err());
+    }
+
+    #[test]
+    fn collection_behavior_toggles_all_spaces_without_losing_unrelated_flags() {
+        const MANAGED: usize = 1 << 2;
+        const FULL_SCREEN_PRIMARY: usize = 1 << 7;
+        let baseline = MANAGED | FULL_SCREEN_PRIMARY;
+
+        // Pinning adds CanJoinAllSpaces while keeping existing managed/full-screen flags:
+        let pinned = next_collection_behavior(baseline, true);
+        assert_eq!(
+            pinned,
+            baseline | NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+        );
+        assert_eq!(next_collection_behavior(pinned, true), pinned);
+
+        // Enabling CanJoinAllSpaces clears mutually exclusive MoveToActiveSpace:
+        let with_move = baseline | NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE;
+        let pinned_from_move = next_collection_behavior(with_move, true);
+        assert_eq!(
+            pinned_from_move,
+            baseline | NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+        );
+        assert_eq!(
+            pinned_from_move & NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE,
+            0
+        );
+
+        // Unpinning removes only CanJoinAllSpaces and preserves all other flags:
+        let unpinned = next_collection_behavior(pinned, false);
+        assert_eq!(unpinned, baseline);
+        assert_eq!(next_collection_behavior(unpinned, false), baseline);
     }
 }

@@ -11,6 +11,7 @@ import {
   normalizeCompactWidth,
   resolveVisibleWindowPosition,
   setWindowPinned,
+  setWindowPinnedWith,
   type AnimateWindowFrameRequest,
   type MonitorWorkArea,
   type NativeWindowEnvironment,
@@ -28,6 +29,7 @@ function createMockWindowEnv(initial?: {
   primary?: MonitorWorkArea;
 }) {
   let pinned = initial?.pinned ?? false;
+  let visibleOnAllWorkspaces = initial?.pinned ?? false;
   const scaleFactor = initial?.scaleFactor ?? 2;
   let outerPos = { ...(initial?.outerPos ?? { x: 240, y: 180 }) };
   let innerSize = { ...(initial?.innerSize ?? { width: 800, height: 1400 }) };
@@ -40,6 +42,10 @@ function createMockWindowEnv(initial?: {
       setAlwaysOnTop: async (next) => {
         calls.push(`pin:${next}`);
         pinned = next;
+      },
+      setVisibleOnAllWorkspaces: async (visible) => {
+        calls.push(`allSpaces:${visible}`);
+        visibleOnAllWorkspaces = visible;
       },
       isFocused: async () => true,
       setFocus: async () => {
@@ -81,7 +87,14 @@ function createMockWindowEnv(initial?: {
     }),
   };
 
-  return { env, calls, getOuterPos: () => outerPos, getInnerSize: () => innerSize, getMinSize: () => minSize };
+  return {
+    env,
+    calls,
+    getOuterPos: () => outerPos,
+    getInnerSize: () => innerSize,
+    getMinSize: () => minSize,
+    isVisibleOnAllWorkspaces: () => visibleOnAllWorkspaces,
+  };
 }
 
 describe('macOS native overlaid titlebar and compact window configuration', () => {
@@ -290,6 +303,40 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
       placement: 'anchorTopLeft',
     });
     expect(requests.at(-1)?.durationMs).toBe(0);
+  });
+
+  it('syncs cross-workspace visibility with pin toggles via native setPinned or fallback handle', async () => {
+    const delegated: boolean[] = [];
+    const baseMock = createMockWindowEnv({ pinned: false });
+    const nativeEnv: NativeWindowEnvironment = {
+      ...baseMock.env,
+      setPinned: async (next) => {
+        delegated.push(next);
+        return next;
+      },
+    };
+    expect(await setWindowPinnedWith(nativeEnv, true)).toBe(true);
+    expect(await setWindowPinnedWith(nativeEnv, false)).toBe(false);
+    expect(delegated).toEqual([true, false]);
+    expect(baseMock.calls).toEqual([]);
+
+    // Fallback handle toggles always-on-top and all-workspaces visibility in lockstep:
+    expect(await setWindowPinnedWith(baseMock.env, true)).toBe(true);
+    expect(baseMock.isVisibleOnAllWorkspaces()).toBe(true);
+    expect(baseMock.calls).toEqual(['pin:true', 'allSpaces:true']);
+
+    expect(await setWindowPinnedWith(baseMock.env, false)).toBe(false);
+    expect(baseMock.isVisibleOnAllWorkspaces()).toBe(false);
+    expect(baseMock.calls).toEqual(['pin:true', 'allSpaces:true', 'pin:false', 'allSpaces:false']);
+
+    await applyWindowModeWith(baseMock.env, {
+      pinned: true,
+      compactMode: true,
+      compactHeight: 86,
+      fullSize: { width: 400, height: 700 },
+      placement: 'anchorTopLeft',
+    });
+    expect(baseMock.isVisibleOnAllWorkspaces()).toBe(true);
   });
 
   it('reports explicit unsupported errors instead of faking native window operations in browser preview', async () => {

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { runGitProbe, runPiProbe } from '../../desktop/foundation';
+import { setWindowPinned } from '../../desktop/window';
 
 function waitForUi(check: () => boolean, label = 'state', timeoutMs = 8000): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -74,7 +75,7 @@ async function checkDefaultWorkbench() {
   const initialLogicalHeight = initialOuterSize.height / pinScale;
   try {
     if (wasPinned) {
-      await window.setAlwaysOnTop(false);
+      await setWindowPinned(false);
     }
     await waitForUi(
       () => !!document.querySelector('button[aria-label="Collapse to Compact Mode"]:not(:disabled)')
@@ -82,18 +83,22 @@ async function checkDefaultWorkbench() {
         && !!document.querySelector('button[aria-label="Settings"]:not(:disabled)'),
       'header-permanent-buttons-ready',
     );
-    // 1. Pin in Full Mode toggles always-on-top only (never auto-collapses):
+    // 1. Pin in Full Mode toggles always-on-top + macOS all-spaces visibility only (never auto-collapses):
     document.querySelector<HTMLButtonElement>('button[aria-label="Pin Window"]')!.click();
     await waitForUi(
       () => !document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Unpin Window"]:not(:disabled)'),
       'pin-stayed-full',
     );
-    const [pinnedInFull, pinnedFullSize] = await Promise.all([window.isAlwaysOnTop(), window.outerSize()]);
-    if (!pinnedInFull || Math.abs(pinnedFullSize.height / pinScale - initialLogicalHeight) > 2) {
-      throw new Error(`Pin in Full Mode did not keep full window height (pinned=${pinnedInFull}, h=${pinnedFullSize.height / pinScale})`);
+    const [pinnedInFull, pinnedInFullAllSpaces, pinnedFullSize] = await Promise.all([
+      window.isAlwaysOnTop(),
+      invoke<boolean>('read_smoke_window_spaces_state'),
+      window.outerSize(),
+    ]);
+    if (!pinnedInFull || !pinnedInFullAllSpaces || Math.abs(pinnedFullSize.height / pinScale - initialLogicalHeight) > 2) {
+      throw new Error(`Pin in Full Mode did not keep full window height and join all spaces (pinned=${pinnedInFull}, allSpaces=${pinnedInFullAllSpaces}, h=${pinnedFullSize.height / pinScale})`);
     }
 
-    // 2. Collapse button enters ~86px Compact Mode while keeping pinned=true and top-left anchored:
+    // 2. Collapse button enters ~86px Compact Mode while keeping pinned=true, all-spaces visibility, and top-left anchored:
     document.querySelector<HTMLButtonElement>('button[aria-label="Collapse to Compact Mode"]')!.click();
     await waitForUi(
       () => !!document.querySelector('.compact-bar')
@@ -102,33 +107,39 @@ async function checkDefaultWorkbench() {
         && !!document.querySelector('button[aria-label="Settings"]:not(:disabled)'),
       'collapse-entered-compact',
     );
-    const [compactPinned, compactOuterPos, compactOuterSize] = await Promise.all([
+    const [compactPinned, compactAllSpaces, compactOuterPos, compactOuterSize] = await Promise.all([
       window.isAlwaysOnTop(),
+      invoke<boolean>('read_smoke_window_spaces_state'),
       window.outerPosition(),
       window.outerSize(),
     ]);
     const compactLogicalHeight = compactOuterSize.height / pinScale;
     if (
       !compactPinned
+      || !compactAllSpaces
       || compactLogicalHeight < 80
       || compactLogicalHeight > 112
       || Math.abs(compactOuterPos.x - initialOuterPos.x) > 2
       || Math.abs(compactOuterPos.y - initialOuterPos.y) > 2
     ) {
       throw new Error(
-        `Collapse -> Compact did not shrink height with fixed top-left (pinned=${compactPinned}, h=${compactLogicalHeight}, pos=${JSON.stringify(compactOuterPos)}, initialPos=${JSON.stringify(initialOuterPos)})`,
+        `Collapse -> Compact did not shrink height with fixed top-left and all-spaces (pinned=${compactPinned}, allSpaces=${compactAllSpaces}, h=${compactLogicalHeight}, pos=${JSON.stringify(compactOuterPos)}, initialPos=${JSON.stringify(initialOuterPos)})`,
       );
     }
 
-    // 3. Unpin in Compact Mode toggles always-on-top off while staying in Compact Mode:
+    // 3. Unpin in Compact Mode toggles always-on-top and all-spaces off while staying in Compact Mode:
     document.querySelector<HTMLButtonElement>('button[aria-label="Unpin Window"]')!.click();
     await waitForUi(
       () => !!document.querySelector('.compact-bar') && !!document.querySelector('button[aria-label="Pin Window"]:not(:disabled)'),
       'unpin-stayed-compact',
     );
-    const [unpinnedInCompact, unpinnedCompactSize] = await Promise.all([window.isAlwaysOnTop(), window.outerSize()]);
-    if (unpinnedInCompact || unpinnedCompactSize.height / pinScale > 112) {
-      throw new Error(`Unpin in Compact Mode did not stay compact (pinned=${unpinnedInCompact}, h=${unpinnedCompactSize.height / pinScale})`);
+    const [unpinnedInCompact, unpinnedAllSpaces, unpinnedCompactSize] = await Promise.all([
+      window.isAlwaysOnTop(),
+      invoke<boolean>('read_smoke_window_spaces_state'),
+      window.outerSize(),
+    ]);
+    if (unpinnedInCompact || unpinnedAllSpaces || unpinnedCompactSize.height / pinScale > 112) {
+      throw new Error(`Unpin in Compact Mode did not clear pin/all-spaces and stay compact (pinned=${unpinnedInCompact}, allSpaces=${unpinnedAllSpaces}, h=${unpinnedCompactSize.height / pinScale})`);
     }
 
     // 4. Permanent Settings button in Compact Mode enlarges directly to standalone Settings (preserving unpinned, never flashing workbench); closing Settings restores compact geometry:
@@ -188,7 +199,7 @@ async function checkDefaultWorkbench() {
       'expand-back-to-full-for-smoke',
     );
   } finally {
-    await window.setAlwaysOnTop(wasPinned);
+    await setWindowPinned(wasPinned);
   }
 }
 
@@ -619,15 +630,16 @@ export function registerUiSmoke() {
           && (document.querySelector('.compact-branch')?.textContent ?? '').includes('feat/branch-proof'),
         'restart-compact-bar-hydrated',
       );
-      const [coldPinned, coldSize, coldPos, coldScale] = await Promise.all([
+      const [coldPinned, coldAllSpaces, coldSize, coldPos, coldScale] = await Promise.all([
         win.isAlwaysOnTop(),
+        invoke<boolean>('read_smoke_window_spaces_state'),
         win.outerSize(),
         win.outerPosition(),
         win.scaleFactor(),
       ]);
       const coldHeight = coldSize.height / coldScale;
-      if (!coldPinned || coldHeight < 80 || coldHeight > 112) {
-        throw new Error(`Cold restart did not restore pinned compact window geometry (pinned=${coldPinned}, height=${coldHeight})`);
+      if (!coldPinned || !coldAllSpaces || coldHeight < 80 || coldHeight > 112) {
+        throw new Error(`Cold restart did not restore pinned compact window geometry and all-spaces (pinned=${coldPinned}, allSpaces=${coldAllSpaces}, height=${coldHeight})`);
       }
 
       // Path 1 real WKWebView verification: Compact -> Standalone Settings -> Compact without mounting/flashing full workbench:
