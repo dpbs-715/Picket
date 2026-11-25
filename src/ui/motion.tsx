@@ -107,7 +107,11 @@ export function Collapse({
 
   if (instant) {
     if (!open) return null;
-    return <div id={id} className={className || undefined}>{children}</div>;
+    return (
+      <div id={id} className={`motion-collapse ${className}`.trim()} data-motion-mode="instant">
+        {children}
+      </div>
+    );
   }
 
   return (
@@ -117,6 +121,7 @@ export function Collapse({
           key="collapse-body"
           id={id}
           className={`motion-collapse ${className}`.trim()}
+          data-motion-mode="animated"
           initial={{ height: 0, opacity: 0 }}
           animate={{ height: 'auto', opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}

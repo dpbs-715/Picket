@@ -2800,10 +2800,11 @@ export async function verifyWorkbench(root: Root) {
     .find((item) => item.textContent?.includes('Remote Branches'))!;
   assert(!remoteSectionToggle.querySelector('.chevron-rotator')?.classList.contains('is-open'), 'Collapsed Remote chevron must not be rotated open');
   await clickElement(remoteSectionToggle);
+  const remoteChevronOpen = remoteSectionToggle.querySelector('.chevron-rotator')?.classList.contains('is-open');
+  const remoteCollapseEl = document.querySelector('.branch-menu .motion-collapse:has([data-branch-group="remote"])');
   assert(
-    remoteSectionToggle.querySelector('.chevron-rotator')?.classList.contains('is-open')
-      && !!document.querySelector('.branch-menu .motion-collapse [data-branch-group="remote"]'),
-    'Expanding Remote Branches must rotate chevron and render inside animated Collapse container',
+    remoteChevronOpen && !!remoteCollapseEl,
+    `Expanding Remote Branches must rotate chevron and render inside animated Collapse container (chevronOpen=${remoteChevronOpen}, hasCollapse=${Boolean(remoteCollapseEl)}, mode=${remoteCollapseEl?.getAttribute('data-motion-mode')}, visibility=${document.visibilityState}, reduced=${window.matchMedia('(prefers-reduced-motion: reduce)').matches})`,
   );
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   await waitUntil(() => !document.querySelector('.branch-menu'), 'branch-popover-exit');

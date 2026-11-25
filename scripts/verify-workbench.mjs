@@ -85,6 +85,10 @@ try {
   };
   await send('Page.enable');
   await send('Runtime.enable');
+  await send('Page.bringToFront');
+  await send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
+  });
   await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 700, deviceScaleFactor: 1, mobile: false });
   await navigate('verify=1');
   const result = await evaluate(`new Promise(resolve => {
@@ -213,5 +217,9 @@ try {
   socket?.close();
   await stop(chrome);
   await stop(server);
-  rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+  try {
+    rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+  } catch (cleanupError) {
+    console.warn(`Warning: failed to remove temporary Chrome profile ${temporary}: ${cleanupError}`);
+  }
 }
