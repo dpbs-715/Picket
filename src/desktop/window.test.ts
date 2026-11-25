@@ -19,6 +19,7 @@ import {
 
 const config = JSON.parse(readFileSync(new URL('../../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
 const capability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/main.json', import.meta.url), 'utf8'));
+const trayCapability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/tray-popover.json', import.meta.url), 'utf8'));
 
 function createMockWindowEnv(initial?: {
   pinned?: boolean;
@@ -124,6 +125,8 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
       'core:window:allow-set-focus',
       'notification:default',
     ]);
+    expect(trayCapability.windows).toEqual(['tray-popover']);
+    expect(trayCapability.permissions).toEqual(['core:default']);
   });
 
   it('keeps top-left physical coordinates fixed when collapsing and expanding on macOS Retina displays', async () => {

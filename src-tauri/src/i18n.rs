@@ -72,6 +72,43 @@ pub const fn picker_must_be_local_dir(locale: LanguageKind) -> &'static str {
 }
 
 // ============================================================================
+// Menu Bar Tray Tooltip (`tray.rs`)
+// ============================================================================
+
+pub const fn tray_tooltip_needs_decision(locale: LanguageKind) -> &'static str {
+    tr(locale, "Picket · Needs decision", "Picket · 待你决定")
+}
+
+pub const fn tray_tooltip_conflict(locale: LanguageKind) -> &'static str {
+    tr(locale, "Picket · Merge conflict", "Picket · 有代码冲突")
+}
+
+pub const fn tray_tooltip_push_failed(locale: LanguageKind) -> &'static str {
+    tr(locale, "Picket · Push failed", "Picket · 推送失败")
+}
+
+pub const fn tray_tooltip_running(locale: LanguageKind) -> &'static str {
+    tr(locale, "Picket · C-Push running", "Picket · 正在执行")
+}
+
+pub fn tray_tooltip_changed_repos(locale: LanguageKind, count: usize) -> String {
+    match locale {
+        LanguageKind::En => {
+            if count == 1 {
+                "Picket · 1 repository with changes".into()
+            } else {
+                format!("Picket · {count} repositories with changes")
+            }
+        }
+        LanguageKind::Zh => format!("Picket · {count} 个仓库有变更"),
+    }
+}
+
+pub const fn tray_tooltip_update_available(locale: LanguageKind) -> &'static str {
+    tr(locale, "Picket · Update available", "Picket · 发现新版本")
+}
+
+// ============================================================================
 // Pi Supervisor (`foundation/pi.rs`)
 // ============================================================================
 

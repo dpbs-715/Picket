@@ -32,6 +32,7 @@ const iconPaths = {
   trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7',
   alert: 'm12 3 10 18H2zM12 9v5m0 3h.01',
   help: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01',
+  power: 'M12 2v10M18.36 6.64a9 9 0 1 1-12.73 0',
 } as const;
 export type IconName = keyof typeof iconPaths;
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {

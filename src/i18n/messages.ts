@@ -446,6 +446,28 @@ export interface Messages {
     footerLine1: string;
     footerLine2: string;
   };
+  tray: {
+    ariaLabel: string;
+    refresh: string;
+    settings: string;
+    emptyTitle: string;
+    emptySubtitle: string;
+    clean: string;
+    changesCount(count: number): string;
+    localKeepOnly(count: number): string;
+    statusUnavailable: string;
+    detachedHead: string;
+    aheadBehind(ahead: number, behind: number): string;
+    statusRunning: string;
+    statusNeedsDecision: string;
+    statusConflict: string;
+    statusWaitingManual: string;
+    statusPushFailed: string;
+    foldedCleanRow(count: number): string;
+    openRepositoryHint(name: string): string;
+    openMainWindow: string;
+    quit: string;
+  };
 }
 
 const en: Messages = {
@@ -939,6 +961,34 @@ const en: Messages = {
     footerLine1: 'Production UI follows docs/design/picket-mvp.tsx.',
     footerLine2: 'Isolated M0 diagnostic harness.',
   },
+  tray: {
+    ariaLabel: 'Picket Menu Bar Status',
+    refresh: 'Refresh repositories',
+    settings: 'Open Settings',
+    emptyTitle: 'No repositories opened yet',
+    emptySubtitle: 'Open the main window to add a local Git repository.',
+    clean: 'Working tree clean',
+    changesCount: (count) => (count === 1 ? '1 change' : `${count} changes`),
+    localKeepOnly: (count) => `${count} local keep only`,
+    statusUnavailable: 'Status unavailable',
+    detachedHead: 'Detached HEAD',
+    aheadBehind: (ahead, behind) => {
+      const parts: string[] = [];
+      if (ahead > 0) parts.push(`↑${ahead}`);
+      if (behind > 0) parts.push(`↓${behind}`);
+      return parts.join(' ');
+    },
+    statusRunning: 'Running…',
+    statusNeedsDecision: 'Needs decision',
+    statusConflict: 'Merge conflict',
+    statusWaitingManual: 'Waiting for IDE merge',
+    statusPushFailed: 'Push failed',
+    foldedCleanRow: (count) =>
+      count === 1 ? '1 other clean workspace' : `${count} other clean workspaces`,
+    openRepositoryHint: (name) => `Open ${name} in Picket`,
+    openMainWindow: 'Open Main Window',
+    quit: 'Quit',
+  },
 };
 
 const zh: Messages = {
@@ -1426,6 +1476,33 @@ const zh: Messages = {
       `产生 ${commitCount} 个测试提交；临时仓库${removed ? '已删除' : '未删除'}。`,
     footerLine1: '正式 UI 以 docs/design/picket-mvp.tsx 为准。',
     footerLine2: '独立 M0 诊断环境。',
+  },
+  tray: {
+    ariaLabel: 'Picket 状态栏概览',
+    refresh: '刷新仓库状态',
+    settings: '打开设置',
+    emptyTitle: '尚未打开仓库',
+    emptySubtitle: '打开主窗口以添加本机 Git 仓库。',
+    clean: '工作区干净',
+    changesCount: (count) => `${count} 项变更`,
+    localKeepOnly: (count) => `仅 ${count} 项本地保留`,
+    statusUnavailable: '状态不可用',
+    detachedHead: '分离 HEAD',
+    aheadBehind: (ahead, behind) => {
+      const parts: string[] = [];
+      if (ahead > 0) parts.push(`↑${ahead}`);
+      if (behind > 0) parts.push(`↓${behind}`);
+      return parts.join(' ');
+    },
+    statusRunning: '执行中…',
+    statusNeedsDecision: '待你决定',
+    statusConflict: '有代码冲突',
+    statusWaitingManual: '等待外部合并',
+    statusPushFailed: '推送失败',
+    foldedCleanRow: (count) => `其余 ${count} 个工作区干净`,
+    openRepositoryHint: (name) => `在主窗口打开 ${name}`,
+    openMainWindow: '打开主窗口',
+    quit: '退出',
   },
 };
 

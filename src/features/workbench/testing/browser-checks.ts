@@ -11,11 +11,13 @@ import type {
   ReviewScopeReply,
 } from '../../../../shared/model-protocol';
 import { PICKET_RELEASES_URL, UPDATE_PROTOCOL_VERSION, type UpdateStateSnapshot } from '../../../../shared/update-protocol';
+import type { TrayMainWindowAction, TrayStateSnapshot } from '../../../../shared/tray-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
 import type { Root } from 'react-dom/client';
 import type { WindowController } from '../../../desktop/window';
 import { getMessages, LANGUAGE_OPTIONS } from '../../../i18n/messages';
 import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
+import { TrayPopover } from '../../tray/TrayPopover';
 import { Workbench } from '../Workbench';
 import { disconnectedBackend } from '../commands';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
@@ -2873,6 +2875,60 @@ export async function verifyWorkbench(root: Root) {
     motionCompactObserver.disconnect();
   }
   checks.push('Motion system: sliding tab pill, sheet/drill/standalone overlay transitions, popover & collapse exit animations, rotating chevrons, dock glide, and zero-flash compact Settings');
+
+  // Menu bar tray popover: read-only cards, urgency sort, clean-workspace auto-folding, zero search box, and clean actions:
+  const trayActions: string[] = [];
+  const traySnapshot: TrayStateSnapshot = {
+    protocolVersion: 1,
+    locale: 'zh',
+    hasUpdate: true,
+    refreshing: false,
+    repositories: [
+      { repositoryId: 'r-clean-1', worktreeId: 'w-clean-1', name: 'docs-site', branch: 'main', detached: false, ahead: 0, behind: 0, hasUpstream: true, changeCount: 0, localKeepCount: 0, worktreeCount: 1, active: false, sessionStatus: 'idle' },
+      { repositoryId: 'r-dirty', worktreeId: 'w-dirty', name: 'Picket', branch: 'feat/tray', detached: false, ahead: 2, behind: 0, hasUpstream: true, changeCount: 4, localKeepCount: 0, worktreeCount: 1, active: true, sessionStatus: 'idle' },
+      { repositoryId: 'r-clean-2', worktreeId: 'w-clean-2', name: 'design-kit', branch: 'main', detached: false, ahead: 0, behind: 0, hasUpstream: true, changeCount: 0, localKeepCount: 0, worktreeCount: 1, active: false, sessionStatus: 'idle' },
+      { repositoryId: 'r-urgent', worktreeId: 'w-urgent', name: 'backend-api', branch: 'feat/pay', detached: false, ahead: 0, behind: 1, hasUpstream: true, changeCount: 2, localKeepCount: 0, worktreeCount: 1, active: false, sessionStatus: 'needsDecision', statusDetail: '敏感文件确认' },
+      { repositoryId: 'r-clean-3', worktreeId: 'w-clean-3', name: 'mobile-app', branch: 'main', detached: false, ahead: 0, behind: 0, hasUpstream: true, changeCount: 0, localKeepCount: 0, worktreeCount: 1, active: false, sessionStatus: 'idle' },
+      { repositoryId: 'r-clean-4', worktreeId: 'w-clean-4', name: 'infra-ops', branch: 'main', detached: false, ahead: 0, behind: 0, hasUpstream: true, changeCount: 0, localKeepCount: 0, worktreeCount: 1, active: false, sessionStatus: 'idle' },
+    ],
+  };
+  await act(async () => {
+    root.render(createElement(TrayPopover, {
+      snapshot: traySnapshot,
+      onRefresh: () => { trayActions.push('refresh'); },
+      onOpenSettings: () => { trayActions.push('settings'); },
+      onOpenMainWindow: (action?: TrayMainWindowAction) => { trayActions.push(`open:${JSON.stringify(action)}`); },
+      onQuit: () => { trayActions.push('quit'); },
+      onDismiss: () => { trayActions.push('dismiss'); },
+    }));
+  });
+  await tick();
+  assert(!document.querySelector('input[type="search"], input[type="text"]'), 'Tray popover must not render a search box');
+  assert(!!document.querySelector('.tray-update-dot'), 'Tray popover did not display update indicator dot on Settings');
+  const visibleCardsBeforeFold = [...document.querySelectorAll<HTMLButtonElement>('[data-tray-repo]')].map((el) => el.dataset.trayRepo);
+  assert(
+    JSON.stringify(visibleCardsBeforeFold) === JSON.stringify(['r-urgent', 'r-dirty']),
+    `Tray popover did not prioritize urgent/dirty repos and auto-fold clean repos: ${JSON.stringify(visibleCardsBeforeFold)}`,
+  );
+  const foldBtn = document.querySelector<HTMLButtonElement>('[data-tray-clean-toggle]');
+  assert(foldBtn && foldBtn.textContent?.includes('4'), 'Missing folded clean workspaces toggle for 4 clean repos');
+  await clickElement(foldBtn);
+  const visibleCardsAfterExpand = [...document.querySelectorAll<HTMLButtonElement>('[data-tray-repo]')].map((el) => el.dataset.trayRepo);
+  assert(visibleCardsAfterExpand.length === 6, `Expanding clean fold did not reveal all 6 repos (${visibleCardsAfterExpand.length})`);
+  await clickElement(document.querySelector<HTMLButtonElement>('[data-tray-repo="r-urgent"]')!);
+  await clickElement(document.querySelector<HTMLButtonElement>('[data-tray-open-main]')!);
+  await clickElement(document.querySelector<HTMLButtonElement>('[data-tray-quit]')!);
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  assert(
+    trayActions.includes('open:{"kind":"focusWorktree","repositoryId":"r-urgent","worktreeId":"w-urgent","openDock":true}')
+      && trayActions.includes('open:{"kind":"show"}')
+      && trayActions.includes('quit')
+      && trayActions.includes('dismiss'),
+    `Tray popover actions mismatch: ${JSON.stringify(trayActions)}`,
+  );
+  checks.push('Menu bar tray popover: read-only priority cards, auto-folded clean group (>5 repos), zero search input, update dot, and Open Main / Quit / Escape actions');
 
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',
