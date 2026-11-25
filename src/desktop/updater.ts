@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { version as PACKAGE_VERSION } from '../../package.json';
 import type { AppLocale } from '../../shared/language-protocol';
 import {
   decodeUpdateStateSnapshot,
@@ -11,7 +12,7 @@ import { getMessages } from '../i18n/messages';
 
 export const UPDATE_STATE_EVENT = 'picket:update-state';
 
-export function initialBrowserUpdateSnapshot(currentVersion = '0.1.0'): UpdateStateSnapshot {
+export function initialBrowserUpdateSnapshot(currentVersion = PACKAGE_VERSION): UpdateStateSnapshot {
   return {
     protocolVersion: UPDATE_PROTOCOL_VERSION,
     currentVersion,

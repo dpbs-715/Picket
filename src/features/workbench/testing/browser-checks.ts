@@ -10,6 +10,7 @@ import type {
   ProviderUpdateReply,
   ReviewScopeReply,
 } from '../../../../shared/model-protocol';
+import { version as PACKAGE_VERSION } from '../../../../package.json';
 import { PICKET_RELEASES_URL, UPDATE_PROTOCOL_VERSION, type UpdateStateSnapshot } from '../../../../shared/update-protocol';
 import type { TrayMainWindowAction, TrayStateSnapshot } from '../../../../shared/tray-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
@@ -2621,7 +2622,7 @@ export async function verifyWorkbench(root: Root) {
   // 19. In-app updater UI: disconnected honesty, indicator dot in Full & Compact without auto-expand, Settings update card, download progress/cancel, and blocker fallback:
   await mount(fixture('empty'));
   await click('Settings');
-  assert(!!document.querySelector('#settings-updates-section') && text().includes('v0.1.0'), 'Settings must display About & Updates section with current version');
+  assert(!!document.querySelector('#settings-updates-section') && text().includes(`v${PACKAGE_VERSION}`), 'Settings must display About & Updates section with current version');
   await click('Check for Updates');
   await tick();
   assert(text().includes('unavailable in browser preview') && !!button('Download on GitHub'), 'Browser preview Check for Updates must report honest error and offer GitHub fallback');

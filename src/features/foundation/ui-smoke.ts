@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { version as PACKAGE_VERSION } from '../../../package.json';
 import { runGitProbe, runPiProbe } from '../../desktop/foundation';
 import { setWindowPinned } from '../../desktop/window';
 
@@ -56,7 +57,7 @@ async function checkDefaultWorkbench() {
   await waitForUi(() => !!document.querySelector('.overlay-heading h1'), 'default-settings-open');
   if (document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left < 84) throw new Error('Settings overlaps native window controls');
   await waitForUi(
-    () => (document.querySelector('#settings-updates-section')?.textContent ?? '').includes('v0.1.0'),
+    () => (document.querySelector('#settings-updates-section')?.textContent ?? '').includes(`v${PACKAGE_VERSION}`),
     'settings-updates-section-ready',
   );
   [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Add First Provider')!.click();
