@@ -383,7 +383,7 @@ function main() {
       ),
     );
   } finally {
-    rmSync(scratchRoot, { recursive: true, force: true });
+    rmSync(scratchRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
   }
 }
 

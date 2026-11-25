@@ -200,5 +200,5 @@ try {
     ui,
   }, null, 2));
 } finally {
-  rmSync(temporary, { recursive: true, force: true });
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
 }

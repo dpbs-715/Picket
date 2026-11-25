@@ -21,7 +21,12 @@ let chrome, socket;
 const stop = async (child) => {
   if (!child || child.exitCode !== null) return;
   const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGTERM'); await exited;
+  child.kill('SIGTERM');
+  const timer = setTimeout(() => {
+    if (child.exitCode === null) child.kill('SIGKILL');
+  }, 5_000);
+  await exited;
+  clearTimeout(timer);
 };
 try {
   let ready = false;
@@ -33,7 +38,7 @@ try {
     await pause();
   }
   if (!ready) throw new Error(`Dev server did not become ready: ${serverOutput}`);
-  chrome = spawn(chromePath, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+  chrome = spawn(chromePath, ['--headless', '--disable-gpu', '--disable-crash-reporter', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
     `--user-data-dir=${join(temporary, 'chrome')}`, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   let chromeOutput = '';
   chrome.stderr.on('data', (chunk) => { chromeOutput += chunk; });
@@ -202,6 +207,11 @@ try {
     console.log(`400 x 700 fixture screenshots written to: ${destination}`);
   }
 } finally {
-  socket?.close(); await stop(chrome); await stop(server);
-  rmSync(temporary, { recursive: true, force: true });
+  if (socket?.readyState === WebSocket.OPEN) {
+    try { socket.send(JSON.stringify({ id: 999_999, method: 'Browser.close', params: {} })); } catch { /* ignore */ }
+  }
+  socket?.close();
+  await stop(chrome);
+  await stop(server);
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
 }
