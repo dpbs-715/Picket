@@ -74,10 +74,13 @@ jobs:
       - name: Verify packaged .app bundle
         run: pnpm package:verify --ui
 
-      - name: Package and verify internal test DMG
+      - name: Package and verify DMG and updater bundle
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ "$REF_TYPE" = "tag" ]; then
             node scripts/package-dmg.mjs --tag "$REF_NAME" --out-dir dist-release
@@ -85,7 +88,7 @@ jobs:
             node scripts/package-dmg.mjs --out-dir dist-release
           fi
 
-      - name: Upload DMG and checksum artifacts
+      - name: Upload DMG and updater artifacts
         uses: actions/upload-artifact@v4
         with:
           name: picket-macos-arm64-dmg
@@ -118,19 +121,35 @@ jobs:
 
           DMG_FILE="Picket-${RELEASE_TAG}-macOS-arm64.dmg"
           SHA_FILE="${DMG_FILE}.sha256"
+          TAR_FILE="Picket-${RELEASE_TAG}-macOS-arm64.app.tar.gz"
+          TAR_SHA_FILE="${TAR_FILE}.sha256"
+          SIG_FILE="${TAR_FILE}.sig"
+          LATEST_FILE="latest.json"
 
-          if [ ! -f "dist-release/${DMG_FILE}" ] || [ ! -f "dist-release/${SHA_FILE}" ]; then
+          if [ ! -f "dist-release/${DMG_FILE}" ] || [ ! -f "dist-release/${SHA_FILE}" ] || [ ! -f "dist-release/${TAR_FILE}" ] || [ ! -f "dist-release/${TAR_SHA_FILE}" ]; then
             echo "Expected release artifacts missing for ${RELEASE_TAG}" >&2
             ls -la dist-release >&2
             exit 1
           fi
 
-          (cd dist-release && sha256sum -c "${SHA_FILE}")
+          (cd dist-release && sha256sum -c "${SHA_FILE}" && sha256sum -c "${TAR_SHA_FILE}")
           SHA256="$(awk '{print $1}' "dist-release/${SHA_FILE}")"
 
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "A GitHub Release already exists for ${RELEASE_TAG}. Delete an unpublished draft manually or bump to a new version tag instead of overwriting." >&2
             exit 1
+          fi
+
+          UPLOAD_ASSETS=(
+            "dist-release/${DMG_FILE}"
+            "dist-release/${SHA_FILE}"
+            "dist-release/${TAR_FILE}"
+            "dist-release/${TAR_SHA_FILE}"
+          )
+          UPDATER_NOTE="In-app auto-update manifest (\`latest.json\`) was skipped because \`TAURI_SIGNING_PRIVATE_KEY\` secret was not configured."
+          if [ -f "dist-release/${SIG_FILE}" ] && [ -f "dist-release/${LATEST_FILE}" ]; then
+            UPLOAD_ASSETS+=("dist-release/${SIG_FILE}" "dist-release/${LATEST_FILE}")
+            UPDATER_NOTE="Signed in-app update bundle (\`${TAR_FILE}\`, \`${SIG_FILE}\`, and \`${LATEST_FILE}\`) is included for existing Picket installations."
           fi
 
           cat > release-notes.md <<EOF
@@ -147,8 +166,9 @@ jobs:
           - **Commit**: \`${COMMIT_SHA}\`
           - **DMG File**: \`${DMG_FILE}\`
           - **SHA-256**: \`${SHA256}\`
+          - **In-App Updates**: ${UPDATER_NOTE}
 
-          ## Installation (Internal Testing)
+          ## Installation (First Time)
 
           1. Download \`${DMG_FILE}\` and optionally verify its checksum:
              \`\`\`bash
@@ -159,21 +179,19 @@ jobs:
              \`\`\`bash
              xattr -dr com.apple.quarantine /Applications/Picket.app
              \`\`\`
-          4. Launch **Picket** from **Applications**.
+          4. Launch **Picket** from **Applications**. Subsequent updates can be installed from **Settings → About & Updates** once the signing key is configured.
 
           ## Known Limitations
 
           - macOS Apple Silicon (\`arm64\`) only; Intel Macs, Windows, and Linux are not supported.
           - Ad-hoc signed internal build (Apple Developer ID signing & notarization are planned for public releases).
-          - No in-app auto-updater.
           EOF
 
+          # Single-channel release: omit --prerelease so GitHub's /releases/latest/download/latest.json resolves cleanly once published.
           gh release create "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --draft \
-            --prerelease \
             --target "${COMMIT_SHA}" \
-            --title "Picket ${RELEASE_TAG} (Internal Test)" \
+            --title "Picket ${RELEASE_TAG}" \
             --notes-file release-notes.md \
-            "dist-release/${DMG_FILE}" \
-            "dist-release/${SHA_FILE}"
+            "${UPLOAD_ASSETS[@]}"

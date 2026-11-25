@@ -10,6 +10,7 @@ import type {
   ProviderUpdateReply,
   ReviewScopeReply,
 } from '../../../../shared/model-protocol';
+import { PICKET_RELEASES_URL, UPDATE_PROTOCOL_VERSION, type UpdateStateSnapshot } from '../../../../shared/update-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
 import type { Root } from 'react-dom/client';
 import type { WindowController } from '../../../desktop/window';
@@ -2598,6 +2599,149 @@ export async function verifyWorkbench(root: Root) {
   );
   await click('Close Settings');
   checks.push('Provider key hints, authenticated full-key reveal & 4 auto-hide rules, child model creation, connection key rotation impact, and duplicate-name disambiguation');
+
+  // 19. In-app updater UI: disconnected honesty, indicator dot in Full & Compact without auto-expand, Settings update card, download progress/cancel, and blocker fallback:
+  await mount(fixture('empty'));
+  await click('Settings');
+  assert(!!document.querySelector('#settings-updates-section') && text().includes('v0.1.0'), 'Settings must display About & Updates section with current version');
+  await click('Check for Updates');
+  await tick();
+  assert(text().includes('unavailable in browser preview') && !!button('Download on GitHub'), 'Browser preview Check for Updates must report honest error and offer GitHub fallback');
+  await click('Close Settings');
+
+  const updateSub: { receive?: (snapshot: UpdateStateSnapshot) => void } = {};
+  let openedReleaseCount = 0;
+  let cancelledDownloadCount = 0;
+  let currentMockUpdate: UpdateStateSnapshot = {
+    protocolVersion: UPDATE_PROTOCOL_VERSION,
+    currentVersion: '0.1.0',
+    phase: 'idle',
+    releasePageUrl: PICKET_RELEASES_URL,
+    installBlocker: 'none',
+    canInstall: false,
+  };
+  const compactUpdateState = fixture('compact');
+  const updateWin = createControlledWindow({ x: 180, y: 120 }, { width: 400, height: 700 });
+  await mount(
+    compactUpdateState,
+    {
+      ...disconnectedBackend,
+      async getUpdateStatus() {
+        return currentMockUpdate;
+      },
+      async checkForUpdate() {
+        currentMockUpdate = {
+          protocolVersion: UPDATE_PROTOCOL_VERSION,
+          currentVersion: '0.1.0',
+          phase: 'available',
+          releasePageUrl: PICKET_RELEASES_URL,
+          availableVersion: '0.1.1',
+          releaseNotes: 'Faster diff reads and unified ~/.picket storage.',
+          installBlocker: 'none',
+          canInstall: true,
+        };
+        return currentMockUpdate;
+      },
+      async installUpdate() {
+        currentMockUpdate = {
+          ...currentMockUpdate,
+          phase: 'downloading',
+          downloadedBytes: 24 * 1024 * 1024,
+          totalBytes: 48 * 1024 * 1024,
+          canInstall: false,
+        };
+        return currentMockUpdate;
+      },
+      async cancelUpdate() {
+        cancelledDownloadCount += 1;
+        currentMockUpdate = {
+          ...currentMockUpdate,
+          phase: 'available',
+          downloadedBytes: undefined,
+          totalBytes: undefined,
+          canInstall: true,
+        };
+        return currentMockUpdate;
+      },
+      async openReleasePage() {
+        openedReleaseCount += 1;
+      },
+      subscribeUpdateState(receive) {
+        updateSub.receive = receive;
+        return () => { updateSub.receive = undefined; };
+      },
+    },
+    updateWin.controller,
+  );
+  await tick();
+  assert(!document.querySelector('button[aria-label="Settings"][data-has-update="true"]'), 'Idle update state must not show Settings dot');
+  await act(async () => {
+    currentMockUpdate = {
+      protocolVersion: UPDATE_PROTOCOL_VERSION,
+      currentVersion: '0.1.0',
+      phase: 'available',
+      releasePageUrl: PICKET_RELEASES_URL,
+      availableVersion: '0.1.1',
+      releaseNotes: 'Faster diff reads and unified ~/.picket storage.',
+      installBlocker: 'none',
+      canInstall: true,
+    };
+    updateSub.receive?.(currentMockUpdate);
+  });
+  await tick();
+  assert(
+    !!document.querySelector('.compact-bar')
+      && !!document.querySelector('.compact-tools button[aria-label="Settings"][data-has-update="true"]'),
+    'Available update in Compact Mode must light up Settings dot without auto-expanding the bar',
+  );
+  await click('Settings');
+  await tick();
+  assert(
+    !document.querySelector('.compact-bar')
+      && text().includes('v0.1.1 available')
+      && text().includes('Faster diff reads')
+      && !!button('Update & Restart')
+      && !!button('Download on GitHub'),
+    'Opening Settings from Compact Mode must display available update details and install/download actions',
+  );
+  await click('Update & Restart');
+  await tick();
+  assert(
+    text().includes('50%')
+      && !!document.querySelector('[role="progressbar"]')
+      && !!button('Cancel'),
+    'Clicking Update & Restart must show download progress bar and Cancel button',
+  );
+  await click('Cancel');
+  await tick();
+  assert(
+    cancelledDownloadCount === 1
+      && !!button('Update & Restart'),
+    'Cancelling update download must restore available state cleanly',
+  );
+  await click('Download on GitHub');
+  assert(openedReleaseCount === 1, 'Download on GitHub button must invoke openReleasePage');
+
+  // Signing-key-unconfigured blocker hides Update & Restart while keeping Download on GitHub:
+  await act(async () => {
+    updateSub.receive?.({
+      ...currentMockUpdate,
+      phase: 'available',
+      installBlocker: 'signingKeyUnconfigured',
+      canInstall: false,
+    });
+  });
+  await tick();
+  assert(
+    text().includes('Update signing key is not configured')
+      && ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Update & Restart')
+      && !!button('Download on GitHub'),
+    'Install blocker must hide Update & Restart and explain manual GitHub download',
+  );
+  await click('Close Settings');
+  await tick();
+  assert(!!document.querySelector('.compact-bar'), 'Closing Settings opened from Compact Mode after inspecting updates must return to Compact Mode');
+  checks.push('In-app updater UI: disconnected boundary, unobtrusive Settings badge dot, progress/cancel, blocker fallback, and compact return');
 
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',

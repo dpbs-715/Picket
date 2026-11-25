@@ -36,7 +36,10 @@ use std::{
     io::Write,
     os::unix::fs::PermissionsExt,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tempfile::NamedTempFile;
@@ -64,6 +67,30 @@ struct CoordinatorInner {
     worktree_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     sessions: Mutex<HashMap<String, StoredCPushSession>>,
     processed_requests: Mutex<HashMap<String, CPushCommandReply>>,
+    active_operations: AtomicUsize,
+}
+
+pub(crate) struct ActiveOperationGuard {
+    inner: Arc<CoordinatorInner>,
+}
+
+impl Drop for ActiveOperationGuard {
+    fn drop(&mut self) {
+        self.inner.active_operations.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl CPushCoordinator {
+    pub fn has_active_operation(&self) -> bool {
+        self.inner.active_operations.load(Ordering::SeqCst) > 0
+    }
+
+    pub(crate) fn track_operation(&self) -> ActiveOperationGuard {
+        self.inner.active_operations.fetch_add(1, Ordering::SeqCst);
+        ActiveOperationGuard {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 fn file_basename(path: &str) -> String {
@@ -977,6 +1004,7 @@ impl CPushCoordinator {
         repository::validate_request_id_with_locale(&request.request_id, locale)?;
         let wt_gate = self.worktree_gate(&request.target.worktree_id)?;
         let _wt_guard = wt_gate.lock_owned().await;
+        let _op_guard = self.track_operation();
 
         if let Some(existing_reply) = self
             .inner
@@ -1149,6 +1177,7 @@ impl CPushCoordinator {
         repository::validate_request_id_with_locale(&request.request_id, locale)?;
         let wt_gate = self.worktree_gate(&request.target.worktree_id)?;
         let _wt_guard = wt_gate.lock_owned().await;
+        let _op_guard = self.track_operation();
 
         if let Some(existing_reply) = self
             .inner
@@ -1255,6 +1284,7 @@ impl CPushCoordinator {
         repository::validate_request_id_with_locale(&request.request_id, locale)?;
         let wt_gate = self.worktree_gate(&request.target.worktree_id)?;
         let _wt_guard = wt_gate.lock_owned().await;
+        let _op_guard = self.track_operation();
 
         if let Some(existing_reply) = self
             .inner
@@ -1464,6 +1494,7 @@ impl CPushCoordinator {
         repository::validate_request_id_with_locale(&request.request_id, req_locale)?;
         let wt_gate = self.worktree_gate(&request.target.worktree_id)?;
         let _wt_guard = wt_gate.lock_owned().await;
+        let _op_guard = self.track_operation();
 
         if let Some(existing_reply) = self
             .inner

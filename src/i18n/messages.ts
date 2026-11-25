@@ -273,6 +273,27 @@ export interface Messages {
       maxOutputTokens: number;
       baseUrl?: string;
     }): string;
+    updates: {
+      heading: string;
+      currentVersion(version: string): string;
+      checkButton: string;
+      checking: string;
+      upToDate: string;
+      availableTitle(version: string): string;
+      updateAndRestart: string;
+      downloading(percent: number, downloadedMb: string, totalMb: string): string;
+      downloadingUnknown(downloadedMb: string): string;
+      installing: string;
+      downloadFromGithub: string;
+      retry: string;
+      gitBusyNote: string;
+      blockers: {
+        devBuild: string;
+        readOnlyVolume: string;
+        appTranslocation: string;
+        signingKeyUnconfigured: string;
+      };
+    };
   };
   modelForm: {
     addProviderTitle: string;
@@ -371,6 +392,7 @@ export interface Messages {
     disconnectedRevealModelKey: string;
     browserPinUnsupported: string;
     browserWindowUnsupported: string;
+    disconnectedUpdater: string;
     cPushPlanMismatch: string;
     cPushStartMismatch: string;
     pullRebaseMismatch: string;
@@ -720,6 +742,27 @@ const en: Messages = {
     deleteModelLabel: (name) => `Delete model ${name}`,
     modelDetailTitle: ({ connectionName, providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
       `${connectionName} · ${providerLabel} (${formatShort}) · ${modelId} · Context ${contextWindow} / Max output ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
+    updates: {
+      heading: 'About & Updates',
+      currentVersion: (version) => `v${version}`,
+      checkButton: 'Check for Updates',
+      checking: 'Checking…',
+      upToDate: 'You’re up to date.',
+      availableTitle: (version) => `v${version} available`,
+      updateAndRestart: 'Update & Restart',
+      downloading: (percent, downloadedMb, totalMb) => `Downloading… ${percent}% (${downloadedMb} / ${totalMb} MB)`,
+      downloadingUnknown: (downloadedMb) => `Downloading… ${downloadedMb} MB`,
+      installing: 'Installing update & restarting…',
+      downloadFromGithub: 'Download on GitHub',
+      retry: 'Retry',
+      gitBusyNote: 'Wait for the active Git or C-Push task to finish before installing the update.',
+      blockers: {
+        devBuild: 'In-app updates require the packaged macOS app bundle.',
+        readOnlyVolume: 'Move Picket.app into Applications first, or download the latest DMG from GitHub.',
+        appTranslocation: 'Move Picket.app into Applications and reopen it to enable in-app updates.',
+        signingKeyUnconfigured: 'Update signing key is not configured in this build yet; download from GitHub instead.',
+      },
+    },
   },
   modelForm: {
     addProviderTitle: 'Add Provider',
@@ -840,6 +883,7 @@ const en: Messages = {
     disconnectedRevealModelKey: 'System authentication and desktop credential storage are unavailable in browser preview; no API key was read.',
     browserPinUnsupported: 'Window pinning is unavailable in browser preview. Run pnpm desktop dev to open the desktop app.',
     browserWindowUnsupported: 'Window resizing and pinning are unavailable in browser preview; compact layout is previewed inside the page.',
+    disconnectedUpdater: 'Desktop update service is unavailable in browser preview.',
     cPushPlanMismatch: 'C-Push plan reply target or request identity mismatch; ignored reply.',
     cPushStartMismatch: 'C-Push start reply target or request identity mismatch; ignored reply.',
     pullRebaseMismatch: 'Pull & rebase reply target or request identity mismatch. Refresh to verify Git status.',
@@ -1189,6 +1233,27 @@ const zh: Messages = {
     deleteModelLabel: (name) => `删除模型 ${name}`,
     modelDetailTitle: ({ connectionName, providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
       `${connectionName} · ${providerLabel}（${formatShort}）· ${modelId} · 上下文 ${contextWindow} / 最大输出 ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
+    updates: {
+      heading: '关于与更新',
+      currentVersion: (version) => `v${version}`,
+      checkButton: '检查更新',
+      checking: '检查中…',
+      upToDate: '当前已是最新版本。',
+      availableTitle: (version) => `发现新版本 v${version}`,
+      updateAndRestart: '立即更新并重启',
+      downloading: (percent, downloadedMb, totalMb) => `正在下载… ${percent}%（${downloadedMb} / ${totalMb} MB）`,
+      downloadingUnknown: (downloadedMb) => `正在下载… ${downloadedMb} MB`,
+      installing: '正在安装更新并重启…',
+      downloadFromGithub: '前往 GitHub 下载',
+      retry: '重试',
+      gitBusyNote: '当前有 Git 或 C-Push 任务正在执行，请等完成后再更新。',
+      blockers: {
+        devBuild: '应用内更新仅适用于已打包的 macOS 应用。',
+        readOnlyVolume: '请先将 Picket.app 拖入「应用程序」，或前往 GitHub 手动下载。',
+        appTranslocation: '请将 Picket.app 移入「应用程序」并重新打开后再使用应用内更新。',
+        signingKeyUnconfigured: '当前构建尚未配置更新验签公钥，请前往 GitHub 手动下载。',
+      },
+    },
   },
   modelForm: {
     addProviderTitle: '添加供应商',
@@ -1306,6 +1371,7 @@ const zh: Messages = {
     disconnectedRevealModelKey: '当前环境未连接系统身份验证与本地凭据服务，无法显示密钥。',
     browserPinUnsupported: '浏览器预览不能设置窗口置顶。请使用 pnpm desktop dev 打开桌面应用。',
     browserWindowUnsupported: '浏览器预览不支持调整原生窗口大小或置顶；当前仅在页面内预览紧凑布局。',
+    disconnectedUpdater: '浏览器预览未连接桌面更新服务。',
     cPushPlanMismatch: 'C-Push 预生成计划回执的目标或请求身份不匹配，已忽略该回执。',
     cPushStartMismatch: 'C-Push 启动回执的目标工作树或请求身份不匹配，已忽略该回执。',
     pullRebaseMismatch: '拉取并变基回执的目标工作树或请求身份不匹配，请刷新核对实际 Git 状态。',

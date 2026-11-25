@@ -54,6 +54,10 @@ async function checkDefaultWorkbench() {
   document.querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!.click();
   await waitForUi(() => !!document.querySelector('.overlay-heading h1'));
   if (document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left < 84) throw new Error('Settings overlaps native window controls');
+  await waitForUi(
+    () => (document.querySelector('#settings-updates-section')?.textContent ?? '').includes('v0.1.0'),
+    'settings-updates-section-ready',
+  );
   [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Add First Provider')!.click();
   await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 2);
   if (document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left < 84) throw new Error('Provider form overlaps native window controls');
@@ -630,7 +634,7 @@ export function registerUiSmoke() {
         findButton('Settings')!.click();
         await waitForUi(
           () => document.querySelector('main')?.getAttribute('data-surface') === 'standaloneSettings'
-            && !!document.querySelector('[data-setting-group="editor"]')
+            && !!document.querySelector('#settings-updates-section')
             && !!document.querySelector('button[aria-label="Close Settings"]:not(:disabled)')
             && !document.querySelector('.workbench-content'),
           'restart-compact-standalone-settings-open',

@@ -66,6 +66,7 @@ It pauses to ask only when a real decision is needed, leaving unselected files, 
 - **Unobtrusive notifications**: When Picket is unfocused, native macOS notifications alert you only when your input is needed (decisions, conflicts, or push failures) without stealing focus or resizing the window.
 - **Seamless external IDE integration**: Auto-detects installed editors (`IntelliJ IDEA`, `RustRover`, `WebStorm`, `VS Code`, `Cursor`) to open files, diffs, staged diffs, review lines, and conflict merges.
 - **Bilingual experience**: Instant **English** / **简体中文** UI switching, plus per-project **Preferred Editor** and **Commit Message Language** settings (Conventional Commit prefixes like `feat` and `fix` remain in English).
+- **Quiet in-app updates**: Single-channel update checks via **Settings → About & Updates** with a subtle indicator dot when a newer signed release is available, live download progress, Ed25519 signature verification, active-Git-task safety guards, and graceful restart (plus direct GitHub Releases fallback).
 
 <table>
   <tr>

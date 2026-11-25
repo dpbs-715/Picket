@@ -660,6 +660,7 @@ impl RepositoryStore {
             .repository_gate(&request.target.repository_id)?
             .lock_owned()
             .await;
+        let _write_guard = self.track_write();
         let (registered, root) = self
             .registered_worktree_root(&request.target, locale)
             .await?;

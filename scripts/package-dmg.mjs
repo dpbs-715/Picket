@@ -26,6 +26,10 @@ function parseArgs(argv) {
     tag: null,
     appPath: defaultAppPath,
     outDir: defaultOutDir,
+    repo: process.env.GITHUB_REPOSITORY || 'dpbs-715/Picket',
+    notes: '',
+    notesFile: null,
+    requireUpdaterSignature: false,
   };
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
@@ -38,6 +42,15 @@ function parseArgs(argv) {
       options.appPath = resolve(argv[++index] ?? '');
     } else if (arg === '--out-dir') {
       options.outDir = resolve(argv[++index] ?? '');
+    } else if (arg === '--repo') {
+      options.repo = argv[++index] ?? '';
+      if (!options.repo) throw new Error('--repo requires a value (e.g. owner/repo)');
+    } else if (arg === '--notes') {
+      options.notes = argv[++index] ?? '';
+    } else if (arg === '--notes-file') {
+      options.notesFile = resolve(argv[++index] ?? '');
+    } else if (arg === '--require-updater-signature') {
+      options.requireUpdaterSignature = true;
     } else if (arg === '--') {
       continue;
     } else {
@@ -257,9 +270,69 @@ function main() {
     // Execute smoke test directly against the freshly signed staged bundle.
     const smoke = smokeTestStagedApp(stagedApp, scratchRoot);
 
+    mkdirSync(options.outDir, { recursive: true });
+
+    // Package the exact same verified & signed Picket.app into an updater tarball (single top-level `Picket.app/`
+    // directory, no AppleDouble `._*` files) so DMG and in-app updates ship byte-identical binaries.
+    const tarFilename = `Picket-v${version}-macOS-arm64.app.tar.gz`;
+    const tarPath = join(options.outDir, tarFilename);
+    const tarSha256Path = `${tarPath}.sha256`;
+    runCommand('/usr/bin/tar', ['-czf', tarPath, '-C', stagingDir, 'Picket.app'], {
+      env: { ...process.env, COPYFILE_DISABLE: '1' },
+    });
+    const tarListing = runCommand('/usr/bin/tar', ['-tzf', tarPath]).stdout.split('\n').filter(Boolean);
+    if (!tarListing.length || !tarListing.every((entry) => entry === 'Picket.app/' || entry.startsWith('Picket.app/'))) {
+      throw new Error(`Updater tarball must contain a single top-level Picket.app/ directory (first entry: ${tarListing[0] ?? 'empty'})`);
+    }
+    const tarSha256 = createHash('sha256').update(readFileSync(tarPath)).digest('hex');
+    writeFileSync(tarSha256Path, `${tarSha256}  ${tarFilename}\n`, 'utf8');
+
+    const hasSigningKey = Boolean(
+      process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()
+      || process.env.TAURI_SIGNING_PRIVATE_KEY_PATH?.trim(),
+    );
+    let updaterSigned = false;
+    let sigFilename = null;
+    let latestJsonPath = null;
+    if (hasSigningKey) {
+      const tauriCliBin = join(root, 'node_modules/.bin/tauri');
+      if (!existsSync(tauriCliBin)) {
+        throw new Error(`Tauri CLI binary not found at ${tauriCliBin}; run pnpm install first.`);
+      }
+      runCommand(tauriCliBin, ['signer', 'sign', '--app-version', version, tarPath], {
+        cwd: root,
+        env: process.env,
+      });
+      const sigPath = `${tarPath}.sig`;
+      if (!existsSync(sigPath)) {
+        throw new Error(`Expected updater signature missing at ${sigPath}`);
+      }
+      const signature = readFileSync(sigPath, 'utf8').trim();
+      const releaseNotes = options.notesFile
+        ? readFileSync(options.notesFile, 'utf8').trim()
+        : options.notes.trim() || `Picket v${version} (macOS Apple Silicon)`;
+      const releaseTag = options.tag ?? `v${version}`;
+      const manifest = {
+        version,
+        notes: releaseNotes,
+        pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        platforms: {
+          'darwin-aarch64': {
+            signature,
+            url: `https://github.com/${options.repo}/releases/download/${releaseTag}/${tarFilename}`,
+          },
+        },
+      };
+      latestJsonPath = join(options.outDir, 'latest.json');
+      writeFileSync(latestJsonPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+      sigFilename = `${tarFilename}.sig`;
+      updaterSigned = true;
+    } else if (options.requireUpdaterSignature) {
+      throw new Error('TAURI_SIGNING_PRIVATE_KEY (or TAURI_SIGNING_PRIVATE_KEY_PATH) is required when --require-updater-signature is set.');
+    }
+
     symlinkSync('/Applications', join(stagingDir, 'Applications'));
 
-    mkdirSync(options.outDir, { recursive: true });
     const dmgFilename = `Picket-v${version}-macOS-arm64.dmg`;
     const dmgPath = join(options.outDir, dmgFilename);
     const sha256Path = `${dmgPath}.sha256`;
@@ -293,6 +366,12 @@ function main() {
           sha256Path,
           sha256,
           sizeBytes: statSync(dmgPath).size,
+          updaterTarballPath: tarPath,
+          updaterTarballFilename: tarFilename,
+          updaterTarballSha256: tarSha256,
+          updaterSigned,
+          updaterSignatureFilename: sigFilename,
+          latestJsonPath,
           minimumSystemVersion,
           mainBinaryMinOs: mainMachO.minOs,
           nodeBinaryMinOs: nodeMachO.minOs,

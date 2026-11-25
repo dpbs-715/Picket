@@ -4,6 +4,7 @@ mod foundation;
 mod i18n;
 mod models;
 mod repository;
+mod updater;
 
 use cpush::{
     CPushCoordinator,
@@ -37,6 +38,13 @@ use repository::{
 };
 use tauri::{Manager, State, ipc::Channel};
 use tauri_plugin_dialog::DialogExt;
+use updater::{
+    UpdateManager,
+    types::{
+        CancelUpdateRequest, CheckUpdateRequest, InstallUpdateRequest, OpenReleasePageRequest,
+        UpdateStateSnapshot,
+    },
+};
 
 #[derive(Default)]
 struct RepositoryPicker(tokio::sync::Mutex<()>);
@@ -936,6 +944,56 @@ fn close_smoke_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_update_status(
+    app: tauri::AppHandle,
+    updater: State<'_, UpdateManager>,
+) -> Result<UpdateStateSnapshot, String> {
+    updater.get_status(&app)
+}
+
+#[tauri::command]
+async fn check_for_update(
+    app: tauri::AppHandle,
+    updater: State<'_, UpdateManager>,
+    request: CheckUpdateRequest,
+) -> Result<UpdateStateSnapshot, String> {
+    updater.check(&app, request.manual, request.locale).await
+}
+
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    updater: State<'_, UpdateManager>,
+    repositories: State<'_, RepositoryStore>,
+    cpush: State<'_, CPushCoordinator>,
+    request: InstallUpdateRequest,
+) -> Result<UpdateStateSnapshot, String> {
+    updater
+        .install(
+            &app,
+            &request.version,
+            request.locale,
+            &repositories,
+            &cpush,
+        )
+        .await
+}
+
+#[tauri::command]
+fn cancel_update(
+    app: tauri::AppHandle,
+    updater: State<'_, UpdateManager>,
+    request: CancelUpdateRequest,
+) -> Result<UpdateStateSnapshot, String> {
+    updater.cancel(&app, request.locale)
+}
+
+#[tauri::command]
+fn open_release_page(request: OpenReleasePageRequest) -> Result<(), String> {
+    UpdateManager::open_release_page(request.locale)
+}
+
+#[tauri::command]
 fn fail_ui_smoke(app: tauri::AppHandle, message: String) -> Result<(), String> {
     if !app.state::<DesktopLifecycle>().ui_smoke {
         return Err("Not running UI smoke mode".into());
@@ -975,6 +1033,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(RepositoryStore::default())
         .manage(EditorLauncher::default())
         .manage(WorkbenchPersistence::default())
@@ -984,6 +1043,7 @@ fn main() {
         .manage(repository::smoke::SmokeState::default())
         .manage(PiSupervisor::default())
         .manage(CPushCoordinator::default())
+        .manage(UpdateManager::default())
         .manage(DesktopLifecycle::with_flags(
             std::env::args().any(|arg| arg == "--foundation-ui-smoke"),
             std::env::args().any(|arg| arg == "--foundation-restart-smoke"),
@@ -995,6 +1055,11 @@ fn main() {
             run_git_probe,
             close_smoke_window,
             fail_ui_smoke,
+            get_update_status,
+            check_for_update,
+            install_update,
+            cancel_update,
+            open_release_page,
             open_repository,
             refresh_repository,
             set_repository_local_keep,

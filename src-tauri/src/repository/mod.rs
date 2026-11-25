@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use types::*;
@@ -52,6 +52,7 @@ pub struct RepositoryStore {
 struct StoreInner {
     reader: GitReader,
     sequence: AtomicU64,
+    active_writes: AtomicUsize,
     repositories: Mutex<HashMap<String, Registration>>,
     opened_order: Mutex<Vec<String>>,
     gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -60,6 +61,29 @@ struct StoreInner {
     verified_remotes: Mutex<HashSet<(String, String)>>,
     local_keep: Mutex<HashMap<PathBuf, BTreeSet<String>>>,
     offline_local_keep: Mutex<HashMap<String, Vec<String>>>,
+}
+
+pub(crate) struct ActiveWriteGuard {
+    inner: Arc<StoreInner>,
+}
+
+impl Drop for ActiveWriteGuard {
+    fn drop(&mut self) {
+        self.inner.active_writes.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl RepositoryStore {
+    pub fn has_active_write(&self) -> bool {
+        self.inner.active_writes.load(Ordering::SeqCst) > 0
+    }
+
+    pub(crate) fn track_write(&self) -> ActiveWriteGuard {
+        self.inner.active_writes.fetch_add(1, Ordering::SeqCst);
+        ActiveWriteGuard {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 #[derive(Clone)]
 struct Registration {
@@ -232,6 +256,7 @@ impl RepositoryStore {
         if !paths.iter().all(|path| is_valid_local_keep_path(path)) {
             return Err(i18n::local_keep_invalid_path_error(locale).into());
         }
+        let _write_guard = self.track_write();
         let path = self
             .inner
             .repositories

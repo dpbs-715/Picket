@@ -16,7 +16,9 @@ import type {
   UpdateProviderConnectionInput,
 } from '../../../shared/model-protocol';
 import type { GitLocalKeepReply, GitReadReply } from '../../../shared/git-read-protocol';
+import { PICKET_RELEASES_URL, type UpdateStateSnapshot } from '../../../shared/update-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../shared/workbench-persistence-protocol';
+import { initialBrowserUpdateSnapshot } from '../../desktop/updater';
 import { getMessages } from '../../i18n/messages';
 import type { EditorId, Target, WorkbenchEvent } from './state/workbench';
 
@@ -56,6 +58,12 @@ export interface WorkbenchBackend {
   updateProviderConnection(input: UpdateProviderConnectionInput): Promise<ProviderUpdateReply>;
   saveModel(input: SaveModelInput): Promise<ModelSaveReply>;
   revealProviderApiKey?(connectionId: string, locale?: AppLocale): Promise<ProviderRevealKeyReply>;
+  getUpdateStatus?(): Promise<UpdateStateSnapshot>;
+  checkForUpdate?(manual: boolean, locale?: AppLocale): Promise<UpdateStateSnapshot>;
+  installUpdate?(version: string, locale?: AppLocale): Promise<UpdateStateSnapshot>;
+  cancelUpdate?(locale?: AppLocale): Promise<UpdateStateSnapshot>;
+  openReleasePage?(locale?: AppLocale): Promise<void>;
+  subscribeUpdateState?(receive: (snapshot: UpdateStateSnapshot) => void): () => void;
   subscribe?(receive: (event: WorkbenchEvent) => void): () => void;
 }
 
@@ -83,5 +91,22 @@ export const disconnectedBackend: WorkbenchBackend = {
   },
   async revealProviderApiKey(_connectionId, locale) {
     throw new Error(getMessages(locale).desktop.disconnectedRevealModelKey);
+  },
+  async getUpdateStatus() {
+    return initialBrowserUpdateSnapshot();
+  },
+  async checkForUpdate(_manual, locale) {
+    throw new Error(getMessages(locale).desktop.disconnectedUpdater);
+  },
+  async installUpdate(_version, locale) {
+    throw new Error(getMessages(locale).desktop.disconnectedUpdater);
+  },
+  async cancelUpdate() {
+    return initialBrowserUpdateSnapshot();
+  },
+  async openReleasePage() {
+    if (typeof window !== 'undefined') {
+      window.open(PICKET_RELEASES_URL, '_blank', 'noopener,noreferrer');
+    }
   },
 };

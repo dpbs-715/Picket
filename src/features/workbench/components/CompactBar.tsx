@@ -40,6 +40,7 @@ interface Props {
   busy: boolean;
   pinned: boolean;
   pinBusy: boolean;
+  hasUpdate?: boolean;
   repositoryReadsAvailable: boolean;
   notice?: CompactNotice;
   onSwitchWorktree(worktreeId: string): void;
@@ -256,6 +257,8 @@ export function CompactBar(props: Props) {
           <IconButton
             icon="settings"
             label={t.header.settings}
+            className={props.hasUpdate ? 'has-update' : ''}
+            data-has-update={props.hasUpdate ? 'true' : undefined}
             disabled={props.pinBusy}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => props.onSettings(effectiveDrawer !== 'none')}

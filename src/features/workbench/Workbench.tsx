@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import type { UpdateStateSnapshot } from '../../../shared/update-protocol';
 import {
   WINDOW_DIMENSIONS,
   type WindowPosition,
   type WindowSize,
 } from '../../../shared/workbench-persistence-protocol';
+import { initialBrowserUpdateSnapshot } from '../../desktop/updater';
 import {
   clampCompactHeight,
   desktopWindowController,
@@ -107,6 +109,7 @@ export function Workbench({
   const latestLocalKeepRequestByRepo = useRef<Record<string, string>>({});
   const [pinBusy, setPinBusy] = useState(false);
   const pinInFlight = useRef(false);
+  const [updateState, setUpdateState] = useState<UpdateStateSnapshot>(() => initialBrowserUpdateSnapshot());
   const desiredCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
   const collapsedCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
   const pendingModeFocusRef = useRef<PendingModeFocus | null>(null);
@@ -148,6 +151,13 @@ export function Workbench({
   const branchBusy = !!worktree && pending.includes(`${worktree.repositoryId}:write`);
   const pullBusy = !!worktree && pending.includes(`${worktree.repositoryId}:pull`);
   const localKeepBusy = !!worktree && pending.some((key) => key.startsWith(`${worktree.repositoryId}:localKeep:`));
+  const gitBusyForUpdate = branchBusy
+    || pullBusy
+    || localKeepBusy
+    || pending.some((key) => key.endsWith(':cPush') || key.endsWith(':respond') || key.endsWith(':pull'));
+  const hasUpdate = updateState.phase === 'available'
+    || updateState.phase === 'downloading'
+    || updateState.phase === 'installing';
   const busy = refreshing || branchBusy || pullBusy || localKeepBusy || pending.some((key) => key.startsWith(`${viewKey}:`) && !key.endsWith(':planCPush') && !key.endsWith(':review'));
 
   function isEditingCommitInput(): boolean {
@@ -361,6 +371,35 @@ export function Workbench({
   }, [presentation.surface]);
 
   useEffect(() => backend.subscribe?.((event) => dispatch({ type: 'event', event })), [backend]);
+  useEffect(() => {
+    let mounted = true;
+    void backend.getUpdateStatus?.().then((snapshot) => {
+      if (mounted) setUpdateState(snapshot);
+    }).catch(() => {});
+    const unsubscribe = backend.subscribeUpdateState?.((snapshot) => {
+      if (mounted) setUpdateState(snapshot);
+    });
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
+  }, [backend]);
+  useEffect(() => {
+    const isSmoke = Boolean((globalThis as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__);
+    if (!hydrated || initialState || !backend.repositoryReadsAvailable || !backend.checkForUpdate || isSmoke) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void backend.checkForUpdate?.(false, latestState.current.locale).then((snapshot) => {
+        if (!cancelled) setUpdateState(snapshot);
+      }).catch(() => {});
+    }, 4_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [backend, hydrated, initialState]);
   useEffect(() => {
     if (initialState || !backend.loadWorkbenchState) return;
     let mounted = true;
@@ -1130,6 +1169,42 @@ export function Workbench({
       dispatch({ type: 'providerDeleted', connectionId });
     }
   }
+  async function handleCheckUpdate() {
+    if (!backend.checkForUpdate) return;
+    setUpdateState((previous) => ({ ...previous, phase: 'checking', error: undefined }));
+    try {
+      const next = await backend.checkForUpdate(true, latestState.current.locale);
+      setUpdateState(next);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateState((previous) => ({ ...previous, phase: 'error', error: message, canInstall: false }));
+    }
+  }
+  async function handleInstallUpdate(version: string) {
+    if (!backend.installUpdate) return;
+    try {
+      const next = await backend.installUpdate(version, latestState.current.locale);
+      setUpdateState(next);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateState((previous) => ({ ...previous, phase: 'error', error: message, canInstall: false }));
+    }
+  }
+  async function handleCancelUpdate() {
+    if (!backend.cancelUpdate) return;
+    try {
+      const next = await backend.cancelUpdate(latestState.current.locale);
+      setUpdateState(next);
+    } catch {
+      // Keep current snapshot if cancel failed.
+    }
+  }
+  function handleOpenReleasePage() {
+    void backend.openReleasePage?.(latestState.current.locale).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateState((previous) => ({ ...previous, phase: 'error', error: message }));
+    });
+  }
   const highCount = worktree?.review.findings.filter((finding) => finding.severity === 'high').length ?? 0;
   const suggestionCount = (worktree?.review.findings.length ?? 0) - highCount;
   const noFilesReviewed = worktree?.review.reviewedFileIds !== undefined && worktree.review.reviewedFileIds.length === 0 && (worktree.review.skippedPaths.length ?? 0) > 0;
@@ -1166,6 +1241,7 @@ export function Workbench({
           busy={busy}
           pinned={pinned}
           pinBusy={pinBusy}
+          hasUpdate={hasUpdate}
           repositoryReadsAvailable={!!backend.repositoryReadsAvailable}
           notice={activeNotice?.text ? activeNotice : undefined}
           onSwitchWorktree={(worktreeId) => switchWorktree(worktreeId)}
@@ -1196,6 +1272,7 @@ export function Workbench({
             branchBusy={branchBusy}
             pullBusy={pullBusy}
             pinned={pinned}
+            hasUpdate={hasUpdate}
             pinBusy={pinBusy}
             onCollapse={() => void collapseToCompact()}
             onPin={() => void togglePin()}
@@ -1365,6 +1442,12 @@ export function Workbench({
           onAddModel={(connection) => setModelOverlay({ kind: 'addModel', connection })}
           onEditModel={(connection, target) => setModelOverlay({ kind: 'editModel', connection, model: target })}
           onDeleteModel={(id) => void deleteModel(id)}
+          updateState={updateState}
+          gitBusyForUpdate={gitBusyForUpdate}
+          onCheckUpdate={() => void handleCheckUpdate()}
+          onInstallUpdate={(version) => void handleInstallUpdate(version)}
+          onCancelUpdate={() => void handleCancelUpdate()}
+          onOpenReleasePage={handleOpenReleasePage}
           covered={modelOverlayOpen}
           closeDisabled={pinBusy && settingsSession?.returnTo === 'compact'}
           error={activeNotice?.text}

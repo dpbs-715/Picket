@@ -28,5 +28,14 @@
     "externalBin": ["binaries/picket-node"],
     "resources": { "resources/generated/": "sidecar/" },
     "macOS": { "minimumSystemVersion": "14.0" }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIxQTlFNzA0MTkxRTA4RTQKUldUa0NCNFpCT2VwSVozbVR4TmVHNHJjWWJwSk01c1RZcE1YQ1dvcnZMd25Od3h2emFKVkhVYSsK",
+      "endpoints": [
+        "https://github.com/dpbs-715/Picket/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
+    }
   }
 }

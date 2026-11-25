@@ -26,6 +26,14 @@ import {
   testDesktopModelConnection,
   updateDesktopProviderConnection,
 } from './models';
+import {
+  cancelUpdate,
+  checkForUpdate,
+  getUpdateStatus,
+  installUpdate,
+  openReleasePage,
+  subscribeUpdateState,
+} from './updater';
 
 const eventSubscribers = new Set<(event: WorkbenchEvent) => void>();
 function emitWorkbenchEvent(event: WorkbenchEvent) {
@@ -40,6 +48,12 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
   updateProviderConnection: updateDesktopProviderConnection,
   saveModel: saveDesktopModel,
   revealProviderApiKey: revealDesktopProviderApiKey,
+  getUpdateStatus,
+  checkForUpdate,
+  installUpdate,
+  cancelUpdate,
+  openReleasePage,
+  subscribeUpdateState,
   cancelRequest: cancelDesktopModelRequest,
   subscribe(receive) {
     eventSubscribers.add(receive);

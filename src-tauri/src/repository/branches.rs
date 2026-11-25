@@ -353,6 +353,7 @@ impl RepositoryStore {
             .repository_gate(&request.target.repository_id)?
             .lock_owned()
             .await;
+        let _write_guard = self.track_write();
         let root = self.registered_branch_path(request).await?;
         self.ensure_branch_write_allowed(&root, locale).await?;
         let before = self.branch_state(&root, locale).await?;

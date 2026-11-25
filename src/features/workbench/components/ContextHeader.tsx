@@ -12,6 +12,7 @@ interface Props {
   worktree?: Worktree;
   repository?: Repository;
   pinned: boolean;
+  hasUpdate?: boolean;
   opening: boolean;
   branchBusy: boolean;
   pullBusy?: boolean;
@@ -89,7 +90,7 @@ export function ContextHeader(props: Props) {
           onClick={() => { close(); props.onCollapse(); }}
         />
         <IconButton icon="pin" label={props.pinned ? t.header.unpinWindow : t.header.pinWindow} aria-pressed={props.pinned} disabled={props.pinBusy} onMouseDown={(event) => event.preventDefault()} onClick={props.onPin} />
-        <IconButton icon="settings" label={t.header.settings} onClick={() => { close(); props.onSettings(); }} />
+        <IconButton icon="settings" label={t.header.settings} className={props.hasUpdate ? 'has-update' : ''} data-has-update={props.hasUpdate ? 'true' : undefined} onClick={() => { close(); props.onSettings(); }} />
       </div>
     </div>
     <div className="context-row context-bottom">

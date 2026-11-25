@@ -85,8 +85,9 @@ legend { padding: 0; margin-bottom: 5px; color: #a1a1aa; font-size: 11px; }
 .repository-button { height: 26px; margin-left: -6px; max-width: calc(100% + 6px); color: #f4f4f5; font-size: 12.5px; font-weight: 500; }
 .repository-button .icon { width: 14px; height: 14px; }
 .header-tools { gap: 0; flex-shrink: 0; }
-.header-tools .icon-button { position: relative; }
+.header-tools .icon-button, .compact-tools .icon-button { position: relative; }
 .has-pending::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); top: 3px; right: 3px; }
+.has-update::after { content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--indigo); top: 3px; right: 3px; }
 .context-path { flex: 1; min-width: 0; gap: 3px; }
 .branch-anchor { flex: 1; min-width: 0; display: flex; }
 .branch-anchor > button { margin-left: -6px; max-width: calc(100% + 6px); }
@@ -413,6 +414,16 @@ legend { padding: 0; margin-bottom: 5px; color: #a1a1aa; font-size: 11px; }
 .provider-grid button { height: 28px; padding: 0 4px; font-size: 11px; border-color: var(--line); background: var(--surface); }
 .form-result { padding: 8px 10px; border: 1px solid currentColor; border-radius: 6px; font-size: 11px; line-height: 1.6; background: rgb(255 255 255 / 3%); overflow-wrap: anywhere; }
 .form-actions { padding-top: 8px; display: flex; justify-content: space-between; gap: 8px; }
+.update-card { padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.update-card-uptodate, .update-card-installing { flex-direction: row; align-items: center; gap: 7px; font-size: 11.5px; color: #d4d4d8; }
+.update-card-uptodate .icon, .update-card-installing .icon { width: 13px; height: 13px; flex-shrink: 0; }
+.update-card-error { border-color: rgb(248 113 113 / 28%); background: rgb(248 113 113 / 5%); }
+.update-card-title strong { font-size: 12px; font-weight: 500; color: #f4f4f5; }
+.update-notes { font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 110px; overflow-y: auto; margin: 0; }
+.update-actions { gap: 6px; flex-wrap: wrap; }
+.update-progress-row { justify-content: space-between; gap: 8px; color: #d4d4d8; }
+.update-progress-track { height: 5px; width: 100%; border-radius: 999px; background: rgb(255 255 255 / 8%); overflow: hidden; }
+.update-progress-fill { height: 100%; border-radius: 999px; background: var(--indigo); transition: width 120ms ease; }
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }

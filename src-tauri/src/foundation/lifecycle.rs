@@ -80,6 +80,32 @@ impl DesktopLifecycle {
     }
 }
 
+pub async fn cleanup_for_restart(app: &tauri::AppHandle) {
+    app.state::<DesktopLifecycle>()
+        .exiting
+        .store(true, Ordering::SeqCst);
+    let supervisor = app.state::<PiSupervisor>().inner().clone();
+    let repositories = app
+        .state::<crate::repository::RepositoryStore>()
+        .inner()
+        .clone();
+    repositories.shutdown().await;
+    if let Err(error) = app
+        .state::<crate::repository::editor::EditorLauncher>()
+        .cleanup()
+    {
+        eprintln!("Temporary editor snapshot cleanup failed before restart: {error}");
+    }
+    let _ = app
+        .state::<crate::repository::smoke::SmokeState>()
+        .cleanup();
+    app.state::<crate::models::smoke::ModelSmokeState>()
+        .cleanup();
+    if let Err(error) = supervisor.shutdown().await {
+        eprintln!("Pi cleanup failed before restart: {error}");
+    }
+}
+
 pub fn exit_after_cleanup(app: &tauri::AppHandle) {
     if app
         .state::<DesktopLifecycle>()
