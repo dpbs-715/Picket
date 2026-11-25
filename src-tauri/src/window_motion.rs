@@ -13,6 +13,27 @@ const MAX_DURATION_MS: u32 = 600;
 const FRAME_EPSILON: f64 = 0.5;
 const NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
 const NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
+const NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT: usize = 1 << 3;
+const NS_WINDOW_COLLECTION_BEHAVIOR_IGNORES_CYCLE: usize = 1 << 6;
+/// Floats one level above `NSFloatingWindowLevel` (3) so the transient launch splash stays above
+/// even a pinned main window while the main window fades in underneath its landing ripple.
+const NS_SPLASH_WINDOW_LEVEL: isize = 4;
+/// Floats at `NSStatusWindowLevel` (25) right beneath the macOS menu bar and above floating windows.
+const NS_TRAY_POPOVER_WINDOW_LEVEL: isize = 25;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MonitorWorkArea {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+pub type ScaledMonitorWorkAreas = (
+    Vec<(MonitorWorkArea, f64)>,
+    Option<(MonitorWorkArea, f64)>,
+    f64,
+);
 
 /// Compute the next macOS `NSWindow.collectionBehavior` bitmask for cross-Space visibility.
 /// Clears mutually exclusive `MoveToActiveSpace` when enabling `CanJoinAllSpaces`, while
@@ -330,6 +351,12 @@ mod macos {
         }
     }
 
+    unsafe fn msg_send_point(receiver: *mut c_void, sel: *const c_void) -> NSPoint {
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void) -> NSPoint =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(receiver, sel) }
+    }
+
     unsafe fn window_frame(ns_window: *mut c_void) -> NSRect {
         let sel = unsafe { sel_registerName(c"frame".as_ptr()) };
         unsafe { msg_send_rect(ns_window, sel) }
@@ -352,6 +379,104 @@ mod macos {
         let f: unsafe extern "C" fn(*mut c_void, *const c_void, NSRect, ObjcBool, ObjcBool) =
             unsafe { mem::transmute(objc_msgSend as *const ()) };
         unsafe { f(ns_window, sel, frame, 1, 0) };
+    }
+
+    unsafe fn set_window_frame_origin(ns_window: *mut c_void, origin: NSPoint) {
+        let sel = unsafe { sel_registerName(c"setFrameOrigin:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, NSPoint) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, origin) };
+    }
+
+    unsafe fn set_window_alpha(ns_window: *mut c_void, alpha: f64) {
+        let sel = unsafe { sel_registerName(c"setAlphaValue:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, f64) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, alpha) };
+    }
+
+    unsafe fn set_window_opaque(ns_window: *mut c_void, opaque: bool) {
+        let sel = unsafe { sel_registerName(c"setOpaque:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, u8::from(opaque)) };
+    }
+
+    unsafe fn set_window_clear_background(ns_window: *mut c_void) {
+        let color_cls = unsafe { objc_getClass(c"NSColor".as_ptr()) };
+        if color_cls.is_null() {
+            return;
+        }
+        let clear_sel = unsafe { sel_registerName(c"clearColor".as_ptr()) };
+        let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        let clear = unsafe { send_obj(color_cls, clear_sel) };
+        if !clear.is_null() {
+            let bg_sel = unsafe { sel_registerName(c"setBackgroundColor:".as_ptr()) };
+            let send_bg: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) =
+                unsafe { mem::transmute(objc_msgSend as *const ()) };
+            unsafe { send_bg(ns_window, bg_sel, clear) };
+        }
+    }
+
+    unsafe fn set_window_has_shadow(ns_window: *mut c_void, has_shadow: bool) {
+        let sel = unsafe { sel_registerName(c"setHasShadow:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, u8::from(has_shadow)) };
+    }
+
+    unsafe fn set_window_ignores_mouse_events(ns_window: *mut c_void, ignores: bool) {
+        let sel = unsafe { sel_registerName(c"setIgnoresMouseEvents:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, u8::from(ignores)) };
+    }
+
+    unsafe fn set_window_level(ns_window: *mut c_void, level: isize) {
+        let sel = unsafe { sel_registerName(c"setLevel:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, isize) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, level) };
+    }
+
+    unsafe fn set_window_collection_behavior_raw(ns_window: *mut c_void, behavior: usize) {
+        let sel = unsafe { sel_registerName(c"setCollectionBehavior:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, usize) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, behavior) };
+    }
+
+    unsafe fn order_window_front_regardless(ns_window: *mut c_void) {
+        let sel = unsafe { sel_registerName(c"orderFrontRegardless".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel) };
+    }
+
+    unsafe fn make_window_key_and_order_front(ns_window: *mut c_void) {
+        let sel = unsafe { sel_registerName(c"makeKeyAndOrderFront:".as_ptr()) };
+        let f: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { f(ns_window, sel, ptr::null_mut()) };
+    }
+
+    unsafe fn activate_app_macos() {
+        let app_cls = unsafe { objc_getClass(c"NSApplication".as_ptr()) };
+        if app_cls.is_null() {
+            return;
+        }
+        let shared_sel = unsafe { sel_registerName(c"sharedApplication".as_ptr()) };
+        let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        let shared = unsafe { send_obj(app_cls, shared_sel) };
+        if shared.is_null() {
+            return;
+        }
+        let activate_sel = unsafe { sel_registerName(c"activateIgnoringOtherApps:".as_ptr()) };
+        let send_bool: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
+            unsafe { mem::transmute(objc_msgSend as *const ()) };
+        unsafe { send_bool(shared, activate_sel, 1) };
     }
 
     unsafe fn window_collection_behavior(ns_window: *mut c_void) -> usize {
@@ -829,6 +954,548 @@ mod macos {
         rx.await
             .map_err(|_| "Window spaces inspection task did not run on main thread".to_string())?
     }
+
+    pub fn prefers_reduced_motion() -> bool {
+        let _pool = AutoreleasePoolGuard::new();
+        unsafe { prefers_reduced_motion_macos() }
+    }
+
+    /// Reads all active macOS screens' logical work areas (excluding menu bar & Dock) in top-left
+    /// global coordinates alongside `NSScreen.screens[0].frame.size.height`. Must run on main thread.
+    pub fn read_monitors_on_main(
+        window: &tauri::WebviewWindow,
+    ) -> (Vec<MonitorWorkArea>, Option<MonitorWorkArea>, f64) {
+        let _pool = AutoreleasePoolGuard::new();
+        let mut monitors = Vec::new();
+        let mut primary_height = 900.0;
+        unsafe {
+            let ns_screen_cls = objc_getClass(c"NSScreen".as_ptr());
+            if !ns_screen_cls.is_null() {
+                let screens_sel = sel_registerName(c"screens".as_ptr());
+                let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
+                    mem::transmute(objc_msgSend as *const ());
+                let screens = send_obj(ns_screen_cls, screens_sel);
+                if !screens.is_null() {
+                    let count_sel = sel_registerName(c"count".as_ptr());
+                    let send_usize: unsafe extern "C" fn(*mut c_void, *const c_void) -> usize =
+                        mem::transmute(objc_msgSend as *const ());
+                    let obj_at_sel = sel_registerName(c"objectAtIndex:".as_ptr());
+                    let send_at: unsafe extern "C" fn(
+                        *mut c_void,
+                        *const c_void,
+                        usize,
+                    ) -> *mut c_void = mem::transmute(objc_msgSend as *const ());
+                    let frame_sel = sel_registerName(c"frame".as_ptr());
+                    let visible_sel = sel_registerName(c"visibleFrame".as_ptr());
+                    let count = send_usize(screens, count_sel);
+                    if count > 0 {
+                        let first = send_at(screens, obj_at_sel, 0);
+                        if !first.is_null() {
+                            let first_frame = msg_send_rect(first, frame_sel);
+                            if first_frame.size.height > 0.0 {
+                                primary_height = first_frame.size.height;
+                            }
+                        }
+                        for idx in 0..count {
+                            let screen = send_at(screens, obj_at_sel, idx);
+                            if screen.is_null() {
+                                continue;
+                            }
+                            let vf = msg_send_rect(screen, visible_sel);
+                            if vf.size.width > 0.0 && vf.size.height > 0.0 {
+                                monitors.push(MonitorWorkArea {
+                                    x: vf.origin.x,
+                                    y: primary_height - (vf.origin.y + vf.size.height),
+                                    width: vf.size.width,
+                                    height: vf.size.height,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            if monitors.is_empty()
+                && let Ok(ns_window) = window.ns_window()
+                && !ns_window.is_null()
+            {
+                primary_height = primary_screen_height(ns_window);
+            }
+        }
+        let primary = monitors.first().copied();
+        (monitors, primary, primary_height)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn configure_main_window_startup_on_main(
+        window: &tauri::WebviewWindow,
+        target_x: f64,
+        target_y: f64,
+        width: f64,
+        height: f64,
+        min_width: f64,
+        min_height: f64,
+        pinned: bool,
+    ) -> Result<(), String> {
+        let _pool = AutoreleasePoolGuard::new();
+        let ns_window = window.ns_window().map_err(|e| e.to_string())?;
+        if ns_window.is_null() {
+            return Err("Native NSWindow pointer is unavailable".into());
+        }
+        let _ = apply_pinned_on_main(window, ns_window, pinned)?;
+        let before_frame = unsafe { window_frame(ns_window) };
+        let before_content = unsafe { window_content_rect(ns_window, before_frame) };
+        let primary_height = unsafe { primary_screen_height(ns_window) };
+        let req = ValidatedRequest {
+            width: Some(width),
+            height,
+            min_width,
+            min_height,
+            placement: WindowFramePlacement::RestorePosition,
+            target_x: Some(target_x),
+            target_y: Some(target_y),
+            duration_ms: 0,
+            pinned: Some(pinned),
+        };
+        let target_frame =
+            compute_target_frame(before_frame, before_content.size, primary_height, req);
+        let final_min = NSSize {
+            width: min_width.min(width),
+            height: min_height.min(height),
+        };
+        let pre_min = NSSize {
+            width: final_min.width.min(before_content.size.width),
+            height: final_min.height.min(before_content.size.height),
+        };
+        unsafe {
+            set_window_content_min_size(ns_window, pre_min);
+            set_window_frame_instant(ns_window, target_frame);
+            set_window_content_min_size(ns_window, final_min);
+        }
+        Ok(())
+    }
+
+    pub fn prepare_splash_window_on_main(
+        window: &tauri::WebviewWindow,
+        top_left_x: f64,
+        top_left_y: f64,
+        size: f64,
+        primary_height: f64,
+    ) -> Result<(), String> {
+        let _pool = AutoreleasePoolGuard::new();
+        let ns_window = window.ns_window().map_err(|e| e.to_string())?;
+        if ns_window.is_null() {
+            return Err("Splash NSWindow pointer is unavailable".into());
+        }
+        let frame = NSRect {
+            origin: NSPoint {
+                x: top_left_x,
+                y: primary_height - top_left_y - size,
+            },
+            size: NSSize {
+                width: size,
+                height: size,
+            },
+        };
+        unsafe {
+            set_window_opaque(ns_window, false);
+            set_window_clear_background(ns_window);
+            set_window_has_shadow(ns_window, false);
+            set_window_ignores_mouse_events(ns_window, true);
+            set_window_level(ns_window, NS_SPLASH_WINDOW_LEVEL);
+            set_window_collection_behavior_raw(
+                ns_window,
+                NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+                    | NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT
+                    | NS_WINDOW_COLLECTION_BEHAVIOR_IGNORES_CYCLE,
+            );
+            set_window_frame_instant(ns_window, frame);
+            set_window_alpha(ns_window, 1.0);
+        }
+        Ok(())
+    }
+
+    pub async fn show_splash_window(window: tauri::WebviewWindow) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel::<Result<(), String>>();
+        let win_for_main = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _pool = AutoreleasePoolGuard::new();
+                let res = (|| -> Result<(), String> {
+                    let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
+                    if ns_window.is_null() {
+                        return Err("Splash NSWindow pointer is unavailable".into());
+                    }
+                    unsafe {
+                        set_window_alpha(ns_window, 1.0);
+                    }
+                    win_for_main.show().map_err(|e| e.to_string())?;
+                    unsafe {
+                        set_window_level(ns_window, NS_SPLASH_WINDOW_LEVEL);
+                        order_window_front_regardless(ns_window);
+                    }
+                    Ok(())
+                })();
+                let _ = tx.send(res);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "Show splash task did not run on main thread".to_string())?
+    }
+
+    pub async fn move_splash_window_origin(
+        window: tauri::WebviewWindow,
+        top_left_x: f64,
+        top_left_y: f64,
+        size: f64,
+        primary_height: f64,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel::<Result<(), String>>();
+        let win_for_main = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _pool = AutoreleasePoolGuard::new();
+                let res = (|| -> Result<(), String> {
+                    let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
+                    if ns_window.is_null() {
+                        return Err("Splash NSWindow pointer is unavailable".into());
+                    }
+                    let origin = NSPoint {
+                        x: top_left_x,
+                        y: primary_height - top_left_y - size,
+                    };
+                    unsafe { set_window_frame_origin(ns_window, origin) };
+                    Ok(())
+                })();
+                let _ = tx.send(res);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "Move splash origin task did not run on main thread".to_string())?
+    }
+
+    pub async fn reveal_main_window_smoothly(
+        window: tauri::WebviewWindow,
+        duration_ms: u32,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel::<Result<(), String>>();
+        let win_for_main = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _pool = AutoreleasePoolGuard::new();
+                let res = (|| -> Result<(), String> {
+                    let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
+                    if ns_window.is_null() {
+                        return Err("Main NSWindow pointer is unavailable".into());
+                    }
+                    let animate = duration_ms > 0 && !unsafe { prefers_reduced_motion_macos() };
+                    if !animate {
+                        unsafe { set_window_alpha(ns_window, 1.0) };
+                        win_for_main.show().map_err(|e| e.to_string())?;
+                        let _ = win_for_main.set_focus();
+                        return Ok(());
+                    }
+                    unsafe { set_window_alpha(ns_window, 0.0) };
+                    win_for_main.show().map_err(|e| e.to_string())?;
+                    let _ = win_for_main.set_focus();
+                    unsafe {
+                        let anim_ctx_cls = objc_getClass(c"NSAnimationContext".as_ptr());
+                        if anim_ctx_cls.is_null() {
+                            set_window_alpha(ns_window, 1.0);
+                            return Ok(());
+                        }
+                        let begin_sel = sel_registerName(c"beginGrouping".as_ptr());
+                        let end_sel = sel_registerName(c"endGrouping".as_ptr());
+                        let current_sel = sel_registerName(c"currentContext".as_ptr());
+                        let set_duration_sel = sel_registerName(c"setDuration:".as_ptr());
+                        let set_timing_sel = sel_registerName(c"setTimingFunction:".as_ptr());
+                        let animator_sel = sel_registerName(c"animator".as_ptr());
+                        let set_alpha_sel = sel_registerName(c"setAlphaValue:".as_ptr());
+
+                        let send_void: unsafe extern "C" fn(*mut c_void, *const c_void) =
+                            mem::transmute(objc_msgSend as *const ());
+                        let send_obj: unsafe extern "C" fn(
+                            *mut c_void,
+                            *const c_void,
+                        ) -> *mut c_void = mem::transmute(objc_msgSend as *const ());
+                        let send_f64: unsafe extern "C" fn(*mut c_void, *const c_void, f64) =
+                            mem::transmute(objc_msgSend as *const ());
+                        let send_ptr: unsafe extern "C" fn(
+                            *mut c_void,
+                            *const c_void,
+                            *const c_void,
+                        ) = mem::transmute(objc_msgSend as *const ());
+
+                        send_void(anim_ctx_cls, begin_sel);
+                        let ctx = send_obj(anim_ctx_cls, current_sel);
+                        if !ctx.is_null() {
+                            send_f64(ctx, set_duration_sel, f64::from(duration_ms) / 1000.0);
+                            let timing_cls = objc_getClass(c"CAMediaTimingFunction".as_ptr());
+                            if !timing_cls.is_null() {
+                                let timing_sel =
+                                    sel_registerName(c"functionWithControlPoints::::".as_ptr());
+                                let send_timing: unsafe extern "C" fn(
+                                    *mut c_void,
+                                    *const c_void,
+                                    f32,
+                                    f32,
+                                    f32,
+                                    f32,
+                                )
+                                    -> *mut c_void = mem::transmute(objc_msgSend as *const ());
+                                let timing_fn =
+                                    send_timing(timing_cls, timing_sel, 0.22, 1.0, 0.36, 1.0);
+                                if !timing_fn.is_null() {
+                                    send_ptr(ctx, set_timing_sel, timing_fn as *const c_void);
+                                }
+                            }
+                        }
+                        let animator = send_obj(ns_window, animator_sel);
+                        if !animator.is_null() {
+                            send_f64(animator, set_alpha_sel, 1.0);
+                        } else {
+                            set_window_alpha(ns_window, 1.0);
+                        }
+                        send_void(anim_ctx_cls, end_sel);
+                    }
+                    Ok(())
+                })();
+                let _ = tx.send(res);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "Reveal main window task did not run on main thread".to_string())?
+    }
+
+    pub async fn ensure_main_window_opaque(window: tauri::WebviewWindow) {
+        let win_for_main = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            let _pool = AutoreleasePoolGuard::new();
+            if let Ok(ns_window) = win_for_main.ns_window()
+                && !ns_window.is_null()
+            {
+                unsafe { set_window_alpha(ns_window, 1.0) };
+            }
+        });
+    }
+
+    /// Reads all active macOS screens' logical work areas with their backing scale factor plus
+    /// `NSScreen.screens[0].frame.size.height`. Must run on the main thread.
+    pub fn read_monitors_with_scale_on_main(
+        window: &tauri::WebviewWindow,
+    ) -> ScaledMonitorWorkAreas {
+        let _pool = AutoreleasePoolGuard::new();
+        let mut monitors = Vec::new();
+        let mut primary_height = 900.0;
+        unsafe {
+            let ns_screen_cls = objc_getClass(c"NSScreen".as_ptr());
+            if !ns_screen_cls.is_null() {
+                let screens_sel = sel_registerName(c"screens".as_ptr());
+                let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
+                    mem::transmute(objc_msgSend as *const ());
+                let screens = send_obj(ns_screen_cls, screens_sel);
+                if !screens.is_null() {
+                    let count_sel = sel_registerName(c"count".as_ptr());
+                    let send_usize: unsafe extern "C" fn(*mut c_void, *const c_void) -> usize =
+                        mem::transmute(objc_msgSend as *const ());
+                    let obj_at_sel = sel_registerName(c"objectAtIndex:".as_ptr());
+                    let send_at: unsafe extern "C" fn(
+                        *mut c_void,
+                        *const c_void,
+                        usize,
+                    ) -> *mut c_void = mem::transmute(objc_msgSend as *const ());
+                    let frame_sel = sel_registerName(c"frame".as_ptr());
+                    let visible_sel = sel_registerName(c"visibleFrame".as_ptr());
+                    let scale_sel = sel_registerName(c"backingScaleFactor".as_ptr());
+                    let send_f64: unsafe extern "C" fn(*mut c_void, *const c_void) -> f64 =
+                        mem::transmute(objc_msgSend as *const ());
+                    let count = send_usize(screens, count_sel);
+                    if count > 0 {
+                        let first = send_at(screens, obj_at_sel, 0);
+                        if !first.is_null() {
+                            let first_frame = msg_send_rect(first, frame_sel);
+                            if first_frame.size.height > 0.0 {
+                                primary_height = first_frame.size.height;
+                            }
+                        }
+                        for idx in 0..count {
+                            let screen = send_at(screens, obj_at_sel, idx);
+                            if screen.is_null() {
+                                continue;
+                            }
+                            let vf = msg_send_rect(screen, visible_sel);
+                            let scale = send_f64(screen, scale_sel).max(1.0);
+                            if vf.size.width > 0.0 && vf.size.height > 0.0 {
+                                monitors.push((
+                                    MonitorWorkArea {
+                                        x: vf.origin.x,
+                                        y: primary_height - (vf.origin.y + vf.size.height),
+                                        width: vf.size.width,
+                                        height: vf.size.height,
+                                    },
+                                    scale,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if monitors.is_empty()
+                && let Ok(ns_window) = window.ns_window()
+                && !ns_window.is_null()
+            {
+                primary_height = primary_screen_height(ns_window);
+            }
+        }
+        let primary = monitors.first().copied();
+        (monitors, primary, primary_height)
+    }
+
+    pub fn mouse_location_logical_on_main(primary_height: f64) -> Option<(f64, f64)> {
+        let _pool = AutoreleasePoolGuard::new();
+        let event_cls = unsafe { objc_getClass(c"NSEvent".as_ptr()) };
+        if event_cls.is_null() {
+            return None;
+        }
+        let sel = unsafe { sel_registerName(c"mouseLocation".as_ptr()) };
+        let pt = unsafe { msg_send_point(event_cls, sel) };
+        if !pt.x.is_finite() || !pt.y.is_finite() {
+            return None;
+        }
+        Some((pt.x, primary_height - pt.y))
+    }
+
+    pub fn prepare_tray_popover_window_on_main(
+        window: &tauri::WebviewWindow,
+        width: f64,
+        height: f64,
+    ) -> Result<(), String> {
+        let _pool = AutoreleasePoolGuard::new();
+        let ns_window = window.ns_window().map_err(|e| e.to_string())?;
+        if ns_window.is_null() {
+            return Err("Tray popover NSWindow pointer is unavailable".into());
+        }
+        let primary_height = unsafe { primary_screen_height(ns_window) };
+        let frame = NSRect {
+            origin: NSPoint {
+                x: 0.0,
+                y: primary_height - height,
+            },
+            size: NSSize { width, height },
+        };
+        unsafe {
+            set_window_opaque(ns_window, false);
+            set_window_clear_background(ns_window);
+            set_window_has_shadow(ns_window, true);
+            set_window_level(ns_window, NS_TRAY_POPOVER_WINDOW_LEVEL);
+            set_window_collection_behavior_raw(
+                ns_window,
+                NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+                    | NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT
+                    | NS_WINDOW_COLLECTION_BEHAVIOR_IGNORES_CYCLE,
+            );
+            set_window_frame_instant(ns_window, frame);
+            set_window_alpha(ns_window, 1.0);
+        }
+        Ok(())
+    }
+
+    pub fn show_tray_popover_on_main(
+        window: &tauri::WebviewWindow,
+        top_left_x: f64,
+        top_left_y: f64,
+        width: f64,
+        height: f64,
+        primary_height: f64,
+    ) -> Result<(), String> {
+        let _pool = AutoreleasePoolGuard::new();
+        let ns_window = window.ns_window().map_err(|e| e.to_string())?;
+        if ns_window.is_null() {
+            return Err("Tray popover NSWindow pointer is unavailable".into());
+        }
+        let frame = NSRect {
+            origin: NSPoint {
+                x: top_left_x,
+                y: primary_height - top_left_y - height,
+            },
+            size: NSSize { width, height },
+        };
+        unsafe {
+            set_window_opaque(ns_window, false);
+            set_window_clear_background(ns_window);
+            set_window_has_shadow(ns_window, true);
+            set_window_level(ns_window, NS_TRAY_POPOVER_WINDOW_LEVEL);
+            set_window_collection_behavior_raw(
+                ns_window,
+                NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES
+                    | NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT
+                    | NS_WINDOW_COLLECTION_BEHAVIOR_IGNORES_CYCLE,
+            );
+            set_window_frame_instant(ns_window, frame);
+            set_window_alpha(ns_window, 1.0);
+        }
+        window.show().map_err(|e| e.to_string())?;
+        unsafe {
+            activate_app_macos();
+            order_window_front_regardless(ns_window);
+            make_window_key_and_order_front(ns_window);
+        }
+        Ok(())
+    }
+
+    pub async fn resize_tray_popover_height(
+        window: tauri::WebviewWindow,
+        width: f64,
+        height: f64,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel::<Result<(), String>>();
+        let win_for_main = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _pool = AutoreleasePoolGuard::new();
+                let res = (|| -> Result<(), String> {
+                    let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
+                    if ns_window.is_null() {
+                        return Err("Tray popover NSWindow pointer is unavailable".into());
+                    }
+                    let current = unsafe { window_frame(ns_window) };
+                    let target = NSRect {
+                        origin: NSPoint {
+                            x: current.origin.x,
+                            y: current.origin.y + current.size.height - height,
+                        },
+                        size: NSSize { width, height },
+                    };
+                    if !frames_within_epsilon(current, target) {
+                        unsafe { set_window_frame_instant(ns_window, target) };
+                    }
+                    Ok(())
+                })();
+                let _ = tx.send(res);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "Resize tray popover task did not run on main thread".to_string())?
+    }
+
+    pub fn activate_and_focus_main_on_main(window: &tauri::WebviewWindow) {
+        let _pool = AutoreleasePoolGuard::new();
+        if let Ok(ns_window) = window.ns_window()
+            && !ns_window.is_null()
+        {
+            unsafe { set_window_alpha(ns_window, 1.0) };
+        }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        unsafe {
+            activate_app_macos();
+            if let Ok(ns_window) = window.ns_window()
+                && !ns_window.is_null()
+            {
+                make_window_key_and_order_front(ns_window);
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -849,6 +1516,160 @@ mod fallback {
         _window: tauri::WebviewWindow,
     ) -> Result<bool, String> {
         Ok(false)
+    }
+
+    pub fn prefers_reduced_motion() -> bool {
+        false
+    }
+
+    pub fn read_monitors_on_main(
+        window: &tauri::WebviewWindow,
+    ) -> (Vec<MonitorWorkArea>, Option<MonitorWorkArea>, f64) {
+        let monitors: Vec<MonitorWorkArea> = window
+            .available_monitors()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| {
+                let scale = m.scale_factor().max(0.5);
+                let area = m.work_area();
+                MonitorWorkArea {
+                    x: f64::from(area.position.x) / scale,
+                    y: f64::from(area.position.y) / scale,
+                    width: f64::from(area.size.width) / scale,
+                    height: f64::from(area.size.height) / scale,
+                }
+            })
+            .collect();
+        let primary = monitors.first().copied();
+        let primary_height = primary.map_or(900.0, |p| p.height);
+        (monitors, primary, primary_height)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn configure_main_window_startup_on_main(
+        window: &tauri::WebviewWindow,
+        target_x: f64,
+        target_y: f64,
+        width: f64,
+        height: f64,
+        min_width: f64,
+        min_height: f64,
+        pinned: bool,
+    ) -> Result<(), String> {
+        window
+            .set_always_on_top(pinned)
+            .map_err(|e| e.to_string())?;
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(
+                min_width.min(width),
+                min_height.min(height),
+            )))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_position(tauri::LogicalPosition::new(target_x, target_y))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(min_width, min_height)))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn prepare_splash_window_on_main(
+        window: &tauri::WebviewWindow,
+        top_left_x: f64,
+        top_left_y: f64,
+        _size: f64,
+        _primary_height: f64,
+    ) -> Result<(), String> {
+        window
+            .set_position(tauri::LogicalPosition::new(top_left_x, top_left_y))
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn show_splash_window(window: tauri::WebviewWindow) -> Result<(), String> {
+        window.show().map_err(|e| e.to_string())
+    }
+
+    pub async fn move_splash_window_origin(
+        window: tauri::WebviewWindow,
+        top_left_x: f64,
+        top_left_y: f64,
+        _size: f64,
+        _primary_height: f64,
+    ) -> Result<(), String> {
+        window
+            .set_position(tauri::LogicalPosition::new(top_left_x, top_left_y))
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn reveal_main_window_smoothly(
+        window: tauri::WebviewWindow,
+        _duration_ms: u32,
+    ) -> Result<(), String> {
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.set_focus();
+        Ok(())
+    }
+
+    pub async fn ensure_main_window_opaque(_window: tauri::WebviewWindow) {}
+
+    pub fn read_monitors_with_scale_on_main(
+        window: &tauri::WebviewWindow,
+    ) -> ScaledMonitorWorkAreas {
+        let (monitors, primary, primary_height) = read_monitors_on_main(window);
+        let scaled: Vec<(MonitorWorkArea, f64)> = monitors.into_iter().map(|m| (m, 1.0)).collect();
+        let scaled_primary = primary.map(|m| (m, 1.0));
+        (scaled, scaled_primary, primary_height)
+    }
+
+    pub fn mouse_location_logical_on_main(_primary_height: f64) -> Option<(f64, f64)> {
+        None
+    }
+
+    pub fn prepare_tray_popover_window_on_main(
+        _window: &tauri::WebviewWindow,
+        _width: f64,
+        _height: f64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn show_tray_popover_on_main(
+        window: &tauri::WebviewWindow,
+        top_left_x: f64,
+        top_left_y: f64,
+        width: f64,
+        height: f64,
+        _primary_height: f64,
+    ) -> Result<(), String> {
+        window
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_position(tauri::LogicalPosition::new(top_left_x, top_left_y))
+            .map_err(|e| e.to_string())?;
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.set_focus();
+        Ok(())
+    }
+
+    pub async fn resize_tray_popover_height(
+        window: tauri::WebviewWindow,
+        width: f64,
+        height: f64,
+    ) -> Result<(), String> {
+        window
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn activate_and_focus_main_on_main(window: &tauri::WebviewWindow) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 
     pub async fn animate_main_window(
@@ -918,6 +1739,227 @@ mod fallback {
             },
             animated: false,
         })
+    }
+}
+
+pub fn prefers_reduced_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::prefers_reduced_motion()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::prefers_reduced_motion()
+    }
+}
+
+pub fn read_monitors_on_main(
+    window: &tauri::WebviewWindow,
+) -> (Vec<MonitorWorkArea>, Option<MonitorWorkArea>, f64) {
+    #[cfg(target_os = "macos")]
+    {
+        macos::read_monitors_on_main(window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::read_monitors_on_main(window)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn configure_main_window_startup_on_main(
+    window: &tauri::WebviewWindow,
+    target_x: f64,
+    target_y: f64,
+    width: f64,
+    height: f64,
+    min_width: f64,
+    min_height: f64,
+    pinned: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::configure_main_window_startup_on_main(
+            window, target_x, target_y, width, height, min_width, min_height, pinned,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::configure_main_window_startup_on_main(
+            window, target_x, target_y, width, height, min_width, min_height, pinned,
+        )
+    }
+}
+
+pub fn prepare_splash_window_on_main(
+    window: &tauri::WebviewWindow,
+    top_left_x: f64,
+    top_left_y: f64,
+    size: f64,
+    primary_height: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::prepare_splash_window_on_main(window, top_left_x, top_left_y, size, primary_height)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::prepare_splash_window_on_main(
+            window,
+            top_left_x,
+            top_left_y,
+            size,
+            primary_height,
+        )
+    }
+}
+
+pub async fn show_splash_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::show_splash_window(window).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::show_splash_window(window).await
+    }
+}
+
+pub async fn move_splash_window_origin(
+    window: tauri::WebviewWindow,
+    top_left_x: f64,
+    top_left_y: f64,
+    size: f64,
+    primary_height: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::move_splash_window_origin(window, top_left_x, top_left_y, size, primary_height).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::move_splash_window_origin(window, top_left_x, top_left_y, size, primary_height)
+            .await
+    }
+}
+
+pub async fn reveal_main_window_smoothly(
+    window: tauri::WebviewWindow,
+    duration_ms: u32,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::reveal_main_window_smoothly(window, duration_ms).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::reveal_main_window_smoothly(window, duration_ms).await
+    }
+}
+
+pub async fn ensure_main_window_opaque(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        macos::ensure_main_window_opaque(window).await;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::ensure_main_window_opaque(window).await;
+    }
+}
+
+pub fn read_monitors_with_scale_on_main(window: &tauri::WebviewWindow) -> ScaledMonitorWorkAreas {
+    #[cfg(target_os = "macos")]
+    {
+        macos::read_monitors_with_scale_on_main(window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::read_monitors_with_scale_on_main(window)
+    }
+}
+
+pub fn mouse_location_logical_on_main(primary_height: f64) -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::mouse_location_logical_on_main(primary_height)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::mouse_location_logical_on_main(primary_height)
+    }
+}
+
+pub fn prepare_tray_popover_window_on_main(
+    window: &tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::prepare_tray_popover_window_on_main(window, width, height)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::prepare_tray_popover_window_on_main(window, width, height)
+    }
+}
+
+pub fn show_tray_popover_on_main(
+    window: &tauri::WebviewWindow,
+    top_left_x: f64,
+    top_left_y: f64,
+    width: f64,
+    height: f64,
+    primary_height: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::show_tray_popover_on_main(
+            window,
+            top_left_x,
+            top_left_y,
+            width,
+            height,
+            primary_height,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::show_tray_popover_on_main(
+            window,
+            top_left_x,
+            top_left_y,
+            width,
+            height,
+            primary_height,
+        )
+    }
+}
+
+pub async fn resize_tray_popover_height(
+    window: tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::resize_tray_popover_height(window, width, height).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::resize_tray_popover_height(window, width, height).await
+    }
+}
+
+pub fn activate_and_focus_main_on_main(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        macos::activate_and_focus_main_on_main(window);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fallback::activate_and_focus_main_on_main(window);
     }
 }
 

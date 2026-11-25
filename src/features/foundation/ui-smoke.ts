@@ -278,6 +278,13 @@ async function checkReadOnlyRepository() {
   }
   keepHeader.click();
   await waitForUi(() => !!document.querySelector('.local-keep-list .file-row[data-file-path="pnpm-lock.yaml"]'), 'wkwebview-local-keep-expanded');
+
+  // Verify macOS menu bar tray icon exists, synced the live repository snapshot, and hides/restores main cleanly:
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const trayState = await invoke<{ repositories: { name: string; branch: string }[] }>('verify_tray_smoke');
+  if (!trayState.repositories.some((repo) => repo.branch === 'feat/read-proof')) {
+    throw new Error(`Tray state did not sync opened smoke repository: ${JSON.stringify(trayState)}`);
+  }
   const keptLockRow = document.querySelector<HTMLElement>('.local-keep-list .file-row[data-file-path="pnpm-lock.yaml"]')!;
   const normalZoneRect = document.querySelector<HTMLElement>('.changes-list')!.getBoundingClientRect();
   const keptLockRect = keptLockRow.getBoundingClientRect();
@@ -579,7 +586,11 @@ async function checkCPushM4Operations(secret: string) {
 
 // Runs only when the native harness explicitly signals after WebView loading.
 export function registerUiSmoke() {
-  (window as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__ = true;
+  const smokeGlobal = window as {
+    __PICKET_UI_SMOKE__?: boolean;
+    __PICKET_PENDING_SMOKE_EVENT__?: string;
+  };
+  smokeGlobal.__PICKET_UI_SMOKE__ = true;
   const formatError = (error: unknown) => {
     const labels = [...document.querySelectorAll('button')].map((el) => el.getAttribute('aria-label') || el.textContent?.trim()).filter(Boolean).slice(0, 12).join(', ');
     const overlayCount = document.querySelectorAll('.overlay').length;
@@ -588,7 +599,8 @@ export function registerUiSmoke() {
     const base = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error);
     return `${base} [overlays=${overlayCount}, visibility=${document.visibilityState}, dock=${dockStatus}:${dockTitle}, buttons: ${labels}]`;
   };
-  window.addEventListener('picket:foundation-smoke', () => {
+  const runSmoke = () => {
+    delete smokeGlobal.__PICKET_PENDING_SMOKE_EVENT__;
     let closing = false;
     const fail = (error: unknown) => invoke('fail_ui_smoke', { message: formatError(error) });
     void (async () => {
@@ -617,9 +629,11 @@ export function registerUiSmoke() {
         }
       });
     })().catch((error: unknown) => { if (!closing) void fail(error); });
-  }, { once: true });
+  };
+  window.addEventListener('picket:foundation-smoke', runSmoke, { once: true });
 
-  window.addEventListener('picket:foundation-restart-smoke', () => {
+  const runRestartSmoke = () => {
+    delete smokeGlobal.__PICKET_PENDING_SMOKE_EVENT__;
     const fail = (error: unknown) => invoke('fail_ui_smoke', { message: formatError(error) });
     void (async () => {
       const win = getCurrentWindow();
@@ -710,5 +724,17 @@ export function registerUiSmoke() {
       await invoke('verify_restart_smoke');
       await invoke('close_smoke_window');
     })().catch((error: unknown) => { void fail(error); });
-  }, { once: true });
+  };
+  window.addEventListener('picket:foundation-restart-smoke', runRestartSmoke, { once: true });
+
+  // Multi-entry Vite builds split shared chunks, so WKWebView's PageLoadEvent::Finished can fire
+  // before the module graph finishes executing `registerUiSmoke()`. Drain any pending signal now.
+  const pendingEvent = smokeGlobal.__PICKET_PENDING_SMOKE_EVENT__;
+  if (pendingEvent === 'picket:foundation-smoke') {
+    window.removeEventListener('picket:foundation-smoke', runSmoke);
+    runSmoke();
+  } else if (pendingEvent === 'picket:foundation-restart-smoke') {
+    window.removeEventListener('picket:foundation-restart-smoke', runRestartSmoke);
+    runRestartSmoke();
+  }
 }

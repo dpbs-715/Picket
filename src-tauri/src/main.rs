@@ -4,6 +4,8 @@ mod foundation;
 mod i18n;
 mod models;
 mod repository;
+mod startup_splash;
+mod tray;
 mod updater;
 mod window_motion;
 
@@ -1053,11 +1055,22 @@ fn main() {
         .manage(PiSupervisor::default())
         .manage(CPushCoordinator::default())
         .manage(UpdateManager::default())
+        .manage(startup_splash::StartupSplashCoordinator::default())
+        .manage(tray::TrayCoordinator::default())
         .manage(DesktopLifecycle::with_flags(
             std::env::args().any(|arg| arg == "--foundation-ui-smoke"),
             std::env::args().any(|arg| arg == "--foundation-restart-smoke"),
             std::env::args().any(|arg| arg == "--keep-smoke-repo-once"),
         ))
+        .setup(|app| {
+            let ui_smoke = app.state::<DesktopLifecycle>().ui_smoke;
+            let data_dir = picket_data_dir().ok();
+            app.state::<startup_splash::StartupSplashCoordinator>()
+                .setup_startup(app.handle(), ui_smoke, data_dir.as_deref());
+            app.state::<tray::TrayCoordinator>()
+                .setup_tray(app.handle(), ui_smoke);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             run_pi_probe,
             cancel_pi_probe,
@@ -1065,8 +1078,20 @@ fn main() {
             close_smoke_window,
             read_smoke_window_spaces_state,
             fail_ui_smoke,
+            startup_splash::splash_ready,
+            startup_splash::notify_workbench_ready,
+            startup_splash::run_splash_jump,
+            startup_splash::complete_splash,
             window_motion::set_window_pinned,
             window_motion::animate_window_frame,
+            tray::read_tray_state,
+            tray::sync_tray_state,
+            tray::request_tray_refresh,
+            tray::resize_tray_popover,
+            tray::hide_tray_popover,
+            tray::tray_open_main_window,
+            tray::tray_quit_app,
+            tray::verify_tray_smoke,
             get_update_status,
             check_for_update,
             install_update,
@@ -1109,7 +1134,8 @@ fn main() {
             verify_repository_persistence_smoke
         ])
         .on_page_load(|window, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Finished
+            if window.label() == "main"
+                && payload.event() == tauri::webview::PageLoadEvent::Finished
                 && window.state::<DesktopLifecycle>().start_ui_smoke()
             {
                 let event_name = if window.state::<DesktopLifecycle>().restart_smoke {
@@ -1117,20 +1143,38 @@ fn main() {
                 } else {
                     "picket:foundation-smoke"
                 };
-                if let Err(error) =
-                    window.eval(format!("window.dispatchEvent(new Event('{event_name}'))"))
-                {
+                if let Err(error) = window.eval(format!(
+                    "window.__PICKET_PENDING_SMOKE_EVENT__ = '{event_name}'; window.dispatchEvent(new Event('{event_name}'));"
+                )) {
                     eprintln!("Cannot start UI smoke: {error}");
                     window.state::<DesktopLifecycle>().fail();
                     exit_after_cleanup(window.app_handle());
                 }
             }
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match (window.label(), event) {
+            ("main", tauri::WindowEvent::CloseRequested { api, .. }) => {
                 api.prevent_close();
-                exit_after_cleanup(window.app_handle());
+                if window.state::<DesktopLifecycle>().ui_smoke {
+                    exit_after_cleanup(window.app_handle());
+                } else {
+                    window
+                        .state::<tray::TrayCoordinator>()
+                        .hide_main_to_tray_on_main(window.app_handle());
+                }
             }
+            (tray::TRAY_POPOVER_LABEL, tauri::WindowEvent::Focused(false)) => {
+                window
+                    .state::<tray::TrayCoordinator>()
+                    .handle_popover_blur_on_main(window.app_handle());
+            }
+            (tray::TRAY_POPOVER_LABEL, tauri::WindowEvent::CloseRequested { api, .. }) => {
+                api.prevent_close();
+                window
+                    .state::<tray::TrayCoordinator>()
+                    .hide_popover_on_main(window.app_handle());
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("Cannot initialize Picket");
@@ -1142,12 +1186,13 @@ fn main() {
             exit_after_cleanup(app);
         }
         #[cfg(target_os = "macos")]
-        tauri::RunEvent::Reopen { .. } => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+        tauri::RunEvent::Reopen { .. }
+            if app
+                .state::<startup_splash::StartupSplashCoordinator>()
+                .may_reopen_main() =>
+        {
+            app.state::<tray::TrayCoordinator>()
+                .restore_main_from_tray_on_main(app, None);
         }
         _ => {}
     });

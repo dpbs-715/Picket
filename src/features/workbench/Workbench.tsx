@@ -7,12 +7,18 @@ import {
 } from '../../../shared/workbench-persistence-protocol';
 import { initialBrowserUpdateSnapshot } from '../../desktop/updater';
 import {
+  subscribeTrayMainAction,
+  subscribeTrayRefreshRequested,
+  syncTrayState,
+} from '../../desktop/tray';
+import {
   clampCompactHeight,
   desktopWindowController,
   normalizeCompactWidth,
   normalizeFullWindowSize,
   type WindowController,
 } from '../../desktop/window';
+import { buildTrayStateSnapshot } from '../tray/trayModel';
 import { getMessages, I18nProvider } from '../../i18n';
 import { Icon, IconButton } from '../../ui/controls';
 import {
@@ -125,9 +131,13 @@ export function Workbench({
   const pendingModeFocusRef = useRef<PendingModeFocus | null>(null);
   const previousSessionStatusRef = useRef<Record<string, Worktree['sessionStatus']> | null>(null);
   const [hydrated, setHydrated] = useState(() => !!initialState || !backend.loadWorkbenchState);
+  const workbenchReadyNotifiedRef = useRef(false);
   const saveRevision = useRef(0);
   const lastPersistedKey = useRef<string | null>(null);
   const lastStructuralKey = useRef<string | null>(null);
+  const lastTraySnapshotKey = useRef<string | null>(null);
+  const trayActionHandlerRef = useRef<(action: import('../../../shared/tray-protocol').TrayMainWindowAction) => void>(() => {});
+  const trayRefreshHandlerRef = useRef<() => void>(() => {});
   const latestState = useRef(state);
   latestState.current = state;
   const commitPanelRef = useRef<HTMLDivElement>(null);
@@ -330,6 +340,18 @@ export function Workbench({
       setPinBusy(false);
     }
   }
+
+  useLayoutEffect(() => {
+    if (!hydrated || !windowController.isDesktopWindow || workbenchReadyNotifiedRef.current) return;
+    // Defer by one short macrotask (rather than rAF, which WebKit can throttle in hidden windows)
+    // so the hydrated DOM has flushed before signaling the startup splash to leap and reveal.
+    const timer = window.setTimeout(() => {
+      if (workbenchReadyNotifiedRef.current) return;
+      workbenchReadyNotifiedRef.current = true;
+      void windowController.notifyWorkbenchReady?.();
+    }, 16);
+    return () => window.clearTimeout(timer);
+  }, [hydrated, windowController]);
 
   useLayoutEffect(() => {
     if (typeof document !== 'undefined') {
@@ -621,6 +643,85 @@ export function Workbench({
     window.addEventListener('focus', refresh);
     return () => window.removeEventListener('focus', refresh);
   }, [backend, worktree?.worktreeId, worktree?.scopeVersion]);
+
+  const anyRepoRefreshing = pending.some((key) => key.endsWith(':refresh'));
+  const traySnapshot = buildTrayStateSnapshot(state, {
+    hasUpdate,
+    refreshing: anyRepoRefreshing,
+  });
+  const traySnapshotKey = JSON.stringify(traySnapshot);
+
+  useEffect(() => {
+    if (!hydrated || initialState || !windowController.isDesktopWindow) return;
+    if (traySnapshotKey === lastTraySnapshotKey.current) return;
+    lastTraySnapshotKey.current = traySnapshotKey;
+    void syncTrayState(traySnapshot).catch(() => {});
+  }, [hydrated, initialState, traySnapshot, traySnapshotKey, windowController.isDesktopWindow]);
+
+  trayRefreshHandlerRef.current = () => {
+    if (!backend.repositoryReadsAvailable || inFlight.current.has('global:openRepository')) return;
+    const current = latestState.current;
+    const seenRepos = new Set<string>();
+    const activeTree = current.worktrees.find((tree) => tree.worktreeId === current.activeWorktreeId);
+    const orderedTrees = activeTree
+      ? [activeTree, ...current.worktrees.filter((tree) => tree.worktreeId !== activeTree.worktreeId)]
+      : current.worktrees;
+    for (const tree of orderedTrees) {
+      if (seenRepos.has(tree.repositoryId)) continue;
+      seenRepos.add(tree.repositoryId);
+      if (inFlight.current.has(`${tree.repositoryId}:refresh`) || inFlight.current.has(`${tree.repositoryId}:write`)) {
+        continue;
+      }
+      void execute(
+        { kind: 'refresh', target: targetOf(tree), requestId: crypto.randomUUID(), locale: current.locale },
+        true,
+      );
+    }
+  };
+
+  trayActionHandlerRef.current = (action) => {
+    if (action.kind === 'openSettings') {
+      if (activeSurfaceRef.current === 'compact') {
+        void openSettingsFromCompact({ focusModels: false });
+      } else {
+        openSettingsFromWorkbench(false);
+      }
+      return;
+    }
+    if (action.kind === 'focusWorktree') {
+      const targetTree = latestState.current.worktrees.find((tree) => tree.worktreeId === action.worktreeId);
+      if (!targetTree) return;
+      if (settingsSessionRef.current?.returnTo === 'workbench') {
+        settingsSessionRef.current = null;
+        setSettingsSession(null);
+      }
+      setModelOverlay({ kind: 'closed' });
+      dispatch({ type: 'switch', worktreeId: targetTree.worktreeId, expand: action.openDock || undefined });
+      if (action.openDock && activeSurfaceRef.current === 'compact') {
+        void expandFromCompact('dock');
+      }
+      if (backend.repositoryReadsAvailable) {
+        void execute(
+          { kind: 'refresh', target: targetOf(targetTree), requestId: crypto.randomUUID(), locale: latestState.current.locale },
+          true,
+        );
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!windowController.isDesktopWindow || initialState) return;
+    const unsubRefresh = subscribeTrayRefreshRequested(() => {
+      trayRefreshHandlerRef.current();
+    });
+    const unsubAction = subscribeTrayMainAction((action) => {
+      trayActionHandlerRef.current(action);
+    });
+    return () => {
+      unsubRefresh();
+      unsubAction();
+    };
+  }, [initialState, windowController.isDesktopWindow]);
 
   function notify(text: string, key = viewKey, showModelSettings = false) {
     setFeedback((previous) => ({
@@ -1276,6 +1377,10 @@ export function Workbench({
     return () => observer.disconnect();
   }, [presentation.mountWorkbenchContent, syncTabIndicator]);
 
+  if (!hydrated && windowController.isDesktopWindow && !initialState) {
+    return <div className="workbench-hydrating" aria-busy="true" />;
+  }
+
   return <I18nProvider locale={state.locale}>
     <MotionRoot>
     <main
@@ -1432,7 +1537,7 @@ export function Workbench({
                   )}
                 </button>
               </div></div>
-              <Collapse open={showPromptBox}>
+              <Collapse key={`prompt:${viewKey}`} open={showPromptBox}>
                 <div className="prompt-box">
                   <textarea
                     ref={textareaRef}

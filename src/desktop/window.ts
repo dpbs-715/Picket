@@ -106,6 +106,7 @@ export interface WindowController {
   setPinned(pinned: boolean, locale?: AppLocale): Promise<boolean>;
   applyWindowMode(options: ApplyWindowModeOptions): Promise<AppliedWindowGeometry>;
   adjustCompactHeight(height: number, locale?: AppLocale): Promise<void>;
+  notifyWorkbenchReady?(): Promise<void>;
   subscribeGeometry?(listener: (snapshot: { position: WindowPosition; size: WindowSize }) => void): () => void;
   notifyBackgroundAttention(params: { title: string; body: string }): Promise<boolean>;
   subscribeNotificationTap?(onTap: () => void): () => void;
@@ -448,6 +449,10 @@ export function createDesktopWindowController(): WindowController {
       }
       await runProgrammatic(() => adjustCompactHeightWith(tauriEnvironment, height));
     },
+    async notifyWorkbenchReady() {
+      if (!isTauri()) return;
+      await invoke('notify_workbench_ready').catch(() => {});
+    },
     subscribeGeometry(listener) {
       if (!isTauri()) return () => {};
       const win = getCurrentWindow();
@@ -510,7 +515,9 @@ export function createDesktopWindowController(): WindowController {
       let cleanup: (() => void) | undefined;
       void onAction(() => {
         if (disposed) return;
-        void getCurrentWindow().setFocus().catch(() => {});
+        void invoke('tray_open_main_window', { action: { kind: 'show' } }).catch(() => {
+          void getCurrentWindow().setFocus().catch(() => {});
+        });
         onTap();
       })
         .then((listener) => {

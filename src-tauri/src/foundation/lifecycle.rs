@@ -84,6 +84,7 @@ pub async fn cleanup_for_restart(app: &tauri::AppHandle) {
     app.state::<DesktopLifecycle>()
         .exiting
         .store(true, Ordering::SeqCst);
+    app.state::<crate::tray::TrayCoordinator>().teardown(app);
     let supervisor = app.state::<PiSupervisor>().inner().clone();
     let repositories = app
         .state::<crate::repository::RepositoryStore>()
@@ -119,6 +120,7 @@ pub fn exit_after_cleanup(app: &tauri::AppHandle) {
         .state::<crate::repository::RepositoryStore>()
         .inner()
         .clone();
+    app.state::<crate::tray::TrayCoordinator>().teardown(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         repositories.shutdown().await;
