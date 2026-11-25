@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { describe, expect, it } from 'vitest';
 import {
+  COMPACT_DRAWER_ANIMATION_MS,
+  WINDOW_MODE_ANIMATION_MS,
   adjustCompactHeightWith,
   applyWindowModeWith,
   clampCompactHeight,
@@ -9,6 +11,7 @@ import {
   normalizeCompactWidth,
   resolveVisibleWindowPosition,
   setWindowPinned,
+  type AnimateWindowFrameRequest,
   type MonitorWorkArea,
   type NativeWindowEnvironment,
 } from './window';
@@ -201,6 +204,92 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
     // Compact height is clamped safely within bounds (82..280):
     expect(clampCompactHeight(40)).toBe(82);
     expect(clampCompactHeight(300)).toBe(280);
+  });
+
+  it('delegates smooth frame transitions to native animateFrame and respects instant & reduced-motion flags', async () => {
+    const requests: AnimateWindowFrameRequest[] = [];
+    let reduced = false;
+    const baseMock = createMockWindowEnv({
+      monitors: [{ x: 0, y: 25, width: 1512, height: 945 }],
+      primary: { x: 0, y: 25, width: 1512, height: 945 },
+    });
+    const animatedEnv: NativeWindowEnvironment = {
+      ...baseMock.env,
+      prefersReducedMotion: () => reduced,
+      animateFrame: async (req) => {
+        requests.push(req);
+        return {
+          pinned: req.pinned ?? true,
+          previousPosition: { x: 200, y: 120 },
+          previousSize: { width: 400, height: 700 },
+          position: { x: req.targetX ?? 200, y: req.targetY ?? 120 },
+          size: { width: req.width ?? 400, height: req.height },
+          animated: req.durationMs > 0,
+        };
+      },
+    };
+
+    // Interactive collapse animates smoothly with top-left anchoring:
+    const collapsed = await applyWindowModeWith(animatedEnv, {
+      pinned: true,
+      compactMode: true,
+      compactHeight: 86,
+      fullSize: { width: 400, height: 700 },
+      placement: 'anchorTopLeft',
+    });
+    expect(collapsed.size).toEqual({ width: 400, height: 86 });
+    expect(requests.at(-1)).toMatchObject({
+      width: 400,
+      height: 86,
+      minWidth: 400,
+      minHeight: 82,
+      placement: 'anchorTopLeft',
+      durationMs: WINDOW_MODE_ANIMATION_MS,
+      pinned: true,
+    });
+
+    // Startup hydration with `instant: true` uses durationMs: 0 and clamps off-screen coordinates:
+    await applyWindowModeWith(animatedEnv, {
+      pinned: false,
+      compactMode: false,
+      fullSize: { width: 400, height: 700 },
+      placement: 'restorePosition',
+      targetPosition: { x: 2400, y: -100 },
+      instant: true,
+    });
+    expect(requests.at(-1)).toMatchObject({
+      width: 400,
+      height: 700,
+      minWidth: 400,
+      minHeight: 480,
+      placement: 'restorePosition',
+      targetX: 1112,
+      targetY: 25,
+      durationMs: 0,
+      pinned: false,
+    });
+
+    // Compact drawer height adjustment animates without overriding width or pin state:
+    await adjustCompactHeightWith(animatedEnv, 240);
+    expect(requests.at(-1)).toEqual({
+      height: 240,
+      minWidth: 400,
+      minHeight: 82,
+      placement: 'anchorTopLeft',
+      durationMs: COMPACT_DRAWER_ANIMATION_MS,
+    });
+
+    // Reduced motion forces durationMs: 0 for both mode switch and compact drawer resize:
+    reduced = true;
+    await adjustCompactHeightWith(animatedEnv, 86);
+    expect(requests.at(-1)?.durationMs).toBe(0);
+    await applyWindowModeWith(animatedEnv, {
+      pinned: false,
+      compactMode: false,
+      fullSize: { width: 400, height: 700 },
+      placement: 'anchorTopLeft',
+    });
+    expect(requests.at(-1)?.durationMs).toBe(0);
   });
 
   it('reports explicit unsupported errors instead of faking native window operations in browser preview', async () => {

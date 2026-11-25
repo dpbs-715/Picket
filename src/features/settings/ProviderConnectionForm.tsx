@@ -8,7 +8,8 @@ import type {
   UpdateProviderConnectionInput,
 } from '../../../shared/model-protocol';
 import { useI18n } from '../../i18n';
-import { HelpTip, Icon, IconButton, Overlay } from '../../ui/controls';
+import { HelpTip, Icon, IconButton, Overlay, RotatingChevron, type OverlayVariant } from '../../ui/controls';
+import { Collapse, MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../ui/motion';
 import {
   apiFormats,
   editProviderConnectionInput,
@@ -48,6 +49,7 @@ function parseOptionalPositiveInt(raw: string): number | 'invalid' | undefined {
 type CreateProps = {
   mode: 'create';
   keepActiveModel?: boolean;
+  overlayVariant?: OverlayVariant;
   onClose(): void;
   onCreated(reply: ProviderSaveReply): void;
   test(input: TestConnectionInput): Promise<string>;
@@ -56,6 +58,7 @@ type CreateProps = {
 
 type EditProps = {
   mode: 'edit';
+  overlayVariant?: OverlayVariant;
   connection: ProviderConnection;
   childModels: readonly ModelConfiguration[];
   onClose(): void;
@@ -77,12 +80,14 @@ export function ProviderConnectionForm(props: ProviderConnectionFormProps) {
 
 function CreateProviderConnectionForm({
   keepActiveModel,
+  overlayVariant = 'drill',
   onClose,
   onCreated,
   test,
   create,
 }: CreateProps) {
   const { locale, t } = useI18n();
+  const instantMotion = useInstantMotion();
   const apiKeyInputId = useId();
   const [input, setInput] = useState<CreateProviderConnectionInput>(() =>
     newProviderConnectionInput('anthropic', locale),
@@ -234,7 +239,7 @@ function CreateProviderConnectionForm({
         : t.modelForm.saveAndUse;
 
   return (
-    <Overlay title={t.modelForm.addProviderTitle} onClose={onClose}>
+    <Overlay title={t.modelForm.addProviderTitle} onClose={onClose} variant={overlayVariant}>
       <form
         className="model-form scroll-area"
         data-form-mode="create-provider"
@@ -340,14 +345,14 @@ function CreateProviderConnectionForm({
           aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((open) => !open)}
         >
-          <Icon name={advancedOpen ? 'down' : 'right'} />
+          <RotatingChevron open={advancedOpen} />
           <span>{t.modelForm.advancedToggle}</span>
           <span className="muted small mono truncate">
             {t.apiFormats[effectiveFormat].short}
           </span>
         </button>
 
-        {advancedOpen && (
+        <Collapse open={advancedOpen}>
           <div className="advanced-fields">
             <label>
               {t.modelForm.apiFormatLabel}
@@ -404,9 +409,20 @@ function CreateProviderConnectionForm({
               </label>
             </div>
           </div>
-        )}
+        </Collapse>
 
-        {result && <p role="status" className={`form-result ${result.ok ? 'success' : 'danger'}`}>{result.text}</p>}
+        {result && (
+          <m.p
+            key={result.text}
+            role="status"
+            className={`form-result ${result.ok ? 'success' : 'danger'}`}
+            initial={instantMotion ? false : { opacity: 0, y: 3 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+          >
+            {result.text}
+          </m.p>
+        )}
         <div className="form-actions">
           <button
             type="button"
@@ -428,6 +444,7 @@ function CreateProviderConnectionForm({
 }
 
 function EditProviderConnectionForm({
+  overlayVariant = 'drill',
   connection,
   childModels,
   onClose,
@@ -438,6 +455,7 @@ function EditProviderConnectionForm({
   revealApiKey,
 }: EditProps) {
   const { locale, t } = useI18n();
+  const instantMotion = useInstantMotion();
   const apiKeyInputId = useId();
   const [input, setInput] = useState<UpdateProviderConnectionInput>(() =>
     editProviderConnectionInput(connection),
@@ -582,7 +600,7 @@ function EditProviderConnectionForm({
   }
 
   return (
-    <Overlay title={t.modelForm.editConnectionTitle} onClose={() => { clearRevealedKey(); onClose(); }}>
+    <Overlay title={t.modelForm.editConnectionTitle} onClose={() => { clearRevealedKey(); onClose(); }} variant={overlayVariant}>
       <form
         className="model-form scroll-area"
         data-form-mode="edit-provider"
@@ -657,9 +675,16 @@ function EditProviderConnectionForm({
               )}
             </div>
             {revealedApiKey !== null && (
-              <div className="revealed-api-key mono" role="region" aria-label={t.modelForm.revealedKeyReadonlyLabel}>
+              <m.div
+                className="revealed-api-key mono"
+                role="region"
+                aria-label={t.modelForm.revealedKeyReadonlyLabel}
+                initial={instantMotion ? false : { opacity: 0, y: -3 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+              >
                 {revealedApiKey}
-              </div>
+              </m.div>
             )}
             {revealNotice && revealedApiKey === null && (
               <p className={`field-inline-note ${revealNotice.danger ? 'danger' : 'muted'}`}>{revealNotice.text}</p>
@@ -671,7 +696,18 @@ function EditProviderConnectionForm({
         )}
 
         {!canTestConnection && <p className="muted help">{t.modelForm.testNeedsModelHint}</p>}
-        {result && <p role="status" className={`form-result ${result.ok ? 'success' : 'danger'}`}>{result.text}</p>}
+        {result && (
+          <m.p
+            key={result.text}
+            role="status"
+            className={`form-result ${result.ok ? 'success' : 'danger'}`}
+            initial={instantMotion ? false : { opacity: 0, y: 3 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+          >
+            {result.text}
+          </m.p>
+        )}
         <div className="form-actions">
           <button
             type="button"

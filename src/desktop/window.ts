@@ -1,4 +1,4 @@
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { availableMonitors, getCurrentWindow, primaryMonitor, type Monitor } from '@tauri-apps/api/window';
 import { isPermissionGranted, onAction, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
@@ -9,6 +9,36 @@ import {
   type WindowSize,
 } from '../../shared/workbench-persistence-protocol';
 import { getMessages } from '../i18n/messages';
+
+export const WINDOW_MODE_ANIMATION_MS = 185;
+export const COMPACT_DRAWER_ANIMATION_MS = 145;
+
+export interface AnimateWindowFrameRequest {
+  width?: number;
+  height: number;
+  minWidth: number;
+  minHeight: number;
+  placement: 'anchorTopLeft' | 'restorePosition';
+  targetX?: number;
+  targetY?: number;
+  durationMs: number;
+  pinned?: boolean;
+}
+
+export interface AnimateWindowFrameReply {
+  pinned: boolean;
+  previousPosition: WindowPosition;
+  previousSize: WindowSize;
+  position: WindowPosition;
+  size: WindowSize;
+  animated: boolean;
+}
+
+export function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
 
 export interface MonitorWorkArea {
   x: number;
@@ -33,6 +63,8 @@ export interface ApplyWindowModeOptions {
   fullSize: WindowSize;
   placement: 'anchorTopLeft' | 'restorePosition';
   targetPosition?: WindowPosition;
+  /** Skip native frame transition (e.g. cold startup hydration). */
+  instant?: boolean;
   locale?: AppLocale;
 }
 
@@ -62,6 +94,8 @@ export interface NativeWindowHandle {
 export interface NativeWindowEnvironment {
   window(): NativeWindowHandle;
   monitors(): Promise<{ available: MonitorWorkArea[]; primary?: MonitorWorkArea }>;
+  animateFrame?(request: AnimateWindowFrameRequest): Promise<AnimateWindowFrameReply>;
+  prefersReducedMotion?(): boolean;
 }
 
 export interface WindowController {
@@ -163,6 +197,8 @@ const tauriEnvironment: NativeWindowEnvironment = {
       primary: primary ? monitorToLogicalWorkArea(primary) : undefined,
     };
   },
+  animateFrame: (request) => invoke<AnimateWindowFrameReply>('animate_window_frame', { request }),
+  prefersReducedMotion,
 };
 
 export async function readWindowSnapshotWith(env: NativeWindowEnvironment): Promise<WindowGeometrySnapshot> {
@@ -194,6 +230,54 @@ export async function applyWindowModeWith(
   env: NativeWindowEnvironment,
   options: ApplyWindowModeOptions,
 ): Promise<AppliedWindowGeometry> {
+  if (env.animateFrame) {
+    const targetSize: WindowSize = options.compactMode
+      ? {
+          width: normalizeCompactWidth(options.compactWidth),
+          height: clampCompactHeight(options.compactHeight ?? WINDOW_DIMENSIONS.compactDefaultHeight),
+        }
+      : normalizeFullWindowSize(options.fullSize);
+    const minSize: WindowSize = options.compactMode
+      ? { width: WINDOW_DIMENSIONS.compactWidth, height: WINDOW_DIMENSIONS.compactMinHeight }
+      : { width: WINDOW_DIMENSIONS.minFullWidth, height: WINDOW_DIMENSIONS.minFullHeight };
+    let placement: 'anchorTopLeft' | 'restorePosition' = options.placement;
+    let targetX: number | undefined;
+    let targetY: number | undefined;
+    if (options.placement === 'restorePosition') {
+      if (options.targetPosition) {
+        const { available, primary } = await env.monitors();
+        const visible = resolveVisibleWindowPosition(options.targetPosition, targetSize, available, primary);
+        if (visible) {
+          targetX = visible.x;
+          targetY = visible.y;
+        } else {
+          placement = 'anchorTopLeft';
+        }
+      } else {
+        placement = 'anchorTopLeft';
+      }
+    }
+    const reduced = env.prefersReducedMotion ? env.prefersReducedMotion() : prefersReducedMotion();
+    const durationMs = options.instant || reduced ? 0 : WINDOW_MODE_ANIMATION_MS;
+    const reply = await env.animateFrame({
+      width: targetSize.width,
+      height: targetSize.height,
+      minWidth: minSize.width,
+      minHeight: minSize.height,
+      placement,
+      ...(targetX !== undefined && targetY !== undefined ? { targetX, targetY } : {}),
+      durationMs,
+      pinned: options.pinned,
+    });
+    return {
+      pinned: reply.pinned,
+      previousPosition: reply.previousPosition,
+      previousSize: reply.previousSize,
+      position: reply.position,
+      size: reply.size,
+    };
+  }
+
   const win = env.window();
   const [beforeScaleRaw, beforeOuterPos, beforeInnerSize] = await Promise.all([
     win.scaleFactor(),
@@ -271,8 +355,19 @@ export async function adjustCompactHeightWith(
   env: NativeWindowEnvironment,
   height: number,
 ): Promise<void> {
-  const win = env.window();
   const targetHeight = clampCompactHeight(height);
+  if (env.animateFrame) {
+    const reduced = env.prefersReducedMotion ? env.prefersReducedMotion() : prefersReducedMotion();
+    await env.animateFrame({
+      height: targetHeight,
+      minWidth: WINDOW_DIMENSIONS.compactWidth,
+      minHeight: WINDOW_DIMENSIONS.compactMinHeight,
+      placement: 'anchorTopLeft',
+      durationMs: reduced ? 0 : COMPACT_DRAWER_ANIMATION_MS,
+    });
+    return;
+  }
+  const win = env.window();
   const [scaleRaw, beforeOuterPos, beforeInnerSize] = await Promise.all([
     win.scaleFactor(),
     win.outerPosition(),

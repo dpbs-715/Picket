@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ModelSaveReply, SaveModelInput, TestConnectionInput } from '../../../shared/model-protocol';
 import { useI18n } from '../../i18n';
-import { HelpTip, Icon, Overlay } from '../../ui/controls';
+import { HelpTip, Icon, Overlay, RotatingChevron, type OverlayVariant } from '../../ui/controls';
+import { Collapse, MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../ui/motion';
 import {
   apiFormats,
   editModelEntryInput,
@@ -23,6 +24,7 @@ function parseOptionalPositiveInt(raw: string): number | 'invalid' | undefined {
 }
 
 interface Props {
+  overlayVariant?: OverlayVariant;
   connection: ProviderConnection;
   initialModel?: ModelConfiguration;
   onClose(): void;
@@ -32,6 +34,7 @@ interface Props {
 }
 
 export function ModelEntryForm({
+  overlayVariant = 'drill',
   connection,
   initialModel,
   onClose,
@@ -40,6 +43,7 @@ export function ModelEntryForm({
   save,
 }: Props) {
   const { locale, t } = useI18n();
+  const instantMotion = useInstantMotion();
   const isEditing = !!initialModel;
   const provider = providerFor(connection.provider);
 
@@ -190,7 +194,7 @@ export function ModelEntryForm({
         : t.modelForm.saveModel;
 
   return (
-    <Overlay title={isEditing ? t.modelForm.editModelTitle : t.modelForm.addModelTitle} onClose={onClose}>
+    <Overlay title={isEditing ? t.modelForm.editModelTitle : t.modelForm.addModelTitle} onClose={onClose} variant={overlayVariant}>
       <form
         className="model-form scroll-area"
         data-form-mode={isEditing ? 'edit-model' : 'add-model'}
@@ -242,14 +246,14 @@ export function ModelEntryForm({
           aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((open) => !open)}
         >
-          <Icon name={advancedOpen ? 'down' : 'right'} />
+          <RotatingChevron open={advancedOpen} />
           <span>{t.modelForm.advancedToggle}</span>
           <span className="muted small mono truncate">
             {t.apiFormats[effectiveFormat].short}
           </span>
         </button>
 
-        {advancedOpen && (
+        <Collapse open={advancedOpen}>
           <div className="advanced-fields">
             <label>
               {t.modelForm.apiFormatLabel}
@@ -306,9 +310,20 @@ export function ModelEntryForm({
               </label>
             </div>
           </div>
-        )}
+        </Collapse>
 
-        {result && <p role="status" className={`form-result ${result.ok ? 'success' : 'danger'}`}>{result.text}</p>}
+        {result && (
+          <m.p
+            key={result.text}
+            role="status"
+            className={`form-result ${result.ok ? 'success' : 'danger'}`}
+            initial={instantMotion ? false : { opacity: 0, y: 3 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+          >
+            {result.text}
+          </m.p>
+        )}
         <div className="form-actions">
           <button
             type="button"

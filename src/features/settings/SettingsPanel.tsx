@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
 import type { UpdateStateSnapshot } from '../../../shared/update-protocol';
 import { LANGUAGE_OPTIONS, useI18n } from '../../i18n';
-import { HelpTip, Icon, IconButton, Overlay } from '../../ui/controls';
+import { HelpTip, Icon, IconButton, Overlay, RotatingChevron, type OverlayVariant } from '../../ui/controls';
+import { Collapse, MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../ui/motion';
 import { editors } from '../workbench/state/workbench';
 import type { EditorId } from '../workbench/state/workbench';
 import { formatTokenCount, providerFor, resolveDefaultTokenLimits } from './modelProviders';
@@ -36,6 +37,7 @@ interface Props {
   onOpenReleasePage?(): void;
   onClose(): void;
   closeDisabled?: boolean;
+  overlayVariant?: OverlayVariant;
   error?: string;
   focusModels?: boolean;
 }
@@ -46,6 +48,7 @@ function formatMegabytes(bytes: number): string {
 
 export function SettingsPanel(props: Props) {
   const { t } = useI18n();
+  const instantMotion = useInstantMotion();
   const modelsSectionRef = useRef<HTMLElement>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -75,7 +78,13 @@ export function SettingsPanel(props: Props) {
   }
 
   return (
-    <Overlay title={t.settings.title} onClose={props.onClose} covered={props.covered} closeDisabled={props.closeDisabled}>
+    <Overlay
+      title={t.settings.title}
+      onClose={props.onClose}
+      covered={props.covered}
+      closeDisabled={props.closeDisabled}
+      variant={props.overlayVariant}
+    >
       <div className="settings-content scroll-area">
         <section>
           <div className="section-heading">
@@ -188,7 +197,7 @@ export function SettingsPanel(props: Props) {
                         aria-label={t.settings.toggleConnectionLabel(conn.name, isExpanded)}
                         onClick={() => toggleConnection(conn.id)}
                       >
-                        <Icon name={isExpanded ? 'down' : 'right'} />
+                        <RotatingChevron open={isExpanded} />
                         <span className="provider-card-title-group min-width-zero">
                           <strong className="truncate">{conn.name}</strong>
                           <span className="provider-card-subline">
@@ -224,7 +233,7 @@ export function SettingsPanel(props: Props) {
                       </div>
                     </div>
 
-                    {confirmingDelete && (
+                    <Collapse open={confirmingDelete}>
                       <div className="provider-delete-confirm" role="alertdialog" aria-label={t.settings.confirmDeleteConnection}>
                         <p className="help">{t.settings.deleteConnectionConfirm(conn.name, childModels.length, includesActive)}</p>
                         <div className="row provider-delete-actions">
@@ -243,9 +252,9 @@ export function SettingsPanel(props: Props) {
                           </button>
                         </div>
                       </div>
-                    )}
+                    </Collapse>
 
-                    {isExpanded && (
+                    <Collapse open={isExpanded}>
                       <div className="provider-card-body">
                         {childModels.length === 0 ? (
                           <p className="muted help provider-empty-note">{t.settings.emptyConnectionHint}</p>
@@ -328,7 +337,7 @@ export function SettingsPanel(props: Props) {
                           <span>{t.settings.addChildModel}</span>
                         </button>
                       </div>
-                    )}
+                    </Collapse>
                   </div>
                 );
               })}
@@ -360,104 +369,113 @@ export function SettingsPanel(props: Props) {
               )}
             </div>
 
-            {props.updateState.phase === 'upToDate' && (
-              <div className="update-card update-card-uptodate" role="status">
-                <Icon name="check" className="success" />
-                <span>{t.settings.updates.upToDate}</span>
-              </div>
-            )}
-
-            {props.updateState.phase === 'available' && props.updateState.availableVersion && (
-              <div className="update-card" role="region" aria-label={t.settings.updates.availableTitle(props.updateState.availableVersion)}>
-                <div className="row update-card-title">
-                  <strong>{t.settings.updates.availableTitle(props.updateState.availableVersion)}</strong>
-                </div>
-                {props.updateState.releaseNotes && (
-                  <p className="muted update-notes">{props.updateState.releaseNotes}</p>
+            {props.updateState.phase !== 'idle' && props.updateState.phase !== 'checking' && (
+              <m.div
+                key={`update-card:${props.updateState.phase}:${props.updateState.availableVersion ?? ''}`}
+                initial={instantMotion ? false : { opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+              >
+                {props.updateState.phase === 'upToDate' && (
+                  <div className="update-card update-card-uptodate" role="status">
+                    <Icon name="check" className="success" />
+                    <span>{t.settings.updates.upToDate}</span>
+                  </div>
                 )}
-                {props.updateState.installBlocker !== 'none' && (
-                  <p className="help muted">
-                    {t.settings.updates.blockers[props.updateState.installBlocker]}
-                  </p>
-                )}
-                {props.updateState.installBlocker === 'none' && props.gitBusyForUpdate && (
-                  <p className="help warning">{t.settings.updates.gitBusyNote}</p>
-                )}
-                {props.updateState.error && (
-                  <p className="help danger" role="alert">{props.updateState.error}</p>
-                )}
-                <div className="row update-actions">
-                  {props.updateState.canInstall && props.onInstallUpdate && (
-                    <button
-                      type="button"
-                      className="primary compact"
-                      disabled={props.gitBusyForUpdate}
-                      onClick={() => props.onInstallUpdate?.(props.updateState!.availableVersion!)}
-                    >
-                      {t.settings.updates.updateAndRestart}
-                    </button>
-                  )}
-                  {props.onOpenReleasePage && (
-                    <button type="button" className="secondary compact" onClick={props.onOpenReleasePage}>
-                      {t.settings.updates.downloadFromGithub}
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
 
-            {props.updateState.phase === 'downloading' && (
-              <div className="update-card" role="status">
-                {(() => {
-                  const downloaded = props.updateState.downloadedBytes ?? 0;
-                  const total = props.updateState.totalBytes;
-                  const percent = total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : null;
-                  return (
-                    <>
-                      <div className="row update-progress-row">
-                        <span className="small">
-                          {percent !== null
-                            ? t.settings.updates.downloading(percent, formatMegabytes(downloaded), formatMegabytes(total!))
-                            : t.settings.updates.downloadingUnknown(formatMegabytes(downloaded))}
-                        </span>
-                        {props.onCancelUpdate && (
-                          <button type="button" className="compact" onClick={props.onCancelUpdate}>
-                            {t.common.cancel}
-                          </button>
-                        )}
-                      </div>
-                      <div className="update-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined}>
-                        <div className="update-progress-fill" style={{ width: `${percent ?? 15}%` }} />
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            )}
+                {props.updateState.phase === 'available' && props.updateState.availableVersion && (
+                  <div className="update-card" role="region" aria-label={t.settings.updates.availableTitle(props.updateState.availableVersion)}>
+                    <div className="row update-card-title">
+                      <strong>{t.settings.updates.availableTitle(props.updateState.availableVersion)}</strong>
+                    </div>
+                    {props.updateState.releaseNotes && (
+                      <p className="muted update-notes">{props.updateState.releaseNotes}</p>
+                    )}
+                    {props.updateState.installBlocker !== 'none' && (
+                      <p className="help muted">
+                        {t.settings.updates.blockers[props.updateState.installBlocker]}
+                      </p>
+                    )}
+                    {props.updateState.installBlocker === 'none' && props.gitBusyForUpdate && (
+                      <p className="help warning">{t.settings.updates.gitBusyNote}</p>
+                    )}
+                    {props.updateState.error && (
+                      <p className="help danger" role="alert">{props.updateState.error}</p>
+                    )}
+                    <div className="row update-actions">
+                      {props.updateState.canInstall && props.onInstallUpdate && (
+                        <button
+                          type="button"
+                          className="primary compact"
+                          disabled={props.gitBusyForUpdate}
+                          onClick={() => props.onInstallUpdate?.(props.updateState!.availableVersion!)}
+                        >
+                          {t.settings.updates.updateAndRestart}
+                        </button>
+                      )}
+                      {props.onOpenReleasePage && (
+                        <button type="button" className="secondary compact" onClick={props.onOpenReleasePage}>
+                          {t.settings.updates.downloadFromGithub}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
-            {props.updateState.phase === 'installing' && (
-              <div className="update-card update-card-installing" role="status">
-                <Icon name="refresh" className="spinning" />
-                <span>{t.settings.updates.installing}</span>
-              </div>
-            )}
+                {props.updateState.phase === 'downloading' && (
+                  <div className="update-card" role="status">
+                    {(() => {
+                      const downloaded = props.updateState.downloadedBytes ?? 0;
+                      const total = props.updateState.totalBytes;
+                      const percent = total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : null;
+                      return (
+                        <>
+                          <div className="row update-progress-row">
+                            <span className="small">
+                              {percent !== null
+                                ? t.settings.updates.downloading(percent, formatMegabytes(downloaded), formatMegabytes(total!))
+                                : t.settings.updates.downloadingUnknown(formatMegabytes(downloaded))}
+                            </span>
+                            {props.onCancelUpdate && (
+                              <button type="button" className="compact" onClick={props.onCancelUpdate}>
+                                {t.common.cancel}
+                              </button>
+                            )}
+                          </div>
+                          <div className="update-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined}>
+                            <div className="update-progress-fill" style={{ width: `${percent ?? 15}%` }} />
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
 
-            {props.updateState.phase === 'error' && (
-              <div className="update-card update-card-error" role="alert">
-                {props.updateState.error && <p className="help danger">{props.updateState.error}</p>}
-                <div className="row update-actions">
-                  {props.onCheckUpdate && (
-                    <button type="button" className="secondary compact" onClick={props.onCheckUpdate}>
-                      {t.settings.updates.retry}
-                    </button>
-                  )}
-                  {props.onOpenReleasePage && (
-                    <button type="button" className="secondary compact" onClick={props.onOpenReleasePage}>
-                      {t.settings.updates.downloadFromGithub}
-                    </button>
-                  )}
-                </div>
-              </div>
+                {props.updateState.phase === 'installing' && (
+                  <div className="update-card update-card-installing" role="status">
+                    <Icon name="refresh" className="spinning" />
+                    <span>{t.settings.updates.installing}</span>
+                  </div>
+                )}
+
+                {props.updateState.phase === 'error' && (
+                  <div className="update-card update-card-error" role="alert">
+                    {props.updateState.error && <p className="help danger">{props.updateState.error}</p>}
+                    <div className="row update-actions">
+                      {props.onCheckUpdate && (
+                        <button type="button" className="secondary compact" onClick={props.onCheckUpdate}>
+                          {t.settings.updates.retry}
+                        </button>
+                      )}
+                      {props.onOpenReleasePage && (
+                        <button type="button" className="secondary compact" onClick={props.onOpenReleasePage}>
+                          {t.settings.updates.downloadFromGithub}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </m.div>
             )}
           </section>
         )}

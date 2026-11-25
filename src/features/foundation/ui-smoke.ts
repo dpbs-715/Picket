@@ -30,7 +30,7 @@ function findExtraUntrackedCheckbox(): HTMLInputElement | undefined {
 }
 
 async function checkDefaultWorkbench() {
-  await waitForUi(() => !!document.querySelector('.workbench'));
+  await waitForUi(() => !!document.querySelector('.workbench'), 'default-workbench-mounted');
   const text = document.querySelector('.workbench')!.textContent ?? '';
   if (!text.includes('Open Your Git Repository')
     || !text.includes('Open Local Repository')
@@ -52,19 +52,19 @@ async function checkDefaultWorkbench() {
     throw new Error('Native titlebar is not overlaid or the repository overlaps window controls');
   }
   document.querySelector<HTMLButtonElement>('button[aria-label="Settings"]')!.click();
-  await waitForUi(() => !!document.querySelector('.overlay-heading h1'));
+  await waitForUi(() => !!document.querySelector('.overlay-heading h1'), 'default-settings-open');
   if (document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left < 84) throw new Error('Settings overlaps native window controls');
   await waitForUi(
     () => (document.querySelector('#settings-updates-section')?.textContent ?? '').includes('v0.1.0'),
     'settings-updates-section-ready',
   );
   [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Add First Provider')!.click();
-  await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 2);
+  await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 2, 'default-provider-form-open');
   if (document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left < 84) throw new Error('Provider form overlaps native window controls');
   document.querySelector<HTMLButtonElement>('button[aria-label="Close Add Provider"]')!.click();
-  await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 1);
+  await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 1, 'default-provider-form-closed');
   document.querySelector<HTMLButtonElement>('button[aria-label="Close Settings"]')!.click();
-  await waitForUi(() => !document.querySelector('.overlay'));
+  await waitForUi(() => !document.querySelector('.overlay'), 'default-settings-closed');
   const wasPinned = await window.isAlwaysOnTop();
   const [initialOuterPos, initialOuterSize, pinScale] = await Promise.all([
     window.outerPosition(),
@@ -566,8 +566,9 @@ export function registerUiSmoke() {
   (window as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__ = true;
   const formatError = (error: unknown) => {
     const labels = [...document.querySelectorAll('button')].map((el) => el.getAttribute('aria-label') || el.textContent?.trim()).filter(Boolean).slice(0, 12).join(', ');
+    const overlayCount = document.querySelectorAll('.overlay').length;
     const base = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error);
-    return `${base} [buttons: ${labels}]`;
+    return `${base} [overlays=${overlayCount}, visibility=${document.visibilityState}, buttons: ${labels}]`;
   };
   window.addEventListener('picket:foundation-smoke', () => {
     let closing = false;

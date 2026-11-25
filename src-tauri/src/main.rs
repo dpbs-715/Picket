@@ -5,6 +5,7 @@ mod i18n;
 mod models;
 mod repository;
 mod updater;
+mod window_motion;
 
 use cpush::{
     CPushCoordinator,
@@ -1055,6 +1056,7 @@ fn main() {
             run_git_probe,
             close_smoke_window,
             fail_ui_smoke,
+            window_motion::animate_window_frame,
             get_update_status,
             check_for_update,
             install_update,

@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { useI18n } from '../../../i18n';
-import { Icon, IconButton } from '../../../ui/controls';
+import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
+import { Collapse, MOTION_DURATION, MOTION_EASE, MotionPresence, m, useInstantMotion } from '../../../ui/motion';
 import {
   groupFiles,
   localKeepChanges,
@@ -209,6 +210,7 @@ function TriStateCheckbox(props: {
 
 export function ChangesPanel(props: Props) {
   const { locale, t } = useI18n();
+  const instantMotion = useInstantMotion();
   const [view, setView] = useState<'list' | 'tree'>('list');
   const [localKeepExpanded, setLocalKeepExpanded] = useState(false);
   const [selectedRowPaths, setSelectedRowPaths] = useState<string[]>([]);
@@ -828,7 +830,7 @@ export function ChangesPanel(props: Props) {
             }}
           >
             <span className="local-keep-heading min-width-zero">
-              <Icon name={localKeepExpanded ? 'down' : 'right'} />
+              <RotatingChevron open={localKeepExpanded} />
               <span className="local-keep-title truncate">{t.changes.localKeepTitle}</span>
               {keptConflictCount > 0 && (
                 <span className="local-keep-conflict-badge danger">{t.changes.localKeepConflicts(keptConflictCount)}</span>
@@ -839,7 +841,7 @@ export function ChangesPanel(props: Props) {
             </span>
             <span className="dynamic-count local-keep-count">{kept.length}</span>
           </button>
-          {localKeepExpanded && (
+          <Collapse open={localKeepExpanded}>
             <div
               className="local-keep-list scroll-area"
               onScroll={() => { if (contextMenu) setContextMenu(null); }}
@@ -848,45 +850,52 @@ export function ChangesPanel(props: Props) {
                 ? <p className="local-keep-empty muted help">{t.changes.localKeepEmptyHint}</p>
                 : kept.map((file) => fileRow(file, false))}
             </div>
-          )}
+          </Collapse>
         </div>
       )}
-      {contextMenu && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label={
-            contextMenu.paths.length > 1
-              ? t.changes.batchFileActionsMenuLabel(contextMenu.paths.length)
-              : t.changes.fileActionsMenuLabel(contextMenu.primaryPath)
-          }
-          className="popover file-context-menu"
-          style={{
-            left: `${menuPosition?.left ?? contextMenu.x}px`,
-            top: `${menuPosition?.top ?? contextMenu.y}px`,
-          }}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              const targetPaths = contextMenu.paths;
-              const nextKeep = !contextMenu.isLocalKeep;
-              setContextMenu(null);
-              if (nextKeep && !localKeepExpanded) {
-                const movedSet = new Set(targetPaths);
-                setSelectedRowPaths((prev) => prev.filter((path) => !movedSet.has(path)));
-              }
-              props.onSetLocalKeep(targetPaths, nextKeep);
+      <MotionPresence>
+        {contextMenu && (
+          <m.div
+            key={`ctx:${contextMenu.primaryPath}:${contextMenu.x}:${contextMenu.y}`}
+            ref={menuRef}
+            role="menu"
+            aria-label={
+              contextMenu.paths.length > 1
+                ? t.changes.batchFileActionsMenuLabel(contextMenu.paths.length)
+                : t.changes.fileActionsMenuLabel(contextMenu.primaryPath)
+            }
+            className="popover file-context-menu"
+            style={{
+              left: `${menuPosition?.left ?? contextMenu.x}px`,
+              top: `${menuPosition?.top ?? contextMenu.y}px`,
             }}
+            initial={instantMotion ? false : { opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={instantMotion ? undefined : { opacity: 0, scale: 0.96 }}
+            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
           >
-            <span>{contextMenu.isLocalKeep ? t.changes.moveBackToChangesAction : t.changes.keepLocallyAction}</span>
-            {contextMenu.paths.length > 1 && (
-              <span className="dynamic-count">{contextMenu.paths.length}</span>
-            )}
-          </button>
-        </div>
-      )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const targetPaths = contextMenu.paths;
+                const nextKeep = !contextMenu.isLocalKeep;
+                setContextMenu(null);
+                if (nextKeep && !localKeepExpanded) {
+                  const movedSet = new Set(targetPaths);
+                  setSelectedRowPaths((prev) => prev.filter((path) => !movedSet.has(path)));
+                }
+                props.onSetLocalKeep(targetPaths, nextKeep);
+              }}
+            >
+              <span>{contextMenu.isLocalKeep ? t.changes.moveBackToChangesAction : t.changes.keepLocallyAction}</span>
+              {contextMenu.paths.length > 1 && (
+                <span className="dynamic-count">{contextMenu.paths.length}</span>
+              )}
+            </button>
+          </m.div>
+        )}
+      </MotionPresence>
       {dragState && (
         <div
           className="file-drag-ghost mono"

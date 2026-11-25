@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { useI18n } from '../../../i18n';
-import { Icon, IconButton } from '../../../ui/controls';
+import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
+import { MOTION_DURATION, MOTION_EASE, PresenceNotice, m, useInstantMotion } from '../../../ui/motion';
 import {
   compactStatusSummary,
   hasEmptyValidPlanMessage,
@@ -62,6 +63,7 @@ interface Props {
 
 export function CompactBar(props: Props) {
   const { locale, t } = useI18n();
+  const instantMotion = useInstantMotion();
   const barRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const [drawer, setDrawer] = useState<CompactDrawer>('none');
@@ -193,7 +195,7 @@ export function CompactBar(props: Props) {
             title={repoLabel}
           >
             <span className="compact-repo mono truncate">{repoLabel}</span>
-            <Icon name={effectiveDrawer === 'projects' ? 'up' : 'down'} className="compact-chevron" />
+            <RotatingChevron open={effectiveDrawer === 'projects'} direction="down-up" className="compact-chevron" />
           </button>
           {worktree && (
             <>
@@ -208,7 +210,7 @@ export function CompactBar(props: Props) {
                 title={branchLabel}
               >
                 <span className="compact-branch mono truncate">{branchLabel}</span>
-                <Icon name={effectiveDrawer === 'branches' ? 'up' : 'down'} className="compact-chevron" />
+                <RotatingChevron open={effectiveDrawer === 'branches'} direction="down-up" className="compact-chevron" />
               </button>
             </>
           )}
@@ -248,6 +250,7 @@ export function CompactBar(props: Props) {
           />
           <IconButton
             icon="pin"
+            className="pin-button"
             label={props.pinned ? t.header.unpinWindow : t.header.pinWindow}
             aria-pressed={props.pinned}
             disabled={props.pinBusy}
@@ -266,25 +269,35 @@ export function CompactBar(props: Props) {
         </div>
       </header>
 
-      {props.notice?.text && (
-        <div className="operation-notice compact-notice" role="alert">
-          <span className="operation-notice-body">
-            <Icon name="alert" className="operation-notice-icon" />
-            <span className="truncate" title={props.notice.text}>{props.notice.text}</span>
-          </span>
-          <div className="operation-notice-actions">
-            {props.notice.showModelSettings && (
-              <button type="button" className="secondary operation-notice-action" onClick={props.onOpenModelSettings}>
-                {t.workbench.openModelSettingsAction}
-              </button>
-            )}
-            <IconButton icon="close" label={t.common.dismissNotice} onClick={props.onDismissNotice} />
+      <PresenceNotice show={Boolean(props.notice?.text)} motionKey={`compact-notice:${props.notice?.text ?? ''}`}>
+        {props.notice?.text && (
+          <div className="operation-notice compact-notice" role="alert">
+            <span className="operation-notice-body">
+              <Icon name="alert" className="operation-notice-icon" />
+              <span className="truncate" title={props.notice.text}>{props.notice.text}</span>
+            </span>
+            <div className="operation-notice-actions">
+              {props.notice.showModelSettings && (
+                <button type="button" className="secondary operation-notice-action" onClick={props.onOpenModelSettings}>
+                  {t.workbench.openModelSettingsAction}
+                </button>
+              )}
+              <IconButton icon="close" label={t.common.dismissNotice} onClick={props.onDismissNotice} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </PresenceNotice>
 
       {effectiveDrawer === 'projects' && (
-        <div className="compact-drawer scroll-area" role="region" aria-label={t.compact.projectDrawerLabel}>
+        <m.div
+          key="drawer-projects"
+          className="compact-drawer scroll-area"
+          role="region"
+          aria-label={t.compact.projectDrawerLabel}
+          initial={instantMotion ? false : { opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
           {state.repositories.map((repo) => {
             const trees = state.worktrees.filter((tree) => tree.repositoryId === repo.id);
             const active = repo.id === repository?.id;
@@ -327,11 +340,19 @@ export function CompactBar(props: Props) {
               {t.header.openLocalRepository}
             </button>
           </div>
-        </div>
+        </m.div>
       )}
 
       {effectiveDrawer === 'branches' && worktree && (
-        <div className="compact-drawer compact-branches-drawer scroll-area" role="region" aria-label={t.header.branchesTitle}>
+        <m.div
+          key="drawer-branches"
+          className="compact-drawer compact-branches-drawer scroll-area"
+          role="region"
+          aria-label={t.header.branchesTitle}
+          initial={instantMotion ? false : { opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
           <div className="branch-group-section">
             <button
               type="button"
@@ -339,7 +360,7 @@ export function CompactBar(props: Props) {
               aria-expanded={expandedSections.local}
               onClick={() => toggleSection('local')}
             >
-              <span className="row"><Icon name={expandedSections.local ? 'down' : 'right'} /><span>{t.header.localBranches}</span></span>
+              <span className="row"><RotatingChevron open={expandedSections.local} /><span>{t.header.localBranches}</span></span>
               <span className="branch-group-count muted small">{repository?.branches.length ?? 0}</span>
             </button>
             {expandedSections.local && (
@@ -385,7 +406,7 @@ export function CompactBar(props: Props) {
               aria-expanded={expandedSections.remote}
               onClick={() => toggleSection('remote')}
             >
-              <span className="row"><Icon name={expandedSections.remote ? 'down' : 'right'} /><span>{t.header.remoteBranches}</span></span>
+              <span className="row"><RotatingChevron open={expandedSections.remote} /><span>{t.header.remoteBranches}</span></span>
               <span className="branch-group-count muted small">{remoteBranches.length}</span>
             </button>
             {expandedSections.remote && (
@@ -441,7 +462,7 @@ export function CompactBar(props: Props) {
                 aria-expanded={expandedSections.worktree}
                 onClick={() => toggleSection('worktree')}
               >
-                <span className="row"><Icon name={expandedSections.worktree ? 'down' : 'right'} /><span>{t.header.worktrees}</span></span>
+                <span className="row"><RotatingChevron open={expandedSections.worktree} /><span>{t.header.worktrees}</span></span>
                 <span className="branch-group-count muted small">{repoWorktrees.length}</span>
               </button>
               {expandedSections.worktree && (
@@ -471,11 +492,19 @@ export function CompactBar(props: Props) {
               )}
             </div>
           )}
-        </div>
+        </m.div>
       )}
 
       {effectiveDrawer === 'remote' && worktree && (
-        <div className="compact-drawer compact-remote-drawer" role="region" aria-label={t.header.remoteDetails}>
+        <m.div
+          key="drawer-remote"
+          className="compact-drawer compact-remote-drawer"
+          role="region"
+          aria-label={t.header.remoteDetails}
+          initial={instantMotion ? false : { opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
           <div className="compact-remote-info">
             <span className="muted small">{t.header.trackedRemoteBranch}</span>
             {worktree.remote.kind === 'tracked' ? (
@@ -505,11 +534,19 @@ export function CompactBar(props: Props) {
               {props.pullBusy ? t.header.syncing : t.header.pullAndRebase}
             </button>
           </div>
-        </div>
+        </m.div>
       )}
 
       {effectiveDrawer === 'files' && worktree && (
-        <div className="compact-drawer compact-files-drawer scroll-area" role="region" aria-label={t.compact.filesDrawerLabel}>
+        <m.div
+          key="drawer-files"
+          className="compact-drawer compact-files-drawer scroll-area"
+          role="region"
+          aria-label={t.compact.filesDrawerLabel}
+          initial={instantMotion ? false : { opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
           {normalFiles.length === 0 && (
             <p className="muted compact-files-empty">{t.changes.noNormalChanges}</p>
           )}
@@ -543,7 +580,7 @@ export function CompactBar(props: Props) {
                 onClick={() => setLocalKeepOpen((prev) => !prev)}
               >
                 <span className="row min-width-zero">
-                  <Icon name={localKeepOpen ? 'down' : 'right'} />
+                  <RotatingChevron open={localKeepOpen} />
                   <span className="truncate">{t.changes.localKeepTitle}</span>
                 </span>
                 <span className="muted small mono">{keptFiles.length}</span>
@@ -568,7 +605,7 @@ export function CompactBar(props: Props) {
               })}
             </div>
           )}
-        </div>
+        </m.div>
       )}
 
       <footer className="compact-bottom">
@@ -616,7 +653,7 @@ export function CompactBar(props: Props) {
               {!props.hasModel && selectedList.length > 0 && (
                 <span className="warning small compact-inline-note">· {t.compact.noModelBadge}</span>
               )}
-              <Icon name={effectiveDrawer === 'files' ? 'up' : 'down'} className="compact-chevron" />
+              <RotatingChevron open={effectiveDrawer === 'files'} direction="down-up" className="compact-chevron" />
             </button>
             {worktree.plan && (
               <button

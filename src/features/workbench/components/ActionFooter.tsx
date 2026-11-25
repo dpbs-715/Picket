@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useI18n } from '../../../i18n';
-import { Icon, Popover } from '../../../ui/controls';
+import { Icon, Popover, RotatingChevron } from '../../../ui/controls';
+import { MotionPresence } from '../../../ui/motion';
 import { formatModelDisplayLabel } from '../../settings/modelProviders';
 import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
 import { primaryAction } from '../state/workbench';
@@ -54,47 +55,55 @@ export function ActionFooter(props: Props) {
             >
               <Icon name="cpu" />
               <span className="mono truncate">{activeDisplayLabel}</span>
-              <Icon name="down" />
+              <RotatingChevron open={menuOpen} direction="down-up" />
             </button>
-            {menuOpen && (
-              <Popover title={t.footer.selectModelTitle} onClose={() => setMenuOpen(false)} className="model-menu">
-                {props.models.map((item) => {
-                  const conn = props.connections.find((entry) => entry.id === item.connectionId);
-                  const displayName = formatModelDisplayLabel(item, props.connections, props.models);
-                  const subSource = conn?.name ?? t.providers[item.provider];
-                  return (
+            <MotionPresence>
+              {menuOpen && (
+                <Popover
+                  key="model-popover"
+                  origin="bottom"
+                  title={t.footer.selectModelTitle}
+                  onClose={() => setMenuOpen(false)}
+                  className="model-menu"
+                >
+                  {props.models.map((item) => {
+                    const conn = props.connections.find((entry) => entry.id === item.connectionId);
+                    const displayName = formatModelDisplayLabel(item, props.connections, props.models);
+                    const subSource = conn?.name ?? t.providers[item.provider];
+                    return (
+                      <button
+                        type="button"
+                        key={item.id}
+                        aria-pressed={item.id === props.activeModelId}
+                        onClick={() => {
+                          props.onSelectModel(item.id);
+                          setMenuOpen(false);
+                        }}
+                      >
+                        <span className="model-menu-label">
+                          <span className="model-menu-name truncate">{displayName}</span>
+                          <span className="muted small truncate">
+                            {subSource} · <span className="mono">{item.modelId}</span>
+                          </span>
+                        </span>
+                        {item.id === props.activeModelId && <Icon name="check" className="success" />}
+                      </button>
+                    );
+                  })}
+                  <div className="menu-divider">
                     <button
                       type="button"
-                      key={item.id}
-                      aria-pressed={item.id === props.activeModelId}
                       onClick={() => {
-                        props.onSelectModel(item.id);
                         setMenuOpen(false);
+                        props.onManageModels();
                       }}
                     >
-                      <span className="model-menu-label">
-                        <span className="model-menu-name truncate">{displayName}</span>
-                        <span className="muted small truncate">
-                          {subSource} · <span className="mono">{item.modelId}</span>
-                        </span>
-                      </span>
-                      {item.id === props.activeModelId && <Icon name="check" className="success" />}
+                      <Icon name="settings" />{t.footer.manageModelsMenuItem}
                     </button>
-                  );
-                })}
-                <div className="menu-divider">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      props.onManageModels();
-                    }}
-                  >
-                    <Icon name="settings" />{t.footer.manageModelsMenuItem}
-                  </button>
-                </div>
-              </Popover>
-            )}
+                  </div>
+                </Popover>
+              )}
+            </MotionPresence>
           </>
         )}
       </div>

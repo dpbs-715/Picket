@@ -1,5 +1,6 @@
 import { useI18n } from '../../../i18n';
 import { HelpTip, Icon } from '../../../ui/controls';
+import { PresenceNotice } from '../../../ui/motion';
 import { isModelErrorText, selectedFiles, splitPath } from '../state/workbench';
 import type { Worktree } from '../state/workbench';
 
@@ -39,8 +40,12 @@ export function ReviewPanel(props: Props) {
       ? t.review.changedScopeTip
       : t.review.passedScopeTip;
   return <div className="review-panel">
-    {!!uncovered.length && <div className="change-notice">{t.review.uncoveredNotice(uncovered.length)}</div>}
-    {!!review.changedPaths.length && <div className="change-notice"><span>{t.review.changedNotice(review.changedPaths.length)}</span><button type="button" disabled={!props.canReview} onClick={() => props.onReview(true)}>{t.review.reReviewChangedButton}</button></div>}
+    <PresenceNotice show={uncovered.length > 0} motionKey="review-uncovered">
+      <div className="change-notice">{t.review.uncoveredNotice(uncovered.length)}</div>
+    </PresenceNotice>
+    <PresenceNotice show={review.changedPaths.length > 0} motionKey="review-changed">
+      <div className="change-notice"><span>{t.review.changedNotice(review.changedPaths.length)}</span><button type="button" disabled={!props.canReview} onClick={() => props.onReview(true)}>{t.review.reReviewChangedButton}</button></div>
+    </PresenceNotice>
     <div className="review-results scroll-area">
       {!review.findings.length ? <div className="empty-state review-passed"><Icon name="shield" className={review.changedPaths.length || noFilesReviewed ? 'warning' : 'success'} /><p className="row">{noFilesReviewed ? t.review.noFilesReviewedTitle : review.changedPaths.length || uncovered.length ? t.review.previousScopePassedTitle : t.review.passedTitle}<HelpTip align="end" label={t.review.resultTipLabel} text={passedTip} /></p></div>
         : review.findings.map((finding) => <button type="button" className={`review-finding finding-${finding.severity}`} key={finding.id} onClick={() => props.onOpenFile(finding.fileId, finding.line)}>

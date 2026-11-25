@@ -57,6 +57,22 @@ export async function verifyWorkbench(root: Root) {
   const zh = getMessages('zh');
   const zhLanguageLabel = LANGUAGE_OPTIONS.find((item) => item.id === 'zh')!.label;
   let key = 0;
+  const setInstantMotion = (enabled: boolean) => {
+    (globalThis as { __PICKET_INSTANT_MOTION__?: boolean }).__PICKET_INSTANT_MOTION__ = enabled;
+  };
+  const waitUntil = async (predicate: () => boolean, label: string, timeoutMs = 1500) => {
+    const start = Date.now();
+    while (!predicate()) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timed out waiting for motion check: ${label}`);
+      }
+      await act(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      });
+    }
+  };
+  setInstantMotion(true);
+  try {
   async function mount(
     initialState: WorkbenchState,
     backend: WorkbenchBackend = disconnectedBackend,
@@ -2743,9 +2759,126 @@ export async function verifyWorkbench(root: Root) {
   assert(!!document.querySelector('.compact-bar'), 'Closing Settings opened from Compact Mode after inspecting updates must return to Compact Mode');
   checks.push('In-app updater UI: disconnected boundary, unobtrusive Settings badge dot, progress/cancel, blocker fallback, and compact return');
 
+  // 31. Real DOM motion system: sliding tab indicator, overlay sheet/drill exit animations, popover/collapse/rotating chevrons, dock expand/collapse, and zero-flash compact Settings with animations enabled:
+  setInstantMotion(false);
+  await mount(fixture('question'));
+  const commitTab = document.querySelector<HTMLButtonElement>('#commit-tab')!;
+  const reviewTab = document.querySelector<HTMLButtonElement>('#review-tab')!;
+  const indicator = document.querySelector<HTMLElement>('.tab-active-indicator')!;
+  assert(
+    !!indicator
+      && Math.abs(indicator.getBoundingClientRect().width - commitTab.getBoundingClientRect().width) <= 2,
+    'Segmented tab list should render sliding active indicator aligned with active Commit Plan tab',
+  );
+  await clickElement(reviewTab);
+  await waitUntil(
+    () => Math.abs(indicator.getBoundingClientRect().left - reviewTab.getBoundingClientRect().left) <= 2,
+    'tab-indicator-slide-to-review',
+  );
+  await click('Settings');
+  assert(
+    document.querySelector('.overlay')?.getAttribute('data-overlay-variant') === 'sheet',
+    'Settings opened from Full Workbench must use sheet overlay variant',
+  );
+  await click('Provider');
+  assert(
+    document.querySelectorAll('.overlay')[1]?.getAttribute('data-overlay-variant') === 'drill',
+    'Nested provider form opened over Settings must use drill overlay variant',
+  );
+  await click('Cancel');
+  await waitUntil(() => document.querySelectorAll('.overlay').length === 1, 'drill-overlay-exit');
+  await click('Close Settings');
+  await waitUntil(() => !document.querySelector('.overlay'), 'sheet-overlay-exit');
+
+  // Branch popover + rotating chevron + smooth Collapse:
+  await clickElement(document.querySelector<HTMLButtonElement>('.branch-anchor > button')!);
+  assert(
+    document.querySelector('.branch-menu')?.getAttribute('data-motion-popover') === 'top',
+    'Branch popover must carry top popover motion metadata',
+  );
+  const remoteSectionToggle = [...document.querySelectorAll<HTMLButtonElement>('.branch-menu .branch-group-toggle')]
+    .find((item) => item.textContent?.includes('Remote Branches'))!;
+  assert(!remoteSectionToggle.querySelector('.chevron-rotator')?.classList.contains('is-open'), 'Collapsed Remote chevron must not be rotated open');
+  await clickElement(remoteSectionToggle);
+  assert(
+    remoteSectionToggle.querySelector('.chevron-rotator')?.classList.contains('is-open')
+      && !!document.querySelector('.branch-menu .motion-collapse [data-branch-group="remote"]'),
+    'Expanding Remote Branches must rotate chevron and render inside animated Collapse container',
+  );
+  await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+  await waitUntil(() => !document.querySelector('.branch-menu'), 'branch-popover-exit');
+
+  // MessageDock smooth expand & collapse within lower workspace bounds (tab switch above collapsed the dock):
+  await click('Expand message: Include release notes in this commit?');
+  await waitUntil(() => {
+    const lowerRect = document.querySelector('.lower-workspace')?.getBoundingClientRect();
+    const expandedRect = document.querySelector('.message-expanded')?.getBoundingClientRect();
+    return !!lowerRect && !!expandedRect && Math.abs(lowerRect.top - expandedRect.top) <= 1.5;
+  }, 'message-dock-expand-settle');
+  await click('Collapse Message');
+  await waitUntil(() => !document.querySelector('.message-expanded'), 'message-dock-collapse-exit');
+
+  // Standalone Settings from Compact Mode with real animations enabled must still never flash workbench content:
+  const animatedCompactFixture = fixture('typing');
+  animatedCompactFixture.windowPrefs = {
+    pinned: true,
+    compactMode: true,
+    pinnedExpanded: false,
+    fullSize: { width: 400, height: 700 },
+    compactPosition: { x: 180, y: 120 },
+  };
+  let flashedWorkbenchWithMotion = false;
+  const motionCompactObserver = new MutationObserver(() => {
+    if (document.querySelector('.workbench-content, .changes-panel, .lower-workspace, .action-footer')) {
+      flashedWorkbenchWithMotion = true;
+    }
+  });
+  const motionWindowController: WindowController = {
+    isDesktopWindow: true,
+    async readSnapshot() {
+      return { pinned: true, focused: true, position: { x: 180, y: 120 }, size: { width: 400, height: 86 }, scaleFactor: 2 };
+    },
+    async setPinned(next) { return next; },
+    async applyWindowMode(options) {
+      return {
+        pinned: options.pinned,
+        previousPosition: { x: 180, y: 120 },
+        previousSize: options.compactMode ? { width: 400, height: 700 } : { width: 400, height: 86 },
+        position: options.targetPosition ?? { x: 180, y: 120 },
+        size: options.compactMode
+          ? { width: options.compactWidth ?? 400, height: options.compactHeight ?? 86 }
+          : options.fullSize,
+      };
+    },
+    async adjustCompactHeight() {},
+    async notifyBackgroundAttention() { return false; },
+  };
+  await mount(animatedCompactFixture, disconnectedBackend, motionWindowController);
+  motionCompactObserver.observe(document.body, { childList: true, subtree: true });
+  try {
+    await click('Settings');
+    await waitUntil(
+      () => document.querySelector('.overlay')?.getAttribute('data-overlay-variant') === 'standalone'
+        && !document.querySelector('.compact-bar'),
+      'animated-standalone-settings-open',
+    );
+    await click('Close Settings');
+    await waitUntil(
+      () => !!document.querySelector('.compact-bar') && !document.querySelector('.overlay'),
+      'animated-standalone-settings-close',
+    );
+    assert(!flashedWorkbenchWithMotion, 'Compact -> Settings -> Compact flashed workbench content when real animations were active');
+  } finally {
+    motionCompactObserver.disconnect();
+  }
+  checks.push('Motion system: sliding tab pill, sheet/drill/standalone overlay transitions, popover & collapse exit animations, rotating chevrons, dock glide, and zero-flash compact Settings');
+
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',
     viewport: { width: innerWidth, height: innerHeight },
     checks,
   };
+  } finally {
+    setInstantMotion(false);
+  }
 }

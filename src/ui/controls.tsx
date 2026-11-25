@@ -1,6 +1,8 @@
+import { useIsPresent } from 'motion/react';
 import { useEffect, useId, useRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { useI18n } from '../i18n';
+import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from './motion';
 
 const iconPaths = {
   down: 'm6 9 6 6 6-6', up: 'm6 15 6-6 6 6', right: 'm9 6 6 6-6 6',
@@ -34,6 +36,22 @@ const iconPaths = {
 export type IconName = keyof typeof iconPaths;
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {
   return <svg className={`icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name]} /></svg>;
+}
+export function RotatingChevron({
+  open,
+  direction = 'right-down',
+  className = '',
+}: {
+  open: boolean;
+  direction?: 'right-down' | 'down-up';
+  className?: string;
+}) {
+  return (
+    <Icon
+      name={direction === 'down-up' ? 'down' : 'right'}
+      className={`chevron-rotator chevron-${direction} ${open ? 'is-open' : ''} ${className}`.trim()}
+    />
+  );
 }
 export function IconButton({ icon, label, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { icon: IconName; label: string }) {
   return <button type="button" {...props} className={`icon-button ${props.className ?? ''}`} aria-label={label} title={label}><Icon name={icon} /></button>;
@@ -87,21 +105,70 @@ export function useDismiss(onClose: () => void) {
   return ref;
 }
 
-export function Popover({ title, onClose, children, className = '' }: { title: string; onClose: () => void; children: ReactNode; className?: string }) {
+export function Popover({
+  title,
+  onClose,
+  children,
+  className = '',
+  origin = 'top',
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  className?: string;
+  origin?: 'top' | 'bottom';
+}) {
   const ref = useDismiss(onClose);
-  return <div ref={ref} role="dialog" aria-label={title} className={`popover ${className}`}>{children}</div>;
+  const instant = useInstantMotion();
+  const isPresent = useIsPresent();
+  const offset = origin === 'bottom' ? 4 : -4;
+  return (
+    <m.div
+      ref={ref}
+      role="dialog"
+      aria-label={title}
+      data-motion-popover={origin}
+      className={`popover ${className}`}
+      inert={!isPresent}
+      initial={instant ? false : { opacity: 0, scale: 0.97, y: offset }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={instant ? undefined : { opacity: 0, scale: 0.97, y: offset * 0.75 }}
+      transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+    >
+      {children}
+    </m.div>
+  );
 }
 
-export function Overlay({ title, children, onClose, covered = false, closeDisabled = false }: { title: string; children: ReactNode; onClose: () => void; covered?: boolean; closeDisabled?: boolean }) {
+export type OverlayVariant = 'sheet' | 'standalone' | 'drill';
+
+export function Overlay({
+  title,
+  children,
+  onClose,
+  covered = false,
+  closeDisabled = false,
+  variant = 'sheet',
+}: {
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+  covered?: boolean;
+  closeDisabled?: boolean;
+  variant?: OverlayVariant;
+}) {
   const { t } = useI18n();
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
+  const instant = useInstantMotion();
+  const isPresent = useIsPresent();
   const latestClose = useRef(onClose);
   latestClose.current = onClose;
   const latestCloseDisabled = useRef(closeDisabled);
   latestCloseDisabled.current = closeDisabled;
+  const inert = covered || !isPresent;
   useEffect(() => {
-    if (covered) return;
+    if (inert) return;
     const previousFocus = document.activeElement;
     const panel = ref.current!;
     const autofocusTarget = panel.querySelector<HTMLElement>('[data-autofocus]:not(:disabled)');
@@ -128,11 +195,50 @@ export function Overlay({ title, children, onClose, covered = false, closeDisabl
     panel.addEventListener('keydown', trap);
     return () => {
       panel.removeEventListener('keydown', trap);
-      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected && !previousFocus.closest('[inert]')) {
+        previousFocus.focus();
+      }
     };
-  }, [covered]);
-  return <div ref={ref} className="overlay" role="dialog" aria-modal={!covered} aria-labelledby={id} tabIndex={-1} inert={covered}>
-    <div className="overlay-heading" data-tauri-drag-region><h1 id={id} data-tauri-drag-region>{title}</h1><IconButton icon="close" label={t.common.closeOverlay(title)} disabled={closeDisabled} onClick={onClose} /></div>
-    {children}
-  </div>;
+  }, [inert]);
+
+  const initialProps = instant
+    ? false
+    : variant === 'drill'
+      ? { opacity: 0, x: 16 }
+      : variant === 'standalone'
+        ? { opacity: 0 }
+        : { opacity: 0, y: 8 };
+  const animateProps = variant === 'drill'
+    ? { opacity: 1, x: 0 }
+    : variant === 'standalone'
+      ? { opacity: 1 }
+      : { opacity: 1, y: 0 };
+  const exitProps = instant || variant === 'standalone'
+    ? undefined
+    : variant === 'drill'
+      ? { opacity: 0, x: 14, transition: { duration: 0.13, ease: MOTION_EASE } }
+      : { opacity: 0, y: 6, transition: { duration: 0.13, ease: MOTION_EASE } };
+
+  return (
+    <m.div
+      ref={ref}
+      className="overlay"
+      data-overlay-variant={variant}
+      role="dialog"
+      aria-modal={!covered}
+      aria-labelledby={id}
+      tabIndex={-1}
+      inert={inert}
+      initial={initialProps}
+      animate={animateProps}
+      exit={exitProps}
+      transition={{ duration: variant === 'standalone' ? MOTION_DURATION.fast : MOTION_DURATION.overlay, ease: MOTION_EASE }}
+    >
+      <div className="overlay-heading" data-tauri-drag-region>
+        <h1 id={id} data-tauri-drag-region>{title}</h1>
+        <IconButton icon="close" label={t.common.closeOverlay(title)} disabled={closeDisabled} onClick={onClose} />
+      </div>
+      {children}
+    </m.div>
+  );
 }

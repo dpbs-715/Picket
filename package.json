@@ -25,6 +25,7 @@
     "@earendil-works/pi-ai": "1.6.0",
     "@tauri-apps/api": "2.12.5",
     "@tauri-apps/plugin-notification": "^2.8.1",
+    "motion": "^14.14.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

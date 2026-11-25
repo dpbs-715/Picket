@@ -15,6 +15,16 @@ import {
 } from '../../desktop/window';
 import { getMessages, I18nProvider } from '../../i18n';
 import { Icon, IconButton } from '../../ui/controls';
+import {
+  Collapse,
+  MOTION_DURATION,
+  MOTION_EASE,
+  MotionPresence,
+  MotionRoot,
+  PresenceNotice,
+  m,
+  useInstantMotion,
+} from '../../ui/motion';
 import { ModelEntryForm } from '../settings/ModelEntryForm';
 import type { ModelConfiguration, ProviderConnection } from '../settings/modelProviders';
 import { ProviderConnectionForm } from '../settings/ProviderConnectionForm';
@@ -122,6 +132,11 @@ export function Workbench({
   latestState.current = state;
   const commitPanelRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const commitTabRef = useRef<HTMLButtonElement>(null);
+  const reviewTabRef = useRef<HTMLButtonElement>(null);
+  const [tabIndicator, setTabIndicator] = useState<{ left: number; width: number } | null>(null);
+  const instantMotion = useInstantMotion();
   const t = getMessages(state.locale);
   const pinned = state.windowPrefs.pinned;
   const compactMode = state.windowPrefs.compactMode;
@@ -418,6 +433,7 @@ export function Workbench({
               fullSize: normalizeFullWindowSize(saved.fullSize),
               placement: targetPos ? 'restorePosition' : 'anchorTopLeft',
               targetPosition: targetPos,
+              instant: true,
               locale: restored.locale ?? latestState.current.locale,
             });
             effectiveRestored = {
@@ -1221,7 +1237,47 @@ export function Workbench({
       : '';
   const activeNotice = feedback[viewKey];
 
+  const syncTabIndicator = useCallback(() => {
+    const activeButton = tab === 'commit' ? commitTabRef.current : reviewTabRef.current;
+    if (!activeButton || activeButton.offsetWidth <= 0) {
+      setTabIndicator(null);
+      return;
+    }
+    const nextLeft = activeButton.offsetLeft;
+    const nextWidth = activeButton.offsetWidth;
+    setTabIndicator((previous) =>
+      previous && previous.left === nextLeft && previous.width === nextWidth
+        ? previous
+        : { left: nextLeft, width: nextWidth },
+    );
+  }, [tab]);
+
+  useLayoutEffect(() => {
+    if (!presentation.mountWorkbenchContent) return;
+    syncTabIndicator();
+  }, [
+    presentation.mountWorkbenchContent,
+    syncTabIndicator,
+    state.locale,
+    reviewLabel,
+    worktree?.requests.plan,
+    worktree?.plan?.groups.length,
+    planOutdated,
+  ]);
+
+  useEffect(() => {
+    if (!presentation.mountWorkbenchContent || typeof ResizeObserver === 'undefined') return;
+    const listEl = tabListRef.current;
+    if (!listEl) return;
+    const observer = new ResizeObserver(() => syncTabIndicator());
+    observer.observe(listEl);
+    if (commitTabRef.current) observer.observe(commitTabRef.current);
+    if (reviewTabRef.current) observer.observe(reviewTabRef.current);
+    return () => observer.disconnect();
+  }, [presentation.mountWorkbenchContent, syncTabIndicator]);
+
   return <I18nProvider locale={state.locale}>
+    <MotionRoot>
     <main
       className={`workbench ${presentation.windowSizeMode === 'compact' ? 'workbench-compact' : ''}`}
       data-surface={presentation.surface}
@@ -1230,6 +1286,12 @@ export function Workbench({
       aria-label={t.workbench.ariaLabel}
     >
       {presentation.surface === 'compact' && (
+        <m.div
+          className="compact-surface"
+          initial={instantMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
         <CompactBar
           state={state}
           repository={repository}
@@ -1260,9 +1322,16 @@ export function Workbench({
           onDismissNotice={() => notify('')}
           onDesiredHeightChange={handleDesiredCompactHeight}
         />
+        </m.div>
       )}
       {presentation.mountWorkbenchContent && (
-        <div className="workbench-content" inert={settingsOpen || modelOverlayOpen}>
+        <m.div
+          className="workbench-content"
+          inert={settingsOpen || modelOverlayOpen}
+          initial={instantMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
           <ContextHeader
             key={`header:${viewKey}`}
             state={state}
@@ -1282,22 +1351,24 @@ export function Workbench({
             onBranch={async (kind, branch) => worktree ? execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
             onPull={() => { if (worktree) void execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
           />
-          {activeNotice?.text && (
-            <div className="operation-notice" role="alert">
-              <span className="operation-notice-body">
-                <Icon name="alert" className="operation-notice-icon" />
-                <span>{activeNotice.text}</span>
-              </span>
-              <div className="operation-notice-actions">
-                {activeNotice.showModelSettings && (
-                  <button type="button" className="secondary operation-notice-action" onClick={() => openSettingsFromWorkbench(true)}>
-                    {t.workbench.openModelSettingsAction}
-                  </button>
-                )}
-                <IconButton icon="close" label={t.common.dismissNotice} onClick={() => notify('')} />
+          <PresenceNotice show={Boolean(activeNotice?.text)} motionKey={`notice:${viewKey}:${activeNotice?.text ?? ''}`}>
+            {activeNotice?.text && (
+              <div className="operation-notice" role="alert">
+                <span className="operation-notice-body">
+                  <Icon name="alert" className="operation-notice-icon" />
+                  <span>{activeNotice.text}</span>
+                </span>
+                <div className="operation-notice-actions">
+                  {activeNotice.showModelSettings && (
+                    <button type="button" className="secondary operation-notice-action" onClick={() => openSettingsFromWorkbench(true)}>
+                      {t.workbench.openModelSettingsAction}
+                    </button>
+                  )}
+                  <IconButton icon="close" label={t.common.dismissNotice} onClick={() => notify('')} />
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </PresenceNotice>
           <ChangesPanel
             worktree={worktree}
             editorShort={editorShort}
@@ -1315,8 +1386,18 @@ export function Workbench({
           />
           <section className="lower-workspace" aria-label={t.workbench.lowerWorkspaceLabel}>
             <div className="tab-workspace" inert={!!worktree?.dockExpanded}>
-              <div className="tab-heading"><div className="tab-list" role="tablist" aria-label={t.workbench.workspaceTabsLabel}>
-                <button type="button" id="commit-tab" role="tab" aria-selected={tab === 'commit'} aria-controls="commit-panel" tabIndex={tab === 'commit' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('review'); document.getElementById('review-tab')?.focus(); } }} onClick={() => setTab('commit')}>
+              <div className="tab-heading"><div ref={tabListRef} className={`tab-list ${tabIndicator ? '' : 'no-indicator'}`.trim()} role="tablist" aria-label={t.workbench.workspaceTabsLabel}>
+                {tabIndicator && (
+                  <span
+                    className={`tab-active-indicator ${instantMotion ? 'is-instant' : ''}`.trim()}
+                    aria-hidden="true"
+                    style={{
+                      transform: `translateX(${tabIndicator.left}px)`,
+                      width: `${tabIndicator.width}px`,
+                    }}
+                  />
+                )}
+                <button ref={commitTabRef} type="button" id="commit-tab" role="tab" aria-selected={tab === 'commit'} aria-controls="commit-panel" tabIndex={tab === 'commit' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('review'); document.getElementById('review-tab')?.focus(); } }} onClick={() => setTab('commit')}>
                   {t.commit.tabLabel}
                   {worktree?.requests.plan
                     ? <span className="small muted">{t.commit.planningBadge}</span>
@@ -1324,7 +1405,7 @@ export function Workbench({
                       ? <span className={`small ${planOutdated ? 'warning' : 'muted'}`}>{planOutdated ? t.commit.planOutdatedBadge : t.commit.planCountBadge(worktree.plan.groups.length)}</span>
                       : null}
                 </button>
-                <button type="button" id="review-tab" role="tab" aria-selected={tab === 'review'} aria-controls="review-panel" tabIndex={tab === 'review' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('commit'); document.getElementById('commit-tab')?.focus(); } }} onClick={() => setTab('review')}>{t.review.tabLabel}{reviewLabel && <span className={`small ${highCount ? 'danger' : 'muted'}`}>{reviewLabel}</span>}</button>
+                <button ref={reviewTabRef} type="button" id="review-tab" role="tab" aria-selected={tab === 'review'} aria-controls="review-panel" tabIndex={tab === 'review' ? 0 : -1} onKeyDown={(event) => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { setTab('commit'); document.getElementById('commit-tab')?.focus(); } }} onClick={() => setTab('review')}>{t.review.tabLabel}{reviewLabel && <span className={`small ${highCount ? 'danger' : 'muted'}`}>{reviewLabel}</span>}</button>
               </div><div className="row">
                 {tab === 'review' && worktree?.review.status === 'done' && <IconButton icon="refresh" label={t.review.reReviewLabel} disabled={!canUseModel} onClick={() => void runReview()} />}
                 <button
@@ -1351,7 +1432,7 @@ export function Workbench({
                   )}
                 </button>
               </div></div>
-              {showPromptBox && (
+              <Collapse open={showPromptBox}>
                 <div className="prompt-box">
                   <textarea
                     ref={textareaRef}
@@ -1374,7 +1455,7 @@ export function Workbench({
                     }}
                   />
                 </div>
-              )}
+              </Collapse>
               <div role="tabpanel" id={tab === 'commit' ? 'commit-panel' : 'review-panel'} aria-labelledby={tab === 'commit' ? 'commit-tab' : 'review-tab'} className="tab-panel">
                 {tab === 'commit' ? (
                   <CommitPanel
@@ -1420,10 +1501,13 @@ export function Workbench({
             onSelectModel={(id) => void selectModel(id)}
             onPrimary={primary}
           />
-        </div>
+        </m.div>
       )}
+      <MotionPresence>
       {presentation.showSettings && (
         <SettingsPanel
+          key={presentation.surface === 'standaloneSettings' ? 'settings-standalone' : 'settings-sheet'}
+          overlayVariant={presentation.surface === 'standaloneSettings' ? 'standalone' : 'sheet'}
           locale={state.locale}
           repositoryName={repository?.name}
           editor={activeEditor}
@@ -1455,9 +1539,12 @@ export function Workbench({
           onClose={() => void closeSettings()}
         />
       )}
+      </MotionPresence>
+      <MotionPresence>
       {presentation.surface !== 'compact' && modelOverlay.kind === 'createProvider' && (
         <ProviderConnectionForm
           key="create-provider"
+          overlayVariant={settingsOpen ? 'drill' : 'sheet'}
           mode="create"
           keepActiveModel={modelOverlay.keepActiveModel}
           onClose={() => setModelOverlay({ kind: 'closed' })}
@@ -1481,6 +1568,7 @@ export function Workbench({
       {presentation.surface !== 'compact' && modelOverlay.kind === 'editProvider' && (
         <ProviderConnectionForm
           key={`edit-provider:${modelOverlay.connection.id}`}
+          overlayVariant={settingsOpen ? 'drill' : 'sheet'}
           mode="edit"
           connection={
             state.connections.find((c) => c.id === modelOverlay.connection.id)
@@ -1515,6 +1603,7 @@ export function Workbench({
               ? `edit-model:${modelOverlay.model.id}`
               : `add-model:${modelOverlay.connection.id}`
           }
+          overlayVariant={settingsOpen ? 'drill' : 'sheet'}
           connection={
             state.connections.find((c) => c.id === modelOverlay.connection.id)
             ?? modelOverlay.connection
@@ -1534,6 +1623,8 @@ export function Workbench({
           }}
         />
       )}
+      </MotionPresence>
     </main>
+    </MotionRoot>
   </I18nProvider>;
 }
