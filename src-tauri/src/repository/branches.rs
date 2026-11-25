@@ -312,20 +312,47 @@ impl RepositoryStore {
             .collect::<Result<BTreeSet<_>>>()?
             .into_iter()
             .collect();
-        for source in [
-            None,
-            Some("--cached".to_owned()),
-            Some(format!("--source={target_head}")),
-        ] {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        // Instead of `git check-attr --source=<tree>` (added in Git 2.40, unsupported on
+        // Apple Git 2.39.x shipped with macOS 14/15), load `target_head` into a disposable
+        // temporary index and inspect it with `git check-attr --cached`.
+        let target_index_dir =
+            tempfile::tempdir().map_err(|_| "Cannot create temporary Git attribute index")?;
+        let target_index = target_index_dir.path().join("target.index");
+        let read_tree = reader
+            .run_with_index(root, &["read-tree", target_head], &target_index, None)
+            .await?;
+        if !read_tree.success {
+            return Err(
+                "Cannot inspect target branch Git attributes; no branch write was performed".into(),
+            );
+        }
+        let sources: [(bool, Option<&Path>); 3] = [
+            (false, None),
+            (true, None),
+            (true, Some(target_index.as_path())),
+        ];
+        for (cached, index_override) in sources {
             // Keep argument batches below macOS's command-line size limit.
             for batch in paths.chunks(128) {
                 let mut args = vec!["check-attr", "-z"];
-                if let Some(source) = &source {
-                    args.push(source);
+                if cached {
+                    args.push("--cached");
                 }
                 args.extend(["filter", "--"]);
                 args.extend(batch.iter().map(String::as_str));
-                let attributes = reader.bytes(root, &args).await?;
+                let attributes = match index_override {
+                    Some(index_path) => {
+                        let output = reader.run_with_index(root, &args, index_path, None).await?;
+                        if !output.success {
+                            return Err("Git check-attr read failed; check that the repository is accessible (draft and selection were preserved)".into());
+                        }
+                        output.bytes
+                    }
+                    None => reader.bytes(root, &args).await?,
+                };
                 let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
                 for record in fields.chunks(3).filter(|record| record.len() == 3) {
                     if drivers.contains(&parse::utf8_with_locale(record[2], locale)?) {
