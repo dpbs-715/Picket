@@ -136,6 +136,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           sessionStatus: 'running',
           dockExpanded: action.expandDock ? true : tree.dockExpanded,
           messages: [...reviewMessages, progressMsg],
+          customAction: undefined,
           cPush: {
             runId: action.runId,
             frozenTarget: action.frozenTarget,

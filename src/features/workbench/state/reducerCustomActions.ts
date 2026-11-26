@@ -102,9 +102,14 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
         return {
           ...tree,
           sessionStatus: 'idle',
-          dockExpanded: false,
+          dockExpanded: errorMsg ? tree.dockExpanded : false,
           messages: errorMsg ? [...reviewMessages, errorMsg] : reviewMessages,
-          customAction: undefined,
+          customAction: errorMsg
+            ? {
+                ...tree.customAction,
+                pendingCallId: undefined,
+              }
+            : undefined,
         };
       }),
     };

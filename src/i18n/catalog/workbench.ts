@@ -110,6 +110,7 @@ export interface WorkbenchMessages {
     replyLabel: string;
     conflictReplyPlaceholder: string;
     questionReplyPlaceholder: string;
+    followUpActionPlaceholder: string;
     sendReply: string;
     cancelAction: string;
   };
@@ -311,6 +312,7 @@ export const workbenchEn: WorkbenchMessages = {
     replyLabel: 'Reply to active message',
     conflictReplyPlaceholder: 'Enter merge instructions and press Enter…',
     questionReplyPlaceholder: 'Or enter custom instructions and press Enter…',
+    followUpActionPlaceholder: 'Continue or adjust this action and press Enter…',
     sendReply: 'Send Reply',
     cancelAction: 'Cancel',
   },
@@ -523,6 +525,7 @@ export const workbenchZh: WorkbenchMessages = {
     replyLabel: '回复当前事项',
     conflictReplyPlaceholder: '输入合并要求，回车发送…',
     questionReplyPlaceholder: '或输入更具体的要求，回车发送…',
+    followUpActionPlaceholder: '继续追问或补充下一步指令，回车发送…',
     sendReply: '发送回复',
     cancelAction: '取消执行',
   },

@@ -82,6 +82,7 @@ export function applyCPushSnapshot(
         prompt: nextPrompt,
         plan: nextPlan,
         planRevision: nextPlanRevision,
+        customAction: undefined,
         cPush: session.sessionStatus === 'idle'
           ? undefined
           : {
@@ -131,6 +132,7 @@ export function finishCPushCommand(
           summary: prepared.summary,
           groups: prepared.groups.map((group) => ({ ...group, fileIds: [...group.fileIds] })),
           skippedFileIds: [...prepared.skippedFileIds],
+          ...(prepared.skipPush ? { skipPush: true } : {}),
         },
         planRevision: tree.planRevision + 1,
       };
@@ -256,7 +258,7 @@ export function finishCustomActionCommand(
         dockExpanded: nextDockExpanded,
         messages: nextMessages,
         cPush: undefined,
-        customAction: reply.status === 'done'
+        customAction: reply.status === 'done' || (reply.status === 'failed' && Boolean(reply.message))
           ? {
               runId: reply.runId,
               actionId: reply.actionId,

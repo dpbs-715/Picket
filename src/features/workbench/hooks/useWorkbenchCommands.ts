@@ -233,6 +233,71 @@ export function useWorkbenchCommands({
     }
   }
 
+  function launchCustomAction(
+    action: CustomActionConfig,
+    options?: { followUpPrompt?: string; resumeFromRunId?: string; forceExpandDock?: boolean },
+  ) {
+    if (!worktree || !model || worktree.readError) return;
+    if (inFlight.current.has(`${worktree.repositoryId}:customAction`) || inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
+    const requestId = crypto.randomUUID();
+    const target = targetOf(worktree);
+    const fileIds = selected.map((file) => file.id);
+    const selections = selected.length > 0 && selected.every((file) => !!file.commitToken)
+      ? selected.map((file) => ({ fileId: file.id, commitToken: file.commitToken! }))
+      : undefined;
+    const expandDock = options?.forceExpandDock ?? (!isEditingCommitInput() && !compactMode);
+    dispatch({
+      type: 'customActionStarted',
+      worktreeId: worktree.worktreeId,
+      runId: requestId,
+      actionId: action.id,
+      actionLabel: action.label,
+      expandDock,
+    });
+    void execute({
+      kind: 'runCustomAction',
+      target,
+      requestId,
+      action,
+      fileIds,
+      selections,
+      modelId: model.id,
+      extraPrompt: promptText,
+      ...(options?.followUpPrompt ? { followUpPrompt: options.followUpPrompt } : {}),
+      ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
+      locale: state.locale,
+      commitLanguage: activeCommitLanguage,
+    });
+  }
+
+  function followUpCustomAction(message: Message, text: string) {
+    const trimmed = text.trim();
+    if (!worktree || !trimmed || !worktree.customAction) return;
+    if (!model) {
+      if (compactMode) {
+        openConfigureModelFromCompact();
+      } else {
+        openConfigureModel();
+      }
+      return;
+    }
+    if (worktree.readError) return;
+    const savedAction = state.repositorySettings[worktree.repositoryId]?.customActions?.find(
+      (item) => item.id === worktree.customAction?.actionId,
+    );
+    const targetAction: CustomActionConfig = savedAction ?? {
+      id: worktree.customAction.actionId,
+      label: worktree.customAction.actionLabel,
+      prompt: trimmed,
+    };
+    dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId: message.id, text: '' });
+    launchCustomAction(targetAction, {
+      followUpPrompt: trimmed,
+      resumeFromRunId: worktree.customAction.runId,
+      forceExpandDock: !compactMode,
+    });
+  }
+
   function primary() {
     if (!model && (!worktree || !isActiveSession(worktree))) {
       if (compactMode) {
@@ -252,35 +317,7 @@ export function useWorkbenchCommands({
       return;
     }
     if (activeCustomAction) {
-      if (inFlight.current.has(`${worktree.repositoryId}:customAction`) || inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
-      if (!model || worktree.readError) return;
-      const requestId = crypto.randomUUID();
-      const target = targetOf(worktree);
-      const fileIds = selected.map((file) => file.id);
-      const selections = selected.length > 0 && selected.every((file) => !!file.commitToken)
-        ? selected.map((file) => ({ fileId: file.id, commitToken: file.commitToken! }))
-        : undefined;
-      const expandDock = !isEditingCommitInput() && !compactMode;
-      dispatch({
-        type: 'customActionStarted',
-        worktreeId: worktree.worktreeId,
-        runId: requestId,
-        actionId: activeCustomAction.id,
-        actionLabel: activeCustomAction.label,
-        expandDock,
-      });
-      void execute({
-        kind: 'runCustomAction',
-        target,
-        requestId,
-        action: activeCustomAction,
-        fileIds,
-        selections,
-        modelId: model.id,
-        extraPrompt: promptText,
-        locale: state.locale,
-        commitLanguage: activeCommitLanguage,
-      });
+      launchCustomAction(activeCustomAction);
       return;
     }
     if (inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
@@ -332,6 +369,7 @@ export function useWorkbenchCommands({
               confirmedPlan: {
                 groups: validPlan.groups.map((group) => ({ ...group, fileIds: [...group.fileIds] })),
                 skippedFileIds: [...validPlan.skippedFileIds],
+                ...(validPlan.skipPush ? { skipPush: true } : {}),
               },
             }
           : {}),
@@ -438,6 +476,7 @@ export function useWorkbenchCommands({
     setLocalKeep,
     openFile,
     primary,
+    followUpCustomAction,
     respond,
     cancelActiveCustomAction,
     syncActionToAllRepos,

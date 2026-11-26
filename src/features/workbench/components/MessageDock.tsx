@@ -28,6 +28,7 @@ interface Props {
   onOpenFile(fileId: string): void;
   onReview(): void;
   onCancelCustomAction?(): void;
+  onFollowUpCustomAction?(message: Message, text: string): void;
 }
 
 export function MessageDock(props: Props) {
@@ -39,6 +40,12 @@ export function MessageDock(props: Props) {
   const isQuestionnaire = !!questionnaire && questionnaire.questions.length > 0;
   const canReply = primary
     ? !isQuestionnaire && (primary.kind === 'question' || primary.kind === 'conflict')
+    : false;
+  const canFollowUpAction = primary
+    ? !isQuestionnaire
+      && Boolean(props.worktree.customAction)
+      && Boolean(props.onFollowUpCustomAction)
+      && (primary.kind === 'done' || (primary.kind === 'error' && !primary.options?.length))
     : false;
 
   const [activeQuestionIdx, setActiveQuestionIdx] = useState(0);
@@ -491,13 +498,31 @@ export function MessageDock(props: Props) {
                   {(primary.kind === 'done' || (primary.kind === 'error' && !primary.options?.length)) && (
                     <button type="button" className="secondary" onClick={dismissDone}>{t.dock.gotIt}</button>
                   )}
-                  {canReply && (
-                    <form className="message-reply" onSubmit={(event) => { event.preventDefault(); if (text.trim() && !props.busy) props.onRespond(primary, { text: text.trim() }); }}>
+                  {(canReply || canFollowUpAction) && (
+                    <form
+                      className="message-reply"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!text.trim() || props.busy) return;
+                        if (canFollowUpAction) {
+                          props.onFollowUpCustomAction?.(primary, text.trim());
+                        } else {
+                          props.onRespond(primary, { text: text.trim() });
+                        }
+                      }}
+                    >
                       <input
                         aria-label={t.dock.replyLabel}
                         value={text}
+                        disabled={props.busy}
                         onChange={(event) => props.onReply(primary.id, event.target.value)}
-                        placeholder={primary.kind === 'conflict' ? t.dock.conflictReplyPlaceholder : t.dock.questionReplyPlaceholder}
+                        placeholder={
+                          canFollowUpAction
+                            ? t.dock.followUpActionPlaceholder
+                            : primary.kind === 'conflict'
+                              ? t.dock.conflictReplyPlaceholder
+                              : t.dock.questionReplyPlaceholder
+                        }
                       />
                       <IconButton icon="send" label={t.dock.sendReply} type="submit" disabled={!text.trim() || props.busy} />
                     </form>

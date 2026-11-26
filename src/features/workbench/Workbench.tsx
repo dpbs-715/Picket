@@ -371,6 +371,7 @@ export function Workbench({
                     onOpenFile={commands.openFile}
                     onReview={() => setTab('review')}
                     onCancelCustomAction={commands.cancelActiveCustomAction}
+                    onFollowUpCustomAction={commands.followUpCustomAction}
                   />
                 )}
               </section>

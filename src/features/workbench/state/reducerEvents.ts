@@ -54,6 +54,7 @@ export function receiveEvent(worktree: Worktree, event: WorkbenchEvent, keepSet:
           summary: event.plan.summary,
           groups: event.plan.groups.map((group) => ({ ...group, fileIds: [...group.fileIds] })),
           skippedFileIds: [...event.plan.skippedFileIds],
+          ...(event.plan.skipPush ? { skipPush: true } : {}),
         },
         planRevision: worktree.planRevision + 1,
       };

@@ -73,6 +73,7 @@ export interface EditableCommitPlan {
   summary: string;
   groups: CPushPlanGroup[];
   skippedFileIds: string[];
+  skipPush?: boolean;
 }
 
 export interface ActiveCPushState {

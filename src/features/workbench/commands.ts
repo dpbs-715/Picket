@@ -43,8 +43,8 @@ export type WorkbenchCommand =
   | { kind: 'switchBranch' | 'checkoutRemoteBranch'; target: Target; requestId: string; branch: string; branchToken: string; locale?: AppLocale }
   | { kind: 'openFile'; target: Target; requestId: string; fileId: string; editor: EditorId; line?: number; locale?: AppLocale }
   | { kind: 'planCPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
-  | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; confirmedPlan?: CPushConfirmedPlan; locale?: AppLocale; commitLanguage?: CommitLanguage }
-  | { kind: 'runCustomAction'; target: Target; requestId: string; action: CustomActionConfig; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; extraPrompt: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
+  | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; confirmedPlan?: CPushConfirmedPlan; push?: boolean; locale?: AppLocale; commitLanguage?: CommitLanguage }
+  | { kind: 'runCustomAction'; target: Target; requestId: string; action: CustomActionConfig; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; extraPrompt: string; followUpPrompt?: string; resumeFromRunId?: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
   | { kind: 'review'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; changedPaths?: string[]; locale?: AppLocale }
   | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; questionnaireResponse?: AskUserQuestionResponse; modelId?: string; locale?: AppLocale }
   | { kind: 'selectModel' | 'deleteModel'; modelId: string; locale?: AppLocale }
