@@ -179,7 +179,7 @@ fn outcome_from_nserror(err_ptr: *mut c_void, locale: LanguageKind) -> LocalAuth
             return LocalAuthOutcome::Cancelled;
         }
     }
-    LocalAuthOutcome::Failed(i18n::model_reveal_auth_failed_message(locale).into())
+    LocalAuthOutcome::Failed(i18n::models::model_reveal_auth_failed_message(locale).into())
 }
 
 unsafe extern "C" fn auth_block_invoke(
@@ -210,13 +210,13 @@ fn start_macos_evaluation(
 ) -> Result<(LacContextGuard, oneshot::Receiver<LocalAuthOutcome>), LocalAuthOutcome> {
     let Some(reason_cf) = CfStringOwned::new(reason) else {
         return Err(LocalAuthOutcome::Failed(
-            i18n::model_reveal_auth_unavailable_message(locale).into(),
+            i18n::models::model_reveal_auth_unavailable_message(locale).into(),
         ));
     };
     let la_class = unsafe { objc_getClass(c"LAContext".as_ptr()) };
     if la_class.is_null() {
         return Err(LocalAuthOutcome::Failed(
-            i18n::model_reveal_auth_unavailable_message(locale).into(),
+            i18n::models::model_reveal_auth_unavailable_message(locale).into(),
         ));
     }
     let ctx = unsafe {
@@ -233,7 +233,7 @@ fn start_macos_evaluation(
     };
     if ctx.is_null() {
         return Err(LocalAuthOutcome::Failed(
-            i18n::model_reveal_auth_unavailable_message(locale).into(),
+            i18n::models::model_reveal_auth_unavailable_message(locale).into(),
         ));
     }
     let guard = LacContextGuard(ctx as usize);
@@ -308,7 +308,9 @@ impl LocalAuthenticator for MacOsLocalAuthenticator {
                 Err(outcome) => return outcome,
             };
             rx.await.unwrap_or_else(|_| {
-                LocalAuthOutcome::Failed(i18n::model_reveal_auth_failed_message(locale).into())
+                LocalAuthOutcome::Failed(
+                    i18n::models::model_reveal_auth_failed_message(locale).into(),
+                )
             })
         })
     }
@@ -350,7 +352,7 @@ impl LocalAuthenticator for StaticLocalAuthenticator {
             calls.push((reason.to_owned(), locale));
         }
         let outcome = self.outcome.lock().map(|g| g.clone()).unwrap_or_else(|_| {
-            LocalAuthOutcome::Failed(i18n::model_reveal_auth_failed_message(locale).into())
+            LocalAuthOutcome::Failed(i18n::models::model_reveal_auth_failed_message(locale).into())
         });
         Box::pin(async move { outcome })
     }

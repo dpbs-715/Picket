@@ -155,7 +155,7 @@ pub fn validate_token_limits(
 ) -> Result<(), String> {
     let limits = &model_defaults().limits;
     if context_window < limits.min_context_window || context_window > limits.max_context_window {
-        return Err(i18n::token_context_range_error(
+        return Err(i18n::models::token_context_range_error(
             locale,
             limits.min_context_window,
             limits.max_context_window,
@@ -164,14 +164,14 @@ pub fn validate_token_limits(
     if max_output_tokens < limits.min_max_output_tokens
         || max_output_tokens > limits.max_max_output_tokens
     {
-        return Err(i18n::token_output_range_error(
+        return Err(i18n::models::token_output_range_error(
             locale,
             limits.min_max_output_tokens,
             limits.max_max_output_tokens,
         ));
     }
     if max_output_tokens > context_window {
-        return Err(i18n::token_output_exceeds_context_error(locale).into());
+        return Err(i18n::models::token_output_exceeds_context_error(locale).into());
     }
     Ok(())
 }

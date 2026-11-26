@@ -456,46 +456,46 @@ pub enum ModelStreamEvent {
 pub fn validate_http_base_url(raw: &str, locale: LanguageKind) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(i18n::url_required_error(locale).into());
+        return Err(i18n::models::url_required_error(locale).into());
     }
     if trimmed
         .chars()
         .any(|ch| ch.is_whitespace() || ch.is_control())
     {
-        return Err(i18n::url_invalid_http_error(locale).into());
+        return Err(i18n::models::url_invalid_http_error(locale).into());
     }
     let rest = trimmed
         .strip_prefix("https://")
         .or_else(|| trimmed.strip_prefix("http://"))
-        .ok_or_else(|| i18n::url_no_userinfo_http_error(locale))?;
+        .ok_or_else(|| i18n::models::url_no_userinfo_http_error(locale))?;
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     if authority.is_empty() {
-        return Err(i18n::url_invalid_http_error(locale).into());
+        return Err(i18n::models::url_invalid_http_error(locale).into());
     }
     if authority.contains('@') {
-        return Err(i18n::url_no_userinfo_http_error(locale).into());
+        return Err(i18n::models::url_no_userinfo_http_error(locale).into());
     }
     if let Some(after_open) = authority.strip_prefix('[') {
         let Some(close_idx) = after_open.find(']') else {
-            return Err(i18n::url_invalid_http_error(locale).into());
+            return Err(i18n::models::url_invalid_http_error(locale).into());
         };
         let host = &after_open[..close_idx];
         let remainder = &after_open[close_idx + 1..];
         if host.is_empty() {
-            return Err(i18n::url_invalid_http_error(locale).into());
+            return Err(i18n::models::url_invalid_http_error(locale).into());
         }
         if let Some(port) = remainder.strip_prefix(':') {
             if !port.parse::<u16>().is_ok_and(|p| p >= 1) {
-                return Err(i18n::url_invalid_http_error(locale).into());
+                return Err(i18n::models::url_invalid_http_error(locale).into());
             }
         } else if !remainder.is_empty() {
-            return Err(i18n::url_invalid_http_error(locale).into());
+            return Err(i18n::models::url_invalid_http_error(locale).into());
         }
     } else if let Some((host, port)) = authority.split_once(':')
         && (host.is_empty() || port.contains(':') || !port.parse::<u16>().is_ok_and(|p| p >= 1))
     {
-        return Err(i18n::url_invalid_http_error(locale).into());
+        return Err(i18n::models::url_invalid_http_error(locale).into());
     }
     Ok(trimmed.trim_end_matches('/').to_owned())
 }
@@ -503,7 +503,7 @@ pub fn validate_http_base_url(raw: &str, locale: LanguageKind) -> Result<String,
 pub fn validate_record_id(raw: &str, locale: LanguageKind) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.len() > 128 || trimmed.chars().any(char::is_control) {
-        return Err(i18n::model_invalid_id_record_error(locale).into());
+        return Err(i18n::models::model_invalid_id_record_error(locale).into());
     }
     Ok(trimmed.to_owned())
 }
@@ -515,10 +515,10 @@ pub fn validate_connection_name(
 ) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Ok(i18n::provider_label(locale, provider).to_owned());
+        return Ok(i18n::models::provider_label(locale, provider).to_owned());
     }
     if trimmed.chars().count() > 128 || trimmed.chars().any(char::is_control) {
-        return Err(i18n::model_display_name_invalid_error(locale).into());
+        return Err(i18n::models::model_display_name_invalid_error(locale).into());
     }
     Ok(trimmed.to_owned())
 }
@@ -537,10 +537,10 @@ pub fn validate_api_key(
         if allow_empty {
             return Ok(String::new());
         }
-        return Err(i18n::model_api_key_required_error(locale).into());
+        return Err(i18n::models::model_api_key_required_error(locale).into());
     }
     if trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-        return Err(i18n::model_api_key_invalid_error(locale).into());
+        return Err(i18n::models::model_api_key_invalid_error(locale).into());
     }
     Ok(trimmed.to_owned())
 }
@@ -556,17 +556,17 @@ pub fn validate_model_fields(
 ) -> Result<NormalizedModelFields, String> {
     let model_id = raw_model_id.trim();
     if model_id.is_empty() {
-        return Err(i18n::model_id_required_error(locale).into());
+        return Err(i18n::models::model_id_required_error(locale).into());
     }
     if model_id.len() > 256 || model_id.chars().any(char::is_control) {
-        return Err(i18n::model_id_invalid_error(locale).into());
+        return Err(i18n::models::model_id_invalid_error(locale).into());
     }
     let name_trimmed = raw_name.trim();
     let name = if name_trimmed.is_empty() {
         model_id.to_owned()
     } else {
         if name_trimmed.chars().count() > 128 || name_trimmed.chars().any(char::is_control) {
-            return Err(i18n::model_display_name_invalid_error(locale).into());
+            return Err(i18n::models::model_display_name_invalid_error(locale).into());
         }
         name_trimmed.to_owned()
     };
