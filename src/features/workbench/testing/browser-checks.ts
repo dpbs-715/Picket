@@ -1,5 +1,6 @@
 import { act, createElement } from 'react';
 import type { CPushCommandReply } from '../../../../shared/cpush-protocol';
+import { computeCustomActionPromptHash } from '../../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../../shared/ide-protocol';
 import type {
@@ -3241,6 +3242,9 @@ export async function verifyWorkbench(root: Root) {
               resolvePendingTier2 = resolve;
             }
           });
+          const approvedDontAsk = phase2QuestionResponses.some(
+            (r) => r.callId === 'confirm-tc-1' && r.dontAskAgain === true,
+          );
           return {
             protocolVersion: 1,
             kind: 'customAction',
@@ -3263,6 +3267,15 @@ export async function verifyWorkbench(root: Root) {
             timeline: [{ state: 'done', label: 'Pushed v0.2.0' }],
             commits: [],
             links: [{ label: 'Release v0.2.0', url: 'https://github.com/acme/demo/releases/tag/v0.2.0' }],
+            ...(approvedDontAsk
+              ? {
+                  trustedActionUpdate: {
+                    repositoryId: command.target.repositoryId,
+                    actionId: command.action.id,
+                    trustedPromptHash: computeCustomActionPromptHash(command.action.prompt),
+                  },
+                }
+              : {}),
           };
         }
         return disconnectedBackend.execute(command);
@@ -3332,6 +3345,25 @@ export async function verifyWorkbench(root: Root) {
       `Expected Tier-2 response with dontAskAgain=true, got ${JSON.stringify(phase2QuestionResponses)}`,
     );
     await click('Got it');
+
+    // Trusted custom action preview card keeps title + single-line action buttons on row 1 and wrappable badges cleanly on row 2:
+    {
+      const cardRect = document.querySelector('.custom-action-preview-card')!.getBoundingClientRect();
+      const topRect = document.querySelector('.custom-action-preview-top')!.getBoundingClientRect();
+      const metaRect = document.querySelector('.custom-action-preview-meta')!.getBoundingClientRect();
+      const badges = [...document.querySelectorAll('.custom-action-preview-meta .action-meta-badge')];
+      const actionBtns = [...document.querySelectorAll<HTMLButtonElement>('.custom-action-preview-actions button')];
+      assert(
+        badges.length === 2
+          && metaRect.top >= topRect.bottom - 1
+          && actionBtns.length === 2
+          && actionBtns.every((btn) => {
+            const r = btn.getBoundingClientRect();
+            return r.height <= 28 && r.right <= cardRect.right + 1;
+          }),
+        'Trusted custom action preview header must keep action buttons single-line and place badges cleanly below the title row',
+      );
+    }
 
     // Compact Mode (400 x 86) Split Button & top-left-anchored actions drawer:
     const compactActionsState = fixture('typing');

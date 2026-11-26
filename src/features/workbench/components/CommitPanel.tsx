@@ -40,32 +40,36 @@ export function CommitPanel(props: Props) {
         <div className="plan-region">
           <div className="custom-action-preview-card">
             <div className="custom-action-preview-head">
-              <div className="row min-width-zero">
-                <Icon name="sparkles" className="accent" />
-                <strong className="truncate">{activeAction.label}</strong>
-                <span className="branch-tag">{t.actions.customActionBadge}</span>
-                {trusted && <span className="branch-tag">{t.actions.autoApproveBadge}</span>}
+              <div className="custom-action-preview-top">
+                <div className="custom-action-preview-title">
+                  <Icon name="sparkles" className="accent" />
+                  <strong className="truncate" title={activeAction.label}>{activeAction.label}</strong>
+                </div>
+                <div className="custom-action-preview-actions">
+                  {props.onEditAction && (
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      onClick={() => props.onEditAction!(activeAction)}
+                    >
+                      <Icon name="pencil" />
+                      {t.actions.previewEditAction}
+                    </button>
+                  )}
+                  {props.onSwitchBackCPush && (
+                    <button
+                      type="button"
+                      className="secondary compact"
+                      onClick={props.onSwitchBackCPush}
+                    >
+                      {t.actions.switchBackCPush}
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="row">
-                {props.onEditAction && (
-                  <button
-                    type="button"
-                    className="secondary compact"
-                    onClick={() => props.onEditAction!(activeAction)}
-                  >
-                    <Icon name="pencil" />
-                    {t.actions.previewEditAction}
-                  </button>
-                )}
-                {props.onSwitchBackCPush && (
-                  <button
-                    type="button"
-                    className="secondary compact"
-                    onClick={props.onSwitchBackCPush}
-                  >
-                    {t.actions.switchBackCPush}
-                  </button>
-                )}
+              <div className="custom-action-preview-meta">
+                <span className="action-meta-badge is-accent">{t.actions.customActionBadge}</span>
+                {trusted && <span className="action-meta-badge is-amber">{t.actions.autoApproveBadge}</span>}
               </div>
             </div>
             <pre className="custom-action-prompt-preview mono scroll-area">{activeAction.prompt}</pre>

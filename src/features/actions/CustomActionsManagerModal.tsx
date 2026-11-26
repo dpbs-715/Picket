@@ -112,10 +112,14 @@ export function CustomActionsManagerModal(props: Props) {
                       }}
                     >
                       <div className="custom-action-item-head">
-                        <strong className="truncate">{item.label}</strong>
-                        {isActive && <span className="model-active-badge">{t.actions.activeBadge}</span>}
-                        {trusted && <span className="branch-tag">{t.actions.autoApproveBadge}</span>}
+                        <strong className="truncate" title={item.label}>{item.label}</strong>
                       </div>
+                      {(isActive || trusted) && (
+                        <div className="custom-action-item-badges">
+                          {isActive && <span className="model-active-badge">{t.actions.activeBadge}</span>}
+                          {trusted && <span className="action-meta-badge is-amber">{t.actions.autoApproveBadge}</span>}
+                        </div>
+                      )}
                       <p className="mono muted small custom-action-item-prompt">{item.prompt}</p>
                     </button>
                     <div className="model-actions">
