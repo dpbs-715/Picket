@@ -95,7 +95,10 @@ try {
     const inspect = () => { const result = document.querySelector('[data-workbench-result]'); if (result) { resolve({ status: result.dataset.workbenchResult, text: result.textContent }); return true; } };
     if (!inspect()) { const observer = new MutationObserver(() => { if (inspect()) observer.disconnect(); }); observer.observe(document.body, { childList: true, subtree: true }); }
   })`);
-  if (result.status !== 'passed') throw new Error(result.text);
+  if (result.status !== 'passed') {
+    const errSuffix = browserErrors.length ? `\nBrowser console errors:\n${browserErrors.join('\n')}` : '';
+    throw new Error(`${result.text}${errSuffix}`);
+  }
   if (browserErrors.length) throw new Error(`Browser console errors:\n${browserErrors.join('\n')}`);
   console.log(result.text);
 

@@ -11,6 +11,11 @@ import type {
   ReviewScopeReply,
 } from '../../../../shared/model-protocol';
 import { version as PACKAGE_VERSION } from '../../../../package.json';
+import {
+  DEFAULT_SKILLS_SOURCE_REPO,
+  SKILLS_PROTOCOL_VERSION,
+  type SkillsStateSnapshot,
+} from '../../../../shared/skills-protocol';
 import { PICKET_RELEASES_URL, UPDATE_PROTOCOL_VERSION, type UpdateStateSnapshot } from '../../../../shared/update-protocol';
 import type { TrayMainWindowAction, TrayStateSnapshot } from '../../../../shared/tray-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../../shared/workbench-persistence-protocol';
@@ -42,6 +47,11 @@ async function click(label: string) {
   await act(async () => { target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); });
   await act(async () => { button(label).click(); });
 }
+async function openSettingsTab(tab: 'general' | 'models' | 'skills') {
+  const el = document.querySelector<HTMLButtonElement>(`[data-settings-tab="${tab}"]`);
+  assert(el, `Missing settings tab: ${tab}`);
+  await clickElement(el);
+}
 async function clickElement(target: HTMLElement) {
   await act(async () => { target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); });
   await act(async () => { target.click(); });
@@ -63,11 +73,12 @@ export async function verifyWorkbench(root: Root) {
   const setInstantMotion = (enabled: boolean) => {
     (globalThis as { __PICKET_INSTANT_MOTION__?: boolean }).__PICKET_INSTANT_MOTION__ = enabled;
   };
-  const waitUntil = async (predicate: () => boolean, label: string, timeoutMs = 1500) => {
+  const waitUntil = async (predicate: () => boolean, label: string | (() => string), timeoutMs = 1500) => {
     const start = Date.now();
     while (!predicate()) {
       if (Date.now() - start > timeoutMs) {
-        throw new Error(`Timed out waiting for motion check: ${label}`);
+        const detail = typeof label === 'function' ? label() : label;
+        throw new Error(`Timed out waiting for motion check: ${detail}`);
       }
       await act(async () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -126,10 +137,16 @@ export async function verifyWorkbench(root: Root) {
       && document.querySelector('[data-setting-group="app-language"] button[aria-pressed="true"]')?.textContent?.trim() === 'English',
     'Default commit message language and app language must both be English',
   );
+  await openSettingsTab('models');
+  await click('Add First Provider');
+  await clickElement(document.querySelector<HTMLButtonElement>('[data-overlay-back]')!);
+  assert(document.querySelector('[aria-label="Close Settings"]') && !!document.querySelector('#settings-models-section'), 'Back button on Add Provider should return to Settings Models tab');
   await click('Add First Provider');
   await click('Cancel');
   assert(document.querySelector('[aria-label="Close Settings"]'), 'Cancelling Add Provider opened from Settings should return to Settings');
-  await click('Close Settings');
+  await click('Add First Provider');
+  await click('Close Add Provider');
+  assert(!document.querySelector('.overlay'), 'Clicking × on nested Add Provider should close straight back to workbench');
   assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'Extra instruction written before opening repository', 'Opening and closing Settings must preserve extra instructions');
   await click('Clear Extra Instructions');
   assert(!document.querySelector('.prompt-textarea') && button('+ Prompt').getAttribute('aria-expanded') === 'false', 'Clearing extra instructions via × must clear and collapse prompt box');
@@ -376,7 +393,7 @@ export async function verifyWorkbench(root: Root) {
 
   // 8. Provider connection fields, collapsible Advanced options (API Format + token defaults), and disconnected boundaries:
   await mount(fixture('no-model'));
-  await click('Settings'); await click('Add First Provider');
+  await click('Settings'); await openSettingsTab('models'); await click('Add First Provider');
   const keyHelpTip = document.querySelector<HTMLElement>('[aria-label="API Key storage info"]')!;
   assert(
     !!keyHelpTip && getComputedStyle(keyHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden'
@@ -476,6 +493,7 @@ export async function verifyWorkbench(root: Root) {
     },
   });
   await click('Settings');
+  await openSettingsTab('models');
   assert(document.querySelectorAll('.provider-card').length === 2, 'Settings should group models into 2 provider connection cards');
   const activeSelect = document.querySelector<HTMLButtonElement>('.model-row.is-active .model-select')!;
   assert(activeSelect && getComputedStyle(activeSelect).backgroundColor === 'rgba(0, 0, 0, 0)', 'Active model background should belong to .model-row card rather than inner button');
@@ -509,7 +527,7 @@ export async function verifyWorkbench(root: Root) {
   assert(
     text().includes('GPT-4.1')
       && !text().includes('Claude Sonnet 4')
-      && text().includes('No models under this connection yet.')
+      && text().includes('No models yet.')
       && document.querySelectorAll('.provider-card').length === 2,
     'Deleting the last model under Anthropic must keep the empty Anthropic connection card and fall back to GPT-4.1',
   );
@@ -517,6 +535,7 @@ export async function verifyWorkbench(root: Root) {
   await click('Close Settings');
   assert(button('GPT-4.1'), 'Settings and ActionFooter did not share active model');
   await click('Settings');
+  await openSettingsTab('models');
   await click('Delete connection Anthropic');
   assert(!!document.querySelector('.provider-delete-confirm'), 'Deleting connection must show inline confirmation');
   await click('Delete Connection');
@@ -537,13 +556,13 @@ export async function verifyWorkbench(root: Root) {
       return { protocolVersion: 2, connection, model, connections: [connection], models: [model], activeModelId: model.id };
     },
   });
-  await click('Settings'); await click('Add First Provider'); await click('Ollama (Local)'); await click('Save & Use');
+  await click('Settings'); await openSettingsTab('models'); await click('Add First Provider'); await click('Ollama (Local)'); await click('Save & Use');
   assert(!document.querySelector('.overlay') && button('Qwen 2.5 Coder'), 'Saving first provider should close both overlays and activate model');
   checks.push('Add Provider save receipt, auto-activation, and return to workbench');
 
   const pendingTests: { resolve: (description: string) => void }[] = [];
   await mount(fixture('no-model'), { ...disconnectedBackend, testModel() { return new Promise((resolve) => pendingTests.push({ resolve })); } });
-  await click('Settings'); await click('Add First Provider'); await click('Ollama (Local)'); await click('Test Connection');
+  await click('Settings'); await openSettingsTab('models'); await click('Add First Provider'); await click('Ollama (Local)'); await click('Test Connection');
   const modelInput = document.querySelector<HTMLInputElement>('.model-form [data-field="model-id"]')!;
   type(modelInput, 'changed-model'); await tick(); await click('Test Connection');
   await act(async () => { pendingTests[0].resolve('Stale connection test result'); });
@@ -585,8 +604,9 @@ export async function verifyWorkbench(root: Root) {
   assert(document.querySelector('.overlay-heading h1')!.getBoundingClientRect().left >= 84, 'Settings title overlapped native window controls');
   const projectBadge = document.querySelector<HTMLElement>('.project-badge')!;
   assert(projectBadge && projectBadge.getBoundingClientRect().right <= innerWidth - 14, 'Long repository badge in Settings overflowed narrow window');
+  await openSettingsTab('models');
   await click('Add First Provider');
-  assert(document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left >= 84, 'Add Provider title overlapped native window controls');
+  assert(document.querySelector<HTMLElement>('[data-overlay-back]')!.getBoundingClientRect().left >= 80 && document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left >= 84, 'Add Provider nav header overlapped native window controls');
   assert(!document.querySelector('.overlay-heading button[data-tauri-drag-region]'), 'Overlay close button must not carry drag region');
   document.documentElement.classList.remove('native-titlebar');
   checks.push('Native titlebar inset clearance, long repository badge truncation, and overlay drag boundaries');
@@ -992,7 +1012,7 @@ export async function verifyWorkbench(root: Root) {
       return disconnectedBackend.execute(command);
     },
   });
-  await click('Settings'); await click('Provider');
+  await click('Settings'); await openSettingsTab('models'); await click('Provider');
   const keyField = document.querySelector<HTMLInputElement>('.model-form input[type="password"]')!;
   type(keyField, 'sk-form-secret-5566'); await tick();
   await click('Test Connection');
@@ -2470,6 +2490,7 @@ export async function verifyWorkbench(root: Root) {
 
   // Opening Settings displays `keyHint` on provider cards without calling revealProviderApiKey:
   await click('Settings');
+  await openSettingsTab('models');
   const providerCards = [...document.querySelectorAll<HTMLElement>('.provider-card')];
   assert(
     providerCards.length === 2
@@ -2606,7 +2627,7 @@ export async function verifyWorkbench(root: Root) {
   type(rotateKeyInput, 'fake-new-connection-secret-2222');
   await tick();
   assert(
-    text().includes('Applies to all 2 models under this connection.'),
+    text().includes('Updates all 2 models under this connection.'),
     'Entering a new key in Edit Connection must display child model impact notice',
   );
   await click('Save Changes');
@@ -2752,7 +2773,7 @@ export async function verifyWorkbench(root: Root) {
   });
   await tick();
   assert(
-    text().includes('Update signing key is not configured')
+    text().includes('Signing key not configured')
       && ![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Update & Restart')
       && !!button('Download on GitHub'),
     'Install blocker must hide Update & Restart and explain manual GitHub download',
@@ -2783,6 +2804,7 @@ export async function verifyWorkbench(root: Root) {
     document.querySelector('.overlay')?.getAttribute('data-overlay-variant') === 'sheet',
     'Settings opened from Full Workbench must use sheet overlay variant',
   );
+  await openSettingsTab('models');
   await click('Provider');
   assert(
     document.querySelectorAll('.overlay')[1]?.getAttribute('data-overlay-variant') === 'drill',
@@ -2876,6 +2898,895 @@ export async function verifyWorkbench(root: Root) {
     motionCompactObserver.disconnect();
   }
   checks.push('Motion system: sliding tab pill, sheet/drill/standalone overlay transitions, popover & collapse exit animations, rotating chevrons, dock glide, and zero-flash compact Settings');
+
+  // Phase 1 UX: floating semantic Toast (zero layout shift), MessageDock true `done` dismissal, and `ask_user_question` questionnaire:
+  setInstantMotion(true);
+  await mount(fixture('typing'), {
+    ...disconnectedBackend,
+    async execute(command) {
+      if (command.kind === 'planCPush') {
+        throw new Error('Authentication failed (401/403). Verify your API key.');
+      }
+      return disconnectedBackend.execute(command);
+    },
+  });
+  const changesBeforeToast = document.querySelector('.changes-panel')!.getBoundingClientRect();
+  await click('Regenerate Plan');
+  const toastEl = document.querySelector<HTMLElement>('.operation-notice');
+  const toastLayer = document.querySelector<HTMLElement>('.operation-notice-layer');
+  const changesAfterToast = document.querySelector('.changes-panel')!.getBoundingClientRect();
+  assert(
+    toastEl?.dataset.noticeTone === 'error'
+      && toastLayer && getComputedStyle(toastLayer).position === 'absolute'
+      && Math.abs(changesBeforeToast.top - changesAfterToast.top) <= 0.5
+      && Math.abs(changesBeforeToast.height - changesAfterToast.height) <= 0.5,
+    'Semantic Toast must float above content without shifting changes-panel layout',
+  );
+  await click('Dismiss notice');
+  assert(!document.querySelector('.operation-notice'), 'Clicking Dismiss notice must clear the floating Toast');
+
+  // Done message dismissal via inline × (collapsed) and Got it (expanded) also persists read state via backend:
+  const dismissedDoneIds: string[] = [];
+  const doneDismissBackend: WorkbenchBackend = {
+    ...disconnectedBackend,
+    async dismissCPushDone(_target, _runId, messageId) {
+      dismissedDoneIds.push(messageId);
+    },
+  };
+  await mount(fixture('terminal-done'), doneDismissBackend);
+  assert(!!document.querySelector('.message-collapsed'), 'Collapsed done fixture must show completed summary bar initially');
+  await click('Dismiss completed notice');
+  assert(!document.querySelector('.message-collapsed') && !document.querySelector('.message-expanded'), 'Clicking inline × on done bar must dismiss the message completely');
+  await mount(fixture('done'), doneDismissBackend);
+  assert(!!document.querySelector('.message-expanded'), 'Expanded done fixture must open detail card');
+  await click('Got it');
+  assert(!document.querySelector('.message-collapsed') && !document.querySelector('.message-expanded'), 'Clicking Got it on done card must dismiss the message instead of collapsing it back');
+  assert(dismissedDoneIds.length === 2 && dismissedDoneIds.every((id) => id === 'done'), `Expected both done dismissals to notify backend persistence: ${JSON.stringify(dismissedDoneIds)}`);
+
+  // Multi-question ask_user_question questionnaire with preview, multi-select, and dontAskAgain:
+  const questionnaireCommands: WorkbenchCommand[] = [];
+  const qState = fixture('typing');
+  qState.worktrees[0].dockExpanded = true;
+  qState.worktrees[0].sessionStatus = 'needsDecision';
+  qState.worktrees[0].messages = [{
+    id: 'msg-ask-q',
+    kind: 'question',
+    title: 'Confirm release tag action',
+    scope: 'tag v0.2.0',
+    description: 'Review commands and options before running.',
+    questionnaire: {
+      questions: [
+        {
+          id: 'strategy',
+          header: 'Tag',
+          question: 'How should v0.2.0 be created?',
+          multiSelect: false,
+          options: [
+            {
+              id: 'annotated',
+              label: 'Annotated tag',
+              recommended: true,
+              description: 'Creates signed/annotated tag and pushes it.',
+              preview: 'git tag -a v0.2.0 -m "Release v0.2.0"\ngit push origin v0.2.0',
+            },
+            {
+              id: 'lightweight',
+              label: 'Lightweight tag',
+              description: 'Creates lightweight pointer only.',
+            },
+          ],
+        },
+        {
+          id: 'checks',
+          header: 'Checks',
+          question: 'Which extra steps should run?',
+          multiSelect: true,
+          options: [
+            { id: 'release', label: 'Draft GitHub release', description: 'Opens a draft release with notes.' },
+            { id: 'changelog', label: 'Update changelog', description: 'Prepends v0.2.0 entry.' },
+          ],
+        },
+      ],
+      context: {
+        scope: 'tag v0.2.0',
+        allowDontAskAgain: true,
+        dontAskAgainLabel: "Don't ask again for this button",
+      },
+    },
+  }];
+  await mount(qState, {
+    ...disconnectedBackend,
+    async execute(command) {
+      questionnaireCommands.push(command);
+    },
+  });
+  assert(document.querySelectorAll('.questionnaire-tab').length === 2, 'Multi-question dock must render one tab per question');
+  await click('Preview');
+  assert(document.querySelector('.option-preview-block')?.textContent?.includes('git tag -a v0.2.0'), 'Clicking Preview must reveal inline preview snippet');
+  await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="annotated"]')!);
+  const dontAskCheckbox = document.querySelector<HTMLInputElement>('.dont-ask-toggle input[type="checkbox"]')!;
+  await act(async () => { dontAskCheckbox.click(); });
+  await clickElement(document.querySelectorAll<HTMLButtonElement>('.questionnaire-tab')[1]);
+  await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="release"]')!);
+  await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="changelog"]')!);
+  await click('Submit');
+  const submitted = questionnaireCommands.find((cmd) => cmd.kind === 'respond');
+  assert(
+    submitted?.kind === 'respond'
+      && submitted.questionnaireResponse?.dontAskAgain === true
+      && submitted.questionnaireResponse.answers.find((item) => item.questionId === 'strategy')?.selectedLabels.includes('Annotated tag')
+      && submitted.questionnaireResponse.answers.find((item) => item.questionId === 'checks')?.selectedLabels.length === 2,
+    `ask_user_question Submit did not forward structured answers and dontAskAgain: ${JSON.stringify(submitted)}`,
+  );
+  checks.push('Phase 1 UX: zero-shift semantic floating Toast, MessageDock true done dismissal, and multi-question ask_user_question flow');
+
+  // Model ID preset auto-fill (Kimi 1M/256K presets) without overwriting manual user edits:
+  {
+    await mount(fixture('empty'));
+    await click('Configure Model');
+    await click('Custom Compatible');
+    const presetModelInput = document.querySelector<HTMLInputElement>('[data-field="model-id"]')!;
+    await clickElement(document.querySelector<HTMLButtonElement>('.advanced-toggle')!);
+    const readPresetCtx = () => document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!;
+    const readPresetOut = () => document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!;
+    type(presetModelInput, 'kimi-k3.1-pro'); await tick();
+    assert(readPresetCtx().value === '1048576' && readPresetOut().value === '131072', `Typing kimi-k3.1-pro should auto-fill 1048576 / 131072 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
+    type(presetModelInput, 'kimi-k2.6'); await tick();
+    assert(readPresetCtx().value === '262144' && readPresetOut().value === '32768', `Switching to kimi-k2.6 should update untouched defaults to 262144 / 32768 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
+    type(readPresetCtx(), '500000'); await tick();
+    type(presetModelInput, 'kimi-k2.8'); await tick();
+    assert(readPresetCtx().value === '500000' && readPresetOut().value === '131072', `Manual contextWindow edit must not be overwritten while untouched maxOutputTokens updates (got ${readPresetCtx().value} / ${readPresetOut().value})`);
+    await click('Cancel');
+    checks.push('Model ID preset auto-fill for Kimi models while preserving manual user overrides');
+  }
+
+  // Fetch remote provider models + filter/select + manual fallback (both Add Provider and Add Model):
+  {
+    const listRequests: Array<Record<string, unknown>> = [];
+    let shouldFailList = false;
+    const remoteBackend: WorkbenchBackend = {
+      ...disconnectedBackend,
+      async listProviderModels(input) {
+        listRequests.push(input as unknown as Record<string, unknown>);
+        if (shouldFailList) {
+          throw new Error('Authentication failed (401/403).');
+        }
+        return [
+          { id: 'kimi-k3.1-pro', displayName: 'Kimi K3.1 Pro' },
+          { id: 'kimi-k2.6' },
+          { id: 'custom-gateway-512k', contextWindow: 512_000, maxOutputTokens: 65_536 },
+        ];
+      },
+    };
+    await mount(fixture('empty'), remoteBackend);
+    await click('Configure Model');
+    await click('Custom Compatible');
+    type(document.querySelector<HTMLInputElement>('[data-field="base-url"]')!, 'https://api.moonshot.cn/v1');
+    type(document.querySelector<HTMLInputElement>('[data-field="api-key"]')!, 'sk-test-fetch-1234');
+    await tick();
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-action="fetch-models"]')!);
+    await tick();
+    const pickerEl = document.querySelector<HTMLElement>('.remote-model-picker')!;
+    const nameFieldBeforeClose = document.querySelector<HTMLElement>('[data-field="model-name"]')!.getBoundingClientRect();
+    assert(listRequests.length === 1 && listRequests[0].kind === 'newConnection', 'Fetch Models in Add Provider must dispatch newConnection list request');
+    assert(document.querySelectorAll('.remote-model-option').length === 3 && getComputedStyle(pickerEl).position === 'absolute', 'Fetched model picker must float as an absolute dropdown with all 3 remote models');
+    const modelInput = document.querySelector<HTMLInputElement>('[data-field="model-id"]')!;
+    type(modelInput, 'gateway'); await tick();
+    assert(document.querySelectorAll('.remote-model-option').length === 1, 'Typing in Model ID must live-filter the fetched model list');
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-remote-model="custom-gateway-512k"]')!);
+    const nameFieldAfterClose = document.querySelector<HTMLElement>('[data-field="model-name"]')!.getBoundingClientRect();
+    assert(Math.abs(nameFieldBeforeClose.top - nameFieldAfterClose.top) <= 0.5, 'Opening/closing floating model dropdown must not shift fields below');
+    await clickElement(document.querySelector<HTMLButtonElement>('.advanced-toggle')!);
+    assert(
+      document.querySelector<HTMLInputElement>('[data-field="model-id"]')!.value === 'custom-gateway-512k'
+        && document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!.value === '512000'
+        && document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!.value === '65536',
+      'Selecting a fetched model with API token metadata must populate Model ID and token limits',
+    );
+    await clickElement(document.querySelector<HTMLButtonElement>('.model-picker-toggle')!);
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-remote-model="kimi-k3.1-pro"]')!);
+    assert(
+      document.querySelector<HTMLInputElement>('[data-field="model-id"]')!.value === 'kimi-k3.1-pro'
+        && document.querySelector<HTMLInputElement>('input[aria-label="Context Window"]')!.value === '1048576'
+        && document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!.value === '131072',
+      'Switching to a fetched Kimi model must apply Kimi preset limits cleanly',
+    );
+    await click('Cancel');
+
+    // Add Model under existing connection must pass ONLY connectionId (zero API keys) and keep manual entry working on error:
+    await mount(fixture('typing'), remoteBackend);
+    await click('Settings');
+    await openSettingsTab('models');
+    await clickElement(document.querySelector<HTMLButtonElement>('.provider-add-model')!);
+    shouldFailList = true;
+    type(document.querySelector<HTMLInputElement>('[data-field="model-id"]')!, 'manual-typed-model'); await tick();
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-action="fetch-models"]')!);
+    await tick();
+    const lastListReq = listRequests.at(-1)!;
+    assert(
+      lastListReq.kind === 'existingConnection'
+        && typeof lastListReq.connectionId === 'string'
+        && !('apiKey' in lastListReq)
+        && document.querySelector<HTMLInputElement>('[data-field="model-id"]')!.value === 'manual-typed-model'
+        && text().includes('401/403'),
+      'Add Model fetch must transmit only connectionId and preserve manual input on fetch error',
+    );
+    await click('Cancel');
+    await click('Close Settings');
+    checks.push('Remote provider model list fetching, live filtering, auto-fill, connectionId-only child fetch, and manual fallback');
+  }
+
+  // Phase 2: Repository-bound Custom Actions, Split Button switcher (Full & Compact 400x86), Create with Pi, Sync-to-all, and Tier-2 ask_user_question roundtrip:
+  {
+    const phase2Sub: { receive?: (event: WorkbenchEvent) => void } = {};
+    const phase2Cmds: WorkbenchCommand[] = [];
+    const phase2QuestionResponses: Array<{ runId: string; callId: string; dontAskAgain?: boolean }> = [];
+    let resolvePendingGen: (() => void) | null = null;
+    let resolvePendingTier2: (() => void) | null = null;
+    const phase2State = fixture('typing');
+    phase2State.worktrees[0].selectedIds = [];
+    phase2State.worktrees[0].files = [];
+
+    const phase2Backend: WorkbenchBackend = {
+      ...disconnectedBackend,
+      subscribe(receive) {
+        phase2Sub.receive = receive;
+        return () => { phase2Sub.receive = undefined; };
+      },
+      async generateCustomAction(request, onProgress) {
+        onProgress?.({
+          protocolVersion: 1,
+          runId: request.requestId,
+          status: 'needsDecision',
+          statusLabel: 'Confirm tag format',
+          pendingCallId: 'gen-tc-1',
+          questionnaire: {
+            questions: [{
+              id: 'q-tag',
+              header: 'Tag Format',
+              question: 'Which tag prefix should this button use?',
+              options: [
+                { id: 'v-prefix', label: 'v0.x.y', description: 'Standard semver v-prefix', recommended: true },
+                { id: 'plain', label: '0.x.y', description: 'Plain numeric version' },
+              ],
+            }],
+          },
+        });
+        await new Promise<void>((resolve) => {
+          if (phase2QuestionResponses.some((r) => r.callId === 'gen-tc-1')) {
+            resolve();
+          } else {
+            resolvePendingGen = resolve;
+          }
+        });
+        return {
+          protocolVersion: 1,
+          kind: 'generateCustomAction',
+          requestId: request.requestId,
+          status: 'done',
+          draft: {
+            label: 'Release Tag',
+            prompt: 'git tag -a v0.2.0 -m "Release v0.2.0" && git push origin v0.2.0',
+            summary: 'Creates and pushes annotated semver tag v0.2.0.',
+          },
+        };
+      },
+      async respondCustomAction(request) {
+        phase2QuestionResponses.push({
+          runId: request.runId,
+          callId: request.callId,
+          dontAskAgain: request.response.dontAskAgain,
+        });
+        if (request.callId === 'gen-tc-1') {
+          resolvePendingGen?.();
+          resolvePendingGen = null;
+        }
+        if (request.callId === 'confirm-tc-1') {
+          resolvePendingTier2?.();
+          resolvePendingTier2 = null;
+        }
+        return true;
+      },
+      async execute(command) {
+        phase2Cmds.push(command);
+        if (command.kind === 'runCustomAction') {
+          phase2Sub.receive?.({
+            type: 'customActionProgress',
+            progress: {
+              protocolVersion: 1,
+              runId: command.requestId,
+              repositoryId: command.target.repositoryId,
+              worktreeId: command.target.worktreeId,
+              sessionId: command.target.sessionId,
+              actionId: command.action.id,
+              actionLabel: command.action.label,
+              status: 'needsDecision',
+              pendingCallId: 'confirm-tc-1',
+              message: {
+                id: 'ask-tier2-1',
+                kind: 'question',
+                title: 'Confirm Write',
+                description: 'Confirm before running custom write command',
+                questionnaire: {
+                  questions: [{
+                    id: 'confirm-write',
+                    header: 'Confirm Write',
+                    question: 'Run custom Git command?',
+                    options: [
+                      {
+                        id: 'approve-write',
+                        label: 'Run command',
+                        description: 'Execute in current repository',
+                        recommended: true,
+                        preview: 'git tag -f v0.2.0',
+                      },
+                      { id: 'cancel-write', label: 'Cancel', description: 'Skip command' },
+                    ],
+                  }],
+                  context: { allowDontAskAgain: true },
+                },
+              },
+              timeline: [{ state: 'active', label: 'Running git tag' }],
+              commits: [],
+              links: [],
+            },
+          });
+          await new Promise<void>((resolve) => {
+            if (phase2QuestionResponses.some((r) => r.callId === 'confirm-tc-1')) {
+              resolve();
+            } else {
+              resolvePendingTier2 = resolve;
+            }
+          });
+          return {
+            protocolVersion: 1,
+            kind: 'customAction',
+            requestId: command.requestId,
+            runId: command.requestId,
+            repositoryId: command.target.repositoryId,
+            worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId,
+            actionId: command.action.id,
+            actionLabel: command.action.label,
+            status: 'done',
+            summary: 'Tagged v0.2.0 and pushed to origin.',
+            message: {
+              id: 'done-action-1',
+              kind: 'done',
+              title: 'Release Tag completed',
+              description: 'Tagged v0.2.0 and pushed to origin.',
+              links: [{ label: 'Release v0.2.0', url: 'https://github.com/acme/demo/releases/tag/v0.2.0' }],
+            },
+            timeline: [{ state: 'done', label: 'Pushed v0.2.0' }],
+            commits: [],
+            links: [{ label: 'Release v0.2.0', url: 'https://github.com/acme/demo/releases/tag/v0.2.0' }],
+          };
+        }
+        return disconnectedBackend.execute(command);
+      },
+    };
+
+    await mount(phase2State, phase2Backend);
+    // C-Push must stay disabled on clean tree, while Split Button toggle is available:
+    assert(!document.querySelector('.action-dropdown'), 'Split Button must never reuse legacy .action-dropdown selector');
+    const splitToggle = document.querySelector<HTMLButtonElement>('.action-split-toggle')!;
+    assert(Boolean(splitToggle), 'Full mode footer must render Split Button switcher toggle');
+    await clickElement(splitToggle);
+    const switcherMenu = document.querySelector<HTMLElement>('.action-switcher-menu');
+    assert(Boolean(switcherMenu), 'Clicking Split Button toggle must open action switcher menu');
+    const toggleRect = splitToggle.getBoundingClientRect();
+    const menuRect = switcherMenu!.getBoundingClientRect();
+    assert(
+      menuRect.bottom <= toggleRect.top + 1
+        && menuRect.top >= 0
+        && menuRect.left >= 0
+        && menuRect.right <= innerWidth + 1,
+      `Action switcher menu must open upward within viewport bounds (menu=${JSON.stringify({ top: menuRect.top, bottom: menuRect.bottom, left: menuRect.left, right: menuRect.right })}, toggleTop=${toggleRect.top}, viewport=${innerWidth}x${innerHeight})`,
+    );
+    await click('Create with Picket…');
+    assert(Boolean(document.querySelector('.create-pi-pane')), 'Create with Pi menu entry must open Create modal in Pi mode');
+    const createDesc = document.querySelector<HTMLTextAreaElement>('.create-pi-pane textarea')!;
+    type(createDesc, 'Create a semver release tag and push it'); await tick();
+    await click('Generate Draft');
+    await waitUntil(
+      () => Boolean(document.querySelector('.create-pi-pane .option-card')),
+      'create-pi-inline-question',
+    );
+    await clickElement(document.querySelector<HTMLButtonElement>('.create-pi-pane .option-card')!);
+    await waitUntil(
+      () => document.querySelector<HTMLInputElement>('.custom-action-form input')?.value === 'Release Tag',
+      'create-pi-draft-populated',
+    );
+    assert(
+      document.querySelector<HTMLInputElement>('.custom-action-form input')?.value === 'Release Tag'
+        && document.querySelector<HTMLTextAreaElement>('.custom-action-form textarea')?.value.includes('git tag -a v0.2.0'),
+      'Create with Pi draft did not populate the editable button form',
+    );
+    await click('Sync to All Repos');
+    assert(text().includes('added to 1'), 'Sync to All Repos did not copy custom action to the second registered repo');
+    await click('Save Action');
+
+    // Active button is now "Release Tag", CommitPanel shows its prompt preview, and main button is clickable on clean tree!
+    const mainBtn = document.querySelector<HTMLButtonElement>('.action-split-main')!;
+    assert(
+      mainBtn.textContent?.includes('Release Tag')
+        && !mainBtn.disabled
+        && Boolean(document.querySelector('.custom-action-preview-card')),
+      'Saved custom action must become clickable on clean tree and display prompt preview in CommitPanel',
+    );
+    await clickElement(mainBtn);
+    await tick();
+    assert(Boolean(document.querySelector('.message-expanded')), 'Tier-2 write confirmation should open in MessageDock');
+    const tier2Checkbox = document.querySelector<HTMLInputElement>('.dont-ask-toggle input[type="checkbox"]')!;
+    await act(async () => { tier2Checkbox.click(); });
+    await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="approve-write"]')!);
+    await waitUntil(
+      () => text().includes('Release Tag completed') && Boolean(document.querySelector('.message-link-chip')),
+      () => `phase2-custom-action-done (responses=${JSON.stringify(phase2QuestionResponses)}, dockText=${document.querySelector('.message-expanded, .message-collapsed')?.textContent ?? '<none>'})`,
+    );
+    assert(
+      phase2QuestionResponses.some((r) => r.callId === 'confirm-tc-1' && r.dontAskAgain === true),
+      `Expected Tier-2 response with dontAskAgain=true, got ${JSON.stringify(phase2QuestionResponses)}`,
+    );
+    await click('Got it');
+
+    // Compact Mode (400 x 86) Split Button & top-left-anchored actions drawer:
+    const compactActionsState = fixture('typing');
+    compactActionsState.windowPrefs.compactMode = true;
+    compactActionsState.repositorySettings.orders = {
+      editor: 'idea',
+      commitLanguage: 'en',
+      customActions: [{ id: 'act-1', label: 'Release Tag', prompt: 'git tag v0.2.0' }],
+      activeActionId: 'act-1',
+    };
+    await mount(compactActionsState, phase2Backend);
+    const compactToggle = document.querySelector<HTMLButtonElement>('.compact-bar .action-split-toggle')!;
+    assert(Boolean(compactToggle) && document.querySelector('.compact-bar .action-split-main')?.textContent?.includes('Release Tag'), 'Compact bar must render Split Button with active custom action');
+    await clickElement(compactToggle);
+    assert(Boolean(document.querySelector('.compact-actions-drawer')), 'Compact Split Button toggle must expand actions drawer');
+    await clickElement(document.querySelector<HTMLButtonElement>('.compact-action-item')!);
+    assert(!document.querySelector('.compact-actions-drawer') && document.querySelector('.compact-bar .action-split-main')?.textContent?.includes('C-Push'), 'Selecting C-Push in compact actions drawer must switch main button and collapse drawer');
+    // Phase 2 + Pinned Space-switch resilience: verify Create with Pi, ProviderConnectionForm, MessageDock questionnaire, and + Prompt Collapse never unmount or lose state across visibilitychange (visible -> hidden -> visible) with real animations enabled:
+    {
+      const cancelledGenRuns: string[] = [];
+      let resolveSpaceGen: (() => void) | null = null;
+      const spaceSwitchState = fixture('typing');
+      spaceSwitchState.windowPrefs.pinned = true;
+      spaceSwitchState.worktrees[0].dockExpanded = true;
+      spaceSwitchState.worktrees[0].sessionStatus = 'needsDecision';
+      spaceSwitchState.worktrees[0].messages = [{
+        id: 'msg-space-q',
+        kind: 'question',
+        title: 'Multi-step Space-switch check',
+        description: 'Confirm state survives macOS Space switches.',
+        questionnaire: {
+          questions: [{
+            id: 'q-multi',
+            header: 'Options',
+            question: 'Pick options to keep across Space switch',
+            multiSelect: true,
+            options: [
+              { id: 'opt-a', label: 'Option A', description: 'First option', recommended: true },
+              { id: 'opt-b', label: 'Option B', description: 'Second option' },
+            ],
+          }],
+          context: { allowDontAskAgain: true },
+        },
+      }];
+      const spaceSwitchBackend: WorkbenchBackend = {
+        ...disconnectedBackend,
+        async generateCustomAction(request, onProgress) {
+          onProgress?.({
+            protocolVersion: 1,
+            runId: request.requestId,
+            status: 'needsDecision',
+            statusLabel: 'Confirm branch target',
+            pendingCallId: 'space-gen-tc-1',
+            questionnaire: {
+              questions: [{
+                id: 'q-target',
+                header: 'Target',
+                question: 'Which branch should this action target?',
+                options: [
+                  { id: 'test-branch', label: 'test', description: 'Push to test branch', recommended: true },
+                  { id: 'staging-branch', label: 'staging', description: 'Push to staging branch' },
+                ],
+              }],
+            },
+          });
+          await new Promise<void>((resolve) => { resolveSpaceGen = resolve; });
+          return {
+            protocolVersion: 1,
+            kind: 'generateCustomAction',
+            requestId: request.requestId,
+            status: 'done',
+            draft: {
+              label: 'Deploy Test',
+              prompt: 'submit -ch to test',
+              summary: 'Submits changes to test branch.',
+            },
+          };
+        },
+        async respondCustomAction(request) {
+          if (request.callId === 'space-gen-tc-1') {
+            resolveSpaceGen?.();
+            resolveSpaceGen = null;
+          }
+          return true;
+        },
+        async cancelCustomAction(requestId) {
+          cancelledGenRuns.push(requestId);
+        },
+      };
+
+      const simulateSpaceSwitch = async () => {
+        const prevDesc = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        try {
+          Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+          await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+          await tick();
+          Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+          await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+          await tick();
+        } finally {
+          if (prevDesc) Object.defineProperty(document, 'visibilityState', prevDesc);
+          else delete (document as { visibilityState?: unknown }).visibilityState;
+        }
+      };
+
+      setInstantMotion(false);
+      try {
+        await mount(spaceSwitchState, spaceSwitchBackend);
+
+        // 1) + Prompt textarea inside <Collapse> and MessageDock questionnaire selections survive Space switch:
+        const promptBefore = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
+        assert(Boolean(promptBefore), 'Expected + Prompt textarea inside Collapse');
+        await clickElement(document.querySelector<HTMLButtonElement>('.message-expanded .option-card[data-option-id="opt-a"]')!);
+        const dockCustomInput = document.querySelector<HTMLInputElement>('.message-expanded .message-reply input')!;
+        type(dockCustomInput, 'keep this note');
+        const dockDontAsk = document.querySelector<HTMLInputElement>('.message-expanded .dont-ask-toggle input[type="checkbox"]')!;
+        await act(async () => { dockDontAsk.click(); });
+        await simulateSpaceSwitch();
+        assert(
+          document.querySelector<HTMLTextAreaElement>('.prompt-textarea') === promptBefore
+            && document.querySelector('.message-expanded .option-card[data-option-id="opt-a"]')?.classList.contains('is-selected')
+            && document.querySelector<HTMLInputElement>('.message-expanded .message-reply input')?.value === 'keep this note'
+            && document.querySelector<HTMLInputElement>('.message-expanded .dont-ask-toggle input[type="checkbox"]')?.checked === true,
+          'Space switch (visibilitychange) must not unmount Collapse prompt or wipe MessageDock questionnaire state',
+        );
+
+        // 2) Create with Pi session (running + inline ask_user_question) survives Space switch in Pinned mode:
+        const spaceSplitState = fixture('typing');
+        spaceSplitState.windowPrefs.pinned = true;
+        await mount(spaceSplitState, spaceSwitchBackend);
+        await clickElement(document.querySelector<HTMLButtonElement>('.action-split-toggle')!);
+        await click('Create with Picket…');
+        const createInput = document.querySelector<HTMLTextAreaElement>('.create-pi-pane textarea')!;
+        type(createInput, 'Submit my changes to test branch');
+        await tick();
+        await click('Generate Draft');
+        await waitUntil(() => Boolean(document.querySelector('.create-pi-pane .create-pi-question')), 'space-switch-create-pi-question');
+        const questionNodeBefore = document.querySelector('.create-pi-pane .create-pi-question');
+        await simulateSpaceSwitch();
+        assert(
+          cancelledGenRuns.length === 0
+            && document.querySelector('.create-pi-pane .create-pi-question') === questionNodeBefore
+            && document.querySelector<HTMLTextAreaElement>('.create-pi-pane textarea')?.value === 'Submit my changes to test branch',
+          `Create with Pi session vanished or remounted across Space switch (cancelled=${JSON.stringify(cancelledGenRuns)})`,
+        );
+        await clickElement(document.querySelector<HTMLButtonElement>('.create-pi-pane .option-card[data-option-id="test-branch"]')!);
+        await waitUntil(
+          () => document.querySelector<HTMLInputElement>('.custom-action-form input')?.value === 'Deploy Test',
+          'space-switch-create-pi-draft-completed',
+        );
+        await click('Cancel');
+        await waitUntil(() => !document.querySelector('.overlay'), 'space-switch-create-modal-close');
+
+        // 3) ProviderConnectionForm unsaved fields & Advanced Collapse survive Space switch, and occluded close works instantly:
+        await click('Settings');
+        await openSettingsTab('models');
+        await click('Provider');
+        await click('Custom Compatible');
+        const urlField = document.querySelector<HTMLInputElement>('[data-field="base-url"]')!;
+        const keyField = document.querySelector<HTMLInputElement>('[data-field="api-key"]')!;
+        assert(Boolean(urlField) && Boolean(keyField), 'Expected Custom Compatible provider form fields');
+        type(urlField, 'https://api.example.com/v1');
+        type(keyField, 'sk-space-persist-test');
+        await clickElement(document.querySelector<HTMLButtonElement>('.advanced-toggle')!);
+        const advancedNodeBefore = document.querySelector('.model-form .motion-collapse');
+        await simulateSpaceSwitch();
+        assert(
+          document.querySelector<HTMLInputElement>('[data-field="base-url"]')?.value === 'https://api.example.com/v1'
+            && document.querySelector<HTMLInputElement>('[data-field="api-key"]')?.value === 'sk-space-persist-test'
+            && document.querySelector('.model-form .motion-collapse') === advancedNodeBefore,
+          'Provider form fields or Advanced Collapse reset across Space switch',
+        );
+        // Occluded WebView (visibilityState === 'hidden') must still close Overlay cleanly without stalling on rAF:
+        const prevDesc = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        try {
+          Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+          await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+          await click('Cancel');
+          assert(document.querySelectorAll('.overlay').length === 1, 'Overlay must unmount immediately when closed while document is hidden');
+        } finally {
+          if (prevDesc) Object.defineProperty(document, 'visibilityState', prevDesc);
+          else delete (document as { visibilityState?: unknown }).visibilityState;
+          await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+        }
+        await click('Close Settings');
+        await waitUntil(() => !document.querySelector('.overlay'), 'space-switch-settings-close');
+      } finally {
+        setInstantMotion(true);
+      }
+      checks.push('Pinned Space-switch resilience: visibilitychange preserves Create with Pi session, Provider form & Collapse state, MessageDock questionnaire selections, + Prompt textarea, and instant occluded close');
+    }
+
+    checks.push('Phase 2 Custom Actions: Split Button switcher (Full & Compact), Create with Pi draft, Sync to All Repos, clean-tree clickability, CommitPanel preview, and Tier-2 ask_user_question');
+
+    // Phase 3: Cold-restart restoration of interrupted submit session with preserved links + dismissal persistence:
+    {
+      const dismissedActions: Array<{ runId?: string; messageId: string }> = [];
+      const restoredSnap = repositorySnapshot(1);
+      await act(async () => {
+        root.render(createElement(Workbench, {
+          key: ++key,
+          backend: {
+            ...reads,
+            async loadWorkbenchState(): Promise<WorkbenchRestoreReply> {
+              return {
+                protocolVersion: 2,
+                locale: 'en',
+                editor: 'idea',
+                defaultCommitLanguage: 'en',
+                activeWorktreeId: 'pay-tree',
+                emptyPrompt: '',
+                snapshots: [restoredSnap],
+                worktrees: [],
+                actionSessions: [{
+                  runId: 'run-submit-restore-1',
+                  repositoryId: 'orders',
+                  worktreeId: 'pay-tree',
+                  actionId: 'act-submit',
+                  actionLabel: 'Submit -> v1.9.0 -> test',
+                  status: 'interrupted',
+                  summary: 'Interrupted before final promotion; created PRs and isolated worktrees were preserved.',
+                  message: {
+                    id: 'interrupted-action-run-submit-restore-1',
+                    kind: 'error',
+                    title: 'Interrupted: Submit -> v1.9.0 -> test',
+                    description: 'Interrupted before final promotion; created PRs and isolated worktrees were preserved.',
+                    links: [
+                      { label: 'Issue #42', url: 'https://github.com/acme/demo/issues/42' },
+                      { label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' },
+                    ],
+                  },
+                  timeline: [
+                    { state: 'done', label: 'Created isolated submit worktree' },
+                    { state: 'failed', label: 'Running gh pr merge' },
+                  ],
+                  commits: [{
+                    oid: '1111111111111111111111111111111111111111',
+                    shortOid: '1111111',
+                    title: 'fix(auth): validate expired tokens',
+                    branch: 'fix/issue-42-auth',
+                    fileIds: [],
+                  }],
+                  links: [
+                    { label: 'Issue #42', url: 'https://github.com/acme/demo/issues/42' },
+                    { label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' },
+                  ],
+                }],
+                warning: null,
+              };
+            },
+            async dismissCustomActionDone(_target, runId, messageId) {
+              dismissedActions.push({ runId, messageId });
+            },
+          },
+        }));
+      });
+      await tick();
+      const restoredPill = document.querySelector<HTMLButtonElement>('.message-collapsed');
+      assert(
+        Boolean(restoredPill) && (restoredPill?.textContent ?? '').includes('Interrupted: Submit -> v1.9.0 -> test'),
+        `Cold-restored interrupted submit session did not surface collapsed dock chip (pill=${restoredPill?.textContent})`,
+      );
+      await clickElement(restoredPill!);
+      const expandedText = document.querySelector('.message-expanded')?.textContent ?? '';
+      assert(
+        expandedText.includes('Issue #42') && expandedText.includes('PR #101'),
+        `Expanded restored submit session did not preserve Issue/PR links (text=${expandedText})`,
+      );
+      const okBtn = [...document.querySelectorAll<HTMLButtonElement>('.message-expanded button')].find((b) =>
+        /dismiss|got it|close|acknowledge/i.test(b.getAttribute('aria-label') ?? b.textContent ?? ''),
+      );
+      assert(Boolean(okBtn), 'Expected dismiss button on restored interrupted custom action card');
+      await clickElement(okBtn!);
+      assert(
+        !document.querySelector('.message-collapsed')
+          && dismissedActions.length === 1
+          && dismissedActions[0].runId === 'run-submit-restore-1'
+          && dismissedActions[0].messageId === 'interrupted-action-run-submit-restore-1',
+        `Dismissing restored submit session did not persist dismissal (${JSON.stringify(dismissedActions)})`,
+      );
+      checks.push('Phase 3 Cold Restart: restored interrupted submit session chip, preserved Issue/PR links, and persisted dismissal');
+    }
+  }
+
+  // Phase 4 Settings -> Skills: bundled state, custom source edit, error preservation, sync, per-skill toggle, and Restore Built-in:
+  {
+    const baseBundledSkills: SkillsStateSnapshot = {
+      protocolVersion: SKILLS_PROTOCOL_VERSION,
+      mode: 'bundled',
+      sourceRepo: DEFAULT_SKILLS_SOURCE_REPO,
+      defaultSourceRepo: DEFAULT_SKILLS_SOURCE_REPO,
+      skills: [
+        { name: 'commit', description: 'Create focused git commits.', enabled: true, builtIn: true, source: 'bundled', fileCount: 1, referenceCount: 0 },
+        { name: 'dcr', description: 'Review git diffs with findings.', enabled: true, builtIn: true, source: 'bundled', fileCount: 1, referenceCount: 0 },
+      ],
+    };
+    let currentSkills: SkillsStateSnapshot = structuredClone(baseBundledSkills);
+    let failNextSync = true;
+    const syncedRepos: Array<string | undefined> = [];
+    const toggledSets: string[][] = [];
+    let resetCount = 0;
+
+    await mount(fixture('typing'), {
+      ...disconnectedBackend,
+      async getSkillsState() {
+        return structuredClone(currentSkills);
+      },
+      async syncSkills(sourceRepo) {
+        syncedRepos.push(sourceRepo);
+        if (failNextSync) {
+          failNextSync = false;
+          throw new Error('Repository not reachable');
+        }
+        currentSkills = {
+          protocolVersion: SKILLS_PROTOCOL_VERSION,
+          mode: 'synced',
+          sourceRepo: sourceRepo ?? DEFAULT_SKILLS_SOURCE_REPO,
+          defaultSourceRepo: DEFAULT_SKILLS_SOURCE_REPO,
+          sourceCommit: '1234567890abcdef1234567890abcdef12345678',
+          syncedAt: '2026-11-26T06:00:00Z',
+          skills: [
+            { name: 'commit', description: 'Synced commit skill.', enabled: true, builtIn: true, source: 'synced', fileCount: 1, referenceCount: 0 },
+            { name: 'dcr', description: 'Synced diff review skill.', enabled: true, builtIn: true, source: 'synced', fileCount: 1, referenceCount: 0 },
+            { name: 'release-tag', description: 'Tag release versions safely.', enabled: false, builtIn: false, source: 'synced', fileCount: 2, referenceCount: 1 },
+          ],
+        };
+        return structuredClone(currentSkills);
+      },
+      async setEnabledSkills(enabledSkills) {
+        toggledSets.push([...enabledSkills]);
+        const enabledSet = new Set(enabledSkills);
+        currentSkills = {
+          ...currentSkills,
+          skills: currentSkills.skills.map((item) => ({
+            ...item,
+            enabled: enabledSet.has(item.name),
+          })),
+        };
+        return structuredClone(currentSkills);
+      },
+      async resetSkills() {
+        resetCount += 1;
+        currentSkills = structuredClone(baseBundledSkills);
+        return structuredClone(currentSkills);
+      },
+    });
+    await click('Settings');
+    await openSettingsTab('skills');
+    await tick();
+    const skillsSection = () => document.querySelector<HTMLElement>('#settings-skills-section');
+    assert(
+      skillsSection()?.dataset.skillsMode === 'bundled'
+        && (skillsSection()?.textContent ?? '').includes(DEFAULT_SKILLS_SOURCE_REPO)
+        && !document.querySelector('[data-skills-reset]'),
+      'Settings -> Skills did not render initial bundled state cleanly',
+    );
+    const bundledCommitCheck = document.querySelector<HTMLInputElement>('[data-skill-name="commit"] input[type="checkbox"]');
+    assert(Boolean(bundledCommitCheck?.disabled), 'Bundled skill checkbox should be read-only before syncing');
+
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-skills-edit-source]')!);
+    const sourceInput = document.querySelector<HTMLInputElement>('[data-skills-source-input]')!;
+    type(sourceInput, 'https://github.com/acme/team-skills');
+    await tick();
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-skills-sync]')!);
+    await tick();
+    assert(
+      skillsSection()?.dataset.skillsMode === 'bundled'
+        && (skillsSection()?.textContent ?? '').includes('Repository not reachable')
+        && document.querySelector<HTMLInputElement>('[data-skills-source-input]')?.value === 'https://github.com/acme/team-skills',
+      'Failed skill sync did not preserve mode, error alert, and edited source repository URL',
+    );
+
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-skills-sync]')!);
+    await tick();
+    assert(
+      skillsSection()?.dataset.skillsMode === 'synced'
+        && syncedRepos.at(-1) === 'https://github.com/acme/team-skills'
+        && (skillsSection()?.textContent ?? '').includes('1234567')
+        && !document.querySelector('[data-skills-source-input]')
+        && Boolean(document.querySelector('[data-skills-reset]')),
+      'Successful skill sync did not update mode, commit metadata, or reveal Restore Built-in',
+    );
+
+    const customSkillCheck = document.querySelector<HTMLInputElement>('[data-skill-name="release-tag"] input[type="checkbox"]')!;
+    assert(!customSkillCheck.disabled && !customSkillCheck.checked, 'Synced custom skill should start unchecked and interactive');
+    await act(async () => { customSkillCheck.click(); });
+    await tick();
+    assert(
+      toggledSets.length === 1
+        && toggledSets[0].includes('release-tag')
+        && document.querySelector<HTMLInputElement>('[data-skill-name="release-tag"] input[type="checkbox"]')?.checked === true
+        && (document.querySelector('[data-settings-tab="skills"]')?.textContent ?? '').includes('3/3'),
+      `Toggling custom skill did not invoke setEnabledSkills or update enabled count (${JSON.stringify(toggledSets)})`,
+    );
+
+    await clickElement(document.querySelector<HTMLButtonElement>('[data-skills-reset]')!);
+    await tick();
+    assert(
+      resetCount === 1
+        && skillsSection()?.dataset.skillsMode === 'bundled'
+        && !document.querySelector('[data-skills-reset]'),
+      'Restore Built-in did not reset Skills section back to bundled mode',
+    );
+    checks.push('Phase 4 Settings -> Skills: bundled view, custom source edit, failed-sync preservation, hot-sync metadata, per-skill toggle, and Restore Built-in');
+  }
+
+  // Zero-flash Overlay Navigation Stack (Manage Actions -> Manual/Create -> Back -> Close) & Pinned Overlay Footers:
+  {
+    await mount(fixture('typing'));
+    await click('Switch primary action');
+    await click('Manage Actions…');
+    const managerOverlay = document.querySelector<HTMLElement>('.overlay[data-overlay-depth="0"]');
+    assert(Boolean(managerOverlay) && (managerOverlay?.textContent ?? '').includes('Manage Actions'), 'Manage Actions did not open at stack depth 0');
+    await click('Manual');
+    const overlaysAfterPush = [...document.querySelectorAll<HTMLElement>('.overlay')];
+    assert(
+      overlaysAfterPush.length === 2
+        && overlaysAfterPush[0] === managerOverlay
+        && overlaysAfterPush[0].hasAttribute('inert')
+        && overlaysAfterPush[1].dataset.overlayDepth === '1'
+        && overlaysAfterPush[1].dataset.overlayVariant === 'drill'
+        && Number(getComputedStyle(overlaysAfterPush[1]).zIndex) > Number(getComputedStyle(overlaysAfterPush[0]).zIndex),
+      'Pushing Manual action from Manage Actions must keep Manage Actions mounted underneath (zero workbench flash) with higher z-index drill overlay on top',
+    );
+    const actionFooterRect = overlaysAfterPush[1].querySelector<HTMLElement>('.overlay-footer')!.getBoundingClientRect();
+    const actionOverlayRect = overlaysAfterPush[1].getBoundingClientRect();
+    assert(
+      Math.abs(actionFooterRect.bottom - actionOverlayRect.bottom) <= 1.5,
+      `CustomActionModal footer must stay pinned to bottom of overlay (footerBottom=${actionFooterRect.bottom}, overlayBottom=${actionOverlayRect.bottom})`,
+    );
+    await clickElement(overlaysAfterPush[1].querySelector<HTMLButtonElement>('[data-overlay-back]')!);
+    assert(
+      document.querySelectorAll('.overlay').length === 1
+        && document.querySelector('.overlay') === managerOverlay
+        && !managerOverlay!.hasAttribute('inert'),
+      'Back from New Custom Action must reveal the same mounted Manage Actions instance without remounting or flashing workbench',
+    );
+    await click('Create');
+    assert(document.querySelectorAll('.overlay').length === 2, 'Pushing Create from Manage Actions must stack over Manage Actions');
+    await click('Close New Custom Action');
+    assert(!document.querySelector('.overlay'), 'Clicking × on stacked New Custom Action must close all action overlays straight back to workbench');
+
+    // Verify ProviderConnectionForm footer stays pinned to bottom even when Advanced fields expand:
+    await click('Settings');
+    await openSettingsTab('models');
+    await click('Provider');
+    await clickElement(document.querySelector<HTMLButtonElement>('.advanced-toggle')!);
+    const modelOverlayEl = document.querySelector<HTMLElement>('.overlay[data-overlay-depth="1"]')!;
+    const modelFooterRect = modelOverlayEl.querySelector<HTMLElement>('.overlay-footer')!.getBoundingClientRect();
+    const modelOverlayRect = modelOverlayEl.getBoundingClientRect();
+    assert(
+      Math.abs(modelFooterRect.bottom - modelOverlayRect.bottom) <= 1.5,
+      `Add Provider footer must stay pinned to bottom of overlay even with Advanced expanded (footerBottom=${modelFooterRect.bottom}, overlayBottom=${modelOverlayRect.bottom})`,
+    );
+    await click('Close Add Provider');
+    assert(!document.querySelector('.overlay'), 'Closing Add Provider via × must return straight to workbench');
+    checks.push('Zero-flash Overlay Navigation Stack (Manage Actions -> Manual/Create -> Back/Close) and bottom-pinned form footers');
+  }
 
   // Menu bar tray popover: read-only cards, urgency sort, clean-workspace auto-folding, zero search box, and clean actions:
   const trayActions: string[] = [];
