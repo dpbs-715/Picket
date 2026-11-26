@@ -19,6 +19,7 @@ export interface SidecarMessages {
   providerServiceError: (detail: string) => string;
   connectionFailed: (detail: string) => string;
   requestTimedOut: (detail: string) => string;
+  toolsUnsupported: (detail: string) => string;
   requestFailed: (detail: string) => string;
   emptyCommitMessage: string;
   invalidReviewJson: string;
@@ -60,6 +61,10 @@ export interface SidecarMessages {
   providerReturnedError: string;
   lengthTruncatedJson: string;
   thinkingTokensExhausted: string;
+  defaultCustomActionSummary: string;
+  invalidCustomActionDraftJson: string;
+  missingCustomActionDraftFields: string;
+  defaultCustomActionDraftSummary: string;
 }
 
 const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
@@ -75,6 +80,7 @@ const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
     providerServiceError: (detail) => `Model provider service error (5xx). Please retry shortly (${detail})`,
     connectionFailed: (detail) => `Unable to connect to model service. Check your network or local server (${detail})`,
     requestTimedOut: (detail) => `Model request timed out. Please retry shortly (${detail})`,
+    toolsUnsupported: (detail) => `The selected model does not support tool calling; switch to a tool-capable model in Model Settings (${detail})`,
     requestFailed: (detail) => `Model request failed: ${detail}`,
     emptyCommitMessage: 'Model returned an empty commit message.',
     invalidReviewJson: 'Model did not return valid structured review JSON.',
@@ -116,6 +122,10 @@ const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
     providerReturnedError: 'Model service returned an error.',
     lengthTruncatedJson: 'Model output was truncated due to max output tokens before completing structured JSON; narrow the selected file scope and retry.',
     thinkingTokensExhausted: 'Model thinking tokens exhausted max output tokens before generating final output; narrow the selected scope or switch to a non-reasoning model.',
+    defaultCustomActionSummary: 'Custom action completed.',
+    invalidCustomActionDraftJson: 'Picket did not return a valid button draft JSON object.',
+    missingCustomActionDraftFields: 'Generated button draft is missing a label or prompt.',
+    defaultCustomActionDraftSummary: 'Generated from repository context; review or edit before saving.',
   },
   zh: {
     missingBaseUrl: '缺少模型服务接口地址（Base URL）',
@@ -129,6 +139,7 @@ const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
     providerServiceError: (detail) => `模型服务异常（5xx），请稍后重试（${detail}）`,
     connectionFailed: (detail) => `无法连接到模型服务，请确认网络或本地服务已启动（${detail}）`,
     requestTimedOut: (detail) => `连接模型服务超时，请稍后重试（${detail}）`,
+    toolsUnsupported: (detail) => `当前选中的模型不支持工具调用（Tool Calling），请在模型设置中切换支持工具调用的模型（${detail}）`,
     requestFailed: (detail) => `模型请求未完成：${detail}`,
     emptyCommitMessage: '模型返回了空的提交说明',
     invalidReviewJson: '模型未返回有效的结构化审查 JSON',
@@ -170,6 +181,10 @@ const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
     providerReturnedError: '模型服务返回错误',
     lengthTruncatedJson: '模型输出达到长度上限被截断，未能生成完整的结构化结果；请缩小单次勾选文件范围后重试',
     thinkingTokensExhausted: '模型思考内容耗尽了输出长度上限，未生成最终正文；请缩小所选变更范围或改用非深度思考模型重试',
+    defaultCustomActionSummary: '自定义动作已执行完成。',
+    invalidCustomActionDraftJson: 'Picket 未返回有效的按钮草稿 JSON。',
+    missingCustomActionDraftFields: '生成的按钮草稿缺少名称或指令内容。',
+    defaultCustomActionDraftSummary: '已根据仓库上下文生成按钮草稿，你可以微调后保存。',
   },
 };
 

@@ -1,5 +1,11 @@
 import { isAppLocale, type AppLocale, type CommitLanguage } from './language-protocol';
-import { isModelApiFormat, isModelProviderId, type ModelApiFormat, type ModelProviderId } from './model-protocol';
+import {
+  isModelApiFormat,
+  isModelProviderId,
+  type ModelApiFormat,
+  type ModelProviderId,
+  type RemoteModelOption,
+} from './model-protocol';
 
 export const PI_PROTOCOL_VERSION = 1;
 export const PI_CORE_VERSION = '1.6.0';
@@ -118,6 +124,26 @@ export interface TestConnectionRequest {
   locale?: AppLocale;
 }
 
+export interface ListModelsRequest {
+  type: 'listModels';
+  requestId: string;
+  context: RequestContext;
+  model: PiProviderSpec;
+  locale?: AppLocale;
+}
+
+export interface RuntimeSkillOverrideEntry {
+  name: string;
+  description: string;
+  files: string[];
+}
+
+export interface RuntimeSkillOverrideCatalog {
+  sourceRepo?: string;
+  sourceCommit?: string;
+  skills: RuntimeSkillOverrideEntry[];
+}
+
 export interface ReviewScopeCommand {
   type: 'reviewScope';
   requestId: string;
@@ -128,6 +154,8 @@ export interface ReviewScopeCommand {
   files: PiDiffFile[];
   skippedPaths: string[];
   locale?: AppLocale;
+  enableTools?: boolean;
+  skillOverrides?: RuntimeSkillOverrideCatalog;
 }
 
 export interface PlanCPushCommand {
@@ -143,6 +171,7 @@ export interface PlanCPushCommand {
   qaHistory: PiCPushQaTurn[];
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
+  skillOverrides?: RuntimeSkillOverrideCatalog;
 }
 
 export interface ResolveConflictCommand {
@@ -158,14 +187,60 @@ export interface ResolveConflictCommand {
   locale?: AppLocale;
 }
 
+export interface RunCustomActionCommand {
+  type: 'runCustomAction';
+  requestId: string;
+  context: RequestContext;
+  model: PiProviderSpec;
+  branch: string;
+  detached: boolean;
+  remoteBranches: string[];
+  actionLabel: string;
+  actionPrompt: string;
+  extraPrompt: string;
+  selectedFiles: PiPlanFileEntry[];
+  unselectedPaths: string[];
+  localKeepPaths: string[];
+  locale?: AppLocale;
+  commitLanguage?: CommitLanguage;
+  skillOverrides?: RuntimeSkillOverrideCatalog;
+  previousCheckpoint?: string;
+}
+
+export interface GenerateCustomActionCommand {
+  type: 'generateCustomAction';
+  requestId: string;
+  context: RequestContext;
+  model: PiProviderSpec;
+  branch: string;
+  existingLabels: string[];
+  userRequest: string;
+  locale?: AppLocale;
+  skillOverrides?: RuntimeSkillOverrideCatalog;
+}
+
 export type PiTaskRequest =
   | ProbeRequest
   | TestConnectionRequest
+  | ListModelsRequest
   | ReviewScopeCommand
   | PlanCPushCommand
-  | ResolveConflictCommand;
+  | ResolveConflictCommand
+  | RunCustomActionCommand
+  | GenerateCustomActionCommand;
+
+export interface PiToolResultCommand {
+  type: 'toolResult';
+  requestId: string;
+  callId: string;
+  ok: boolean;
+  content: string;
+  details?: unknown;
+  isError?: boolean;
+}
 
 export type PiCommand = PiTaskRequest
+  | PiToolResultCommand
   | { type: 'cancel'; requestId: string }
   | { type: 'shutdown' };
 
@@ -178,6 +253,17 @@ export interface PiReviewFinding {
   reason: string;
 }
 
+export interface PiActionLink {
+  label: string;
+  url: string;
+}
+
+export interface PiCustomActionDraft {
+  label: string;
+  prompt: string;
+  summary: string;
+}
+
 export type ProbeEvent = {
   requestId: string;
   context: RequestContext;
@@ -185,10 +271,15 @@ export type ProbeEvent = {
   | { type: 'started' }
   | { type: 'activity' }
   | { type: 'textDelta'; delta: string }
+  | { type: 'toolCall'; callId: string; toolName: string; args: Record<string, unknown> }
+  | { type: 'toolProgress'; callId: string; toolName: string; status: string }
   | { type: 'completed'; text: string }
+  | { type: 'modelsListed'; models: RemoteModelOption[] }
   | { type: 'reviewCompleted'; findings: PiReviewFinding[] }
   | { type: 'cPushPlanCompleted'; plan: PiCPushPlan }
   | { type: 'conflictResolved'; resolution: PiConflictResolution }
+  | { type: 'customActionCompleted'; summary: string; links: PiActionLink[] }
+  | { type: 'customActionDrafted'; draft: PiCustomActionDraft }
   | { type: 'cancelled' }
   | { type: 'failed'; message: string }
 );
@@ -213,11 +304,11 @@ function decodeRequestContext(value: unknown): RequestContext {
   };
 }
 
-function decodeProviderSpec(value: unknown): PiProviderSpec {
+function decodeProviderSpec(value: unknown, allowEmptyModelId = false): PiProviderSpec {
   if (!isRecord(value)
     || !isModelProviderId(value.provider)
     || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
-    || typeof value.modelId !== 'string' || !value.modelId.trim()
+    || typeof value.modelId !== 'string' || (!allowEmptyModelId && !value.modelId.trim())
     || typeof value.baseUrl !== 'string'
     || typeof value.apiKey !== 'string'
     || !(value.contextWindow === undefined || value.contextWindow === null || (typeof value.contextWindow === 'number' && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0))
@@ -268,8 +359,10 @@ function decodeStringList(value: unknown, field: string): string[] {
   return value as string[];
 }
 
-function decodePlanFiles(value: unknown): PiPlanFileEntry[] {
-  if (!Array.isArray(value) || value.length === 0) throw new Error('Expected non-empty plan files array');
+function decodePlanFiles(value: unknown, allowEmpty = false): PiPlanFileEntry[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    throw new Error(allowEmpty ? 'Expected plan files array' : 'Expected non-empty plan files array');
+  }
   return value.map((item) => {
     if (!isRecord(item)
       || typeof item.fileId !== 'string' || !item.fileId
@@ -342,6 +435,31 @@ function decodeConflictFiles(value: unknown): PiConflictFile[] {
   });
 }
 
+function decodeSkillOverrides(value: unknown): RuntimeSkillOverrideCatalog | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value) || !Array.isArray(value.skills)) {
+    throw new Error('Invalid skillOverrides catalog');
+  }
+  const skills: RuntimeSkillOverrideEntry[] = value.skills.map((entry) => {
+    if (!isRecord(entry)
+      || typeof entry.name !== 'string' || !entry.name.trim()
+      || typeof entry.description !== 'string'
+      || !Array.isArray(entry.files) || !entry.files.every((file) => typeof file === 'string')) {
+      throw new Error('Invalid skillOverrides entry');
+    }
+    return {
+      name: entry.name.trim(),
+      description: entry.description,
+      files: entry.files as string[],
+    };
+  });
+  return {
+    ...(typeof value.sourceRepo === 'string' && value.sourceRepo ? { sourceRepo: value.sourceRepo } : {}),
+    ...(typeof value.sourceCommit === 'string' && value.sourceCommit ? { sourceCommit: value.sourceCommit } : {}),
+    skills,
+  };
+}
+
 export function decodeCommand(line: string): PiCommand {
   if (Buffer.byteLength(line) > MAX_COMMAND_LINE_BYTES) throw new Error('Protocol line is too large');
   const command: unknown = JSON.parse(line);
@@ -351,6 +469,23 @@ export function decodeCommand(line: string): PiCommand {
     throw new Error('Invalid requestId');
   }
   if (command.type === 'cancel') return { type: 'cancel', requestId: command.requestId };
+  if (command.type === 'toolResult') {
+    if (typeof command.callId !== 'string' || !command.callId.trim()
+      || typeof command.ok !== 'boolean'
+      || typeof command.content !== 'string'
+      || !(command.isError === undefined || typeof command.isError === 'boolean')) {
+      throw new Error('Invalid toolResult fields');
+    }
+    return {
+      type: 'toolResult',
+      requestId: command.requestId,
+      callId: command.callId.trim(),
+      ok: command.ok,
+      content: command.content,
+      ...(command.details !== undefined ? { details: command.details } : {}),
+      ...(typeof command.isError === 'boolean' ? { isError: command.isError } : {}),
+    };
+  }
   if (command.type === 'probe') {
     if (!isRecord(command.context)) throw new Error('Unknown command');
     const context = command.context;
@@ -381,12 +516,26 @@ export function decodeCommand(line: string): PiCommand {
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }
+  if (command.type === 'listModels') {
+    if (!(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
+      throw new Error('Invalid locale');
+    }
+    return {
+      type: 'listModels',
+      requestId: command.requestId,
+      context: decodeRequestContext(command.context),
+      model: decodeProviderSpec(command.model, true),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
+    };
+  }
   if (command.type === 'reviewScope') {
     if (typeof command.branch !== 'string'
       || typeof command.prompt !== 'string'
-      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
+      || !(command.enableTools === undefined || command.enableTools === null || typeof command.enableTools === 'boolean')) {
       throw new Error('Invalid reviewScope fields');
     }
+    const skillOverrides = decodeSkillOverrides(command.skillOverrides);
     return {
       type: 'reviewScope',
       requestId: command.requestId,
@@ -397,6 +546,8 @@ export function decodeCommand(line: string): PiCommand {
       files: decodeDiffFiles(command.files),
       skippedPaths: decodeStringList(command.skippedPaths, 'skippedPaths'),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
+      ...(typeof command.enableTools === 'boolean' ? { enableTools: command.enableTools } : {}),
+      ...(skillOverrides ? { skillOverrides } : {}),
     };
   }
   if (command.type === 'planCPush') {
@@ -406,6 +557,7 @@ export function decodeCommand(line: string): PiCommand {
       || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))) {
       throw new Error('Invalid planCPush fields');
     }
+    const skillOverrides = decodeSkillOverrides(command.skillOverrides);
     return {
       type: 'planCPush',
       requestId: command.requestId,
@@ -419,6 +571,7 @@ export function decodeCommand(line: string): PiCommand {
       qaHistory: decodeQaHistory(command.qaHistory),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
       ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
+      ...(skillOverrides ? { skillOverrides } : {}),
     };
   }
   if (command.type === 'resolveConflict') {
@@ -439,6 +592,59 @@ export function decodeCommand(line: string): PiCommand {
       commits: decodeStringList(command.commits, 'commits'),
       files: decodeConflictFiles(command.files),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
+    };
+  }
+  if (command.type === 'runCustomAction') {
+    if (typeof command.branch !== 'string'
+      || typeof command.detached !== 'boolean'
+      || typeof command.actionLabel !== 'string' || !command.actionLabel.trim()
+      || typeof command.actionPrompt !== 'string' || !command.actionPrompt.trim()
+      || typeof command.extraPrompt !== 'string'
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
+      || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))
+      || !(command.previousCheckpoint === undefined || command.previousCheckpoint === null || typeof command.previousCheckpoint === 'string')) {
+      throw new Error('Invalid runCustomAction fields');
+    }
+    const skillOverrides = decodeSkillOverrides(command.skillOverrides);
+    return {
+      type: 'runCustomAction',
+      requestId: command.requestId,
+      context: decodeRequestContext(command.context),
+      model: decodeProviderSpec(command.model),
+      branch: command.branch,
+      detached: command.detached,
+      remoteBranches: decodeStringList(command.remoteBranches, 'remoteBranches'),
+      actionLabel: command.actionLabel.trim(),
+      actionPrompt: command.actionPrompt.trim(),
+      extraPrompt: command.extraPrompt,
+      selectedFiles: decodePlanFiles(command.selectedFiles, true),
+      unselectedPaths: decodeStringList(command.unselectedPaths, 'unselectedPaths'),
+      localKeepPaths: decodeStringList(command.localKeepPaths, 'localKeepPaths'),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
+      ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
+      ...(skillOverrides ? { skillOverrides } : {}),
+      ...(typeof command.previousCheckpoint === 'string' && command.previousCheckpoint.trim()
+        ? { previousCheckpoint: command.previousCheckpoint }
+        : {}),
+    };
+  }
+  if (command.type === 'generateCustomAction') {
+    if (typeof command.branch !== 'string'
+      || typeof command.userRequest !== 'string' || !command.userRequest.trim()
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
+      throw new Error('Invalid generateCustomAction fields');
+    }
+    const skillOverrides = decodeSkillOverrides(command.skillOverrides);
+    return {
+      type: 'generateCustomAction',
+      requestId: command.requestId,
+      context: decodeRequestContext(command.context),
+      model: decodeProviderSpec(command.model),
+      branch: command.branch,
+      existingLabels: decodeStringList(command.existingLabels, 'existingLabels'),
+      userRequest: command.userRequest.trim(),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
+      ...(skillOverrides ? { skillOverrides } : {}),
     };
   }
   throw new Error('Unknown command');

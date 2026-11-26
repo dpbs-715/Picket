@@ -1,27 +1,55 @@
-import { Agent } from '@earendil-works/pi-agent-core';
+import { Agent, type AgentTool } from '@earendil-works/pi-agent-core';
 import { normalizeAppLocale, type AppLocale } from '../../shared/language-protocol';
 import { MODEL_GLOBAL_DEFAULTS } from '../../shared/model-defaults';
 import type {
+  GenerateCustomActionCommand,
+  ListModelsRequest,
+  PiActionLink,
   PiConflictFile,
   PiConflictResolution,
   PiCPushCommitGroup,
   PiCPushPlan,
   PiCPushQuestionOption,
+  PiCustomActionDraft,
   PiDiffFile,
   PiPlanFileEntry,
   PiResolvedConflictFile,
   PiReviewFinding,
   PiTaskRequest,
+  PiToolResultCommand,
   PlanCPushCommand,
   ProbeEvent,
   ResolveConflictCommand,
   ReviewScopeCommand,
+  RunCustomActionCommand,
   TestConnectionRequest,
 } from '../../shared/pi-protocol';
-import { COMMIT_SKILL_SPEC, CPUSH_SKILL_SPEC } from './git-skills';
+import { COMMIT_SKILL_SPEC, CPUSH_SKILL_SPEC, DCR_SKILL_SPEC } from './git-skills';
 import { LocalizedSidecarError, getSidecarMessages } from './i18n';
 import { createProbe } from './probe';
-import { createIsolatedModelRuntime, sanitizeProviderError } from './providers';
+import { createIsolatedModelRuntime, fetchProviderModels, sanitizeProviderError } from './providers';
+import {
+  PICKET_DESKTOP_OVERLAY,
+  SkillRegistry,
+  adaptCommitSkillForDesktop,
+} from './skills';
+import {
+  ToolBridge,
+  createAskUserQuestionTool,
+  createCheckCliEnvTool,
+  createCleanupSubmitDuplicatesTool,
+  createCommitExactScopeTool,
+  createInstallPlatformCliTool,
+  createManageSubmitWorktreeTool,
+  createReadRepoFileTool,
+  createReadScopeDiffTool,
+  createReadSkillDocTool,
+  createRecordActionCheckpointTool,
+  createRunGitTool,
+  createRunPlatformCliTool,
+  createSearchRepoTool,
+  createSyncAndPushTool,
+} from './tools';
 
 function formatDiffPromptBlock(files: PiDiffFile[], skippedPaths: string[]): string {
   const blocks = files.map((file) => {
@@ -405,9 +433,19 @@ export function parseReviewFindings(
     if (!matched) continue;
 
     const rawSeverity = typeof record.severity === 'string' ? record.severity.toLowerCase().trim() : '';
-    const severity: 'high' | 'suggestion' = rawSeverity === 'high' || rawSeverity === 'critical' || rawSeverity === 'error'
+    const severity: 'high' | 'suggestion' = rawSeverity === 'high'
+      || rawSeverity === 'critical'
+      || rawSeverity === 'error'
+      || rawSeverity === 'p0'
+      || rawSeverity === 'p1'
       ? 'high'
-      : rawSeverity === 'suggestion' || rawSeverity === 'medium' || rawSeverity === 'low' || rawSeverity === 'warning' || rawSeverity === 'info'
+      : rawSeverity === 'suggestion'
+        || rawSeverity === 'medium'
+        || rawSeverity === 'low'
+        || rawSeverity === 'warning'
+        || rawSeverity === 'info'
+        || rawSeverity === 'p2'
+        || rawSeverity === 'p3'
         ? 'suggestion'
         : (() => { throw new LocalizedSidecarError(msg.unknownReviewSeverity); })();
 
@@ -431,34 +469,54 @@ export function parseReviewFindings(
   return findings;
 }
 
-export function buildReviewPrompts(command: ReviewScopeCommand): { systemPrompt: string; userPrompt: string } {
+export function buildReviewPrompts(
+  command: ReviewScopeCommand,
+  dcrSkillSpec: string = DCR_SKILL_SPEC,
+): { systemPrompt: string; userPrompt: string } {
   const locale = normalizeAppLocale(command.locale, 'en');
   const languageDirective = locale === 'zh'
     ? 'Write every finding `title` and `reason` in clear, concise Chinese (the schema below uses English placeholders only).'
     : 'Write every finding `title` and `reason` in clear, concise English.';
+  const toolsGuidance = command.enableTools
+    ? 'Read-only repository tools (`read_scope_diff`, `read_repo_file`, `search_repo`, `read_skill_doc`) are enabled: use `read_scope_diff` to read omitted hunks of any truncated/deferred authorized file diff, and use `read_repo_file`/`search_repo` to inspect surrounding code, callers, types, schemas, or tests when needed to confirm a concrete bug or rule out a false positive. Keep tool calls focused and minimal.'
+    : 'Review ONLY the supplied Git diff patches without inventing context outside them.';
 
   const systemPrompt = [
-    'You are Picket\'s pre-commit code reviewer.',
-    'Review ONLY the supplied Git diff patches and report concrete defects, security/credential leaks, data loss hazards, concurrency/state bugs, or maintainability risks.',
+    'You are Picket\'s pre-commit code reviewer, governed by the `dcr` (Diff Code Review) skill specification and desktop overlay below.',
+    '',
+    '<dcr_skill_spec>',
+    dcrSkillSpec,
+    '</dcr_skill_spec>',
+    '',
+    '<picket_desktop_overlay>',
+    PICKET_DESKTOP_OVERLAY.dcrReviewOverlay,
+    '</picket_desktop_overlay>',
+    '',
+    toolsGuidance,
     'When `User review instructions / context` is provided, apply its focus and background strictly within the supplied patches without inventing findings on unselected files.',
     `Do NOT invent issues outside the supplied patches. ${languageDirective}`,
     'Return ONLY a single JSON object with this exact schema (no prose outside JSON):',
-    '{"findings":[{"fileId":"<exact fileId from input>","path":"<exact path from input>","line":1,"severity":"high","title":"Concise issue title","reason":"Concrete cause and impact explanation"}]}',
-    'Use severity "high" only for real bugs, security/credential exposure, broken invariants, or data corruption; use "suggestion" for non-blocking improvements. Return {"findings":[]} if no issues are found.',
+    '{"findings":[{"fileId":"<exact fileId from input>","path":"<exact path from input>","line":1,"severity":"high","title":"Concise issue title","reason":"Concrete cause, impact, and suggested fix or verification"}]}',
+    'Map P0/P1 findings (real bugs, security/credential exposure, broken invariants, data corruption, broken behavior) to severity "high"; map P2 findings (edge-case bugs, risky missing tests, diff-introduced maintainability risks) to severity "suggestion". Return {"findings":[]} if no concrete issues are found.',
   ].join('\n');
 
   const parts: string[] = [`Branch: ${command.branch}`];
   if (command.prompt.trim()) {
     parts.push(`User review instructions / context:\n${command.prompt.trim()}`);
   }
-  parts.push(`Reviewable diff patches:\n${formatDiffPromptBlock(command.files, [])}`);
+  parts.push(`Reviewable diff patches:\n${formatDiffPromptBlock(command.files, command.skippedPaths)}`);
   return { systemPrompt, userPrompt: parts.join('\n\n') };
 }
 
-export function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt: string; userPrompt: string } {
+export function buildCPushPlanPrompts(
+  command: PlanCPushCommand,
+  skillSpecs?: { cpush?: string; commit?: string },
+): { systemPrompt: string; userPrompt: string } {
   const locale = normalizeAppLocale(command.locale, 'en');
   const commitLang = normalizeAppLocale(command.commitLanguage, 'en');
   const uiLanguage = locale === 'zh' ? 'Chinese' : 'English';
+  const cpushSpec = skillSpecs?.cpush ?? CPUSH_SKILL_SPEC;
+  const commitSpec = adaptCommitSkillForDesktop(skillSpecs?.commit ?? COMMIT_SKILL_SPEC);
   const commitRule = commitLang === 'zh'
     ? 'Git commit message language (`commitLanguage = "zh"`, `<commit_skill_spec>` flag `-ch`): keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English, and write BOTH the subject (after `<type>(<optional scope>):`) AND every `- ` detail bullet of `groups[].message` in concise Chinese — using `recentCommits` only as `<type>(<scope>)` scope-naming reference.'
     : 'Git commit message language (`commitLanguage = "en"`, `<commit_skill_spec>` flag `-en`): keep Conventional Commit tokens (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`, `!`, `BREAKING CHANGE:`) in English, and write BOTH the subject (after `<type>(<optional scope>):`) AND every `- ` detail bullet of `groups[].message` in concise English — using `recentCommits` only as `<type>(<scope>)` scope-naming reference and NOT switching language even if `recentCommits` or `User extra instructions` are in another language.';
@@ -467,12 +525,16 @@ export function buildCPushPlanPrompts(command: PlanCPushCommand): { systemPrompt
     'You are Picket\'s C-Push planner, governed by the repository `cpush` and `commit` skill specifications below.',
     '',
     '<cpush_skill_spec>',
-    CPUSH_SKILL_SPEC,
+    cpushSpec,
     '</cpush_skill_spec>',
     '',
     '<commit_skill_spec>',
-    COMMIT_SKILL_SPEC,
+    commitSpec,
     '</commit_skill_spec>',
+    '',
+    '<picket_desktop_overlay>',
+    PICKET_DESKTOP_OVERLAY.cpushCommitFormat,
+    '</picket_desktop_overlay>',
     '',
     'Desktop C-Push Planning Rules:',
     '1. Pre-commit Triage ("Do not include unrelated work just because it is present in the working tree"):',
@@ -657,14 +719,177 @@ export function buildResolveConflictPrompts(command: ResolveConflictCommand): { 
 const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
 const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
+const MAX_REVIEW_TOOL_CALLS = 24;
+const MAX_CUSTOM_ACTION_TOOL_CALLS = 80;
+const MAX_GENERATE_ACTION_TOOL_CALLS = 16;
+
+export function buildCustomActionPrompts(
+  command: RunCustomActionCommand,
+  registry: SkillRegistry,
+): { systemPrompt: string; userPrompt: string } {
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const commitLang = normalizeAppLocale(command.commitLanguage, 'en');
+  const uiLanguage = locale === 'zh' ? 'Chinese' : 'English';
+  const commitLangNote = commitLang === 'zh'
+    ? 'Write Git commit subjects & `- ` bullets in Chinese (keeping Conventional Commit tokens in English).'
+    : 'Write Git commit subjects & `- ` bullets in English.';
+
+  const systemPrompt = [
+    'You are Picket\'s Git & Collaboration Agent executing a user-triggered Custom Action Button inside the currently open repository.',
+    '',
+    '<available_skills_index>',
+    registry.formatIndex(),
+    '</available_skills_index>',
+    '',
+    '<picket_desktop_overlay>',
+    PICKET_DESKTOP_OVERLAY.customActionOverlay,
+    '</picket_desktop_overlay>',
+    '',
+    `UI / user-facing interaction language: ${uiLanguage}. Write all questions, explanations, and your final \`summary\` in concise ${uiLanguage}.`,
+    `Commit message language preference: ${commitLangNote}`,
+  ].join('\n');
+
+  const parts: string[] = [
+    `Custom Action Button: ${command.actionLabel}`,
+    `Current branch: ${command.detached ? '(detached HEAD)' : command.branch}`,
+  ];
+  if (command.remoteBranches.length > 0) {
+    parts.push(`Remote branches (${command.remoteBranches.length}): ${command.remoteBranches.slice(0, 30).join(', ')}`);
+  }
+  parts.push(`Action preset prompt / command:\n${command.actionPrompt}`);
+  if (command.extraPrompt.trim()) {
+    parts.push(`User one-off extra instructions (+ Prompt):\n${command.extraPrompt.trim()}`);
+  }
+  if (command.selectedFiles.length > 0) {
+    parts.push(`Authorized selected files (${command.selectedFiles.length}):\n${formatPlanFilesPromptBlock(command.selectedFiles)}`);
+  } else {
+    parts.push('Authorized selected files: 0 (no files are currently checked; do NOT commit local modifications unless the user selects them, though read-only actions, tagging, PR review, or creating PRs/issues from existing commits are completely fine).');
+  }
+  if (command.unselectedPaths.length > 0) {
+    parts.push(`Unselected worktree files (off-limits for local commits):\n${command.unselectedPaths.slice(0, 40).map((p) => `- ${p}`).join('\n')}`);
+  }
+  if (command.localKeepPaths.length > 0) {
+    parts.push(`Local Keep paths (excluded from commits):\n${command.localKeepPaths.slice(0, 30).map((p) => `- ${p}`).join('\n')}`);
+  }
+  if (command.previousCheckpoint?.trim()) {
+    parts.push(
+      [
+        '<previous_session_checkpoint>',
+        command.previousCheckpoint.trim(),
+        '</previous_session_checkpoint>',
+        'A previous session recorded the verified checkpoint above. Reconcile these Issues, branches, isolated worktrees, and PRs/MRs against live Git and gh/glab BEFORE creating new resources, and resume cleanly from the first unfinished step without duplicating already-created resources.',
+      ].join('\n'),
+    );
+  }
+  return { systemPrompt, userPrompt: parts.join('\n\n') };
+}
+
+export function buildGenerateCustomActionPrompts(
+  command: GenerateCustomActionCommand,
+  registry: SkillRegistry,
+): { systemPrompt: string; userPrompt: string } {
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const uiLanguage = locale === 'zh' ? 'Chinese' : 'English';
+  const systemPrompt = [
+    'You are Picket\'s Custom Action designer (`Create with Picket`).',
+    '',
+    '<available_skills_index>',
+    registry.formatIndex(),
+    '</available_skills_index>',
+    '',
+    '<picket_desktop_overlay>',
+    PICKET_DESKTOP_OVERLAY.createActionOverlay,
+    '</picket_desktop_overlay>',
+    '',
+    `Write \`label\`, \`summary\`, and any clarifying \`ask_user_question\` text in concise ${uiLanguage}.`,
+  ].join('\n');
+
+  const parts = [
+    `Current branch: ${command.branch}`,
+    command.existingLabels.length > 0
+      ? `Existing custom button labels in this repository (avoid duplicates): ${command.existingLabels.join(', ')}`
+      : 'Existing custom button labels in this repository: none',
+    `User request:\n${command.userRequest}`,
+  ];
+  return { systemPrompt, userPrompt: parts.join('\n\n') };
+}
+
+export function parseCustomActionResult(
+  raw: string,
+  locale: AppLocale = 'en',
+): { summary: string; links: PiActionLink[] } {
+  const msg = getSidecarMessages(locale);
+  const trimmed = stripReasoningBlocks(raw);
+  try {
+    const parsed = extractJsonObject(trimmed);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>;
+      const summary = typeof rec.summary === 'string' && rec.summary.trim()
+        ? rec.summary.trim().slice(0, 1200)
+        : '';
+      const links: PiActionLink[] = [];
+      if (Array.isArray(rec.links)) {
+        for (const item of rec.links) {
+          if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+          const entry = item as Record<string, unknown>;
+          const label = typeof entry.label === 'string' ? entry.label.trim().slice(0, 80) : '';
+          const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+          if (label && /^https?:\/\//i.test(url)) {
+            links.push({ label, url });
+          }
+        }
+      }
+      if (summary) {
+        return { summary, links };
+      }
+    }
+  } catch {
+    // Fall back to clean plain text summary when model finishes with prose instead of JSON.
+  }
+  const fallback = trimmed.slice(0, 1200) || msg.defaultCustomActionSummary;
+  return { summary: fallback, links: [] };
+}
+
+export function parseCustomActionDraft(raw: string, locale: AppLocale = 'en'): PiCustomActionDraft {
+  const msg = getSidecarMessages(locale);
+  const parsed = extractJsonObject(raw);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new LocalizedSidecarError(msg.invalidCustomActionDraftJson);
+  }
+  const rec = parsed as Record<string, unknown>;
+  const label = typeof rec.label === 'string' ? rec.label.trim().slice(0, 48) : '';
+  const prompt = typeof rec.prompt === 'string' ? rec.prompt.replace(/\r\n/g, '\n').trim().slice(0, 4000) : '';
+  const summary = typeof rec.summary === 'string' ? rec.summary.trim().slice(0, 300) : '';
+  if (!label || !prompt) {
+    throw new LocalizedSidecarError(msg.missingCustomActionDraftFields);
+  }
+  return {
+    label,
+    prompt,
+    summary: summary || msg.defaultCustomActionDraftSummary,
+  };
+}
+
+export interface TaskRunnerHandle {
+  cancel: () => void;
+  deliverToolResult?: (result: PiToolResultCommand) => void;
+  run: () => Promise<void>;
+}
 
 function runAgentTask(
-  command: TestConnectionRequest | ReviewScopeCommand | PlanCPushCommand | ResolveConflictCommand,
+  command:
+    | TestConnectionRequest
+    | ReviewScopeCommand
+    | PlanCPushCommand
+    | ResolveConflictCommand
+    | RunCustomActionCommand
+    | GenerateCustomActionCommand,
   emit: (event: ProbeEvent) => void,
-) {
+): TaskRunnerHandle {
   const envelope = { requestId: command.requestId, context: command.context };
   const locale = normalizeAppLocale(command.locale, 'en');
   const msg = getSidecarMessages(locale);
+  const bridge = new ToolBridge(envelope, emit);
   let cancelled = false;
   let activeAgent: Agent | undefined;
   let lastActivitySentAt = 0;
@@ -680,7 +905,11 @@ function runAgentTask(
   return {
     cancel: () => {
       cancelled = true;
+      bridge.abortAll('Task cancelled');
       activeAgent?.abort();
+    },
+    deliverToolResult: (result) => {
+      bridge.deliverToolResult(result);
     },
     async run() {
       emit({ ...envelope, type: 'started' });
@@ -692,23 +921,105 @@ function runAgentTask(
         }
         const { models, model } = createIsolatedModelRuntime(command.model, locale);
         const isTest = command.type === 'testConnection';
-        const prompts = isTest
-          ? { systemPrompt: 'Reply with OK only.', userPrompt: 'Connection check.' }
-          : command.type === 'reviewScope'
-            ? buildReviewPrompts(command)
-            : command.type === 'planCPush'
-              ? buildCPushPlanPrompts(command)
-              : buildResolveConflictPrompts(command);
 
+        const overrideCatalog = command.type === 'reviewScope'
+          || command.type === 'planCPush'
+          || command.type === 'runCustomAction'
+          || command.type === 'generateCustomAction'
+          ? command.skillOverrides
+          : undefined;
+        const registry = new SkillRegistry(overrideCatalog, async (skill, path) => {
+          const response = await bridge.invokeHostTool('read_skill_override_doc', { skill, path });
+          return response.ok && !response.isError ? response.content : null;
+        });
+
+        let prompts: { systemPrompt: string; userPrompt: string };
+        let tools: AgentTool<any>[] = [];
+        let toolBudget = 0;
+
+        if (isTest) {
+          prompts = { systemPrompt: 'Reply with OK only.', userPrompt: 'Connection check.' };
+        } else if (command.type === 'reviewScope') {
+          const dcrDoc = await registry.readDoc('dcr', 'SKILL.md');
+          prompts = buildReviewPrompts(command, dcrDoc.content);
+          if (command.enableTools) {
+            tools = [
+              createReadScopeDiffTool(bridge),
+              createReadRepoFileTool(bridge),
+              createSearchRepoTool(bridge),
+              createReadSkillDocTool(registry),
+            ];
+            toolBudget = MAX_REVIEW_TOOL_CALLS;
+          }
+        } else if (command.type === 'planCPush') {
+          const [cpushDoc, commitDoc] = await Promise.all([
+            registry.readDoc('cpush', 'SKILL.md'),
+            registry.readDoc('commit', 'SKILL.md'),
+          ]);
+          prompts = buildCPushPlanPrompts(command, {
+            cpush: cpushDoc.content,
+            commit: commitDoc.content,
+          });
+        } else if (command.type === 'runCustomAction') {
+          prompts = buildCustomActionPrompts(command, registry);
+          tools = [
+            createReadSkillDocTool(registry),
+            createCheckCliEnvTool(bridge),
+            createInstallPlatformCliTool(bridge),
+            createRunGitTool(bridge, false),
+            createRunPlatformCliTool(bridge),
+            createCommitExactScopeTool(bridge),
+            createSyncAndPushTool(bridge),
+            createManageSubmitWorktreeTool(bridge),
+            createCleanupSubmitDuplicatesTool(bridge),
+            createRecordActionCheckpointTool(bridge),
+            createReadRepoFileTool(bridge),
+            createSearchRepoTool(bridge),
+            createAskUserQuestionTool(bridge),
+          ];
+          toolBudget = MAX_CUSTOM_ACTION_TOOL_CALLS;
+        } else if (command.type === 'generateCustomAction') {
+          prompts = buildGenerateCustomActionPrompts(command, registry);
+          tools = [
+            createReadSkillDocTool(registry),
+            createCheckCliEnvTool(bridge),
+            createRunGitTool(bridge, true),
+            createReadRepoFileTool(bridge),
+            createSearchRepoTool(bridge),
+            createAskUserQuestionTool(bridge),
+          ];
+          toolBudget = MAX_GENERATE_ACTION_TOOL_CALLS;
+        } else {
+          prompts = buildResolveConflictPrompts(command);
+        }
+
+        if (cancelled) {
+          emit({ ...envelope, type: 'cancelled' });
+          return;
+        }
+
+        let toolCallsExecuted = 0;
         const agent = new Agent({
           sessionId: command.context.sessionId,
           identity: { attribution: null },
           initialState: {
             model,
-            tools: [],
+            tools,
             thinkingLevel: 'off',
             systemPrompt: prompts.systemPrompt,
           },
+          beforeToolCall: toolBudget > 0
+            ? async () => {
+                if (toolCallsExecuted >= toolBudget) {
+                  return {
+                    block: true,
+                    reason: `Tool call budget (${toolBudget} calls) reached. Do not call more tools; return your final JSON response now using the evidence already collected.`,
+                  };
+                }
+                toolCallsExecuted += 1;
+                return undefined;
+              }
+            : undefined,
           streamFn: (targetModel, context, options) => models.streamSimple(targetModel, context, {
             ...options,
             maxTokens: isTest
@@ -740,6 +1051,12 @@ function runAgentTask(
             } else {
               emitActivity(false);
             }
+          } else if (
+            event.type === 'tool_execution_start'
+            || event.type === 'tool_execution_update'
+            || event.type === 'tool_execution_end'
+          ) {
+            emitActivity(true);
           }
         });
 
@@ -811,6 +1128,14 @@ function runAgentTask(
             );
           }
           emit({ ...envelope, type: 'cPushPlanCompleted', plan });
+        } else if (command.type === 'runCustomAction') {
+          const result = parseCustomActionResult(firstTurn.rawText, locale);
+          emit({ ...envelope, type: 'customActionCompleted', summary: result.summary, links: result.links });
+        } else if (command.type === 'generateCustomAction') {
+          const draft = wrapLengthTruncation(firstTurn.stopReason, () =>
+            parseCustomActionDraft(firstTurn.rawText, locale),
+          );
+          emit({ ...envelope, type: 'customActionDrafted', draft });
         } else {
           const resolution = wrapLengthTruncation(firstTurn.stopReason, () =>
             parseConflictResolution(firstTurn.rawText, command, locale),
@@ -830,9 +1155,53 @@ function runAgentTask(
   };
 }
 
-export function createTaskRunner(command: PiTaskRequest, emit: (event: ProbeEvent) => void) {
+function runListModelsTask(
+  command: ListModelsRequest,
+  emit: (event: ProbeEvent) => void,
+): TaskRunnerHandle {
+  const envelope = { requestId: command.requestId, context: command.context };
+  const locale = normalizeAppLocale(command.locale, 'en');
+  const controller = new AbortController();
+  let cancelled = false;
+
+  return {
+    cancel: () => {
+      cancelled = true;
+      controller.abort();
+    },
+    async run() {
+      emit({ ...envelope, type: 'started' });
+      const timer = setTimeout(() => controller.abort(), 30_000);
+      try {
+        if (cancelled) {
+          emit({ ...envelope, type: 'cancelled' });
+          return;
+        }
+        const models = await fetchProviderModels(command.model, controller.signal, locale);
+        if (cancelled) {
+          emit({ ...envelope, type: 'cancelled' });
+          return;
+        }
+        emit({ ...envelope, type: 'modelsListed', models });
+      } catch (error) {
+        if (cancelled) {
+          emit({ ...envelope, type: 'cancelled' });
+          return;
+        }
+        emit({ ...envelope, type: 'failed', message: sanitizeProviderError(error, command.model, locale) });
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+export function createTaskRunner(command: PiTaskRequest, emit: (event: ProbeEvent) => void): TaskRunnerHandle {
   if (command.type === 'probe') {
     return createProbe(command, emit);
+  }
+  if (command.type === 'listModels') {
+    return runListModelsTask(command, emit);
   }
   return runAgentTask(command, emit);
 }

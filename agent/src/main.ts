@@ -1,11 +1,22 @@
 import { createInterface } from 'node:readline';
-import { PI_CORE_VERSION, PI_PROTOCOL_VERSION, decodeCommand, type PiEvent } from '../../shared/pi-protocol';
+import {
+  PI_CORE_VERSION,
+  PI_PROTOCOL_VERSION,
+  decodeCommand,
+  type PiEvent,
+  type PiToolResultCommand,
+} from '../../shared/pi-protocol';
 import { createTaskRunner } from './tasks';
 
 const emit = (event: PiEvent) => { process.stdout.write(`${JSON.stringify(event)}\n`); };
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const seenRequests = new Set<string>();
-let active: { requestId: string; cancel: () => void; finished: Promise<void> } | undefined;
+let active: {
+  requestId: string;
+  cancel: () => void;
+  deliverToolResult?: (result: PiToolResultCommand) => void;
+  finished: Promise<void>;
+} | undefined;
 let closing = false;
 const SHUTDOWN_DEADLINE_MS = 2_000;
 
@@ -31,12 +42,23 @@ input.on('line', (line) => {
       if (active?.requestId === command.requestId) active.cancel();
       return;
     }
+    if (command.type === 'toolResult') {
+      if (active?.requestId === command.requestId) {
+        active.deliverToolResult?.(command);
+      }
+      return;
+    }
     if (active || seenRequests.has(command.requestId)) throw new Error('Probe is busy or requestId was already accepted');
     seenRequests.add(command.requestId);
     const task = createTaskRunner(command, emit);
-    // Defer execution until the cancellation handle is installed.
+    // Defer execution until the cancellation and tool-result handles are installed.
     const finished = Promise.resolve().then(() => task.run()).finally(() => { active = undefined; });
-    active = { requestId: command.requestId, cancel: task.cancel, finished };
+    active = {
+      requestId: command.requestId,
+      cancel: task.cancel,
+      deliverToolResult: task.deliverToolResult,
+      finished,
+    };
   } catch (error) {
     emit({ type: 'protocolError', message: error instanceof Error ? error.message : 'Invalid command' });
   }
