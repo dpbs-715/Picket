@@ -70,10 +70,21 @@ pub const fn action_tier2_header(locale: LanguageKind) -> &'static str {
     tr(locale, "Confirm Write", "确认写入")
 }
 
+pub const fn action_tier2_edit_header(locale: LanguageKind) -> &'static str {
+    tr(locale, "Confirm File Edit", "确认修改文件")
+}
+
 pub fn action_tier2_question(locale: LanguageKind, reason: &str) -> String {
     match locale {
         LanguageKind::En => format!("Confirm before running this write command: {reason}"),
         LanguageKind::Zh => format!("即将执行高风险或自定义写操作：{reason}"),
+    }
+}
+
+pub fn action_tier2_edit_question(locale: LanguageKind, reason: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("Confirm before modifying this repository file: {reason}"),
+        LanguageKind::Zh => format!("即将修改当前仓库中的文件：{reason}"),
     }
 }
 
@@ -89,6 +100,18 @@ pub const fn action_tier2_approve_desc(locale: LanguageKind) -> &'static str {
     )
 }
 
+pub const fn action_tier2_edit_approve_label(locale: LanguageKind) -> &'static str {
+    tr(locale, "Apply edit", "允许修改")
+}
+
+pub const fn action_tier2_edit_approve_desc(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Write the exact text replacement shown in the preview below",
+        "将下方预览中的修改写入当前仓库文件",
+    )
+}
+
 pub const fn action_tier2_cancel_label(locale: LanguageKind) -> &'static str {
     tr(locale, "Cancel", "取消操作")
 }
@@ -96,8 +119,8 @@ pub const fn action_tier2_cancel_label(locale: LanguageKind) -> &'static str {
 pub const fn action_tier2_cancel_desc(locale: LanguageKind) -> &'static str {
     tr(
         locale,
-        "Decline this command without modifying the repository",
-        "不执行此命令，并通知 Picket 停止或改用其他方案",
+        "Decline this operation without modifying the repository",
+        "取消本次操作，不改动当前仓库",
     )
 }
 
@@ -203,6 +226,13 @@ pub fn action_interrupted_summary(locale: LanguageKind, action_label: &str) -> S
     }
 }
 
+pub fn action_edited_file_label(locale: LanguageKind, path: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("Edited {path}"),
+        LanguageKind::Zh => format!("已修改 {path}"),
+    }
+}
+
 pub fn action_tool_status_label(locale: LanguageKind, tool_name: &str, detail: &str) -> String {
     match (locale, tool_name) {
         (LanguageKind::En, "check_cli_env") => "Checking local Git / gh / glab environment".into(),
@@ -213,6 +243,10 @@ pub fn action_tool_status_label(locale: LanguageKind, tool_name: &str, detail: &
         (LanguageKind::Zh, "run_git") => format!("执行 git {detail}"),
         (LanguageKind::En, "run_platform_cli") => format!("Running {detail}"),
         (LanguageKind::Zh, "run_platform_cli") => format!("执行 {detail}"),
+        (LanguageKind::En, "run_repo_command") => format!("Running {detail}"),
+        (LanguageKind::Zh, "run_repo_command") => format!("执行 {detail}"),
+        (LanguageKind::En, "edit_repo_file") => format!("Editing {detail}"),
+        (LanguageKind::Zh, "edit_repo_file") => format!("修改 {detail}"),
         (LanguageKind::En, "commit_exact_scope") => "Creating exact-scope local commit".into(),
         (LanguageKind::Zh, "commit_exact_scope") => "写入精确范围本地提交".into(),
         (LanguageKind::En, "sync_and_push") => "Syncing and pushing to remote".into(),

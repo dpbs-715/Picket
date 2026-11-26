@@ -43,9 +43,11 @@ pub fn build_augmented_path(override_dirs: Option<&[PathBuf]>) -> OsString {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let local_bin = home.join(".local/bin");
-        if !dirs.contains(&local_bin) {
-            dirs.push(local_bin);
+        for rel in [".local/bin", ".cargo/bin"] {
+            let dir = home.join(rel);
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
         }
     }
     std::env::join_paths(dirs)
@@ -54,12 +56,14 @@ pub fn build_augmented_path(override_dirs: Option<&[PathBuf]>) -> OsString {
 
 pub fn resolve_cli_binary(name: &str, override_dirs: Option<&[PathBuf]>) -> Option<PathBuf> {
     if name.is_empty()
+        || name == "."
+        || name == ".."
         || name.contains('/')
         || name.contains('\\')
         || name.contains('\0')
         || !name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+'))
     {
         return None;
     }
@@ -80,6 +84,7 @@ pub fn resolve_cli_binary(name: &str, override_dirs: Option<&[PathBuf]>) -> Opti
     candidates.push(PathBuf::from("/usr/local/bin").join(name));
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         candidates.push(home.join(".local/bin").join(name));
+        candidates.push(home.join(".cargo/bin").join(name));
     }
     candidates.push(PathBuf::from("/usr/bin").join(name));
     candidates.push(PathBuf::from("/bin").join(name));

@@ -1,5 +1,5 @@
-//! Three-tier controlled CLI security policy and permanent hard redlines for `run_git` and
-//! `run_platform_cli` (`gh` / `glab`).
+//! Three-tier controlled CLI security policy and permanent hard redlines for `run_git`,
+//! `run_platform_cli` (`gh` / `glab`), and `run_repo_command`.
 //!
 //! - Tier 0 (`AllowTier0`): Read-only inspection commands (auto-allowed).
 //! - Tier 1 (`AllowTier1`): Routine in-scope write commands that pass every permanent redline.
@@ -8,11 +8,13 @@
 //! - Hard Redline (`DenyRedline`): Permanently blocked regardless of skills, model output, or
 //!   "don't ask again" preferences.
 
+mod command;
 mod git;
 mod platform;
 #[cfg(test)]
 mod tests;
 
+pub use command::{classify_repo_command, validate_repo_command_target};
 pub use git::classify_git_command;
 pub use platform::classify_platform_cli_command;
 

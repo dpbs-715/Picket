@@ -171,6 +171,7 @@ pub fn classify_platform_cli_command(
             | ("milestone", "list")
             | ("release", "list" | "view")
             | ("run", "list" | "view")
+            | ("workflow", "list" | "view")
             | ("search", _) => CommandDecision::AllowTier0,
 
             // Tier 1 routine writes with permanent redline checks:

@@ -14,7 +14,7 @@ const MAX_SOURCE_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_SEARCH_RESULTS: usize = 50;
 const MAX_SEARCH_BYTES: usize = 24 * 1024;
 
-fn validate_safe_repo_path(raw: &str) -> Result<String, String> {
+pub(crate) fn validate_safe_repo_path(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("Missing required repository-relative path".into());

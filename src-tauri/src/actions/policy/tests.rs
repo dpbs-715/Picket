@@ -187,6 +187,10 @@ fn platform_cli_policy_enforces_sha_guards_admin_block_and_repo_scope() {
         classify_platform_cli_command("gh", &vecs(&["auth", "status"]), &remotes),
         CommandDecision::AllowTier0
     );
+    assert_eq!(
+        classify_platform_cli_command("gh", &vecs(&["workflow", "view", "release.yml"]), &remotes),
+        CommandDecision::AllowTier0
+    );
 
     // Tier 1 writes with valid guard & matching repo:
     assert_eq!(
@@ -278,6 +282,144 @@ fn platform_cli_policy_enforces_sha_guards_admin_block_and_repo_scope() {
         classify_platform_cli_command("gh", &vecs(&["auth", "token"]), &remotes),
         CommandDecision::DenyRedline {
             code: "forbidden_auth_token",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn repo_command_policy_blocks_redlines_and_requires_tier2_for_valid_commands() {
+    // Valid discrete-argv commands require Tier-2 preview confirmation with prompt-bound trust:
+    assert!(matches!(
+        classify_repo_command(
+            "node",
+            &vecs(&[
+                "scripts/package-dmg.mjs",
+                "--check-version-only",
+                "--tag",
+                "v0.2.1"
+            ])
+        ),
+        CommandDecision::RequireConfirmTier2 {
+            allow_dont_ask_again: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("pnpm", &vecs(&["check"])),
+        CommandDecision::RequireConfirmTier2 {
+            allow_dont_ask_again: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("python3.12", &vecs(&["-m", "pytest"])),
+        CommandDecision::RequireConfirmTier2 {
+            allow_dont_ask_again: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("./scripts/verify.mjs", &vecs(&["--strict"])),
+        CommandDecision::RequireConfirmTier2 {
+            allow_dont_ask_again: true,
+            ..
+        }
+    ));
+
+    // Picket-dedicated CLIs are permanently redirected to their guarded tools:
+    for dedicated in ["git", "gh", "glab", "brew"] {
+        assert!(matches!(
+            classify_repo_command(dedicated, &vecs(&["--version"])),
+            CommandDecision::DenyRedline {
+                code: "use_dedicated_picket_tool",
+                ..
+            }
+        ));
+    }
+
+    // Shells & wrappers are permanently blocked:
+    for shell in [
+        "sh",
+        "bash",
+        "zsh",
+        "osascript",
+        "env",
+        "xargs",
+        "./bin/bash",
+    ] {
+        assert!(matches!(
+            classify_repo_command(shell, &vecs(&["-c", "echo hi"])),
+            CommandDecision::DenyRedline {
+                code: "forbidden_shell_wrapper",
+                ..
+            }
+        ));
+    }
+
+    // Destructive & privileged binaries are permanently blocked:
+    for destructive in ["sudo", "rm", "mv", "chmod", "kill", "diskutil", "security"] {
+        assert!(matches!(
+            classify_repo_command(destructive, &vecs(&["-rf", "."])),
+            CommandDecision::DenyRedline {
+                code: "forbidden_destructive_binary",
+                ..
+            }
+        ));
+    }
+
+    // Raw network transfer & desktop launchers are permanently blocked:
+    for net_bin in ["curl", "wget", "ssh", "open", "pbcopy"] {
+        assert!(matches!(
+            classify_repo_command(net_bin, &vecs(&["https://example.com"])),
+            CommandDecision::DenyRedline {
+                code: "forbidden_network_or_system_binary",
+                ..
+            }
+        ));
+    }
+
+    // Absolute paths, traversal, spaces in command, NUL bytes, and excessive args are blocked:
+    assert!(matches!(
+        classify_repo_command("/usr/bin/node", &vecs(&["-v"])),
+        CommandDecision::DenyRedline {
+            code: "forbidden_absolute_command",
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("./../outside", &vecs(&[])),
+        CommandDecision::DenyRedline {
+            code: "forbidden_command_path",
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("./.git/hooks/pre-commit", &vecs(&[])),
+        CommandDecision::DenyRedline {
+            code: "forbidden_command_path",
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("node -v", &vecs(&[])),
+        CommandDecision::DenyRedline {
+            code: "invalid_command",
+            ..
+        }
+    ));
+    assert!(matches!(
+        classify_repo_command("node", &[String::from("bad\0arg")]),
+        CommandDecision::DenyRedline {
+            code: "invalid_nul",
+            ..
+        }
+    ));
+    let many_args: Vec<String> = (0..65).map(|i| i.to_string()).collect();
+    assert!(matches!(
+        classify_repo_command("node", &many_args),
+        CommandDecision::DenyRedline {
+            code: "too_many_args",
             ..
         }
     ));

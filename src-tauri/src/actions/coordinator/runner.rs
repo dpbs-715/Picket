@@ -6,7 +6,7 @@ use super::{
         ActionRunState, ActionToolContext, PersistStateFn, ProgressEmitFn, append_unique_links,
         format_tool_status_label, push_timeline_step,
     },
-    tools_cli, tools_git_ops, tools_submit,
+    tools_cli, tools_git_ops, tools_submit, tools_workspace,
 };
 use crate::{
     actions::{
@@ -76,6 +76,10 @@ async fn dispatch_action_tool(
         "run_git" => tools_cli::handle_run_git(&ctx, &call_id, &args, status_label).await,
         "run_platform_cli" => {
             tools_cli::handle_run_platform_cli(&ctx, &call_id, &args, status_label).await
+        }
+        "edit_repo_file" => tools_workspace::handle_edit_repo_file(&ctx, &call_id, &args).await,
+        "run_repo_command" => {
+            tools_workspace::handle_run_repo_command(&ctx, &call_id, &args, status_label).await
         }
         "commit_exact_scope" => tools_git_ops::handle_commit_exact_scope(&ctx, &args).await,
         "sync_and_push" => tools_git_ops::handle_sync_and_push(&ctx, &args).await,
@@ -221,6 +225,8 @@ impl CustomActionCoordinator {
             commits: Vec::new(),
             links: Vec::new(),
             committed_file_ids: HashSet::new(),
+            action_edited_hashes: std::collections::HashMap::new(),
+            committed_edited_paths: HashSet::new(),
             skip_write_confirm: initially_trusted,
             trusted_action_update: None,
             wrote_repo: false,
@@ -357,6 +363,12 @@ impl CustomActionCoordinator {
             previous_checkpoint,
         };
 
+        let local_keep_paths_set: HashSet<String> = live_snapshot
+            .repository
+            .local_keep_paths
+            .iter()
+            .cloned()
+            .collect();
         let tool_ctx = Arc::new(ActionToolContext {
             coordinator: self.clone(),
             store: store.clone(),
@@ -367,9 +379,11 @@ impl CustomActionCoordinator {
             skills: skill_snapshot,
             root: worktree_root,
             storage_dir: storage_dir.to_path_buf(),
+            bundled_node_path: paths.node.clone(),
             remotes,
             frozen_selections: request.selections.clone(),
             live_changes: active_tree.files.clone(),
+            local_keep_paths: local_keep_paths_set,
             target: request.target.clone(),
             run_id: run_id.clone(),
             action_id: action_id.clone(),

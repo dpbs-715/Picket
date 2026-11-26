@@ -10,6 +10,9 @@ mod runner;
 mod tools_cli;
 mod tools_git_ops;
 mod tools_submit;
+mod tools_workspace;
+#[cfg(test)]
+mod workspace_tests;
 
 use super::{
     session_store::{self, ActionSessionSnapshot},

@@ -1,17 +1,21 @@
 //! Exact-scope local commit and remote sync/push tool handlers for Custom Actions.
 
-use super::context::{ActionToolContext, push_timeline_step};
+use super::{
+    context::{ActionToolContext, push_timeline_step},
+    tools_workspace::sha256_hex,
+};
 use crate::{
     cpush::types::CPushLandedCommit,
     foundation::pi::PiToolExecutionResult,
     i18n,
     repository::{
+        read_tools::validate_safe_repo_path,
         remote::{PushOutcome, RebaseSyncOutcome},
         types::{CommitRequest, CommitSelection},
     },
 };
 use serde_json::{Value, json};
-use std::sync::atomic::Ordering;
+use std::{collections::HashSet, fs, sync::atomic::Ordering};
 
 pub(super) async fn handle_commit_exact_scope(
     ctx: &ActionToolContext,
@@ -23,6 +27,20 @@ pub(super) async fn handle_commit_exact_scope(
         .map(|arr| {
             arr.iter()
                 .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let requested_edited_paths: Vec<String> = args
+        .get("editedPaths")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(str::to_owned)
                 .collect()
         })
@@ -34,17 +52,98 @@ pub(super) async fn handle_commit_exact_scope(
         .trim()
         .to_owned();
     let should_push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
-    if requested_ids.is_empty() || message.is_empty() {
+    if (requested_ids.is_empty() && requested_edited_paths.is_empty()) || message.is_empty() {
         return PiToolExecutionResult::error(
-            "commit_exact_scope requires non-empty `fileIds` and `message`.",
+            "commit_exact_scope requires non-empty `message` and at least one entry in `fileIds` or `editedPaths`.",
         );
     }
-    let already_committed = ctx
+
+    let (already_committed, action_edited_hashes, committed_edited_paths) = ctx
         .run_state
         .lock()
-        .map(|st| st.committed_file_ids.clone())
+        .map(|st| {
+            (
+                st.committed_file_ids.clone(),
+                st.action_edited_hashes.clone(),
+                st.committed_edited_paths.clone(),
+            )
+        })
         .unwrap_or_default();
+
+    let mut validated_edited_paths: Vec<String> = Vec::with_capacity(requested_edited_paths.len());
+    let mut seen_edited: HashSet<String> = HashSet::new();
+    for raw_path in &requested_edited_paths {
+        let clean = match validate_safe_repo_path(raw_path) {
+            Ok(p) => p,
+            Err(err) => return PiToolExecutionResult::error(err),
+        };
+        if !seen_edited.insert(clean.clone()) {
+            continue;
+        }
+        if ctx.local_keep_paths.contains(&clean) {
+            return PiToolExecutionResult::error(format!(
+                "Refused to commit `{clean}` because it is in Local Keep."
+            ));
+        }
+        if committed_edited_paths.contains(&clean) {
+            return PiToolExecutionResult::error(format!(
+                "Edited file `{clean}` was already committed in this run."
+            ));
+        }
+        let Some(expected_hash) = action_edited_hashes.get(&clean) else {
+            return PiToolExecutionResult::error(format!(
+                "File `{clean}` was not modified by `edit_repo_file` in this run; cannot widen past authorized scope."
+            ));
+        };
+        let live_bytes = match fs::read(ctx.root.join(&clean)) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return PiToolExecutionResult::error(format!(
+                    "Cannot read edited file `{clean}` before commit: {err}"
+                ));
+            }
+        };
+        if &sha256_hex(&live_bytes) != expected_hash {
+            return PiToolExecutionResult::error(format!(
+                "Edited file `{clean}` was modified externally after `edit_repo_file`; refusing to commit unverified changes."
+            ));
+        }
+        validated_edited_paths.push(clean);
+    }
+
+    let needs_live_refresh = !validated_edited_paths.is_empty()
+        || requested_ids.iter().any(|fid| {
+            ctx.live_changes
+                .iter()
+                .find(|c| c.id == *fid)
+                .is_some_and(|c| action_edited_hashes.contains_key(&c.path))
+        });
+
+    let live_tree_files = if needs_live_refresh {
+        match ctx.store.refresh_with_locale(&ctx.target, ctx.locale).await {
+            Ok(snap) => match snap
+                .worktrees
+                .into_iter()
+                .find(|wt| wt.worktree_id == ctx.target.worktree_id)
+            {
+                Some(tree) => Some(tree.files),
+                None => {
+                    return PiToolExecutionResult::error(
+                        "Target worktree not found in refreshed repository snapshot.",
+                    );
+                }
+            },
+            Err(err) => return PiToolExecutionResult::error(err),
+        }
+    } else {
+        None
+    };
+
     let mut matched_selections: Vec<CommitSelection> = Vec::new();
+    let mut seen_selection_ids: HashSet<String> = HashSet::new();
+    let mut committed_ids_to_record: Vec<String> = Vec::new();
+    let mut committed_paths_to_record: Vec<String> = Vec::new();
+
     for fid in &requested_ids {
         if already_committed.contains(fid) {
             return PiToolExecutionResult::error(format!(
@@ -56,8 +155,77 @@ pub(super) async fn handle_commit_exact_scope(
                 "File `{fid}` is outside the user's selected scope (or is in Local Keep). Never widen past selected files."
             ));
         };
-        matched_selections.push(sel.clone());
+        // If this pre-selected file was also edited via `edit_repo_file`, resolve its fresh token
+        // after confirming its disk bytes still match what `edit_repo_file` wrote.
+        let edited_path = ctx
+            .live_changes
+            .iter()
+            .find(|c| c.id == *fid)
+            .and_then(|c| {
+                action_edited_hashes
+                    .get(&c.path)
+                    .map(|h| (c.path.as_str(), h))
+            });
+        let resolved_sel = if let Some((path, expected_hash)) = edited_path {
+            let live_bytes = match fs::read(ctx.root.join(path)) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    return PiToolExecutionResult::error(format!(
+                        "Cannot read edited file `{path}` before commit: {err}"
+                    ));
+                }
+            };
+            if &sha256_hex(&live_bytes) != expected_hash {
+                return PiToolExecutionResult::error(format!(
+                    "Edited file `{path}` was modified externally after `edit_repo_file`; refusing to commit unverified changes."
+                ));
+            }
+            let Some(live_change) = live_tree_files
+                .as_ref()
+                .and_then(|files| files.iter().find(|c| c.path == path))
+            else {
+                return PiToolExecutionResult::error(format!(
+                    "Edited file `{path}` has no uncommitted changes to commit."
+                ));
+            };
+            committed_paths_to_record.push(path.to_owned());
+            CommitSelection {
+                file_id: live_change.id.clone(),
+                commit_token: live_change.commit_token.clone(),
+            }
+        } else {
+            sel.clone()
+        };
+        if seen_selection_ids.insert(resolved_sel.file_id.clone()) {
+            committed_ids_to_record.push(resolved_sel.file_id.clone());
+            matched_selections.push(resolved_sel);
+        }
     }
+
+    for path in &validated_edited_paths {
+        let Some(live_change) = live_tree_files
+            .as_ref()
+            .and_then(|files| files.iter().find(|c| c.path == *path))
+        else {
+            return PiToolExecutionResult::error(format!(
+                "Edited file `{path}` has no uncommitted changes to commit."
+            ));
+        };
+        if live_change.range.kind == "partial" {
+            return PiToolExecutionResult::error(format!(
+                "Edited file `{path}` is partially staged; refusing to commit ambiguous index state."
+            ));
+        }
+        committed_paths_to_record.push(path.clone());
+        if seen_selection_ids.insert(live_change.id.clone()) {
+            committed_ids_to_record.push(live_change.id.clone());
+            matched_selections.push(CommitSelection {
+                file_id: live_change.id.clone(),
+                commit_token: live_change.commit_token.clone(),
+            });
+        }
+    }
+
     let step_n = ctx.coordinator.inner.seq.fetch_add(1, Ordering::SeqCst) + 1;
     let commit_req = CommitRequest {
         request_id: format!("act-commit-{step_n}"),
@@ -71,15 +239,18 @@ pub(super) async fn handle_commit_exact_scope(
         Ok((snap, landed)) => {
             if let Ok(mut st) = ctx.run_state.lock() {
                 st.wrote_repo = true;
-                for fid in &requested_ids {
+                for fid in &committed_ids_to_record {
                     st.committed_file_ids.insert(fid.clone());
+                }
+                for path in &committed_paths_to_record {
+                    st.committed_edited_paths.insert(path.clone());
                 }
                 st.commits.push(CPushLandedCommit {
                     oid: landed.oid.clone(),
                     short_oid: landed.short_oid.clone(),
                     title: landed.title.clone(),
                     branch: landed.branch.clone(),
-                    file_ids: requested_ids.clone(),
+                    file_ids: committed_ids_to_record.clone(),
                 });
                 push_timeline_step(
                     &mut st.timeline,
