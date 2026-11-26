@@ -269,6 +269,54 @@ pub struct ModelTestReply {
     pub latency_ms: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteModelOption {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ListModelsInput {
+    NewConnection {
+        provider: ProviderKind,
+        #[serde(default)]
+        base_url: String,
+        #[serde(default)]
+        api_key: String,
+        #[serde(default)]
+        api_format: Option<ApiFormatKind>,
+        #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        locale: LanguageKind,
+    },
+    ExistingConnection {
+        connection_id: String,
+        #[serde(default)]
+        api_format: Option<ApiFormatKind>,
+        #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        locale: LanguageKind,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelListReply {
+    pub protocol_version: u8,
+    pub provider: ProviderKind,
+    pub models: Vec<RemoteModelOption>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSaveReply {
@@ -524,7 +572,7 @@ pub fn validate_model_fields(
     };
     let api_format = raw_api_format.unwrap_or_else(|| provider.default_api_format());
     let (default_context_window, default_max_output_tokens) =
-        resolve_default_token_limits(provider, Some(api_format));
+        resolve_default_token_limits(provider, Some(api_format), Some(model_id));
     let context_window = raw_context_window.unwrap_or(default_context_window);
     let max_output_tokens = raw_max_output_tokens.unwrap_or(default_max_output_tokens);
     validate_token_limits(context_window, max_output_tokens, locale)?;

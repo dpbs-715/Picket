@@ -98,6 +98,35 @@ export interface ModelTestReply {
   latencyMs: number;
 }
 
+export interface RemoteModelOption {
+  id: string;
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+export type ListModelsInput =
+  | {
+      kind: 'newConnection';
+      provider: ModelProviderId;
+      baseUrl: string;
+      apiKey: string;
+      apiFormat?: ModelApiFormat;
+      locale?: AppLocale;
+    }
+  | {
+      kind: 'existingConnection';
+      connectionId: string;
+      apiFormat?: ModelApiFormat;
+      locale?: AppLocale;
+    };
+
+export interface ModelListReply {
+  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
+  provider: ModelProviderId;
+  models: RemoteModelOption[];
+}
+
 export interface ProviderSaveReply {
   protocolVersion: typeof MODEL_PROTOCOL_VERSION;
   connection: SavedProviderConnection;
@@ -454,5 +483,36 @@ export function decodeReviewScopeReply(value: unknown): ReviewScopeReply {
     findings,
     skippedPaths: value.skippedPaths as string[],
     reviewedFileIds: value.reviewedFileIds as string[],
+  };
+}
+
+export function decodeModelListReply(value: unknown): ModelListReply {
+  if (!record(value)
+    || value.protocolVersion !== MODEL_PROTOCOL_VERSION
+    || 'apiKey' in value
+    || 'credentialRef' in value
+    || !isModelProviderId(value.provider)
+    || !Array.isArray(value.models)) {
+    throw new Error('Model list reply mismatch.');
+  }
+  const models: RemoteModelOption[] = value.models.map((raw) => {
+    if (!record(raw)
+      || typeof raw.id !== 'string' || !raw.id.trim()
+      || !(raw.displayName === undefined || raw.displayName === null || typeof raw.displayName === 'string')
+      || !(raw.contextWindow === undefined || raw.contextWindow === null || (typeof raw.contextWindow === 'number' && Number.isSafeInteger(raw.contextWindow) && raw.contextWindow > 0))
+      || !(raw.maxOutputTokens === undefined || raw.maxOutputTokens === null || (typeof raw.maxOutputTokens === 'number' && Number.isSafeInteger(raw.maxOutputTokens) && raw.maxOutputTokens > 0))) {
+      throw new Error('Invalid remote model entry.');
+    }
+    return {
+      id: raw.id.trim(),
+      ...(typeof raw.displayName === 'string' && raw.displayName.trim() ? { displayName: raw.displayName.trim() } : {}),
+      ...(typeof raw.contextWindow === 'number' ? { contextWindow: raw.contextWindow } : {}),
+      ...(typeof raw.maxOutputTokens === 'number' ? { maxOutputTokens: raw.maxOutputTokens } : {}),
+    };
+  });
+  return {
+    protocolVersion: MODEL_PROTOCOL_VERSION,
+    provider: value.provider,
+    models,
   };
 }

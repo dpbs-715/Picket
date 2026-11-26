@@ -7,13 +7,50 @@ use crate::i18n::{self, LanguageKind};
 use serde::Serialize;
 
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-const MAX_FILE_PATCH_BYTES: usize = 48 * 1024;
-const MAX_TOTAL_PATCH_BYTES: usize = 192 * 1024;
+const MAX_FILE_PATCH_BYTES: usize = 64 * 1024;
+const MAX_SCALED_FILE_PATCH_BYTES: usize = 256 * 1024;
+const REVIEW_MIN_PATCH_BYTES: usize = 32 * 1024;
+const REVIEW_MAX_PATCH_BYTES: usize = 1536 * 1024;
+const REVIEW_PROMPT_RESERVE_TOKENS: usize = 8_000;
+const REVIEW_INLINE_DIFF_SHARE_NUM: usize = 55;
+const REVIEW_INLINE_DIFF_SHARE_DEN: usize = 100;
+const REVIEW_BYTES_PER_TOKEN_CONSERVATIVE: usize = 3;
 const MIN_PARTIAL_PATCH_BUDGET: usize = 2 * 1024;
+const SCOPE_DIFF_MAX_LINES: usize = 250;
+const SCOPE_DIFF_MAX_BYTES: usize = 24 * 1024;
 const CPUSH_MAX_FILE_PATCH_BYTES: usize = 8 * 1024;
 const CPUSH_MAX_TOTAL_PATCH_BYTES: usize = 64 * 1024;
 const CPUSH_MIN_PARTIAL_PATCH_BUDGET: usize = 512;
 const MAX_UNTRACKED_READ_BYTES: usize = 256 * 1024;
+const MAX_REVIEW_UNTRACKED_READ_BYTES: usize = 512 * 1024;
+
+/// Computes the initial inline diff byte budget for code review directly from the
+/// active model's configured `context_window` and `max_output_tokens`:
+/// - Reserves `max_output_tokens` plus ~8k tokens for system prompt, `dcr` skill, and tool schemas.
+/// - Allocates 55% of remaining input tokens to the initial inline diff (leaving ~45% for
+///   multi-turn `read_scope_diff` / `read_repo_file` / `search_repo` tool calls and reasoning).
+/// - Uses a conservative 3 bytes/token estimate (safe for mixed English code and Chinese UTF-8)
+///   and clamps to `[32 KB, 1.5 MB]` to keep desktop stdio IPC responsive.
+pub fn review_patch_budget_for_model(context_window: u32, max_output_tokens: u32) -> usize {
+    let available_input_tokens = (context_window as usize)
+        .saturating_sub(max_output_tokens as usize)
+        .saturating_sub(REVIEW_PROMPT_RESERVE_TOKENS);
+    let diff_tokens = available_input_tokens.saturating_mul(REVIEW_INLINE_DIFF_SHARE_NUM)
+        / REVIEW_INLINE_DIFF_SHARE_DEN;
+    let budget_bytes = diff_tokens.saturating_mul(REVIEW_BYTES_PER_TOKEN_CONSERVATIVE);
+    budget_bytes.clamp(REVIEW_MIN_PATCH_BYTES, REVIEW_MAX_PATCH_BYTES)
+}
+
+#[derive(Clone, Debug)]
+pub struct DeferredPatchNotice {
+    pub file_id: String,
+    pub path: String,
+    pub total_lines: usize,
+    pub initial_ranges: Vec<(usize, usize)>,
+    pub deferred_only: bool,
+    pub partial_notice: String,
+    pub omitted_notice: String,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +72,8 @@ pub struct ExtractedAiScope {
     pub files: Vec<ExtractedDiffFile>,
     pub skipped_paths: Vec<String>,
     pub reviewed_file_ids: Vec<String>,
+    pub authorized_patches: HashMap<String, String>,
+    pub deferred_notices: Vec<DeferredPatchNotice>,
 }
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
@@ -172,18 +211,29 @@ fn redact_sensitive_patch(path: &str, raw_patch: &str) -> Option<String> {
     Some(out)
 }
 
-pub(crate) fn truncate_patch_head_tail(
+fn truncate_patch_head_tail_with_ranges(
     raw_patch: &str,
     max_bytes: usize,
     locale: LanguageKind,
-) -> String {
+) -> (String, Vec<(usize, usize)>, usize) {
+    let total_lines = raw_patch.lines().count().max(1);
     if raw_patch.len() <= max_bytes {
-        return raw_patch.to_owned();
+        return (raw_patch.to_owned(), vec![(1, total_lines)], total_lines);
     }
     const MARKER_RESERVE: usize = 64;
     if max_bytes < MARKER_RESERVE + 128 {
         let cut = raw_patch.floor_char_boundary(max_bytes.saturating_sub(20));
-        return format!("{}\n... [truncated]", &raw_patch[..cut]);
+        let covered_head = raw_patch[..cut].lines().count();
+        let ranges = if covered_head > 0 {
+            vec![(1, covered_head)]
+        } else {
+            Vec::new()
+        };
+        return (
+            format!("{}\n... [truncated]", &raw_patch[..cut]),
+            ranges,
+            total_lines,
+        );
     }
     let usable = max_bytes - MARKER_RESERVE;
     let head_budget = (usable * 13) / 20;
@@ -206,19 +256,136 @@ pub(crate) fn truncate_patch_head_tail(
     let omitted_lines = raw_patch[head_end..tail_start].lines().count().max(1);
     let head = raw_patch[..head_end].trim_end_matches('\n');
     let tail = raw_patch[tail_start..].trim_start_matches('\n');
-    if tail.is_empty() {
+    let head_line_count = head.lines().count();
+    let mut ranges = Vec::new();
+    if head_line_count > 0 {
+        ranges.push((1, head_line_count));
+    }
+    if !tail.is_empty() {
+        let tail_line_count = tail.lines().count();
+        let tail_start_line = total_lines
+            .saturating_sub(tail_line_count)
+            .saturating_add(1);
+        if tail_start_line <= total_lines {
+            ranges.push((tail_start_line, total_lines));
+        }
+    }
+    let formatted = if tail.is_empty() {
         i18n::patch_omitted_trailing(locale, head, omitted_lines)
     } else {
         i18n::patch_omitted_middle(locale, head, omitted_lines, tail)
+    };
+    (formatted, ranges, total_lines)
+}
+
+pub(crate) fn truncate_patch_head_tail(
+    raw_patch: &str,
+    max_bytes: usize,
+    locale: LanguageKind,
+) -> String {
+    truncate_patch_head_tail_with_ranges(raw_patch, max_bytes, locale).0
+}
+
+pub fn ranges_cover_all_lines(total_lines: usize, ranges: &[(usize, usize)]) -> bool {
+    if total_lines == 0 {
+        return true;
     }
+    let mut valid: Vec<(usize, usize)> = ranges
+        .iter()
+        .copied()
+        .filter(|&(start, end)| start > 0 && end >= start)
+        .map(|(start, end)| (start.min(total_lines), end.min(total_lines)))
+        .collect();
+    if valid.is_empty() {
+        return false;
+    }
+    valid.sort_unstable();
+    let (cur_start, mut cur_end) = valid[0];
+    if cur_start > 1 {
+        return false;
+    }
+    for (start, end) in valid.into_iter().skip(1) {
+        if start <= cur_end.saturating_add(1) {
+            cur_end = cur_end.max(end);
+        } else {
+            return false;
+        }
+    }
+    cur_end >= total_lines
+}
+
+pub fn read_authorized_scope_diff(
+    patches: &HashMap<String, String>,
+    raw_path: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> std::result::Result<(String, usize, usize, usize), String> {
+    let path = raw_path.trim();
+    if path.is_empty() {
+        return Err("Missing required repository-relative path".into());
+    }
+    let Some(raw_patch) = patches.get(path) else {
+        return Err(format!(
+            "File `{path}` is not part of the authorized review scope"
+        ));
+    };
+    let lines: Vec<&str> = raw_patch.lines().collect();
+    let total = lines.len();
+    if total == 0 {
+        return Ok((format!("Authorized diff for {path} (0 lines)"), 1, 0, 0));
+    }
+    let start = start_line.unwrap_or(1).max(1);
+    if start > total {
+        return Err(format!(
+            "startLine {start} exceeds authorized diff line count ({total}) for {path}"
+        ));
+    }
+    let requested_end = end_line
+        .unwrap_or(start.saturating_add(SCOPE_DIFF_MAX_LINES - 1))
+        .max(start);
+    let max_end = requested_end
+        .min(start.saturating_add(SCOPE_DIFF_MAX_LINES - 1))
+        .min(total);
+
+    let mut out = String::new();
+    let mut actual_end = start.saturating_sub(1);
+    let mut byte_count = 0usize;
+    let mut truncated_bytes = false;
+
+    for (offset, line) in lines[start - 1..max_end].iter().enumerate() {
+        let line_no = start + offset;
+        let formatted = format!("{line_no}: {line}\n");
+        if byte_count + formatted.len() > SCOPE_DIFF_MAX_BYTES && actual_end >= start {
+            truncated_bytes = true;
+            break;
+        }
+        out.push_str(&formatted);
+        byte_count += formatted.len();
+        actual_end = line_no;
+    }
+
+    let mut header = format!("Authorized diff: {path} (Lines {start}-{actual_end} of {total})\n");
+    if actual_end < total {
+        header.push_str(&format!(
+            "[More diff lines available; call read_scope_diff with startLine={} to continue{}]\n",
+            actual_end + 1,
+            if truncated_bytes {
+                ", byte cap reached"
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok((format!("{header}{out}"), start, actual_end, total))
 }
 
 impl RepositoryStore {
-    pub async fn extract_ai_scope(
+    pub async fn extract_ai_scope_with_budget(
         &self,
         target: &ReadTarget,
         selections: &[CommitSelection],
         locale: LanguageKind,
+        max_total_patch_bytes: usize,
     ) -> Result<ExtractedAiScope> {
         if selections.is_empty() {
             return Err(i18n::ai_selection_required_error(locale, false).into());
@@ -274,12 +441,11 @@ impl RepositoryStore {
             .for_worktree(&root)
             .await?;
 
-        let mut files = Vec::new();
         let mut skipped_paths = Vec::new();
-        let mut reviewed_file_ids = Vec::new();
-        let mut total_patch_bytes = 0usize;
+        let mut authorized_patches = HashMap::new();
+        let mut raw_candidates: Vec<(usize, String)> = Vec::new();
 
-        for item in selections {
+        for (selection_idx, item) in selections.iter().enumerate() {
             let change = change_by_id[item.file_id.as_str()];
             if change.ignored_for_review {
                 skipped_paths.push(i18n::ai_skipped_lockfile_review(locale, &change.path));
@@ -329,7 +495,7 @@ impl RepositoryStore {
                         .map_err(|_| "Cannot read symbolic link target")?;
                     format_untracked_patch(&change.path, &format!("symlink -> {}", link.display()))
                 } else {
-                    if metadata.len() as usize > MAX_FILE_PATCH_BYTES {
+                    if metadata.len() as usize > MAX_REVIEW_UNTRACKED_READ_BYTES {
                         skipped_paths.push(i18n::ai_skipped_diff_too_large(locale, &change.path));
                         continue;
                     }
@@ -386,20 +552,93 @@ impl RepositoryStore {
                 raw_patch
             };
 
-            let remaining = MAX_TOTAL_PATCH_BYTES.saturating_sub(total_patch_bytes);
-            if remaining < MIN_PARTIAL_PATCH_BUDGET {
-                skipped_paths.push(i18n::ai_skipped_total_too_large(locale, &change.path));
-                continue;
-            }
-            let allowed = MAX_FILE_PATCH_BYTES.min(remaining);
-            let final_patch = if raw_patch.len() > allowed {
-                skipped_paths.push(i18n::ai_skipped_large_partial(locale, &change.path));
-                truncate_patch_head_tail(&raw_patch, allowed, locale)
-            } else {
-                raw_patch
-            };
+            authorized_patches.insert(change.path.clone(), raw_patch.clone());
+            raw_candidates.push((selection_idx, raw_patch));
+        }
 
-            total_patch_bytes += final_patch.len();
+        // Distribute the inline diff budget smallest-first (water-filling) so early large
+        // files never starve smaller files later in alphabetical order.
+        let mut order: Vec<usize> = (0..raw_candidates.len()).collect();
+        order.sort_by_key(|&pos| (raw_candidates[pos].1.len(), raw_candidates[pos].0));
+
+        let mut remaining_budget = max_total_patch_bytes.max(MIN_PARTIAL_PATCH_BUDGET);
+        let max_file_patch_bytes =
+            (remaining_budget / 3).clamp(MAX_FILE_PATCH_BYTES, MAX_SCALED_FILE_PATCH_BYTES);
+        let mut allocated: Vec<Option<(String, Option<DeferredPatchNotice>)>> =
+            vec![None; raw_candidates.len()];
+
+        for (step, &cand_pos) in order.iter().enumerate() {
+            let files_left = order.len() - step;
+            let fair_share = (remaining_budget / files_left).min(max_file_patch_bytes);
+            let (selection_idx, ref raw_patch) = raw_candidates[cand_pos];
+            let change = change_by_id[selections[selection_idx].file_id.as_str()];
+            let total_lines = raw_patch.lines().count().max(1);
+
+            if raw_patch.len() <= fair_share {
+                remaining_budget = remaining_budget.saturating_sub(raw_patch.len());
+                allocated[cand_pos] = Some((raw_patch.clone(), None));
+            } else if fair_share >= MIN_PARTIAL_PATCH_BUDGET {
+                let (mut slimmed, initial_ranges, total_lines) =
+                    truncate_patch_head_tail_with_ranges(raw_patch, fair_share, locale);
+                let first_omitted = initial_ranges
+                    .first()
+                    .map(|&(_, end)| end.saturating_add(1))
+                    .unwrap_or(1)
+                    .min(total_lines);
+                let last_omitted = initial_ranges
+                    .get(1)
+                    .map(|&(start, _)| start.saturating_sub(1))
+                    .unwrap_or(total_lines)
+                    .max(first_omitted);
+                slimmed.push_str(&format!(
+                    "\n[Diff truncated ({total_lines} lines total). Call read_scope_diff(path=\"{}\", startLine={first_omitted}, endLine={last_omitted}) to inspect omitted hunks.]",
+                    change.path
+                ));
+                remaining_budget = remaining_budget.saturating_sub(slimmed.len());
+                allocated[cand_pos] = Some((
+                    slimmed,
+                    Some(DeferredPatchNotice {
+                        file_id: change.id.clone(),
+                        path: change.path.clone(),
+                        total_lines,
+                        initial_ranges,
+                        deferred_only: false,
+                        partial_notice: i18n::ai_skipped_large_partial(locale, &change.path),
+                        omitted_notice: i18n::ai_skipped_total_too_large(locale, &change.path),
+                    }),
+                ));
+            } else {
+                let stub = format!(
+                    "[Inline diff omitted due to large total changeset ({total_lines} lines, {} bytes). Call read_scope_diff(path=\"{}\", startLine=1, endLine=250) to review its exact authorized diff.]",
+                    raw_patch.len(),
+                    change.path
+                );
+                allocated[cand_pos] = Some((
+                    stub,
+                    Some(DeferredPatchNotice {
+                        file_id: change.id.clone(),
+                        path: change.path.clone(),
+                        total_lines,
+                        initial_ranges: Vec::new(),
+                        deferred_only: true,
+                        partial_notice: i18n::ai_skipped_large_partial(locale, &change.path),
+                        omitted_notice: i18n::ai_skipped_total_too_large(locale, &change.path),
+                    }),
+                ));
+            }
+        }
+
+        let mut files = Vec::with_capacity(raw_candidates.len());
+        let mut reviewed_file_ids = Vec::with_capacity(raw_candidates.len());
+        let mut deferred_notices = Vec::new();
+        for (cand_pos, (selection_idx, _)) in raw_candidates.into_iter().enumerate() {
+            let Some((final_patch, notice)) = allocated[cand_pos].take() else {
+                continue;
+            };
+            let change = change_by_id[selections[selection_idx].file_id.as_str()];
+            if let Some(deferred) = notice {
+                deferred_notices.push(deferred);
+            }
             reviewed_file_ids.push(change.id.clone());
             files.push(ExtractedDiffFile {
                 file_id: change.id.clone(),
@@ -423,6 +662,8 @@ impl RepositoryStore {
             files,
             skipped_paths,
             reviewed_file_ids,
+            authorized_patches,
+            deferred_notices,
         })
     }
 
@@ -872,6 +1113,124 @@ mod tests {
         assert!(
             extracted.files.iter().all(|f| f.patch.is_some()),
             "Every file in a 95-file scope should retain patch context without tail starvation"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_scope_fair_budget_prevents_alphabetical_starvation_and_tracks_diff_tool_coverage()
+     {
+        let fixture = Fixture::new().unwrap();
+        let mut giant = String::from("export const giantStart = true;\n");
+        for idx in 0..900 {
+            giant.push_str(&format!(
+                "export const item_{idx:04} = 'payload-line-with-realistic-content-{idx:04}';\n"
+            ));
+        }
+        giant.push_str("export const giantEnd = true;\n");
+        fs::write(fixture.root.join("a-giant.ts"), giant).unwrap();
+        for idx in 0..5 {
+            fs::write(
+                fixture.root.join(format!("z-small-{idx}.ts")),
+                format!("export const small{idx} = {idx};\n"),
+            )
+            .unwrap();
+        }
+
+        let store = RepositoryStore::default();
+        let snapshot = store.open(&fixture.root).await.unwrap();
+        let tree = &snapshot.worktrees[0];
+        let selections: Vec<CommitSelection> = tree
+            .files
+            .iter()
+            .filter(|f| f.path == "a-giant.ts" || f.path.starts_with("z-small-"))
+            .map(|f| CommitSelection {
+                file_id: f.id.clone(),
+                commit_token: f.commit_token.clone(),
+            })
+            .collect();
+        assert_eq!(selections.len(), 6);
+
+        let target = ReadTarget {
+            repository_id: tree.repository_id.clone(),
+            worktree_id: tree.worktree_id.clone(),
+            session_id: "sess-review-fair".into(),
+            scope_version: tree.status_version.clone(),
+        };
+        let scope = store
+            .extract_ai_scope_with_budget(&target, &selections, LanguageKind::En, 24 * 1024)
+            .await
+            .unwrap();
+
+        assert_eq!(scope.files.len(), 6);
+        assert!(scope.skipped_paths.is_empty());
+        // Every smaller `z-small-*` file got its 100% full patch without starvation:
+        for idx in 0..5 {
+            let path = format!("z-small-{idx}.ts");
+            let entry = scope.files.iter().find(|f| f.path == path).unwrap();
+            assert!(
+                entry
+                    .patch
+                    .contains(&format!("export const small{idx} = {idx};"))
+            );
+            assert!(
+                !scope.deferred_notices.iter().any(|n| n.path == path),
+                "Small file {path} should not be truncated or starved by earlier large file"
+            );
+        }
+
+        // Only `a-giant.ts` was truncated inline and carries a `read_scope_diff` hint + deferred notice:
+        assert_eq!(scope.deferred_notices.len(), 1);
+        let notice = &scope.deferred_notices[0];
+        assert_eq!(notice.path, "a-giant.ts");
+        assert!(!notice.deferred_only);
+        assert!(!ranges_cover_all_lines(
+            notice.total_lines,
+            &notice.initial_ranges
+        ));
+        let giant_entry = scope.files.iter().find(|f| f.path == "a-giant.ts").unwrap();
+        assert!(giant_entry.patch.contains("read_scope_diff"));
+
+        // Reading an unauthorized file outside the scope is strictly refused:
+        assert!(
+            read_authorized_scope_diff(&scope.authorized_patches, "outside.ts", Some(1), Some(20))
+                .is_err()
+        );
+
+        // Reading remaining diff chunks via `read_authorized_scope_diff` completes 100% line coverage:
+        let mut combined = notice.initial_ranges.clone();
+        let mut cursor = 1usize;
+        while cursor <= notice.total_lines {
+            let (chunk, start, end, total) = read_authorized_scope_diff(
+                &scope.authorized_patches,
+                "a-giant.ts",
+                Some(cursor),
+                Some(cursor + 249),
+            )
+            .unwrap();
+            assert_eq!(total, notice.total_lines);
+            assert!(chunk.contains("Authorized diff: a-giant.ts"));
+            combined.push((start, end));
+            if end >= total {
+                break;
+            }
+            cursor = end + 1;
+        }
+        assert!(ranges_cover_all_lines(notice.total_lines, &combined));
+
+        // Dynamic model-aware budget helper derives inline diff bytes directly from
+        // (context_window - max_output_tokens - 8k reserve) * 55% * 3 bytes/token,
+        // clamped to [32 KB, 1.5 MB]:
+        assert_eq!(review_patch_budget_for_model(32_000, 4_096), 32_841);
+        assert_eq!(review_patch_budget_for_model(128_000, 8_192), 184_482);
+        assert_eq!(review_patch_budget_for_model(256_000, 16_384), 382_164);
+        assert_eq!(
+            review_patch_budget_for_model(1_000_000, 32_768),
+            REVIEW_MAX_PATCH_BYTES
+        );
+        // Tiny/misconfigured windows clamp safely to the 32 KB floor without underflow:
+        assert_eq!(
+            review_patch_budget_for_model(8_000, 8_000),
+            REVIEW_MIN_PATCH_BYTES
         );
     }
 }

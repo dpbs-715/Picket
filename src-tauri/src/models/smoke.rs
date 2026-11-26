@@ -167,6 +167,30 @@ fn handle_connection(
         return Ok(());
     }
 
+    if path.ends_with("/models") {
+        let payload = serde_json::json!({
+            "data": [
+                {
+                    "id": "kimi-k3.1-pro",
+                    "display_name": "Kimi K3.1 Pro",
+                    "context_length": 1_048_576,
+                    "max_completion_tokens": 131_072
+                },
+                {
+                    "id": "kimi-k2.8"
+                }
+            ]
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        )?;
+        stream.flush()?;
+        return Ok(());
+    }
+
     let response_text = if body.contains("authorized Git conflict merge resolver") {
         build_conflict_smoke_resolution(&body)
     } else if body.contains("Picket's C-Push planner")

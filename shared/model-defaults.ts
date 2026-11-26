@@ -21,10 +21,17 @@ export interface ApiFormatDefaultConfig {
   defaultMaxOutputTokens: number;
 }
 
+export interface ModelPresetConfig {
+  pattern: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+}
+
 export const MODEL_TOKEN_LIMITS = rawDefaults.limits;
 export const MODEL_GLOBAL_DEFAULTS = rawDefaults.defaults;
 export const MODEL_API_FORMAT_DEFAULTS = rawDefaults.apiFormats as Record<ModelApiFormat, ApiFormatDefaultConfig>;
 export const MODEL_PROVIDER_DEFAULTS = rawDefaults.providers as Record<ModelProviderId, ProviderDefaultConfig>;
+export const MODEL_PRESET_DEFAULTS = (rawDefaults.modelPresets ?? []) as readonly ModelPresetConfig[];
 
 export function resolveDefaultApiFormat(provider: ModelProviderId): ModelApiFormat {
   return MODEL_PROVIDER_DEFAULTS[provider].defaultApiFormat;
@@ -34,10 +41,42 @@ export function resolveDefaultBaseUrl(provider: ModelProviderId): string {
   return MODEL_PROVIDER_DEFAULTS[provider].defaultBaseUrl;
 }
 
+function matchesPresetPattern(candidate: string, pattern: string): boolean {
+  if (candidate === pattern) return true;
+  if (!candidate.startsWith(pattern)) return false;
+  const next = candidate[pattern.length];
+  return next === '-' || next === '_' || next === '.' || next === ':' || next === '@';
+}
+
+export function resolveModelPresetTokenLimits(
+  modelId?: string,
+): { contextWindow: number; maxOutputTokens: number } | undefined {
+  const normalized = (modelId ?? '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  const slashIndex = normalized.lastIndexOf('/');
+  const candidates = slashIndex >= 0 && slashIndex + 1 < normalized.length
+    ? [normalized, normalized.slice(slashIndex + 1)]
+    : [normalized];
+  for (const preset of MODEL_PRESET_DEFAULTS) {
+    const pattern = preset.pattern.trim().toLowerCase();
+    if (!pattern) continue;
+    if (candidates.some((candidate) => matchesPresetPattern(candidate, pattern))) {
+      return {
+        contextWindow: preset.contextWindow,
+        maxOutputTokens: preset.maxOutputTokens,
+      };
+    }
+  }
+  return undefined;
+}
+
 export function resolveDefaultTokenLimits(
   provider: ModelProviderId,
   apiFormat?: ModelApiFormat,
+  modelId?: string,
 ): { contextWindow: number; maxOutputTokens: number } {
+  const preset = resolveModelPresetTokenLimits(modelId);
+  if (preset) return preset;
   const providerCfg = MODEL_PROVIDER_DEFAULTS[provider];
   const effectiveFormat = apiFormat ?? providerCfg.defaultApiFormat;
   if (effectiveFormat === providerCfg.defaultApiFormat) {

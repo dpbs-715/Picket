@@ -4,6 +4,7 @@ import {
   MODEL_PROVIDER_DEFAULTS,
   MODEL_TOKEN_LIMITS,
   resolveDefaultTokenLimits,
+  resolveModelPresetTokenLimits,
   validateTokenLimitsCode,
 } from '../../../shared/model-defaults';
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../../shared/language-protocol';
@@ -19,7 +20,7 @@ import type {
 } from '../../../shared/model-protocol';
 import { getMessages } from '../../i18n/messages';
 
-export { formatTokenCount, MODEL_TOKEN_LIMITS, resolveDefaultTokenLimits };
+export { formatTokenCount, MODEL_TOKEN_LIMITS, resolveDefaultTokenLimits, resolveModelPresetTokenLimits };
 
 export const apiFormats = MODEL_API_FORMATS.map((id) => ({
   id,
@@ -114,7 +115,7 @@ export function newModelEntryInput(connection: ProviderConnection): SaveModelInp
 export function editModelEntryInput(model: ModelConfiguration): SaveModelInput {
   const defaults = providerFor(model.provider);
   const apiFormat = model.apiFormat ?? defaults.defaultApiFormat;
-  const fallbackLimits = resolveDefaultTokenLimits(model.provider, apiFormat);
+  const fallbackLimits = resolveDefaultTokenLimits(model.provider, apiFormat, model.modelId);
   return {
     id: model.id,
     connectionId: model.connectionId,
@@ -156,7 +157,7 @@ export function validateCreateProviderConnection(
   }
   if (!input.modelId.trim()) return validation.missingModelId;
   const effectiveFormat = input.apiFormat ?? provider.defaultApiFormat;
-  const fallbackLimits = resolveDefaultTokenLimits(input.provider, effectiveFormat);
+  const fallbackLimits = resolveDefaultTokenLimits(input.provider, effectiveFormat, input.modelId);
   const contextWindow = input.contextWindow ?? fallbackLimits.contextWindow;
   const maxOutputTokens = input.maxOutputTokens ?? fallbackLimits.maxOutputTokens;
   const code = validateTokenLimitsCode(contextWindow, maxOutputTokens);
@@ -172,7 +173,7 @@ export function validateModelEntry(
   const provider = providerFor(providerId);
   if (!input.modelId.trim()) return validation.missingModelId;
   const effectiveFormat = input.apiFormat ?? provider.defaultApiFormat;
-  const fallbackLimits = resolveDefaultTokenLimits(providerId, effectiveFormat);
+  const fallbackLimits = resolveDefaultTokenLimits(providerId, effectiveFormat, input.modelId);
   const contextWindow = input.contextWindow ?? fallbackLimits.contextWindow;
   const maxOutputTokens = input.maxOutputTokens ?? fallbackLimits.maxOutputTokens;
   const code = validateTokenLimitsCode(contextWindow, maxOutputTokens);
@@ -185,7 +186,7 @@ export function normalizeCreateProviderConnection(
 ): CreateProviderConnectionInput {
   const provider = providerFor(input.provider);
   const apiFormat = input.apiFormat ?? provider.defaultApiFormat;
-  const fallbackLimits = resolveDefaultTokenLimits(input.provider, apiFormat);
+  const fallbackLimits = resolveDefaultTokenLimits(input.provider, apiFormat, input.modelId);
   return {
     provider: input.provider,
     connectionName: input.connectionName.trim() || getMessages(locale).providers[input.provider],
@@ -207,7 +208,7 @@ export function normalizeModelEntry(
 ): SaveModelInput {
   const provider = providerFor(providerId);
   const apiFormat = input.apiFormat ?? provider.defaultApiFormat;
-  const fallbackLimits = resolveDefaultTokenLimits(providerId, apiFormat);
+  const fallbackLimits = resolveDefaultTokenLimits(providerId, apiFormat, input.modelId);
   return {
     ...(input.id ? { id: input.id } : {}),
     connectionId: input.connectionId,

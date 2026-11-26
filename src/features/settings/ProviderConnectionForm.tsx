@@ -1,15 +1,18 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type {
   CreateProviderConnectionInput,
+  ListModelsInput,
   ProviderRevealKeyReply,
   ProviderSaveReply,
   ProviderUpdateReply,
+  RemoteModelOption,
   TestConnectionInput,
   UpdateProviderConnectionInput,
 } from '../../../shared/model-protocol';
 import { useI18n } from '../../i18n';
 import { HelpTip, Icon, IconButton, Overlay, RotatingChevron, type OverlayVariant } from '../../ui/controls';
 import { Collapse, MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../ui/motion';
+import { ModelIdField } from './ModelIdField';
 import {
   apiFormats,
   editProviderConnectionInput,
@@ -18,6 +21,7 @@ import {
   providerFor,
   providers,
   resolveDefaultTokenLimits,
+  validateBaseUrl,
   validateCreateProviderConnection,
 } from './modelProviders';
 import type { ApiFormatId, ModelConfiguration, ProviderConnection } from './modelProviders';
@@ -50,15 +54,26 @@ type CreateProps = {
   mode: 'create';
   keepActiveModel?: boolean;
   overlayVariant?: OverlayVariant;
+  covered?: boolean;
+  depth?: number;
+  onBack?(): void;
+  backLabel?: string;
+  closeDisabled?: boolean;
   onClose(): void;
   onCreated(reply: ProviderSaveReply): void;
   test(input: TestConnectionInput): Promise<string>;
+  listModels?(input: ListModelsInput): Promise<RemoteModelOption[]>;
   create(input: CreateProviderConnectionInput): Promise<ProviderSaveReply>;
 };
 
 type EditProps = {
   mode: 'edit';
   overlayVariant?: OverlayVariant;
+  covered?: boolean;
+  depth?: number;
+  onBack?(): void;
+  backLabel?: string;
+  closeDisabled?: boolean;
   connection: ProviderConnection;
   childModels: readonly ModelConfiguration[];
   onClose(): void;
@@ -81,9 +96,15 @@ export function ProviderConnectionForm(props: ProviderConnectionFormProps) {
 function CreateProviderConnectionForm({
   keepActiveModel,
   overlayVariant = 'drill',
+  covered,
+  depth,
+  onBack,
+  backLabel,
+  closeDisabled,
   onClose,
   onCreated,
   test,
+  listModels,
   create,
 }: CreateProps) {
   const { locale, t } = useI18n();
@@ -102,17 +123,27 @@ function CreateProviderConnectionForm({
   const [failedSignature, setFailedSignature] = useState<string | null>(null);
   const [operation, setOperation] = useState<'idle' | 'testing' | 'saving'>('idle');
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [fetchedModels, setFetchedModels] = useState<RemoteModelOption[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetchStatus, setFetchStatus] = useState<string | null>(null);
 
   const generation = useRef(0);
+  const fetchGeneration = useRef(0);
   const inFlight = useRef<number | null>(null);
+  const autoLimitsRef = useRef<{ contextWindow: number; maxOutputTokens: number }>(
+    resolveDefaultTokenLimits('anthropic', 'anthropic-messages', providerFor('anthropic').model),
+  );
+  const autoModelNameRef = useRef<string>(providerFor('anthropic').name);
 
   useEffect(() => () => {
     generation.current += 1;
+    fetchGeneration.current += 1;
   }, []);
 
   const provider = providerFor(input.provider);
   const effectiveFormat = input.apiFormat ?? provider.defaultApiFormat;
-  const defaultLimits = resolveDefaultTokenLimits(input.provider, effectiveFormat);
+  const defaultLimits = resolveDefaultTokenLimits(input.provider, effectiveFormat, input.modelId);
 
   function resetAsyncState() {
     generation.current += 1;
@@ -122,30 +153,111 @@ function CreateProviderConnectionForm({
     setOperation('idle');
   }
 
-  function change(next: CreateProviderConnectionInput) {
+  function resetFetchedModels() {
+    fetchGeneration.current += 1;
+    setFetchingModels(false);
+    setFetchedModels([]);
+    setFetchError(null);
+    setFetchStatus(null);
+  }
+
+  function change(next: CreateProviderConnectionInput, clearFetched = false) {
     resetAsyncState();
+    if (clearFetched) resetFetchedModels();
     setInput(next);
+  }
+
+  function applyAutoLimits(
+    nextLimits: { contextWindow: number; maxOutputTokens: number },
+    baseInput: CreateProviderConnectionInput,
+  ) {
+    const prevLimits = autoLimitsRef.current;
+    const useDefaultCtx = !contextWindowText.trim() || contextWindowText.trim() === String(prevLimits.contextWindow);
+    const useDefaultOut = !maxOutputTokensText.trim() || maxOutputTokensText.trim() === String(prevLimits.maxOutputTokens);
+    const nextCtx = useDefaultCtx ? nextLimits.contextWindow : baseInput.contextWindow;
+    const nextOut = useDefaultOut ? nextLimits.maxOutputTokens : baseInput.maxOutputTokens;
+    autoLimitsRef.current = nextLimits;
+    resetAsyncState();
+    setInput({ ...baseInput, contextWindow: nextCtx, maxOutputTokens: nextOut });
+    if (useDefaultCtx) setContextWindowText(String(nextLimits.contextWindow));
+    if (useDefaultOut) setMaxOutputTokensText(String(nextLimits.maxOutputTokens));
+  }
+
+  function changeModelId(nextModelId: string) {
+    const nextDefaults = resolveDefaultTokenLimits(input.provider, effectiveFormat, nextModelId);
+    applyAutoLimits(nextDefaults, { ...input, modelId: nextModelId });
+  }
+
+  function selectFetchedModel(option: RemoteModelOption) {
+    const presetDefaults = resolveDefaultTokenLimits(input.provider, effectiveFormat, option.id);
+    const nextCtx = option.contextWindow ?? presetDefaults.contextWindow;
+    const rawOut = option.maxOutputTokens ?? presetDefaults.maxOutputTokens;
+    const nextOut = Math.min(rawOut, nextCtx);
+    const currentName = input.modelName.trim();
+    const shouldUpdateName = !currentName || currentName === autoModelNameRef.current;
+    const nextName = shouldUpdateName ? (option.displayName ?? '') : input.modelName;
+    if (shouldUpdateName) autoModelNameRef.current = nextName;
+    applyAutoLimits(
+      { contextWindow: nextCtx, maxOutputTokens: nextOut },
+      { ...input, modelId: option.id, modelName: nextName },
+    );
   }
 
   function changeProvider(nextProviderId: CreateProviderConnectionInput['provider']) {
     const base = newProviderConnectionInput(nextProviderId, locale);
+    const nextLimits = resolveDefaultTokenLimits(nextProviderId, base.apiFormat, base.modelId);
+    autoLimitsRef.current = nextLimits;
+    autoModelNameRef.current = base.modelName;
     resetAsyncState();
+    resetFetchedModels();
     setInput(base);
     setContextWindowText(String(base.contextWindow ?? ''));
     setMaxOutputTokensText(String(base.maxOutputTokens ?? ''));
   }
 
   function changeApiFormat(nextFormat: ApiFormatId) {
-    const prevDefaults = resolveDefaultTokenLimits(input.provider, effectiveFormat);
-    const nextDefaults = resolveDefaultTokenLimits(input.provider, nextFormat);
-    const useDefaultCtx = !contextWindowText.trim() || contextWindowText.trim() === String(prevDefaults.contextWindow);
-    const useDefaultOut = !maxOutputTokensText.trim() || maxOutputTokensText.trim() === String(prevDefaults.maxOutputTokens);
-    const nextCtx = useDefaultCtx ? nextDefaults.contextWindow : input.contextWindow;
-    const nextOut = useDefaultOut ? nextDefaults.maxOutputTokens : input.maxOutputTokens;
-    resetAsyncState();
-    setInput({ ...input, apiFormat: nextFormat, contextWindow: nextCtx, maxOutputTokens: nextOut });
-    if (useDefaultCtx) setContextWindowText(String(nextDefaults.contextWindow));
-    if (useDefaultOut) setMaxOutputTokensText(String(nextDefaults.maxOutputTokens));
+    const nextDefaults = resolveDefaultTokenLimits(input.provider, nextFormat, input.modelId);
+    resetFetchedModels();
+    applyAutoLimits(nextDefaults, { ...input, apiFormat: nextFormat });
+  }
+
+  async function handleFetchModels() {
+    if (!listModels || fetchingModels || operation === 'saving') return;
+    if (provider.needsUrl) {
+      const urlErr = validateBaseUrl(input.baseUrl, locale);
+      if (urlErr) {
+        setFetchError(urlErr);
+        setFetchStatus(null);
+        return;
+      }
+    }
+    if (provider.needsKey && !input.apiKey.trim()) {
+      setFetchError(t.modelForm.validation.missingApiKey);
+      setFetchStatus(null);
+      return;
+    }
+    const version = ++fetchGeneration.current;
+    setFetchingModels(true);
+    setFetchError(null);
+    setFetchStatus(null);
+    try {
+      const models = await listModels({
+        kind: 'newConnection',
+        provider: input.provider,
+        baseUrl: provider.needsUrl ? input.baseUrl.trim() : '',
+        apiKey: provider.needsKey ? input.apiKey.trim() : '',
+        apiFormat: effectiveFormat,
+        locale,
+      });
+      if (fetchGeneration.current !== version) return;
+      setFetchedModels(models);
+      setFetchStatus(models.length > 0 ? null : t.modelForm.fetchedModelsEmpty);
+    } catch (err) {
+      if (fetchGeneration.current !== version) return;
+      setFetchError(sanitizeModelError(err, [input.apiKey], t.modelForm.fetchModelsErrorFallback));
+    } finally {
+      if (fetchGeneration.current === version) setFetchingModels(false);
+    }
   }
 
   function buildNormalized(): { normalized?: CreateProviderConnectionInput; error?: string } {
@@ -239,9 +351,18 @@ function CreateProviderConnectionForm({
         : t.modelForm.saveAndUse;
 
   return (
-    <Overlay title={t.modelForm.addProviderTitle} onClose={onClose} variant={overlayVariant}>
+    <Overlay
+      title={t.modelForm.addProviderTitle}
+      covered={covered}
+      depth={depth}
+      onBack={onBack}
+      backLabel={backLabel}
+      closeDisabled={closeDisabled}
+      onClose={onClose}
+      variant={overlayVariant}
+    >
       <form
-        className="model-form scroll-area"
+        className="model-form"
         data-form-mode="create-provider"
         noValidate
         onSubmit={(event) => {
@@ -249,193 +370,192 @@ function CreateProviderConnectionForm({
           void submit('saving');
         }}
       >
-        <fieldset>
-          <legend>{t.modelForm.providerLegend}</legend>
-          <div className="provider-grid" role="group" aria-label={t.modelForm.providerLegend}>
-            {providers.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                disabled={operation === 'saving'}
-                aria-pressed={input.provider === item.id}
-                onClick={() => changeProvider(item.id)}
-              >
-                {t.providers[item.id]}
-              </button>
-            ))}
-          </div>
-        </fieldset>
+        <div className="model-form-body scroll-area">
+          <fieldset>
+            <legend>{t.modelForm.providerLegend}</legend>
+            <div className="provider-grid" role="group" aria-label={t.modelForm.providerLegend}>
+              {providers.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  disabled={operation === 'saving'}
+                  aria-pressed={input.provider === item.id}
+                  onClick={() => changeProvider(item.id)}
+                >
+                  {t.providers[item.id]}
+                </button>
+              ))}
+            </div>
+          </fieldset>
 
-        <div className="form-section-label">{t.modelForm.connectionSectionHeading}</div>
-        <label>
-          {t.modelForm.connectionNameLabel}
-          <input
-            data-field="connection-name"
-            disabled={operation === 'saving'}
-            value={input.connectionName}
-            onChange={(event) => setInput({ ...input, connectionName: event.target.value })}
-            placeholder={t.modelForm.connectionNamePlaceholder}
-          />
-        </label>
-        {provider.needsUrl && (
+          <div className="form-section-label">{t.modelForm.connectionSectionHeading}</div>
           <label>
-            {t.modelForm.baseUrlLabel}
+            {t.modelForm.connectionNameLabel}
             <input
-              className="mono"
-              data-field="base-url"
+              data-field="connection-name"
               disabled={operation === 'saving'}
-              value={input.baseUrl}
-              onChange={(event) => change({ ...input, baseUrl: event.target.value })}
-              placeholder={provider.url}
-              required
+              value={input.connectionName}
+              onChange={(event) => setInput({ ...input, connectionName: event.target.value })}
+              placeholder={t.modelForm.connectionNamePlaceholder}
             />
           </label>
-        )}
-        {provider.needsKey && (
-          <div className="form-field">
-            <div className="label-row api-key-label-row">
-              <label htmlFor={apiKeyInputId} className="label-row">
-                <span>API Key</span>
-                <HelpTip align="start" label={t.modelForm.apiKeyTipLabel} text={t.modelForm.apiKeyTipText} />
-              </label>
-            </div>
-            <input
-              id={apiKeyInputId}
-              className="mono"
-              data-field="api-key"
-              disabled={operation === 'saving'}
-              type="password"
-              value={input.apiKey}
-              onChange={(event) => change({ ...input, apiKey: event.target.value })}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={t.modelForm.apiKeyEnterPlaceholder}
-              required
-            />
-          </div>
-        )}
-
-        <div className="form-section-label">{t.modelForm.firstModelSectionHeading}</div>
-        <label>
-          {t.modelForm.modelIdLabel}
-          <input
-            className="mono"
-            data-field="model-id"
-            disabled={operation === 'saving'}
-            value={input.modelId}
-            onChange={(event) => change({ ...input, modelId: event.target.value })}
-            placeholder={provider.model}
-            required
-          />
-        </label>
-        <label>
-          {t.modelForm.displayNameLabel}
-          <input
-            data-field="model-name"
-            disabled={operation === 'saving'}
-            value={input.modelName}
-            onChange={(event) => setInput({ ...input, modelName: event.target.value })}
-            placeholder={t.modelForm.displayNamePlaceholder}
-          />
-        </label>
-
-        <button
-          type="button"
-          className="advanced-toggle"
-          aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen((open) => !open)}
-        >
-          <RotatingChevron open={advancedOpen} />
-          <span>{t.modelForm.advancedToggle}</span>
-          <span className="muted small mono truncate">
-            {t.apiFormats[effectiveFormat].short}
-          </span>
-        </button>
-
-        <Collapse open={advancedOpen}>
-          <div className="advanced-fields">
+          {provider.needsUrl && (
             <label>
-              {t.modelForm.apiFormatLabel}
-              <div className="select-field">
-                <select
-                  aria-label={t.modelForm.apiFormatLabel}
-                  disabled={operation === 'saving'}
-                  value={effectiveFormat}
-                  onChange={(event) => changeApiFormat(event.target.value as ApiFormatId)}
-                >
-                  {apiFormats.map((format) => (
-                    <option key={format.id} value={format.id}>{t.apiFormats[format.id].label}</option>
-                  ))}
-                </select>
-                <Icon name="down" />
-              </div>
+              {t.modelForm.baseUrlLabel}
+              <input
+                className="mono"
+                data-field="base-url"
+                disabled={operation === 'saving'}
+                value={input.baseUrl}
+                onChange={(event) => change({ ...input, baseUrl: event.target.value }, true)}
+                placeholder={provider.url}
+                required
+              />
             </label>
-            <div className="model-token-grid">
-              <label>
-                <span className="label-row">
-                  {t.modelForm.contextWindowLabel}
-                  <HelpTip align="start" label={t.modelForm.contextWindowTipLabel} text={t.modelForm.contextWindowTipText(defaultLimits.contextWindow)} />
-                </span>
-                <input
-                  className="mono"
-                  aria-label={t.modelForm.contextWindowLabel}
-                  inputMode="numeric"
-                  disabled={operation === 'saving'}
-                  value={contextWindowText}
-                  onChange={(event) => {
-                    resetAsyncState();
-                    setContextWindowText(event.target.value);
-                  }}
-                  placeholder={t.modelForm.defaultPlaceholder(defaultLimits.contextWindow)}
-                />
-              </label>
-              <label>
-                <span className="label-row">
-                  {t.modelForm.maxOutputTokensLabel}
-                  <HelpTip align="end" label={t.modelForm.maxOutputTokensTipLabel} text={t.modelForm.maxOutputTokensTipText(defaultLimits.maxOutputTokens)} />
-                </span>
-                <input
-                  className="mono"
-                  aria-label={t.modelForm.maxOutputTokensLabel}
-                  inputMode="numeric"
-                  disabled={operation === 'saving'}
-                  value={maxOutputTokensText}
-                  onChange={(event) => {
-                    resetAsyncState();
-                    setMaxOutputTokensText(event.target.value);
-                  }}
-                  placeholder={t.modelForm.defaultPlaceholder(defaultLimits.maxOutputTokens)}
-                />
-              </label>
+          )}
+          {provider.needsKey && (
+            <div className="form-field">
+              <div className="label-row api-key-label-row">
+                <label htmlFor={apiKeyInputId} className="label-row">
+                  <span>API Key</span>
+                  <HelpTip align="start" label={t.modelForm.apiKeyTipLabel} text={t.modelForm.apiKeyTipText} />
+                </label>
+              </div>
+              <input
+                id={apiKeyInputId}
+                className="mono"
+                data-field="api-key"
+                disabled={operation === 'saving'}
+                type="password"
+                value={input.apiKey}
+                onChange={(event) => change({ ...input, apiKey: event.target.value }, true)}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={t.modelForm.apiKeyEnterPlaceholder}
+                required
+              />
             </div>
-          </div>
-        </Collapse>
+          )}
 
-        {result && (
-          <m.p
-            key={result.text}
-            role="status"
-            className={`form-result ${result.ok ? 'success' : 'danger'}`}
-            initial={instantMotion ? false : { opacity: 0, y: 3 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-          >
-            {result.text}
-          </m.p>
-        )}
-        <div className="form-actions">
+          <div className="form-section-label">{t.modelForm.firstModelSectionHeading}</div>
+          <ModelIdField
+            value={input.modelId}
+            placeholder={provider.model}
+            disabled={operation === 'saving'}
+            fetchedModels={fetchedModels}
+            fetching={fetchingModels}
+            fetchError={fetchError}
+            fetchStatus={fetchStatus}
+            canFetch={Boolean(listModels)}
+            onValueChange={changeModelId}
+            onSelectModel={selectFetchedModel}
+            onFetchModels={() => void handleFetchModels()}
+          />
+          <label>
+            {t.modelForm.displayNameLabel}
+            <input
+              data-field="model-name"
+              disabled={operation === 'saving'}
+              value={input.modelName}
+              onChange={(event) => setInput({ ...input, modelName: event.target.value })}
+              placeholder={t.modelForm.displayNamePlaceholder}
+            />
+          </label>
+
           <button
             type="button"
-            className="secondary"
-            disabled={operation !== 'idle'}
-            onClick={() => void submit('testing')}
+            className="advanced-toggle"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((open) => !open)}
           >
-            {operation === 'testing' && <Icon name="refresh" className="spinning" />}
-            {operation === 'testing' ? t.modelForm.testing : t.modelForm.testConnection}
+            <RotatingChevron open={advancedOpen} />
+            <span>{t.modelForm.advancedToggle}</span>
+            <span className="muted small mono truncate">
+              {t.apiFormats[effectiveFormat].short}
+            </span>
           </button>
-          <div className="row">
-            <button type="button" onClick={onClose}>{t.common.cancel}</button>
-            <button type="submit" className="primary" disabled={operation !== 'idle'}>{submitLabel}</button>
+
+          <Collapse open={advancedOpen}>
+            <div className="advanced-fields">
+              <label>
+                {t.modelForm.apiFormatLabel}
+                <div className="select-field">
+                  <select
+                    aria-label={t.modelForm.apiFormatLabel}
+                    disabled={operation === 'saving'}
+                    value={effectiveFormat}
+                    onChange={(event) => changeApiFormat(event.target.value as ApiFormatId)}
+                  >
+                    {apiFormats.map((format) => (
+                      <option key={format.id} value={format.id}>{t.apiFormats[format.id].label}</option>
+                    ))}
+                  </select>
+                  <Icon name="down" />
+                </div>
+              </label>
+              <div className="model-token-grid">
+                <label>
+                  <span>{t.modelForm.contextWindowLabel}</span>
+                  <input
+                    className="mono"
+                    aria-label={t.modelForm.contextWindowLabel}
+                    inputMode="numeric"
+                    disabled={operation === 'saving'}
+                    value={contextWindowText}
+                    onChange={(event) => {
+                      resetAsyncState();
+                      setContextWindowText(event.target.value);
+                    }}
+                    placeholder={t.modelForm.defaultPlaceholder(defaultLimits.contextWindow)}
+                  />
+                </label>
+                <label>
+                  <span>{t.modelForm.maxOutputTokensLabel}</span>
+                  <input
+                    className="mono"
+                    aria-label={t.modelForm.maxOutputTokensLabel}
+                    inputMode="numeric"
+                    disabled={operation === 'saving'}
+                    value={maxOutputTokensText}
+                    onChange={(event) => {
+                      resetAsyncState();
+                      setMaxOutputTokensText(event.target.value);
+                    }}
+                    placeholder={t.modelForm.defaultPlaceholder(defaultLimits.maxOutputTokens)}
+                  />
+                </label>
+              </div>
+            </div>
+          </Collapse>
+        </div>
+
+        <div className="overlay-footer">
+          {result && (
+            <m.p
+              key={result.text}
+              role="status"
+              className={`form-result ${result.ok ? 'success' : 'danger'}`}
+              initial={instantMotion ? false : { opacity: 0, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+            >
+              {result.text}
+            </m.p>
+          )}
+          <div className="form-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={operation !== 'idle'}
+              onClick={() => void submit('testing')}
+            >
+              {operation === 'testing' && <Icon name="refresh" className="spinning" />}
+              {operation === 'testing' ? t.modelForm.testing : t.modelForm.testConnection}
+            </button>
+            <div className="row">
+              <button type="button" onClick={onBack ?? onClose}>{t.common.cancel}</button>
+              <button type="submit" className="primary" disabled={operation !== 'idle'}>{submitLabel}</button>
+            </div>
           </div>
         </div>
       </form>
@@ -445,6 +565,11 @@ function CreateProviderConnectionForm({
 
 function EditProviderConnectionForm({
   overlayVariant = 'drill',
+  covered,
+  depth,
+  onBack,
+  backLabel,
+  closeDisabled,
   connection,
   childModels,
   onClose,
@@ -599,10 +724,25 @@ function EditProviderConnectionForm({
     }
   }
 
+  const handleBackOrClose = () => {
+    clearRevealedKey();
+    if (onBack) onBack();
+    else onClose();
+  };
+
   return (
-    <Overlay title={t.modelForm.editConnectionTitle} onClose={() => { clearRevealedKey(); onClose(); }} variant={overlayVariant}>
+    <Overlay
+      title={t.modelForm.editConnectionTitle}
+      covered={covered}
+      depth={depth}
+      onBack={onBack ? handleBackOrClose : undefined}
+      backLabel={backLabel}
+      closeDisabled={closeDisabled}
+      onClose={() => { clearRevealedKey(); onClose(); }}
+      variant={overlayVariant}
+    >
       <form
-        className="model-form scroll-area"
+        className="model-form"
         data-form-mode="edit-provider"
         noValidate
         onSubmit={(event) => {
@@ -610,119 +750,123 @@ function EditProviderConnectionForm({
           void submit('saving');
         }}
       >
-        <div className="connection-identity-card">
-          <div className="row min-width-zero">
-            <strong>{t.providers[connection.provider]}</strong>
-            {connection.baseUrl && <span className="mono muted small truncate">{connection.baseUrl}</span>}
-          </div>
-          <p className="muted help">{t.modelForm.connectionIdentityLockedNote}</p>
-        </div>
-
-        <label>
-          {t.modelForm.connectionNameLabel}
-          <input
-            data-field="connection-name"
-            disabled={operation === 'saving'}
-            value={input.name}
-            onChange={(event) => {
-              setResult(null);
-              setInput({ ...input, name: event.target.value });
-            }}
-            placeholder={t.modelForm.connectionNamePlaceholder}
-          />
-        </label>
-
-        {provider.needsKey && (
-          <div className="form-field">
-            <div className="label-row api-key-label-row">
-              <label htmlFor={apiKeyInputId} className="label-row">
-                <span>API Key</span>
-                <HelpTip align="start" label={t.modelForm.apiKeyTipLabel} text={t.modelForm.apiKeyTipText} />
-              </label>
-              {effectiveKeyHint && <span className="mono model-key-hint">{effectiveKeyHint}</span>}
+        <div className="model-form-body scroll-area">
+          <div className="connection-identity-card">
+            <div className="row min-width-zero">
+              <strong>{t.providers[connection.provider]}</strong>
+              {connection.baseUrl && <span className="mono muted small truncate">{connection.baseUrl}</span>}
             </div>
-            <div className="api-key-input-row">
-              <input
-                id={apiKeyInputId}
-                className="mono"
-                data-field="api-key"
-                disabled={operation === 'saving'}
-                type="password"
-                value={input.apiKey}
-                onChange={(event) => {
-                  setResult(null);
-                  setInput({ ...input, apiKey: event.target.value });
-                }}
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={t.modelForm.apiKeyKeepPlaceholder}
-              />
-              {canRevealSavedKey && (
-                <IconButton
-                  icon={revealedApiKey !== null ? 'eyeOff' : 'eye'}
-                  className={`api-key-reveal-button ${revealedApiKey !== null ? 'is-active' : ''}`}
+          </div>
+
+          <label>
+            {t.modelForm.connectionNameLabel}
+            <input
+              data-field="connection-name"
+              disabled={operation === 'saving'}
+              value={input.name}
+              onChange={(event) => {
+                setResult(null);
+                setInput({ ...input, name: event.target.value });
+              }}
+              placeholder={t.modelForm.connectionNamePlaceholder}
+            />
+          </label>
+
+          {provider.needsKey && (
+            <div className="form-field">
+              <div className="label-row api-key-label-row">
+                <label htmlFor={apiKeyInputId} className="label-row">
+                  <span>API Key</span>
+                  <HelpTip align="start" label={t.modelForm.apiKeyTipLabel} text={t.modelForm.apiKeyTipText} />
+                </label>
+                {effectiveKeyHint && <span className="mono model-key-hint">{effectiveKeyHint}</span>}
+              </div>
+              <div className="api-key-input-row">
+                <input
+                  id={apiKeyInputId}
+                  className="mono"
+                  data-field="api-key"
                   disabled={operation === 'saving'}
-                  aria-pressed={revealedApiKey !== null}
-                  label={
-                    revealing
-                      ? t.modelForm.revealingApiKeyLabel
-                      : revealedApiKey !== null
-                        ? t.modelForm.hideApiKeyLabel
-                        : t.modelForm.revealApiKeyLabel
-                  }
-                  onClick={() => void toggleRevealApiKey()}
+                  type="password"
+                  value={input.apiKey}
+                  onChange={(event) => {
+                    setResult(null);
+                    setInput({ ...input, apiKey: event.target.value });
+                  }}
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={t.modelForm.apiKeyKeepPlaceholder}
                 />
+                {canRevealSavedKey && (
+                  <IconButton
+                    icon={revealedApiKey !== null ? 'eyeOff' : 'eye'}
+                    className={`api-key-reveal-button ${revealedApiKey !== null ? 'is-active' : ''}`}
+                    disabled={operation === 'saving'}
+                    aria-pressed={revealedApiKey !== null}
+                    label={
+                      revealing
+                        ? t.modelForm.revealingApiKeyLabel
+                        : revealedApiKey !== null
+                          ? t.modelForm.hideApiKeyLabel
+                          : t.modelForm.revealApiKeyLabel
+                    }
+                    onClick={() => void toggleRevealApiKey()}
+                  />
+                )}
+              </div>
+              {revealedApiKey !== null && (
+                <m.div
+                  className="revealed-api-key mono"
+                  role="region"
+                  aria-label={t.modelForm.revealedKeyReadonlyLabel}
+                  initial={instantMotion ? false : { opacity: 0, y: -3 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+                >
+                  {revealedApiKey}
+                </m.div>
+              )}
+              {revealNotice && revealedApiKey === null && (
+                <p className={`field-inline-note ${revealNotice.danger ? 'danger' : 'muted'}`}>{revealNotice.text}</p>
+              )}
+              {input.apiKey.trim().length > 0 && childModels.length > 0 && (
+                <p className="field-inline-note">{t.modelForm.rotateKeyImpactNote(childModels.length)}</p>
               )}
             </div>
-            {revealedApiKey !== null && (
-              <m.div
-                className="revealed-api-key mono"
-                role="region"
-                aria-label={t.modelForm.revealedKeyReadonlyLabel}
-                initial={instantMotion ? false : { opacity: 0, y: -3 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-              >
-                {revealedApiKey}
-              </m.div>
-            )}
-            {revealNotice && revealedApiKey === null && (
-              <p className={`field-inline-note ${revealNotice.danger ? 'danger' : 'muted'}`}>{revealNotice.text}</p>
-            )}
-            {input.apiKey.trim().length > 0 && childModels.length > 0 && (
-              <p className="field-inline-note">{t.modelForm.rotateKeyImpactNote(childModels.length)}</p>
-            )}
-          </div>
-        )}
+          )}
 
-        {!canTestConnection && <p className="muted help">{t.modelForm.testNeedsModelHint}</p>}
-        {result && (
-          <m.p
-            key={result.text}
-            role="status"
-            className={`form-result ${result.ok ? 'success' : 'danger'}`}
-            initial={instantMotion ? false : { opacity: 0, y: 3 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-          >
-            {result.text}
-          </m.p>
-        )}
-        <div className="form-actions">
-          <button
-            type="button"
-            className="secondary"
-            disabled={operation !== 'idle' || !canTestConnection}
-            onClick={() => void submit('testing')}
-          >
-            {operation === 'testing' && <Icon name="refresh" className="spinning" />}
-            {operation === 'testing' ? t.modelForm.testing : t.modelForm.testConnection}
-          </button>
-          <div className="row">
-            <button type="button" onClick={() => { clearRevealedKey(); onClose(); }}>{t.common.cancel}</button>
-            <button type="submit" className="primary" disabled={operation !== 'idle'}>
-              {operation === 'saving' ? t.modelForm.saving : t.modelForm.saveChanges}
+          {!canTestConnection && <p className="muted help">{t.modelForm.testNeedsModelHint}</p>}
+        </div>
+
+        <div className="overlay-footer">
+          {result && (
+            <m.p
+              key={result.text}
+              role="status"
+              className={`form-result ${result.ok ? 'success' : 'danger'}`}
+              initial={instantMotion ? false : { opacity: 0, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+            >
+              {result.text}
+            </m.p>
+          )}
+          <div className="form-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={operation !== 'idle' || !canTestConnection}
+              onClick={() => void submit('testing')}
+            >
+              {operation === 'testing' && <Icon name="refresh" className="spinning" />}
+              {operation === 'testing' ? t.modelForm.testing : t.modelForm.testConnection}
             </button>
+            <div className="row">
+              <button type="button" onClick={handleBackOrClose}>{t.common.cancel}</button>
+              <button type="submit" className="primary" disabled={operation !== 'idle'}>
+                {operation === 'saving' ? t.modelForm.saving : t.modelForm.saveChanges}
+              </button>
+            </div>
           </div>
         </div>
       </form>

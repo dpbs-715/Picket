@@ -88,7 +88,8 @@ impl StoredModelRecord {
 
     fn effective_token_limits(&self, provider: ProviderKind) -> (u32, u32) {
         let format = self.effective_api_format(provider);
-        let (default_ctx, default_max_out) = resolve_default_token_limits(provider, Some(format));
+        let (default_ctx, default_max_out) =
+            resolve_default_token_limits(provider, Some(format), Some(&self.model_id));
         (
             self.context_window.unwrap_or(default_ctx),
             self.max_output_tokens.unwrap_or(default_max_out),
@@ -1030,10 +1031,140 @@ impl ModelStore {
                 })
             }
             PiTaskOutcome::Cancelled => Err(i18n::model_test_cancelled_error(locale).into()),
-            PiTaskOutcome::ReviewCompleted { .. }
+            PiTaskOutcome::ModelsListed { .. }
+            | PiTaskOutcome::ReviewCompleted { .. }
             | PiTaskOutcome::CPushPlanCompleted { .. }
-            | PiTaskOutcome::ConflictResolved { .. } => {
+            | PiTaskOutcome::ConflictResolved { .. }
+            | PiTaskOutcome::CustomActionCompleted { .. }
+            | PiTaskOutcome::CustomActionDrafted { .. } => {
                 Err("Connection test returned an unexpected event type".into())
+            }
+        }
+    }
+
+    pub async fn list_provider_models(
+        &self,
+        storage_dir: &Path,
+        paths: &PiPaths,
+        supervisor: &PiSupervisor,
+        input: &ListModelsInput,
+    ) -> Result<ModelListReply, String> {
+        let (locale, provider, api_format, base_url, api_key) = match input {
+            ListModelsInput::NewConnection {
+                provider,
+                base_url,
+                api_key,
+                api_format,
+                locale,
+            } => {
+                let effective_format = api_format.unwrap_or_else(|| provider.default_api_format());
+                let resolved_url = if provider.needs_url() {
+                    Some(validate_http_base_url(base_url, *locale)?)
+                } else {
+                    None
+                };
+                let effective_key =
+                    validate_api_key(api_key, provider.needs_key(), false, *locale)?;
+                let effective_url = self.effective_base_url(*provider, resolved_url.as_deref());
+                (
+                    *locale,
+                    *provider,
+                    effective_format,
+                    effective_url,
+                    effective_key,
+                )
+            }
+            ListModelsInput::ExistingConnection {
+                connection_id,
+                api_format,
+                locale,
+            } => {
+                let conn_id = validate_record_id(connection_id, *locale)?;
+                let (conn, effective_key) = {
+                    let _guard = self.gate.lock().await;
+                    let (stored, _) = read_models_file(storage_dir, *locale)?;
+                    let conn = stored
+                        .connection(&conn_id)
+                        .cloned()
+                        .ok_or_else(|| i18n::provider_not_found_error(*locale))?;
+                    let key = if conn.provider.needs_key() {
+                        self.credentials
+                            .get(storage_dir, &conn.id)?
+                            .ok_or_else(|| i18n::model_missing_stored_key_error(*locale))?
+                    } else {
+                        String::new()
+                    };
+                    (conn, key)
+                };
+                let effective_format =
+                    api_format.unwrap_or_else(|| conn.provider.default_api_format());
+                let effective_url =
+                    self.effective_base_url(conn.provider, conn.base_url.as_deref());
+                (
+                    *locale,
+                    conn.provider,
+                    effective_format,
+                    effective_url,
+                    effective_key,
+                )
+            }
+        };
+
+        let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let request_id = short_token("listmodels", seq, provider.as_id());
+        let context = RequestContext {
+            repository_id: "settings".into(),
+            worktree_id: "settings".into(),
+            session_id: request_id.clone(),
+            scope_version: "model-list-v1".into(),
+        };
+        let command = PiCommand::ListModels {
+            request_id: request_id.clone(),
+            context: context.clone(),
+            model: PiProviderSpec {
+                provider: provider.as_id(),
+                api_format: Some(api_format.as_id()),
+                model_id: String::new(),
+                base_url,
+                api_key: api_key.clone(),
+                context_window: None,
+                max_output_tokens: None,
+            },
+            locale,
+        };
+        let outcome = supervisor
+            .run_task(
+                paths,
+                request_id,
+                context,
+                &command,
+                TEST_CONNECTION_IDLE_TIMEOUT,
+                Some(&api_key),
+                |_| Ok(()),
+            )
+            .await?;
+        match outcome {
+            PiTaskOutcome::ModelsListed { models } => Ok(ModelListReply {
+                protocol_version: MODEL_PROTOCOL_VERSION,
+                provider,
+                models: models
+                    .into_iter()
+                    .map(|item| RemoteModelOption {
+                        id: item.id,
+                        display_name: item.display_name,
+                        context_window: item.context_window,
+                        max_output_tokens: item.max_output_tokens,
+                    })
+                    .collect(),
+            }),
+            PiTaskOutcome::Cancelled => Err(i18n::model_test_cancelled_error(locale).into()),
+            PiTaskOutcome::Completed { .. }
+            | PiTaskOutcome::ReviewCompleted { .. }
+            | PiTaskOutcome::CPushPlanCompleted { .. }
+            | PiTaskOutcome::ConflictResolved { .. }
+            | PiTaskOutcome::CustomActionCompleted { .. }
+            | PiTaskOutcome::CustomActionDrafted { .. } => {
+                Err("Model list request returned an unexpected event type".into())
             }
         }
     }
@@ -1057,8 +1188,17 @@ impl ModelStore {
         let spec = self
             .resolve_runtime_spec_with_locale(storage_dir, &request.model_id, locale)
             .await?;
+        let patch_budget = repository::ai_context::review_patch_budget_for_model(
+            spec.context_window,
+            spec.max_output_tokens,
+        );
         let scope = repo_store
-            .extract_ai_scope(&request.target, &request.selections, locale)
+            .extract_ai_scope_with_budget(
+                &request.target,
+                &request.selections,
+                locale,
+                patch_budget,
+            )
             .await?;
         if scope.files.is_empty() {
             return Ok(ReviewScopeReply {
@@ -1078,7 +1218,13 @@ impl ModelStore {
             session_id: request.target.session_id.clone(),
             scope_version: request.target.scope_version.clone(),
         };
-        let skipped_paths = scope.skipped_paths.clone();
+        let skill_snapshot = crate::skills::RuntimeSkillSnapshot::load_from_data_dir(storage_dir);
+        let hard_skipped_paths = scope.skipped_paths.clone();
+        let deferred_notices = scope.deferred_notices.clone();
+        let authorized_patches = Arc::new(scope.authorized_patches);
+        type DiffReadRangesMap = std::collections::HashMap<String, Vec<(usize, usize)>>;
+        let read_diff_ranges: Arc<std::sync::Mutex<DiffReadRangesMap>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let command = PiCommand::ReviewScope {
             request_id: request.request_id.clone(),
             context: context.clone(),
@@ -1086,12 +1232,18 @@ impl ModelStore {
             branch: scope.branch,
             prompt: request.prompt.clone(),
             files: scope.files,
-            skipped_paths: skipped_paths.clone(),
+            skipped_paths: hard_skipped_paths.clone(),
             locale,
+            enable_tools: Some(true),
+            skill_overrides: skill_snapshot.catalog_option(),
         };
         let stream_target = request.target.clone();
+        let tool_target = request.target.clone();
+        let tool_repo_store = repo_store.clone();
+        let tool_patches = Arc::clone(&authorized_patches);
+        let tool_ranges = Arc::clone(&read_diff_ranges);
         let outcome = supervisor
-            .run_task(
+            .run_task_with_tools(
                 paths,
                 request.request_id.clone(),
                 context,
@@ -1114,11 +1266,111 @@ impl ModelStore {
                     }),
                     _ => Ok(()),
                 },
+                |_call_id, tool_name, args| {
+                    let repo = tool_repo_store.clone();
+                    let target = tool_target.clone();
+                    let skills = skill_snapshot.clone();
+                    let patches = Arc::clone(&tool_patches);
+                    let ranges = Arc::clone(&tool_ranges);
+                    async move {
+                        if tool_name == "read_scope_diff" {
+                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                            let start_line = args
+                                .get("startLine")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as usize);
+                            let end_line = args
+                                .get("endLine")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as usize);
+                            return match repository::ai_context::read_authorized_scope_diff(
+                                &patches, path, start_line, end_line,
+                            ) {
+                                Ok((content, actual_start, actual_end, _total)) => {
+                                    if actual_end >= actual_start
+                                        && let Ok(mut guard) = ranges.lock()
+                                    {
+                                        guard
+                                            .entry(path.trim().to_owned())
+                                            .or_default()
+                                            .push((actual_start, actual_end));
+                                    }
+                                    crate::foundation::pi::PiToolExecutionResult::success(content)
+                                }
+                                Err(err) => {
+                                    crate::foundation::pi::PiToolExecutionResult::error(err)
+                                }
+                            };
+                        }
+                        if tool_name == "read_skill_override_doc" {
+                            let skill = args.get("skill").and_then(|v| v.as_str()).unwrap_or("");
+                            let path = args
+                                .get("path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("SKILL.md");
+                            return match skills.read_doc(skill, path) {
+                                Ok(Some(doc)) => {
+                                    crate::foundation::pi::PiToolExecutionResult::success(doc)
+                                }
+                                Ok(None) => crate::foundation::pi::PiToolExecutionResult::error(
+                                    format!("No override skill document found for {skill}/{path}"),
+                                ),
+                                Err(err) => {
+                                    crate::foundation::pi::PiToolExecutionResult::error(err)
+                                }
+                            };
+                        }
+                        match repo
+                            .execute_read_tool(&target, &tool_name, &args, locale)
+                            .await
+                        {
+                            Ok(content) => {
+                                crate::foundation::pi::PiToolExecutionResult::success(content)
+                            }
+                            Err(err) => crate::foundation::pi::PiToolExecutionResult::error(err),
+                        }
+                    }
+                },
             )
             .await?;
 
         match outcome {
             PiTaskOutcome::ReviewCompleted { findings } => {
+                let mut final_skipped_paths = hard_skipped_paths;
+                let mut unreviewed_deferred_ids = std::collections::HashSet::new();
+                let recorded_ranges = read_diff_ranges
+                    .lock()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_default();
+                for deferred in &deferred_notices {
+                    let tool_reads = recorded_ranges
+                        .get(&deferred.path)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut combined = deferred.initial_ranges.clone();
+                    combined.extend(tool_reads.iter().copied());
+                    if repository::ai_context::ranges_cover_all_lines(
+                        deferred.total_lines,
+                        &combined,
+                    ) {
+                        continue;
+                    }
+                    if deferred.deferred_only {
+                        if tool_reads.is_empty() {
+                            final_skipped_paths.push(deferred.omitted_notice.clone());
+                            unreviewed_deferred_ids.insert(deferred.file_id.clone());
+                        } else {
+                            final_skipped_paths.push(deferred.partial_notice.clone());
+                        }
+                    } else {
+                        final_skipped_paths.push(deferred.partial_notice.clone());
+                    }
+                }
+                let final_reviewed_file_ids: Vec<String> = scope
+                    .reviewed_file_ids
+                    .into_iter()
+                    .filter(|id| !unreviewed_deferred_ids.contains(id))
+                    .collect();
                 let mapped = findings
                     .into_iter()
                     .enumerate()
@@ -1139,14 +1391,17 @@ impl ModelStore {
                     target: request.target.clone(),
                     model_id: request.model_id.clone(),
                     findings: mapped,
-                    skipped_paths,
-                    reviewed_file_ids: scope.reviewed_file_ids,
+                    skipped_paths: final_skipped_paths,
+                    reviewed_file_ids: final_reviewed_file_ids,
                 })
             }
             PiTaskOutcome::Cancelled => Err(i18n::model_review_cancelled_error(locale).into()),
             PiTaskOutcome::Completed { .. }
+            | PiTaskOutcome::ModelsListed { .. }
             | PiTaskOutcome::CPushPlanCompleted { .. }
-            | PiTaskOutcome::ConflictResolved { .. } => Err(
+            | PiTaskOutcome::ConflictResolved { .. }
+            | PiTaskOutcome::CustomActionCompleted { .. }
+            | PiTaskOutcome::CustomActionDrafted { .. } => Err(
                 "Code review returned an unexpected event type; draft and selection were preserved."
                     .into(),
             ),

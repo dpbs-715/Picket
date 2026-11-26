@@ -91,5 +91,77 @@
       "defaultContextWindow": 128000,
       "defaultMaxOutputTokens": 16384
     }
-  }
+  },
+  "modelPresets": [
+    {
+      "pattern": "kimi-k3.1-pro",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 131072
+    },
+    {
+      "pattern": "kimi-k3",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 131072
+    },
+    {
+      "pattern": "kimi-k2.8",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 131072
+    },
+    {
+      "pattern": "kimi-k2.7",
+      "contextWindow": 262144,
+      "maxOutputTokens": 32768
+    },
+    {
+      "pattern": "kimi-k2.6",
+      "contextWindow": 262144,
+      "maxOutputTokens": 32768
+    },
+    {
+      "pattern": "kimi-k2.5",
+      "contextWindow": 262144,
+      "maxOutputTokens": 32768
+    },
+    {
+      "pattern": "kimi-k2-thinking",
+      "contextWindow": 262144,
+      "maxOutputTokens": 32768
+    },
+    {
+      "pattern": "kimi-k2-0905",
+      "contextWindow": 262144,
+      "maxOutputTokens": 16384
+    },
+    {
+      "pattern": "kimi-k2-0711",
+      "contextWindow": 131072,
+      "maxOutputTokens": 16384
+    },
+    {
+      "pattern": "kimi-k2-turbo",
+      "contextWindow": 131072,
+      "maxOutputTokens": 16384
+    },
+    {
+      "pattern": "kimi-for-coding",
+      "contextWindow": 262144,
+      "maxOutputTokens": 32768
+    },
+    {
+      "pattern": "moonshot-v1-128k",
+      "contextWindow": 131072,
+      "maxOutputTokens": 16384
+    },
+    {
+      "pattern": "moonshot-v1-32k",
+      "contextWindow": 32768,
+      "maxOutputTokens": 8192
+    },
+    {
+      "pattern": "moonshot-v1-8k",
+      "contextWindow": 8192,
+      "maxOutputTokens": 4096
+    }
+  ]
 }

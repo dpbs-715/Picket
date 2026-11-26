@@ -1160,4 +1160,52 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
         git(&fixture.root, &["show", ":part.txt"]).unwrap(),
         b"first=2\nsecond=1\n"
     );
+
+    // Fetching provider models works for both NewConnection and ExistingConnection (using stored credentials):
+    server.set_slow_delay_ms(0);
+    let new_conn_models = model_store
+        .list_provider_models(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &ListModelsInput::NewConnection {
+                provider: ProviderKind::Custom,
+                base_url: format!("{}/v1", server.base_url),
+                api_key: "sk-new-conn-list-secret".into(),
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                locale: LanguageKind::En,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(new_conn_models.provider, ProviderKind::Custom);
+    assert_eq!(new_conn_models.models.len(), 2);
+    assert_eq!(new_conn_models.models[0].id, "kimi-k2.8");
+    assert_eq!(new_conn_models.models[1].id, "kimi-k3.1-pro");
+    assert_eq!(new_conn_models.models[1].context_window, Some(1_048_576));
+    assert_eq!(new_conn_models.models[1].max_output_tokens, Some(131_072));
+
+    let existing_conn_models = model_store
+        .list_provider_models(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &ListModelsInput::ExistingConnection {
+                connection_id: saved.connection.id.clone(),
+                api_format: Some(ApiFormatKind::OpenaiCompletions),
+                locale: LanguageKind::En,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(existing_conn_models.models.len(), 2);
+    let last_list_http = server.requests().pop().unwrap();
+    assert_eq!(last_list_http.path, "/v1/models");
+    assert!(
+        last_list_http
+            .authorization
+            .as_deref()
+            .is_some_and(|hdr| hdr.starts_with("Bearer ")),
+        "ExistingConnection list_provider_models must authenticate using stored credentials"
+    );
 }

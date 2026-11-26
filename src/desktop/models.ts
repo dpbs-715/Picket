@@ -1,6 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { AppLocale } from '../../shared/language-protocol';
 import {
+  decodeModelListReply,
   decodeModelMutateReply,
   decodeModelSaveReply,
   decodeModelTestReply,
@@ -9,6 +10,7 @@ import {
   decodeProviderUpdateReply,
   decodeReviewScopeReply,
   type CreateProviderConnectionInput,
+  type ListModelsInput,
   type ModelFileSelection,
   type ModelMutateReply,
   type ModelSaveReply,
@@ -16,6 +18,7 @@ import {
   type ProviderRevealKeyReply,
   type ProviderSaveReply,
   type ProviderUpdateReply,
+  type RemoteModelOption,
   type ReviewScopeReply,
   type SaveModelInput,
   type TestConnectionInput,
@@ -41,6 +44,14 @@ export async function testDesktopModelConnection(input: TestConnectionInput): Pr
     throw new Error(getMessages(input.locale).desktop.modelTestMismatch);
   }
   return reply.summary;
+}
+
+export async function listDesktopProviderModels(input: ListModelsInput): Promise<RemoteModelOption[]> {
+  const reply = decodeModelListReply(await invoke('list_provider_models', { input }));
+  if (input.kind === 'newConnection' && reply.provider !== input.provider) {
+    throw new Error(getMessages(input.locale).desktop.modelTestMismatch);
+  }
+  return reply.models;
 }
 
 export async function createDesktopProviderConnection(

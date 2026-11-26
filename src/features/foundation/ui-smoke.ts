@@ -60,10 +60,15 @@ async function checkDefaultWorkbench() {
     () => (document.querySelector('#settings-updates-section')?.textContent ?? '').includes(`v${PACKAGE_VERSION}`),
     'settings-updates-section-ready',
   );
+  document.querySelector<HTMLButtonElement>('[data-settings-tab="models"]')!.click();
+  await waitForUi(
+    () => [...document.querySelectorAll<HTMLButtonElement>('button')].some((button) => button.textContent === 'Add First Provider'),
+    'settings-models-tab-ready',
+  );
   [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Add First Provider')!.click();
   await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 2, 'default-provider-form-open');
   if (document.querySelectorAll('.overlay-heading h1')[1].getBoundingClientRect().left < 84) throw new Error('Provider form overlaps native window controls');
-  document.querySelector<HTMLButtonElement>('button[aria-label="Close Add Provider"]')!.click();
+  document.querySelector<HTMLButtonElement>('button[data-overlay-back]')!.click();
   await waitForUi(() => document.querySelectorAll('.overlay-heading h1').length === 1, 'default-provider-form-closed');
   document.querySelector<HTMLButtonElement>('button[aria-label="Close Settings"]')!.click();
   await waitForUi(() => !document.querySelector('.overlay'), 'default-settings-closed');
@@ -427,6 +432,8 @@ async function checkModelAndPreviewPlanOperations() {
   // Verify provider card key hint, LocalAuthentication-gated reveal on Edit Connection, and adding a second child model in real WKWebView:
   const expectedHint = `smok…${secret.slice(-4)}`;
   findButton('Settings')!.click();
+  await waitForUi(() => !!document.querySelector('[data-settings-tab="models"]'), 'm3-settings-open');
+  document.querySelector<HTMLButtonElement>('[data-settings-tab="models"]')!.click();
   await waitForUi(
     () => (document.querySelector('.provider-card .model-key-hint')?.textContent ?? '') === expectedHint,
     'm3-settings-key-hint',

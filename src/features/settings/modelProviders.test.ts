@@ -138,4 +138,56 @@ describe('Provider connection and model form validation rules', () => {
     expect(formatModelDisplayLabel(models[1], connections, models)).toBe('Personal OpenAI / Fast Model');
     expect(formatModelDisplayLabel(models[2], connections, models)).toBe('Review Model');
   });
+
+  it('auto-matches Kimi model ID presets (including vendor-prefixed IDs) without false prefix hits', () => {
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k3.1-pro')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 131_072,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'anthropic-messages', 'moonshotai/kimi-k3.1-pro-highspeed')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 131_072,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2.8')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 131_072,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2.7-code')).toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2.6')).toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2.5')).toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2-thinking-turbo')).toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2-0905-preview')).toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 16_384,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-k2-0711-preview')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 16_384,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'kimi-for-coding')).toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 32_768,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'moonshot-v1-8k-vision-preview')).toEqual({
+      contextWindow: 8_192,
+      maxOutputTokens: 4_096,
+    });
+    // Non-matching or partial numeric lookalike falls back cleanly to provider/format default:
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'moonshot-v1-80k')).toEqual({
+      contextWindow: 128_000,
+      maxOutputTokens: 16_384,
+    });
+  });
 });
