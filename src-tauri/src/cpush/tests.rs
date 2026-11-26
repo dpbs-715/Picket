@@ -1180,3 +1180,282 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
         "Dismissed Done C-Push summary must not resurface after restarting Picket"
     );
 }
+
+#[tokio::test]
+async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retry_on_unsupported_guard()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let models = make_models(temp.path());
+    let server = LocalModelSseServer::start().unwrap();
+    let saved = models
+        .create_provider_connection(
+            temp.path(),
+            &CreateProviderConnectionInput {
+                provider: ProviderKind::Custom,
+                connection_name: "CPush Guard Gateway".into(),
+                base_url: format!("{}/v1", server.base_url),
+                api_key: "sk-cpush-guard-key".into(),
+                model_name: "CPush Planner".into(),
+                model_id: "planner-v1".into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let coordinator = CPushCoordinator::default();
+    let paths = PiPaths::development();
+    let supervisor = PiSupervisor::default();
+
+    // 1. Fail-fast preflight: static write blocker (`index.lock`) refuses BEFORE calling Pi Core (0 LLM requests):
+    let lock_fixture = Fixture::new().unwrap();
+    let repo_store = RepositoryStore::default();
+    let lock_snap = repo_store.open(&lock_fixture.root).await.unwrap();
+    let lock_tree = &lock_snap.worktrees[0];
+    let lock_part = lock_tree
+        .files
+        .iter()
+        .find(|f| f.path == "part.txt")
+        .unwrap();
+    let lock_target = ReadTarget {
+        repository_id: lock_tree.repository_id.clone(),
+        worktree_id: lock_tree.worktree_id.clone(),
+        session_id: "sess-fail-fast".into(),
+        scope_version: lock_tree.status_version.clone(),
+    };
+    fs::write(lock_fixture.root.join(".git/index.lock"), "locked").unwrap();
+    let requests_before = server.requests().len();
+    let lock_err = coordinator
+        .start_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &StartCPushRequest {
+                request_id: "cpush-fail-fast-lock".into(),
+                target: lock_target.clone(),
+                model_id: saved.model.id.clone(),
+                selections: vec![CommitSelection {
+                    file_id: lock_part.id.clone(),
+                    commit_token: lock_part.commit_token.clone(),
+                }],
+                prompt: String::new(),
+                confirmed_plan: None,
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+    assert!(lock_err.contains("index.lock"), "{lock_err}");
+    assert_eq!(
+        server.requests().len(),
+        requests_before,
+        "start_cpush must fail fast before invoking Pi Core when static commit preflight fails"
+    );
+
+    let plan_err = coordinator
+        .plan_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &PlanCPushRequest {
+                request_id: "plan-fail-fast-lock".into(),
+                target: lock_target,
+                model_id: saved.model.id.clone(),
+                selections: vec![CommitSelection {
+                    file_id: lock_part.id.clone(),
+                    commit_token: lock_part.commit_token.clone(),
+                }],
+                prompt: String::new(),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+    assert!(plan_err.contains("index.lock"), "{plan_err}");
+    assert_eq!(
+        server.requests().len(),
+        requests_before,
+        "plan_cpush must also fail fast before invoking Pi Core"
+    );
+
+    // 2. Repo containing an untouched tracked 160000 submodule succeeds end-to-end through C-Push:
+    let sub_fixture = Fixture::new().unwrap();
+    let bare = attach_bare_remote(&sub_fixture.root);
+    let sub_dir = sub_fixture.root.join("vendor/skill-sub");
+    fs::create_dir_all(&sub_dir).unwrap();
+    git(&sub_dir, &["init", "-b", "main"]).unwrap();
+    git(&sub_dir, &["config", "user.name", "Sub Tester"]).unwrap();
+    git(&sub_dir, &["config", "user.email", "sub@picket.invalid"]).unwrap();
+    git(&sub_dir, &["config", "commit.gpgSign", "false"]).unwrap();
+    fs::write(sub_dir.join("SKILL.md"), "# skill\n").unwrap();
+    git(&sub_dir, &["add", "SKILL.md"]).unwrap();
+    git(&sub_dir, &["commit", "-m", "feat: sub seed"]).unwrap();
+    let sub_oid = text_git(&sub_dir, &["rev-parse", "HEAD"]);
+    git(
+        &sub_fixture.root,
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
+    )
+    .unwrap();
+    git(
+        &sub_fixture.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sub_oid},vendor/skill-sub"),
+        ],
+    )
+    .unwrap();
+    git(&sub_fixture.root, &["commit", "-m", "chore: add submodule"]).unwrap();
+    git(&sub_fixture.root, &["push", "origin", "feat/read-proof"]).unwrap();
+
+    fs::write(sub_fixture.root.join("RULES.md"), "# rules\n").unwrap();
+    let sub_snap = repo_store.open(&sub_fixture.root).await.unwrap();
+    let sub_tree = &sub_snap.worktrees[0];
+    let rules = sub_tree
+        .files
+        .iter()
+        .find(|f| f.path == "RULES.md")
+        .unwrap();
+    let sub_target = ReadTarget {
+        repository_id: sub_tree.repository_id.clone(),
+        worktree_id: sub_tree.worktree_id.clone(),
+        session_id: "sess-sub-ok".into(),
+        scope_version: sub_tree.status_version.clone(),
+    };
+    let sub_reply = coordinator
+        .start_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &StartCPushRequest {
+                request_id: "cpush-sub-ok".into(),
+                target: sub_target,
+                model_id: saved.model.id.clone(),
+                selections: vec![CommitSelection {
+                    file_id: rules.id.clone(),
+                    commit_token: rules.commit_token.clone(),
+                }],
+                prompt: String::new(),
+                confirmed_plan: None,
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sub_reply.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(sub_reply.session.commits.len(), 1);
+    assert_eq!(
+        text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]),
+        text_git(&sub_fixture.root, &["rev-parse", "HEAD"])
+    );
+    assert!(
+        text_git(&sub_fixture.root, &["ls-tree", "HEAD", "vendor/skill-sub"])
+            .contains(&format!("160000 commit {sub_oid}"))
+    );
+
+    // 3. Non-retryable unsupported guard encountered mid-execution omits `retry-remaining`
+    //    and marks `dismiss-session` as recommended while preserving Step 1's commit:
+    let mid_fixture = Fixture::new().unwrap();
+    fs::write(mid_fixture.root.join("RELEASE_NOTES.md"), "# Notes\n").unwrap();
+    let post_commit_hook = mid_fixture.root.join(".git/hooks/post-commit");
+    fs::write(
+        &post_commit_hook,
+        "#!/bin/sh\ngit config core.sparseCheckout true\n",
+    )
+    .unwrap();
+    fs::set_permissions(&post_commit_hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mid_snap = repo_store.open(&mid_fixture.root).await.unwrap();
+    let mid_tree = &mid_snap.worktrees[0];
+    let mid_part = mid_tree
+        .files
+        .iter()
+        .find(|f| f.path == "part.txt")
+        .unwrap();
+    let mid_notes = mid_tree
+        .files
+        .iter()
+        .find(|f| f.path == "RELEASE_NOTES.md")
+        .unwrap();
+    let mid_target = ReadTarget {
+        repository_id: mid_tree.repository_id.clone(),
+        worktree_id: mid_tree.worktree_id.clone(),
+        session_id: "sess-non-retryable".into(),
+        scope_version: mid_tree.status_version.clone(),
+    };
+    let blocked = coordinator
+        .start_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &StartCPushRequest {
+                request_id: "cpush-mid-non-retryable".into(),
+                target: mid_target,
+                model_id: saved.model.id.clone(),
+                selections: vec![
+                    CommitSelection {
+                        file_id: mid_part.id.clone(),
+                        commit_token: mid_part.commit_token.clone(),
+                    },
+                    CommitSelection {
+                        file_id: mid_notes.id.clone(),
+                        commit_token: mid_notes.commit_token.clone(),
+                    },
+                ],
+                prompt: String::new(),
+                confirmed_plan: Some(CPushConfirmedPlan {
+                    groups: vec![
+                        PiCPushCommitGroup {
+                            id: "g1".into(),
+                            message: "feat: step 1 lands cleanly".into(),
+                            file_ids: vec![mid_part.id.clone()],
+                        },
+                        PiCPushCommitGroup {
+                            id: "g2".into(),
+                            message: "docs: step 2 hits sparse-checkout".into(),
+                            file_ids: vec![mid_notes.id.clone()],
+                        },
+                    ],
+                    skipped_file_ids: Vec::new(),
+                }),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        blocked.session.session_status,
+        CPushSessionStatus::NeedsDecision
+    );
+    assert!(!blocked.session.can_retry_remaining);
+    assert_eq!(blocked.session.commits.len(), 1);
+    let msg = blocked.session.message.as_ref().unwrap();
+    let opts = msg.options.as_ref().unwrap();
+    assert_eq!(opts.len(), 1);
+    assert_eq!(opts[0].id, "dismiss-session");
+    assert_eq!(opts[0].recommended, Some(true));
+}

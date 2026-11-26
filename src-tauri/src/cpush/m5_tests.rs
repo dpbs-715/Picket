@@ -874,3 +874,98 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
             .contains("interrupted")
     );
 }
+
+#[tokio::test]
+async fn rebase_succeeds_with_untouched_submodule_and_refuses_upstream_submodule_pointer_change() {
+    let pair = BareRemotePair::new("origin", "main");
+
+    // Seed a real 160000 submodule entry on both clones via `clone_a` -> `origin` -> `clone_b`:
+    let sub_a = pair.clone_a.join("vendor/skill-sub");
+    fs::create_dir_all(&sub_a).unwrap();
+    git(&sub_a, &["init", "-b", "main"]).unwrap();
+    git(&sub_a, &["config", "user.name", "Sub"]).unwrap();
+    git(&sub_a, &["config", "user.email", "sub@picket.invalid"]).unwrap();
+    git(&sub_a, &["config", "commit.gpgSign", "false"]).unwrap();
+    fs::write(sub_a.join("SKILL.md"), "# sub v1\n").unwrap();
+    git(&sub_a, &["add", "SKILL.md"]).unwrap();
+    git(&sub_a, &["commit", "-m", "feat: sub v1"]).unwrap();
+    let sub_v1 = text_git(&sub_a, &["rev-parse", "HEAD"]);
+
+    git(
+        &pair.clone_a,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sub_v1},vendor/skill-sub"),
+        ],
+    )
+    .unwrap();
+    git(&pair.clone_a, &["commit", "-m", "chore: seed submodule"]).unwrap();
+    git(&pair.clone_a, &["push", "origin", "main"]).unwrap();
+
+    git(&pair.clone_b, &["pull", "--ff-only", "origin", "main"]).unwrap();
+
+    // 1. Upstream adds an ordinary file while local adds another ordinary file; submodule is untouched:
+    fs::write(pair.clone_b.join("REMOTE.md"), "# remote\n").unwrap();
+    git(&pair.clone_b, &["add", "REMOTE.md"]).unwrap();
+    git(&pair.clone_b, &["commit", "-m", "docs: remote change"]).unwrap();
+    git(&pair.clone_b, &["push", "origin", "main"]).unwrap();
+
+    fs::write(pair.clone_a.join("LOCAL.md"), "# local\n").unwrap();
+    git(&pair.clone_a, &["add", "LOCAL.md"]).unwrap();
+    git(&pair.clone_a, &["commit", "-m", "docs: local change"]).unwrap();
+
+    let repo_store = RepositoryStore::default();
+    let snap = repo_store.open(&pair.clone_a).await.unwrap();
+    let tree = &snap.worktrees[0];
+    let target = ReadTarget {
+        repository_id: tree.repository_id.clone(),
+        worktree_id: tree.worktree_id.clone(),
+        session_id: "sess-rebase-sub".into(),
+        scope_version: tree.status_version.clone(),
+    };
+    let outcome = repo_store.sync_rebase_onto_upstream(&target).await.unwrap();
+    assert!(
+        matches!(outcome, RebaseSyncOutcome::Completed { .. }),
+        "expected Completed rebase with untouched submodule"
+    );
+    assert_eq!(
+        text_git(&pair.clone_a, &["show", "HEAD:REMOTE.md"]),
+        "# remote"
+    );
+    assert_eq!(
+        text_git(&pair.clone_a, &["show", "HEAD:LOCAL.md"]),
+        "# local"
+    );
+    assert!(
+        text_git(&pair.clone_a, &["ls-tree", "HEAD", "vendor/skill-sub"])
+            .contains(&format!("160000 commit {sub_v1}"))
+    );
+
+    // 2. Upstream updates the 160000 submodule pointer -> automatic rebase refuses cleanly before rewriting HEAD:
+    fs::write(sub_a.join("SKILL.md"), "# sub v2\n").unwrap();
+    git(&sub_a, &["commit", "-am", "feat: sub v2"]).unwrap();
+    let sub_v2 = text_git(&sub_a, &["rev-parse", "HEAD"]);
+    git(&sub_a, &["checkout", &sub_v1]).unwrap();
+
+    git(
+        &pair.clone_b,
+        &[
+            "update-index",
+            "--cacheinfo",
+            &format!("160000,{sub_v2},vendor/skill-sub"),
+        ],
+    )
+    .unwrap();
+    git(&pair.clone_b, &["commit", "-m", "chore: bump submodule"]).unwrap();
+    git(&pair.clone_b, &["push", "origin", "main"]).unwrap();
+
+    let head_before = text_git(&pair.clone_a, &["rev-parse", "HEAD"]);
+    let err = repo_store
+        .sync_rebase_onto_upstream(&target)
+        .await
+        .unwrap_err();
+    assert!(err.contains("submodule"), "{err}");
+    assert_eq!(text_git(&pair.clone_a, &["rev-parse", "HEAD"]), head_before);
+}
