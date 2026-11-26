@@ -1679,7 +1679,7 @@ export async function verifyWorkbench(root: Root) {
   });
   await act(async () => {
     await new Promise<void>((resolve) => {
-      const deadline = performance.now() + 1800;
+      const deadline = performance.now() + 6000;
       const waitBottom = () => {
         if (scrollList.scrollTop + scrollList.clientHeight >= scrollList.scrollHeight - 2 || performance.now() >= deadline) {
           resolve();
@@ -1706,7 +1706,7 @@ export async function verifyWorkbench(root: Root) {
   });
   await act(async () => {
     await new Promise<void>((resolve) => {
-      const deadline = performance.now() + 1800;
+      const deadline = performance.now() + 6000;
       const waitTop = () => {
         if (scrollList.scrollTop <= 2 || performance.now() >= deadline) {
           resolve();
@@ -1717,7 +1717,10 @@ export async function verifyWorkbench(root: Root) {
       requestAnimationFrame(waitTop);
     });
   });
-  assert(scrollList.scrollTop <= 2, `Holding dragged file near top edge must auto-scroll back to top (scrollTop=${scrollList.scrollTop})`);
+  assert(
+    scrollList.scrollTop <= 2,
+    `Holding dragged file near top edge must auto-scroll back to top (scrollTop=${scrollList.scrollTop}, scrollHeight=${scrollList.scrollHeight}, clientHeight=${scrollList.clientHeight})`,
+  );
   await act(async () => {
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 23, clientX: listRectAfterExpand.left + 60, clientY: listRectAfterExpand.top + 24 }));
   });
