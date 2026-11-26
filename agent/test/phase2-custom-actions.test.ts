@@ -388,4 +388,101 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
       links: [{ label: 'Actions #101', url: 'https://github.com/dpbs-715/Picket/actions/runs/101' }],
     });
   });
+
+  it('supports write_repo_file and injects <user_follow_up_instruction> with <previous_session_checkpoint>', async () => {
+    let seenUserPrompt = '';
+    const srv = await startMockOpenAiServer((body, callIndex) => {
+      if (callIndex === 1) {
+        const messages = Array.isArray(body.messages) ? body.messages as Array<{ role?: string; content?: unknown }> : [];
+        const userContent = messages.find((m) => m.role === 'user')?.content;
+        seenUserPrompt = typeof userContent === 'string' ? userContent : JSON.stringify(userContent ?? '');
+        return {
+          toolCalls: [{
+            id: 'w1',
+            name: 'write_repo_file',
+            arguments: {
+              path: 'CHANGELOG.md',
+              content: '# Changelog\n\n- v0.2.2\n',
+            },
+          }],
+        };
+      }
+      if (callIndex === 2) {
+        return {
+          toolCalls: [{
+            id: 'c1',
+            name: 'commit_exact_scope',
+            arguments: {
+              editedPaths: ['CHANGELOG.md'],
+              message: 'docs(release): add changelog for v0.2.2\n\n- record v0.2.2 release notes',
+            },
+          }],
+        };
+      }
+      return {
+        text: JSON.stringify({
+          summary: 'Created CHANGELOG.md and committed it.',
+          links: [],
+        }),
+      };
+    });
+    closers.push(srv.close);
+
+    const events: ProbeEvent[] = [];
+    const seenTools: string[] = [];
+    let runner!: ReturnType<typeof createTaskRunner>;
+    runner = createTaskRunner(
+      {
+        type: 'runCustomAction',
+        requestId: 'req-followup-1',
+        context: { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' },
+        model: {
+          provider: 'openai',
+          apiFormat: 'openai-completions',
+          modelId: 'mock-model',
+          baseUrl: srv.url,
+          apiKey: 'sk-mock',
+        },
+        branch: 'main',
+        detached: false,
+        remoteBranches: ['origin/main'],
+        actionLabel: 'Patch Release',
+        actionPrompt: 'Bump patch version and release.',
+        extraPrompt: '',
+        followUpPrompt: 'Also create CHANGELOG.md and commit it.',
+        previousCheckpoint: 'Previous runId=run-prev action="Patch Release" status=done',
+        selectedFiles: [],
+        unselectedPaths: [],
+        localKeepPaths: [],
+        locale: 'en',
+        commitLanguage: 'en',
+      },
+      (event) => {
+        events.push(event);
+        if (event.type === 'toolCall') {
+          seenTools.push(event.toolName);
+          queueMicrotask(() => {
+            runner.deliverToolResult?.({
+              type: 'toolResult',
+              requestId: event.requestId,
+              callId: event.callId,
+              ok: true,
+              content: '{"ok":true}',
+            });
+          });
+        }
+      },
+    );
+
+    await runner.run();
+    expect(seenUserPrompt).toContain('<user_follow_up_instruction>');
+    expect(seenUserPrompt).toContain('Also create CHANGELOG.md and commit it.');
+    expect(seenUserPrompt).toContain('<previous_session_checkpoint>');
+    expect(seenTools).toEqual(['write_repo_file', 'commit_exact_scope']);
+    const done = events.find((e) => e.type === 'customActionCompleted');
+    expect(done).toMatchObject({
+      type: 'customActionCompleted',
+      summary: 'Created CHANGELOG.md and committed it.',
+    });
+  });
 });

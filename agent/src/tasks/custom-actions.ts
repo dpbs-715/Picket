@@ -46,10 +46,20 @@ export function buildCustomActionPrompts(
   if (command.extraPrompt.trim()) {
     parts.push(`User one-off extra instructions (+ Prompt):\n${command.extraPrompt.trim()}`);
   }
+  if (command.followUpPrompt?.trim()) {
+    parts.push(
+      [
+        '<user_follow_up_instruction>',
+        command.followUpPrompt.trim(),
+        '</user_follow_up_instruction>',
+        'The user sent the follow-up instruction above right after reviewing the previous run outcome in `<previous_session_checkpoint>`. Prioritize fulfilling this follow-up instruction while honoring the original button context and Picket safety guardrails; do NOT redo steps that already succeeded.',
+      ].join('\n'),
+    );
+  }
   if (command.selectedFiles.length > 0) {
     parts.push(`Authorized selected files (${command.selectedFiles.length}):\n${formatPlanFilesPromptBlock(command.selectedFiles)}`);
   } else {
-    parts.push('Authorized selected files: 0 (no pre-existing local modifications are checked; do NOT commit pre-existing unselected changes, though read-only actions, tagging, PR/issue workflows, or files you explicitly edit via `edit_repo_file` and commit via `commit_exact_scope({ editedPaths, message })` are allowed).');
+    parts.push('Authorized selected files: 0 (no pre-existing local modifications are checked; do NOT commit pre-existing unselected changes, though read-only actions, tagging, PR/issue workflows, or files you create/modify via `edit_repo_file`, `write_repo_file`, or `run_repo_command` and commit via `commit_exact_scope({ editedPaths, message })` are allowed).');
   }
   if (command.unselectedPaths.length > 0) {
     parts.push(`Unselected worktree files (off-limits for local commits):\n${command.unselectedPaths.slice(0, 40).map((p) => `- ${p}`).join('\n')}`);

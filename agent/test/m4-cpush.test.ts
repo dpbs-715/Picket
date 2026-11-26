@@ -1,7 +1,8 @@
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import type { PlanCPushCommand } from '../../shared/pi-protocol';
+import type { PlanCPushCommand, ProbeEvent } from '../../shared/pi-protocol';
 import { getSidecarMessages } from '../src/i18n';
-import { buildCPushPlanPrompts, buildReviewPrompts, parseCPushPlan } from '../src/tasks';
+import { buildCPushPlanPrompts, buildReviewPrompts, createTaskRunner, parseCPushPlan } from '../src/tasks';
 
 function basePlanCommand(qaCount = 0, overrides: Partial<PlanCPushCommand> = {}): PlanCPushCommand {
   return {
@@ -237,5 +238,149 @@ describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
       groups: [{ id: 'g1', fileIds: ['@1', '@2', '@3', '@4'], message: 'feat: bad\n\n- x' }],
       skippedFileIds: [],
     }), cmd)).toThrow('unauthorized file (@4)');
+  });
+
+  it('parses skipPush=true and supports optional on-demand read_scope_diff tool calls in planCPush', async () => {
+    const prompts = buildCPushPlanPrompts(basePlanCommand(0, {
+      prompt: '只提交不推送',
+      enableTools: true,
+    }));
+    expect(prompts.systemPrompt).toContain('"skipPush": true');
+    expect(prompts.systemPrompt).toContain('Optional Read-Only Tools (`read_scope_diff`, `read_repo_file`, `search_repo`)');
+
+    const localOnlyPlan = parseCPushPlan(JSON.stringify({
+      kind: 'ready',
+      summary: 'Commit locally without pushing',
+      groups: [{
+        id: 'g1',
+        fileIds: ['@1', '@2', '@3'],
+        message: 'feat(order): commit local changes\n\n- save selected changes locally',
+      }],
+      skippedFileIds: [],
+      skipPush: true,
+    }), basePlanCommand(0));
+    expect(localOnlyPlan).toMatchObject({
+      kind: 'ready',
+      skipPush: true,
+    });
+
+    // End-to-end tool loop for planCPush with enableTools: true invoking read_scope_diff:
+    let callCount = 0;
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        callCount += 1;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        if (callCount === 1) {
+          res.write(`data: ${JSON.stringify({
+            id: 'cmpl-1',
+            object: 'chat.completion.chunk',
+            created: 1700000000,
+            model: 'mock-model',
+            choices: [{
+              index: 0,
+              delta: {
+                role: 'assistant',
+                tool_calls: [{
+                  index: 0,
+                  id: 'tc-diff-1',
+                  type: 'function',
+                  function: { name: 'read_scope_diff', arguments: JSON.stringify({ path: 'src/Order.ts', startLine: 1, endLine: 50 }) },
+                }],
+              },
+              finish_reason: null,
+            }],
+          })}\n\n`);
+          res.write(`data: ${JSON.stringify({
+            id: 'cmpl-1',
+            object: 'chat.completion.chunk',
+            created: 1700000000,
+            model: 'mock-model',
+            choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+          })}\n\n`);
+        } else {
+          res.write(`data: ${JSON.stringify({
+            id: 'cmpl-2',
+            object: 'chat.completion.chunk',
+            created: 1700000000,
+            model: 'mock-model',
+            choices: [{
+              index: 0,
+              delta: {
+                role: 'assistant',
+                content: JSON.stringify({
+                  kind: 'ready',
+                  summary: 'Local commit after inspecting diff',
+                  groups: [{
+                    id: 'g1',
+                    fileIds: ['@1', '@2', '@3'],
+                    message: 'feat(order): inspect full diff and commit locally\n\n- commit order, retry, and release notes locally',
+                  }],
+                  skippedFileIds: [],
+                  skipPush: true,
+                }),
+              },
+              finish_reason: null,
+            }],
+          })}\n\n`);
+          res.write(`data: ${JSON.stringify({
+            id: 'cmpl-2',
+            object: 'chat.completion.chunk',
+            created: 1700000000,
+            model: 'mock-model',
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          })}\n\n`);
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('Invalid address');
+
+    try {
+      const events: ProbeEvent[] = [];
+      const seenTools: string[] = [];
+      let runner!: ReturnType<typeof createTaskRunner>;
+      runner = createTaskRunner(
+        basePlanCommand(0, {
+          model: {
+            provider: 'openai',
+            apiFormat: 'openai-completions',
+            modelId: 'mock-model',
+            baseUrl: `http://127.0.0.1:${addr.port}/v1`,
+            apiKey: 'sk-mock',
+          },
+          prompt: 'commit locally without pushing',
+          enableTools: true,
+        }),
+        (event) => {
+          events.push(event);
+          if (event.type === 'toolCall') {
+            seenTools.push(event.toolName);
+            queueMicrotask(() => {
+              runner.deliverToolResult?.({
+                type: 'toolResult',
+                requestId: event.requestId,
+                callId: event.callId,
+                ok: true,
+                content: 'Authorized diff: src/Order.ts (Lines 1-2 of 2)\n1: +export const lock = true;\n',
+              });
+            });
+          }
+        },
+      );
+      await runner.run();
+      expect(seenTools).toEqual(['read_scope_diff']);
+      const completed = events.find((e) => e.type === 'cPushPlanCompleted');
+      expect(completed).toMatchObject({
+        type: 'cPushPlanCompleted',
+        plan: { kind: 'ready', skipPush: true },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
   });
 });

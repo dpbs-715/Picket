@@ -36,6 +36,7 @@ import {
   createRunRepoCommandTool,
   createSearchRepoTool,
   createSyncAndPushTool,
+  createWriteRepoFileTool,
 } from '../tools';
 import { buildResolveConflictPrompts, parseConflictResolution } from './conflict';
 import { buildCPushPlanPrompts, parseCPushPlan } from './cpush';
@@ -52,6 +53,7 @@ const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
 const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
 const MAX_REVIEW_TOOL_CALLS = 24;
+const MAX_CPUSH_PLAN_TOOL_CALLS = 8;
 const MAX_CUSTOM_ACTION_TOOL_CALLS = 80;
 const MAX_GENERATE_ACTION_TOOL_CALLS = 16;
 
@@ -107,13 +109,21 @@ async function prepareAgentTaskConfig(
       registry.readDoc('cpush', 'SKILL.md'),
       registry.readDoc('commit', 'SKILL.md'),
     ]);
+    const prompts = buildCPushPlanPrompts(command, {
+      cpush: cpushDoc.content,
+      commit: commitDoc.content,
+    });
+    if (!command.enableTools) {
+      return { prompts, tools: [], toolBudget: 0 };
+    }
     return {
-      prompts: buildCPushPlanPrompts(command, {
-        cpush: cpushDoc.content,
-        commit: commitDoc.content,
-      }),
-      tools: [],
-      toolBudget: 0,
+      prompts,
+      tools: [
+        createReadScopeDiffTool(bridge),
+        createReadRepoFileTool(bridge),
+        createSearchRepoTool(bridge),
+      ],
+      toolBudget: MAX_CPUSH_PLAN_TOOL_CALLS,
     };
   }
   if (command.type === 'runCustomAction') {
@@ -126,6 +136,7 @@ async function prepareAgentTaskConfig(
         createRunGitTool(bridge, false),
         createRunPlatformCliTool(bridge),
         createEditRepoFileTool(bridge),
+        createWriteRepoFileTool(bridge),
         createRunRepoCommandTool(bridge),
         createCommitExactScopeTool(bridge),
         createSyncAndPushTool(bridge),

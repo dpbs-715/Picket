@@ -22,4 +22,5 @@ export {
 export {
   createEditRepoFileTool,
   createRunRepoCommandTool,
+  createWriteRepoFileTool,
 } from './workspace';

@@ -181,7 +181,7 @@ export function createCommitExactScopeTool(
   return {
     name: 'commit_exact_scope',
     label: 'Commit Exact Scope',
-    description: 'Create a local Git commit containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` explicitly modified via `edit_repo_file` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
+    description: 'Create a local Git commit containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -195,7 +195,7 @@ export function createCommitExactScopeTool(
         editedPaths: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Repository-relative paths explicitly modified via `edit_repo_file` during this run to include in this commit.',
+          description: 'Repository-relative paths created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (or verified from the previous run checkpoint) to include in this commit.',
         },
         message: {
           type: 'string',

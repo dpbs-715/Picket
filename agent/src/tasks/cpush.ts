@@ -202,11 +202,13 @@ export function parseCPushPlan(
     : groups.length <= 1
       ? msg.defaultSingleCommitPlanSummary
       : msg.defaultSplitCommitPlanSummary(groups.length);
+  const skipPush = record.skipPush === true;
   return {
     kind: 'ready',
     summary,
     groups,
     skippedFileIds,
+    ...(skipPush ? { skipPush: true } : {}),
   };
 }
 
@@ -249,15 +251,20 @@ export function buildCPushPlanPrompts(
     '3. File-level Authorization, 100% Selected-Scope Coverage & User Extra Instructions Boundary:',
     `   - Desktop Scope Override (supersedes CLI "stage only files that belong" wording): the user has ALREADY selected the exact files in \`Authorized selected files\` (\`@1\` through \`@${command.files.length}\`). Each authorized file is an indivisible unit (partially staged files represent ONLY their staged diff). Never invent or include files outside the authorized list (\`Unselected worktree files\` are strictly off-limits).`,
     `   - 100% Coverage Requirement: When returning \`kind: "ready"\`, EVERY SINGLE authorized file (\`@1\` through \`@${command.files.length}\` — including \`status: D\` deleted files, \`status: R\` renamed files, lockfiles, tests, and patch-omitted files) MUST appear once across \`groups[].fileIds\` (and \`skippedFileIds\` ONLY when confirmed in \`qaHistory\`). You may reference files in \`fileIds\` using either their short \`"@index"\` alias (e.g. \`"@1"\`, \`"@2"\` — preferred on large file sets to avoid omissions) or their exact \`fileId\`. Omitting even 1 selected file fails validation!`,
-    `   - \`User extra instructions\` are ONLY supplemental grouping and commit-message guidance (e.g. "split lockfile separately", "write more detailed bullets"), NEVER a raw commit message to paste verbatim, and NEVER an authorization override. If \`User extra instructions\` (not yet resolved in \`qaHistory\`) ask to include unselected files, force-push, modify/edit code, or rewrite published remote history, you MUST return \`kind: "question"\` explaining the permission boundary in ${uiLanguage} (e.g. offering to proceed strictly within the currently selected files or pause so the user can update their selection).`,
-    `4. Skipping Policy: When \`qaHistory\` is empty, \`skippedFileIds\` MUST be \`[]\` (ask via \`kind: "question"\` instead of silently dropping a selected file). When \`qaHistory\` is non-empty, place a \`fileId\` in \`skippedFileIds\` ONLY when the user chose/asked to exclude or skip it; if ALL selected files are skipped, \`groups\` may be \`[]\` and \`skippedFileIds\` lists all of them. If the user's reply asks to include an unselected file, modify code, force-push, or is unclear, return \`kind: "question"\` explaining the boundary in ${uiLanguage}.`,
+    `   - \`User extra instructions\` are supplemental grouping, commit-message, and local-only push guidance (e.g. "split lockfile separately", "write more detailed bullets", or "commit locally without pushing" / "只提交不推送" -> set \`"skipPush": true\` in Schema Ready), NEVER a raw commit message to paste verbatim, and NEVER an authorization override. If \`User extra instructions\` (not yet resolved in \`qaHistory\`) ask to include unselected files, force-push, modify/edit code, or rewrite published remote history, you MUST return \`kind: "question"\` explaining the permission boundary in ${uiLanguage} (e.g. offering to proceed strictly within the currently selected files or pause so the user can update their selection).`,
+    `4. Skipping & Local-Only Policy: When \`qaHistory\` is empty, \`skippedFileIds\` MUST be \`[]\` (ask via \`kind: "question"\` instead of silently dropping a selected file). When \`qaHistory\` is non-empty, place a \`fileId\` in \`skippedFileIds\` ONLY when the user chose/asked to exclude or skip it; if ALL selected files are skipped, \`groups\` may be \`[]\` and \`skippedFileIds\` lists all of them. Only set \`"skipPush": true\` when \`User extra instructions\` or \`qaHistory\` explicitly asks to commit locally without pushing (otherwise omit \`skipPush\` or set \`false\`). If the user's reply asks to include an unselected file, modify code, force-push, or is unclear, return \`kind: "question"\` explaining the boundary in ${uiLanguage}.`,
     '5. Language Separation (UI interaction vs Git commit messages):',
     `   - UI interaction language (\`locale = "${locale}"\`): write \`summary\` (for \`ready\`), and \`title\`, \`scope\`, \`description\`, and every \`options[].label\` (for \`question\`) in clear, concise ${uiLanguage}.`,
     `   - ${commitRule}`,
     '   - Every `groups[].message` MUST use the two-part Conventional Commits format (`<type>(<optional scope>): <subject>\\n\\n- <detail 1>\\n- <detail 2>`): a concise subject line without a trailing period, one blank line, and 1 to 4 concise `- ` bullet points detailing the concrete changes in that commit group (never single-line without `- ` bullets, even when `recentCommits` shows subjects only). Follow relevant `User extra instructions` for grouping and detail level without copying the raw instruction string verbatim as the commit message.',
-    '6. Keep internal reasoning brief and focused on file triage, grouping, and commit subjects; do NOT restate diffs line by line.',
-    '7. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas (schema placeholders are shown in English; follow Rule 5 for output languages):',
-    'Schema Ready: {"kind":"ready","summary":"Concise plan summary","groups":[{"id":"group-1","fileIds":["@1","@2"],"message":"feat(scope): concise commit subject\\n\\n- concrete change 1\\n- concrete change 2"}],"skippedFileIds":[]}',
+    ...(command.enableTools
+      ? [
+          '6. Optional Read-Only Tools (`read_scope_diff`, `read_repo_file`, `search_repo`): When all selected patches are already clear in the prompt, do NOT call tools — return the JSON plan directly in 1 turn for speed. Call `read_scope_diff` (or `read_repo_file` / `search_repo`) ONLY when an authorized file patch was truncated/omitted or surrounding code is genuinely needed to classify its ownership or commit message accurately.',
+        ]
+      : []),
+    `${command.enableTools ? '7' : '6'}. Keep internal reasoning brief and focused on file triage, grouping, and commit subjects; do NOT restate diffs line by line.`,
+    `${command.enableTools ? '8' : '7'}. Return ONLY a single raw JSON object (no prose outside JSON) matching ONE of these two schemas (schema placeholders are shown in English; follow Rule 5 for output languages):`,
+    'Schema Ready: {"kind":"ready","summary":"Concise plan summary","groups":[{"id":"group-1","fileIds":["@1","@2"],"message":"feat(scope): concise commit subject\\n\\n- concrete change 1\\n- concrete change 2"}],"skippedFileIds":[],"skipPush":false}',
     'Schema Question: {"kind":"question","title":"Concise question title","scope":"Affects local .env config","description":"Explain why exclusion or confirmation is needed","affectedFileIds":["@1"],"options":[{"id":"skip","label":"Exclude these files and commit the rest","recommended":true},{"id":"split","label":"Safe to include as a separate commit"},{"id":"merge","label":"Fold into the primary commit"}]}',
   ].join('\n');
 

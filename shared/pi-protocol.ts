@@ -100,6 +100,7 @@ export type PiCPushPlan =
       summary: string;
       groups: PiCPushCommitGroup[];
       skippedFileIds: string[];
+      skipPush?: boolean;
     }
   | {
       kind: 'question';
@@ -171,6 +172,7 @@ export interface PlanCPushCommand {
   qaHistory: PiCPushQaTurn[];
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
+  enableTools?: boolean;
   skillOverrides?: RuntimeSkillOverrideCatalog;
 }
 
@@ -198,6 +200,7 @@ export interface RunCustomActionCommand {
   actionLabel: string;
   actionPrompt: string;
   extraPrompt: string;
+  followUpPrompt?: string;
   selectedFiles: PiPlanFileEntry[];
   unselectedPaths: string[];
   localKeepPaths: string[];
@@ -554,7 +557,8 @@ export function decodeCommand(line: string): PiCommand {
     if (typeof command.branch !== 'string'
       || typeof command.prompt !== 'string'
       || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
-      || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))) {
+      || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))
+      || !(command.enableTools === undefined || command.enableTools === null || typeof command.enableTools === 'boolean')) {
       throw new Error('Invalid planCPush fields');
     }
     const skillOverrides = decodeSkillOverrides(command.skillOverrides);
@@ -571,6 +575,7 @@ export function decodeCommand(line: string): PiCommand {
       qaHistory: decodeQaHistory(command.qaHistory),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
       ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
+      ...(typeof command.enableTools === 'boolean' ? { enableTools: command.enableTools } : {}),
       ...(skillOverrides ? { skillOverrides } : {}),
     };
   }
@@ -600,6 +605,7 @@ export function decodeCommand(line: string): PiCommand {
       || typeof command.actionLabel !== 'string' || !command.actionLabel.trim()
       || typeof command.actionPrompt !== 'string' || !command.actionPrompt.trim()
       || typeof command.extraPrompt !== 'string'
+      || !(command.followUpPrompt === undefined || command.followUpPrompt === null || typeof command.followUpPrompt === 'string')
       || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
       || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))
       || !(command.previousCheckpoint === undefined || command.previousCheckpoint === null || typeof command.previousCheckpoint === 'string')) {
@@ -617,6 +623,9 @@ export function decodeCommand(line: string): PiCommand {
       actionLabel: command.actionLabel.trim(),
       actionPrompt: command.actionPrompt.trim(),
       extraPrompt: command.extraPrompt,
+      ...(typeof command.followUpPrompt === 'string' && command.followUpPrompt.trim()
+        ? { followUpPrompt: command.followUpPrompt.trim() }
+        : {}),
       selectedFiles: decodePlanFiles(command.selectedFiles, true),
       unselectedPaths: decodeStringList(command.unselectedPaths, 'unselectedPaths'),
       localKeepPaths: decodeStringList(command.localKeepPaths, 'localKeepPaths'),
