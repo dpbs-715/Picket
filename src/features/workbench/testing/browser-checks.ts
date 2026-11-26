@@ -2926,6 +2926,31 @@ export async function verifyWorkbench(root: Root) {
       && Math.abs(changesBeforeToast.height - changesAfterToast.height) <= 0.5,
     'Semantic Toast must float above content without shifting changes-panel layout',
   );
+  // Header dropdown popovers must stack strictly above the floating Toast and stay clickable in the overlap zone:
+  await click(fixture('typing').repositories[0].name);
+  const repoMenuEl = document.querySelector<HTMLElement>('.repository-menu');
+  const headerEl = document.querySelector<HTMLElement>('.context-header');
+  assert(Boolean(repoMenuEl && headerEl), 'Repository dropdown should open while Toast is visible');
+  const toastRect = toastEl!.getBoundingClientRect();
+  const repoMenuOverlapRect = repoMenuEl!.getBoundingClientRect();
+  const overlapLeft = Math.max(toastRect.left, repoMenuOverlapRect.left);
+  const overlapRight = Math.min(toastRect.right, repoMenuOverlapRect.right);
+  const overlapTop = Math.max(toastRect.top, repoMenuOverlapRect.top);
+  const overlapBottom = Math.min(toastRect.bottom, repoMenuOverlapRect.bottom);
+  assert(
+    Number(getComputedStyle(toastLayer!).zIndex) < Number(getComputedStyle(headerEl!).zIndex),
+    `Toast layer z-index (${getComputedStyle(toastLayer!).zIndex}) must stay below header/popover layer (${getComputedStyle(headerEl!).zIndex})`,
+  );
+  assert(
+    overlapRight > overlapLeft + 2 && overlapBottom > overlapTop + 2,
+    'Expected repository dropdown and floating Toast bounding boxes to overlap for hit-test verification',
+  );
+  const overlapHit = document.elementFromPoint((overlapLeft + overlapRight) / 2, (overlapTop + overlapBottom) / 2);
+  assert(
+    Boolean(overlapHit && repoMenuEl!.contains(overlapHit)),
+    `Repository dropdown must receive pointer hits above floating Toast in overlapping region (got ${overlapHit?.className ?? 'null'})`,
+  );
+  await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   await click('Dismiss notice');
   assert(!document.querySelector('.operation-notice'), 'Clicking Dismiss notice must clear the floating Toast');
 
@@ -3876,6 +3901,91 @@ export async function verifyWorkbench(root: Root) {
     `Tray popover actions mismatch: ${JSON.stringify(trayActions)}`,
   );
   checks.push('Menu bar tray popover: read-only priority cards, auto-folded clean group (>5 repos), zero search input, update dot, and Open Main / Quit / Escape actions');
+
+  // Custom Action in-place follow-up steering in MessageDock (done & failed cards forward followUpPrompt + resumeFromRunId):
+  {
+    const followUpCommands: WorkbenchCommand[] = [];
+    const followUpState = fixture('typing');
+    const repoId = followUpState.worktrees[0].repositoryId;
+    followUpState.repositorySettings[repoId] = {
+      editor: 'idea',
+      commitLanguage: 'en',
+      customActions: [{
+        id: 'act-release',
+        label: 'Patch Release',
+        prompt: 'Bump patch version, verify, commit, tag, and push.',
+      }],
+      activeActionId: 'act-release',
+    };
+    followUpState.worktrees[0].sessionStatus = 'done';
+    followUpState.worktrees[0].dockExpanded = true;
+    followUpState.worktrees[0].customAction = {
+      runId: 'run-prev-42',
+      actionId: 'act-release',
+      actionLabel: 'Patch Release',
+      timeline: [{ state: 'done', label: 'Edited package.json' }],
+      commits: [],
+      links: [],
+    };
+    followUpState.worktrees[0].messages = [{
+      id: 'done-action-run-prev-42',
+      kind: 'done',
+      title: 'Patch Release completed',
+      description: 'Updated version manifests; ready for next step.',
+    }];
+    await mount(followUpState, {
+      ...disconnectedBackend,
+      async execute(command) {
+        followUpCommands.push(command);
+        if (command.kind === 'runCustomAction') {
+          return {
+            protocolVersion: 1,
+            kind: 'customAction',
+            requestId: command.requestId,
+            runId: command.requestId,
+            repositoryId: command.target.repositoryId,
+            worktreeId: command.target.worktreeId,
+            sessionId: command.target.sessionId,
+            actionId: command.action.id,
+            actionLabel: command.action.label,
+            status: 'done',
+            summary: 'Committed and pushed follow-up changes.',
+            message: {
+              id: `done-action-${command.requestId}`,
+              kind: 'done',
+              title: `${command.action.label} completed`,
+              description: 'Committed and pushed follow-up changes.',
+            },
+            timeline: [{ state: 'done', label: 'Committed follow-up' }],
+            commits: [],
+            links: [],
+          };
+        }
+        return undefined;
+      },
+    });
+    const followUpInput = document.querySelector<HTMLInputElement>('.message-expanded .message-reply input')!;
+    assert(
+      Boolean(followUpInput) && followUpInput.placeholder.includes('Continue or adjust'),
+      'Settled Custom Action card in MessageDock must render follow-up steering input',
+    );
+    type(followUpInput, 'Create CHANGELOG.md and push v0.2.2');
+    await tick();
+    await click('Send Reply');
+    await tick();
+    const sent = followUpCommands.find((cmd) => cmd.kind === 'runCustomAction');
+    assert(
+      sent?.kind === 'runCustomAction'
+        && sent.followUpPrompt === 'Create CHANGELOG.md and push v0.2.2'
+        && sent.resumeFromRunId === 'run-prev-42'
+        && sent.action.id === 'act-release',
+      `Follow-up submission did not forward followUpPrompt and resumeFromRunId: ${JSON.stringify(sent)}`,
+    );
+    assert(text().includes('Committed and pushed follow-up changes.'), 'Follow-up completion message did not render in MessageDock');
+    await click('Got it');
+    assert(!document.querySelector('.message-expanded') && !document.querySelector('.message-collapsed'), 'Clicking Got it must dismiss settled follow-up action card');
+    checks.push('Custom Action in-place follow-up steering in MessageDock forwards followUpPrompt & resumeFromRunId and dismisses cleanly');
+  }
 
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',
