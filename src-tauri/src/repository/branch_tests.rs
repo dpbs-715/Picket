@@ -176,7 +176,7 @@ async fn refuses_hooks_filters_locks_and_existing_git_operations_without_executi
         "index.lock",
         "MERGE_HEAD",
         "rebase-merge",
-        "hidden-index",
+        "sparse-checkout",
     ] {
         let fixture = Fixture::new().unwrap();
         git(&fixture.root, &["branch", "feat/blocked"]).unwrap();
@@ -214,12 +214,8 @@ async fn refuses_hooks_filters_locks_and_existing_git_operations_without_executi
                 )
                 .unwrap();
             }
-        } else if guard == "hidden-index" {
-            git(
-                &fixture.root,
-                &["update-index", "--assume-unchanged", "pnpm-lock.yaml"],
-            )
-            .unwrap();
+        } else if guard == "sparse-checkout" {
+            git(&fixture.root, &["config", "core.sparseCheckout", "true"]).unwrap();
         } else if guard == "rebase-merge" {
             fs::create_dir(fixture.root.join(".git/rebase-merge")).unwrap();
         } else {
@@ -650,4 +646,241 @@ fn branch_wire_format_never_accepts_paths_commands_or_creation_actions() {
         invalid[field] = serde_json::json!("untrusted");
         assert!(serde_json::from_value::<BranchRequest>(invalid).is_err());
     }
+}
+
+#[tokio::test]
+async fn narrows_branch_switch_guards_for_submodules_hooks_filters_and_hidden_flags() {
+    let fixture = Fixture::new().unwrap();
+    // Create a clean commit with a tracked 160000 submodule, an LFS-attributed asset, and a normal file.
+    let sub_dir = fixture.root.join("vendor/skill-sub");
+    fs::create_dir_all(&sub_dir).unwrap();
+    git(&sub_dir, &["init", "-b", "main"]).unwrap();
+    git(&sub_dir, &["config", "user.name", "Sub Tester"]).unwrap();
+    git(&sub_dir, &["config", "user.email", "sub@picket.invalid"]).unwrap();
+    git(&sub_dir, &["config", "commit.gpgSign", "false"]).unwrap();
+    fs::write(sub_dir.join("SKILL.md"), "# v1\n").unwrap();
+    git(&sub_dir, &["add", "SKILL.md"]).unwrap();
+    git(&sub_dir, &["commit", "-m", "feat: sub v1"]).unwrap();
+    let sub_v1 = String::from_utf8(git(&sub_dir, &["rev-parse", "HEAD"]).unwrap())
+        .unwrap()
+        .trim()
+        .to_owned();
+
+    fs::create_dir_all(fixture.root.join("assets")).unwrap();
+    fs::write(fixture.root.join("assets/logo.bin"), b"binary-v1").unwrap();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        "assets/*.bin filter=external\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("keep.txt"), "base keep\n").unwrap();
+    fs::write(fixture.root.join("README.md"), "# base\n").unwrap();
+    git(
+        &fixture.root,
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+            "assets/logo.bin",
+            ".gitattributes",
+            "keep.txt",
+            "README.md",
+        ],
+    )
+    .unwrap();
+    git(
+        &fixture.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sub_v1},vendor/skill-sub"),
+        ],
+    )
+    .unwrap();
+    git(
+        &fixture.root,
+        &["commit", "-m", "chore: base with submodule and lfs"],
+    )
+    .unwrap();
+
+    // Branch 1 (`feat/docs-only`): touches only `README.md`; submodule, LFS asset, and `keep.txt` are identical.
+    git(&fixture.root, &["checkout", "-b", "feat/docs-only"]).unwrap();
+    fs::write(fixture.root.join("README.md"), "# docs branch\n").unwrap();
+    git(&fixture.root, &["commit", "-am", "docs: update readme"]).unwrap();
+
+    // Branch 2 (`feat/bump-sub`): points `vendor/skill-sub` to a different commit `sub_v2`.
+    git(&fixture.root, &["checkout", "feat/read-proof"]).unwrap();
+    git(&fixture.root, &["checkout", "-b", "feat/bump-sub"]).unwrap();
+    fs::write(sub_dir.join("SKILL.md"), "# v2\n").unwrap();
+    git(&sub_dir, &["commit", "-am", "feat: sub v2"]).unwrap();
+    let sub_v2 = String::from_utf8(git(&sub_dir, &["rev-parse", "HEAD"]).unwrap())
+        .unwrap()
+        .trim()
+        .to_owned();
+    git(
+        &fixture.root,
+        &[
+            "update-index",
+            "--cacheinfo",
+            &format!("160000,{sub_v2},vendor/skill-sub"),
+        ],
+    )
+    .unwrap();
+    git(&fixture.root, &["commit", "-m", "chore: bump submodule"]).unwrap();
+
+    // Branch 3 (`feat/lfs-change`): modifies LFS-attributed `assets/logo.bin`.
+    git(&fixture.root, &["checkout", "feat/read-proof"]).unwrap();
+    git(&sub_dir, &["checkout", &sub_v1]).unwrap();
+    git(&fixture.root, &["checkout", "-b", "feat/lfs-change"]).unwrap();
+    fs::write(fixture.root.join("assets/logo.bin"), b"binary-v2").unwrap();
+    git(&fixture.root, &["commit", "-am", "assets: update logo"]).unwrap();
+
+    // Branch 4 (`feat/touch-keep`): modifies `keep.txt`.
+    git(&fixture.root, &["checkout", "feat/read-proof"]).unwrap();
+    git(&fixture.root, &["checkout", "-b", "feat/touch-keep"]).unwrap();
+    fs::write(fixture.root.join("keep.txt"), "branch keep\n").unwrap();
+    git(&fixture.root, &["commit", "-am", "chore: update keep"]).unwrap();
+
+    // Return to `feat/read-proof` and settle `assets/logo.bin` stat cache (avoid same-second
+    // racy-git re-hashing of an unchanged LFS-attributed file during checkout), then configure:
+    // - An external smudge filter script with a marker that must NEVER run.
+    // - An executable `.git/hooks/pre-commit` (non-checkout hook) that must NOT block switching.
+    // - `--assume-unchanged` on `keep.txt` with a local edit.
+    git(&fixture.root, &["checkout", "feat/read-proof"]).unwrap();
+    let older = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.root.join("assets/logo.bin"))
+        .unwrap()
+        .set_modified(older)
+        .unwrap();
+    git(&fixture.root, &["update-index", "--refresh"]).unwrap();
+    let filter_marker = fixture.root.parent().unwrap().join("lfs-must-not-run");
+    let filter_script = fixture.root.parent().unwrap().join("lfs-filter.sh");
+    fs::write(
+        &filter_script,
+        format!("#!/bin/sh\ntouch '{}'\ncat\n", filter_marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&filter_script, fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &fixture.root,
+        &[
+            "config",
+            "filter.external.smudge",
+            filter_script.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let pre_commit_marker = fixture
+        .root
+        .parent()
+        .unwrap()
+        .join("pre-commit-must-not-run");
+    let pre_commit_hook = fixture.root.join(".git/hooks/pre-commit");
+    fs::write(
+        &pre_commit_hook,
+        format!("#!/bin/sh\ntouch '{}'\n", pre_commit_marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&pre_commit_hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+    git(
+        &fixture.root,
+        &["update-index", "--assume-unchanged", "--", "keep.txt"],
+    )
+    .unwrap();
+    fs::write(fixture.root.join("keep.txt"), "local hidden draft\n").unwrap();
+
+    let store = RepositoryStore::default();
+    let snap = store.open(&fixture.root).await.unwrap();
+
+    // 1. Switching to `feat/docs-only` SUCCEEDS despite untouched submodule, untouched LFS file,
+    //    `pre-commit` hook, and untouched `--assume-unchanged` file!
+    let switched = store
+        .change_branch(&request(&snap, "feat/docs-only"))
+        .await
+        .unwrap();
+    assert_eq!(active(&switched).branch, "feat/docs-only");
+    assert_eq!(
+        fs::read(fixture.root.join("README.md")).unwrap(),
+        b"# docs branch\n"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("keep.txt")).unwrap(),
+        b"local hidden draft\n"
+    );
+    assert!(
+        String::from_utf8(git(&fixture.root, &["ls-files", "-v", "--", "keep.txt"]).unwrap())
+            .unwrap()
+            .starts_with("h ")
+    );
+    assert!(!filter_marker.exists());
+    assert!(!pre_commit_marker.exists());
+
+    // 2. Switching to `feat/bump-sub` (different submodule revision) is REFUSED:
+    let sub_err = store
+        .change_branch(&request(&switched, "feat/bump-sub"))
+        .await
+        .unwrap_err();
+    assert!(sub_err.contains("submodule"), "{sub_err}");
+    assert_eq!(branch(&fixture.root), "feat/docs-only");
+
+    // 3. Switching to `feat/lfs-change` (branch diff touches LFS file) is REFUSED without running filter:
+    let lfs_err = store
+        .change_branch(&request(&switched, "feat/lfs-change"))
+        .await
+        .unwrap_err();
+    assert!(lfs_err.contains("external Git filter"), "{lfs_err}");
+    assert!(!filter_marker.exists());
+    assert_eq!(branch(&fixture.root), "feat/docs-only");
+
+    // 4. Switching to `feat/touch-keep` (branch diff touches `--assume-unchanged` file) is REFUSED
+    //    and preserves the hidden local draft on disk:
+    let hidden_err = store
+        .change_branch(&request(&switched, "feat/touch-keep"))
+        .await
+        .unwrap_err();
+    assert!(hidden_err.contains("skip-worktree"), "{hidden_err}");
+    assert_eq!(
+        fs::read(fixture.root.join("keep.txt")).unwrap(),
+        b"local hidden draft\n"
+    );
+    assert_eq!(branch(&fixture.root), "feat/docs-only");
+
+    // 5. Custom `core.hooksPath` (e.g. `.husky`) containing ONLY `pre-commit` allows switching:
+    fs::write(fixture.root.join(".git/info/exclude"), ".husky/\n").unwrap();
+    let husky = fixture.root.join(".husky");
+    fs::create_dir_all(&husky).unwrap();
+    let husky_pre_commit = husky.join("pre-commit");
+    fs::write(&husky_pre_commit, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&husky_pre_commit, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&fixture.root, &["config", "core.hooksPath", ".husky"]).unwrap();
+    let snap_husky = store.open(&fixture.root).await.unwrap();
+    let back = store
+        .change_branch(&request(&snap_husky, "feat/read-proof"))
+        .await
+        .unwrap();
+    assert_eq!(active(&back).branch, "feat/read-proof");
+
+    // 6. Executable `reference-transaction` hook in `.husky` IS refused without executing:
+    let ref_tx_marker = fixture.root.parent().unwrap().join("ref-tx-must-not-run");
+    let ref_tx_hook = husky.join("reference-transaction");
+    fs::write(
+        &ref_tx_hook,
+        format!("#!/bin/sh\ntouch '{}'\n", ref_tx_marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&ref_tx_hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let ref_tx_err = store
+        .change_branch(&request(&back, "feat/docs-only"))
+        .await
+        .unwrap_err();
+    assert!(ref_tx_err.contains("hooksPath"), "{ref_tx_err}");
+    assert!(!ref_tx_marker.exists());
+    assert_eq!(branch(&fixture.root), "feat/read-proof");
 }

@@ -5,7 +5,7 @@
 use super::*;
 use crate::i18n::{self, LanguageKind, deserialize_language_or_default};
 use serde::{Deserialize, Serialize};
-use std::{io::Write, os::unix::fs::PermissionsExt};
+use std::{collections::BTreeMap, io::Write, os::unix::fs::PermissionsExt};
 use tempfile::NamedTempFile;
 
 const STORAGE_VERSION: u8 = 2;
@@ -375,13 +375,13 @@ impl WorkbenchPersistence {
             }
             Err(_) => {
                 return Ok(empty_restore_reply(Some(
-                    i18n::persistence_unreadable_warning(LanguageKind::En).into(),
+                    i18n::repository::persistence_unreadable_warning(LanguageKind::En).into(),
                 )));
             }
         };
         let Some(stored) = parse_workbench_bytes(&bytes) else {
             return Ok(empty_restore_reply(Some(
-                i18n::persistence_incompatible_warning(LanguageKind::En).into(),
+                i18n::repository::persistence_incompatible_warning(LanguageKind::En).into(),
             )));
         };
 
@@ -416,8 +416,9 @@ impl WorkbenchPersistence {
                 setting.local_keep_paths = offline_paths;
             }
         }
-        let warning = (skipped_count > 0)
-            .then(|| i18n::persistence_unavailable_repos_warning(stored.locale, skipped_count));
+        let warning = (skipped_count > 0).then(|| {
+            i18n::repository::persistence_unavailable_repos_warning(stored.locale, skipped_count)
+        });
         Ok(WorkbenchRestoreReply {
             protocol_version: STORAGE_VERSION,
             locale: stored.locale,
@@ -449,15 +450,15 @@ impl WorkbenchPersistence {
         if request.empty_prompt.len() > MAX_PROMPT_BYTES
             || request.worktrees.len() > MAX_STORED_WORKTREES
         {
-            return Err(i18n::persistence_exceeds_limits(locale).into());
+            return Err(i18n::repository::persistence_exceeds_limits(locale).into());
         }
         if let Some(ref prefs) = request.window_preferences
             && !is_valid_window_preferences(prefs)
         {
-            return Err(i18n::persistence_exceeds_limits(locale).into());
+            return Err(i18n::repository::persistence_exceeds_limits(locale).into());
         }
         if request.repository_settings.len() > MAX_STORED_REPOSITORIES * 2 {
-            return Err(i18n::persistence_invalid_repo_settings_entry(locale).into());
+            return Err(i18n::repository::persistence_invalid_repo_settings_entry(locale).into());
         }
         let mut seen_repo_settings = HashSet::with_capacity(request.repository_settings.len());
         for setting in &request.repository_settings {
@@ -470,7 +471,9 @@ impl WorkbenchPersistence {
                 || !validate_custom_actions(&setting.custom_actions)
                 || !seen_repo_settings.insert(setting.repository_id.as_str())
             {
-                return Err(i18n::persistence_invalid_repo_settings_entry(locale).into());
+                return Err(
+                    i18n::repository::persistence_invalid_repo_settings_entry(locale).into(),
+                );
             }
         }
 
@@ -483,7 +486,7 @@ impl WorkbenchPersistence {
                 || item.unselected_ids.len() > 10_000
                 || !seen_worktrees.insert(item.worktree_id.as_str())
             {
-                return Err(i18n::persistence_invalid_worktree_entry(locale).into());
+                return Err(i18n::repository::persistence_invalid_worktree_entry(locale).into());
             }
         }
 

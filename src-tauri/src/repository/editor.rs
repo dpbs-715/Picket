@@ -234,7 +234,7 @@ impl EditorLauncher {
         candidates
             .into_iter()
             .find(|candidate| is_executable_file(candidate))
-            .ok_or_else(|| i18n::editor_not_found_error(locale, display_name, cli))
+            .ok_or_else(|| i18n::repository::editor_not_found_error(locale, display_name, cli))
     }
 
     pub fn detect_installed_editors(&self) -> Vec<EditorKind> {
@@ -290,9 +290,9 @@ impl EditorLauncher {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(false);
-        let mut child = command
-            .spawn()
-            .map_err(|error| i18n::editor_launch_failed_error(locale, display_name, &error))?;
+        let mut child = command.spawn().map_err(|error| {
+            i18n::repository::editor_launch_failed_error(locale, display_name, &error)
+        })?;
         let stderr = child.stderr.take();
         let wait_window = if self
             .inner
@@ -320,9 +320,17 @@ impl EditorLauncher {
                 if detail.is_empty() {
                     detail = format!("exit code {:?}", status.code());
                 }
-                Err(i18n::editor_returned_error(locale, display_name, &detail))
+                Err(i18n::repository::editor_returned_error(
+                    locale,
+                    display_name,
+                    &detail,
+                ))
             }
-            Ok(Err(error)) => Err(i18n::editor_wait_failed_error(locale, display_name, &error)),
+            Ok(Err(error)) => Err(i18n::repository::editor_wait_failed_error(
+                locale,
+                display_name,
+                &error,
+            )),
             Err(_) => {
                 tokio::spawn(async move {
                     let _ = child.wait().await;
@@ -394,7 +402,7 @@ impl RepositoryStore {
         let locale = request.locale;
         validate_request_id_with_locale(&request.request_id, locale)?;
         if request.line == Some(0) {
-            return Err(i18n::editor_invalid_line_error(locale).into());
+            return Err(i18n::repository::editor_invalid_line_error(locale).into());
         }
         let executable = launcher.resolve_executable_with_locale(request.editor, locale)?;
         let (registered, root) = self
@@ -431,7 +439,7 @@ impl RepositoryStore {
         let path = live_entry
             .map(|entry| entry.path.clone())
             .or_else(|| authorized.map(|item| item.path.clone()))
-            .ok_or_else(|| i18n::ai_file_missing_error(locale, false))?;
+            .ok_or_else(|| i18n::repository::ai_file_missing_error(locale, false))?;
         let previous_path = live_entry
             .and_then(|entry| entry.previous.clone())
             .or_else(|| authorized.and_then(|item| item.previous_path.clone()));

@@ -8,7 +8,8 @@ pub fn utf8(bytes: &[u8]) -> Result<String, String> {
     utf8_with_locale(bytes, LanguageKind::En)
 }
 pub fn utf8_with_locale(bytes: &[u8], locale: LanguageKind) -> Result<String, String> {
-    String::from_utf8(bytes.to_vec()).map_err(|_| i18n::parse_non_utf8_path_error(locale).into())
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| i18n::repository::parse_non_utf8_path_error(locale).into())
 }
 pub fn relative(path: &str) -> Result<(), String> {
     if path.is_empty()
@@ -100,6 +101,12 @@ pub fn status_with_locale(bytes: &[u8], locale: LanguageKind) -> Result<Status, 
             } else {
                 None
             };
+            let is_submodule = fields[2].starts_with('S')
+                || if fields[0] == "u" {
+                    fields[3..=6].contains(&"160000")
+                } else {
+                    fields[3..=5].contains(&"160000")
+                };
             parsed.entries.push(StatusEntry {
                 path,
                 previous,
@@ -109,7 +116,11 @@ pub fn status_with_locale(bytes: &[u8], locale: LanguageKind) -> Result<Status, 
                 } else {
                     fields[7].into()
                 },
-                mode: fields[4].into(),
+                mode: if is_submodule {
+                    "160000".into()
+                } else {
+                    fields[4].into()
+                },
                 conflicted: fields[0] == "u",
             });
         } else if !line.starts_with("# ") && !line.starts_with("! ") {

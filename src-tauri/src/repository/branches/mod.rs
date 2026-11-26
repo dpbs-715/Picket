@@ -1,8 +1,11 @@
 //! Branch writes are separate from commit authorization and never stage, stash,
 //! reset, force checkout, fetch, or retry a partially completed operation.
+
+mod guards;
+
 use super::*;
 use crate::i18n::{self, LanguageKind};
-use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
+use std::collections::BTreeSet;
 
 pub(super) fn split_remote_branch(
     short_name: &str,
@@ -35,6 +38,7 @@ pub(super) struct BranchState {
     pub index: Vec<u8>,
     pub working: Vec<(String, String)>,
 }
+
 impl BranchState {
     pub fn token(&self) -> Result<String> {
         Ok(hash(
@@ -42,6 +46,7 @@ impl BranchState {
                 .map_err(|error| error.to_string())?,
         ))
     }
+
     fn preserves_changes(&self, next: &Self) -> bool {
         self.index == next.index && self.working == next.working
     }
@@ -68,6 +73,9 @@ impl RepositoryStore {
         ];
         let status = reader.bytes(root, &args).await?;
         let parsed = parse::status_with_locale(&status, locale)?;
+        if parsed.entries.iter().any(|entry| entry.mode == "160000") {
+            return Err(i18n::repository::commit_submodule_error(locale).into());
+        }
         let index = reader.bytes(root, &["ls-files", "--stage", "-z"]).await?;
         let paths: BTreeSet<_> = parsed
             .entries
@@ -79,7 +87,7 @@ impl RepositoryStore {
             working.push((path.clone(), self.working_file(root, &path)?));
         }
         if reader.bytes(root, &args).await? != status {
-            return Err(i18n::repo_changed_during_read_error(locale).into());
+            return Err(i18n::repository::repo_changed_during_read_error(locale).into());
         }
         Ok(BranchState {
             status,
@@ -99,16 +107,16 @@ impl RepositoryStore {
             .map_err(|_| "Repository registry is unavailable")?
             .get(&request.target.repository_id)
             .cloned()
-            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
+            .ok_or_else(|| i18n::repository::repo_not_opened_error(locale))?;
         if registered.branch_tokens.get(&request.target.worktree_id) != Some(&request.branch_token)
         {
-            return Err(i18n::branch_token_stale_error(locale).into());
+            return Err(i18n::repository::branch_token_stale_error(locale).into());
         }
         let root = registered
             .paths
             .get(&request.target.worktree_id)
             .cloned()
-            .ok_or_else(|| i18n::repo_not_opened_error(locale))?;
+            .ok_or_else(|| i18n::repository::repo_not_opened_error(locale))?;
         if fs::canonicalize(&root).map_err(|_| "Worktree directory is inaccessible")? != root {
             return Err("Worktree path changed; please reopen the directory".into());
         }
@@ -128,7 +136,7 @@ impl RepositoryStore {
             || fs::canonicalize(toplevel).map_err(|_| "Git working directory is inaccessible")?
                 != root
         {
-            return Err(i18n::repo_identity_changed_error(locale).into());
+            return Err(i18n::repository::repo_identity_changed_error(locale).into());
         }
         Ok(root)
     }
@@ -154,216 +162,6 @@ impl RepositoryStore {
         Ok(())
     }
 
-    async fn ensure_branch_write_allowed(&self, root: &Path, locale: LanguageKind) -> Result<()> {
-        let reader = self.inner.reader.with_locale(locale);
-        for marker in [
-            "MERGE_HEAD",
-            "CHERRY_PICK_HEAD",
-            "REVERT_HEAD",
-            "rebase-merge",
-            "rebase-apply",
-            "sequencer",
-            "BISECT_LOG",
-            "index.lock",
-            "HEAD.lock",
-        ] {
-            let path = reader
-                .text(
-                    root,
-                    &["rev-parse", "--path-format=absolute", "--git-path", marker],
-                )
-                .await?;
-            if fs::symlink_metadata(&path).is_ok() {
-                return Err(i18n::branch_in_progress_or_lock_error(locale, marker));
-            }
-        }
-        if !reader
-            .bytes(root, &["ls-files", "--unmerged", "-z"])
-            .await?
-            .is_empty()
-        {
-            return Err(i18n::commit_unresolved_conflict_error(locale).into());
-        }
-        let flags = reader.bytes(root, &["ls-files", "-v", "-z"]).await?;
-        if flags
-            .split(|byte| *byte == 0)
-            .any(|entry| !entry.is_empty() && entry[0] != b'H')
-        {
-            return Err(i18n::commit_sparse_or_hidden_flag_error(locale).into());
-        }
-        if reader
-            .bytes(root, &["ls-files", "--stage", "-z"])
-            .await?
-            .split(|byte| *byte == 0)
-            .any(|entry| entry.starts_with(b"160000 "))
-        {
-            return Err(i18n::commit_submodule_error(locale).into());
-        }
-        // Query without the read runner's hooksPath override. The write runner
-        // preserves this configuration too; executable hooks are refused, not skipped.
-        let hooks = reader
-            .write(
-                root,
-                &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
-            )
-            .await?;
-        if !hooks.success {
-            return Err("Cannot verify Git hooks directory; no branch write was performed".into());
-        }
-        let configured_hooks = reader
-            .write(root, &["config", "--path", "--get", "core.hooksPath"])
-            .await?;
-        if configured_hooks.success {
-            // A custom path can become executable only after checkout (for
-            // example .husky). Checking the source directory alone is unsafe.
-            return Err(i18n::branch_custom_hooks_path_error(locale).into());
-        } else if configured_hooks.code != Some(1) {
-            return Err("Cannot verify Git core.hooksPath; no branch write was performed".into());
-        }
-        let hooks = parse::utf8_with_locale(&hooks.bytes, locale)?;
-        let hooks = PathBuf::from(hooks.strip_suffix('\n').unwrap_or(&hooks));
-        match fs::read_dir(&hooks) {
-            Ok(entries) => {
-                for entry in entries {
-                    let path = entry.map_err(|_| "Cannot inspect Git hook")?.path();
-                    if path.extension().is_some_and(|ext| ext == "sample") {
-                        continue;
-                    }
-                    let metadata = fs::metadata(&path)
-                        .map_err(|_| "Cannot inspect Git hook; no branch write was performed")?;
-                    if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
-                        return Err(i18n::branch_executable_hook_error(locale).into());
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {
-                return Err(
-                    "Cannot inspect Git hooks directory; no branch write was performed".into(),
-                );
-            }
-        }
-        Ok(())
-    }
-
-    async fn ensure_checkout_filters_allowed(
-        &self,
-        root: &Path,
-        target_head: &str,
-        locale: LanguageKind,
-    ) -> Result<()> {
-        let reader = self.inner.reader.with_locale(locale);
-        let filters = reader
-            .run(
-                root,
-                &[
-                    "config",
-                    "--null",
-                    "--name-only",
-                    "--get-regexp",
-                    r"^filter\..*\.(clean|smudge|process)$",
-                    ".+",
-                ],
-            )
-            .await?;
-        if filters.code == Some(1) {
-            return Ok(());
-        }
-        if !filters.success {
-            return Err("Cannot inspect Git file filters; no branch write was performed".into());
-        }
-        let mut drivers = BTreeSet::new();
-        for key in filters
-            .bytes
-            .split(|byte| *byte == 0)
-            .filter(|key| !key.is_empty())
-        {
-            let key = parse::utf8_with_locale(key, locale)?;
-            let (driver, _) = key
-                .strip_prefix("filter.")
-                .ok_or("Cannot parse Git filter driver name")?
-                .rsplit_once('.')
-                .ok_or("Cannot parse Git filter driver name")?;
-            drivers.insert(driver.to_owned());
-        }
-        // Check working attributes, index attributes and target-tree attributes.
-        // Merely installing Git LFS globally must not disable unrelated repos.
-        let mut paths = reader
-            .bytes(
-                root,
-                &[
-                    "ls-files",
-                    "--cached",
-                    "--others",
-                    "--exclude-standard",
-                    "-z",
-                ],
-            )
-            .await?;
-        paths.extend(
-            reader
-                .bytes(root, &["ls-tree", "-r", "--name-only", "-z", target_head])
-                .await?,
-        );
-        let paths: Vec<_> = paths
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .map(|p| parse::utf8_with_locale(p, locale))
-            .collect::<Result<BTreeSet<_>>>()?
-            .into_iter()
-            .collect();
-        if paths.is_empty() {
-            return Ok(());
-        }
-        // Instead of `git check-attr --source=<tree>` (added in Git 2.40, unsupported on
-        // Apple Git 2.39.x shipped with macOS 14/15), load `target_head` into a disposable
-        // temporary index and inspect it with `git check-attr --cached`.
-        let target_index_dir =
-            tempfile::tempdir().map_err(|_| "Cannot create temporary Git attribute index")?;
-        let target_index = target_index_dir.path().join("target.index");
-        let read_tree = reader
-            .run_with_index(root, &["read-tree", target_head], &target_index, None)
-            .await?;
-        if !read_tree.success {
-            return Err(
-                "Cannot inspect target branch Git attributes; no branch write was performed".into(),
-            );
-        }
-        let sources: [(bool, Option<&Path>); 3] = [
-            (false, None),
-            (true, None),
-            (true, Some(target_index.as_path())),
-        ];
-        for (cached, index_override) in sources {
-            // Keep argument batches below macOS's command-line size limit.
-            for batch in paths.chunks(128) {
-                let mut args = vec!["check-attr", "-z"];
-                if cached {
-                    args.push("--cached");
-                }
-                args.extend(["filter", "--"]);
-                args.extend(batch.iter().map(String::as_str));
-                let attributes = match index_override {
-                    Some(index_path) => {
-                        let output = reader.run_with_index(root, &args, index_path, None).await?;
-                        if !output.success {
-                            return Err("Git check-attr read failed; check that the repository is accessible (draft and selection were preserved)".into());
-                        }
-                        output.bytes
-                    }
-                    None => reader.bytes(root, &args).await?,
-                };
-                let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
-                for record in fields.chunks(3).filter(|record| record.len() == 3) {
-                    if drivers.contains(&parse::utf8_with_locale(record[2], locale)?) {
-                        return Err(i18n::branch_external_filter_error(locale).into());
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub async fn change_branch(&self, request: &BranchRequest) -> Result<RepositorySnapshot> {
         let locale = request.locale;
         validate_request_id_with_locale(&request.request_id, locale)?;
@@ -374,7 +172,7 @@ impl RepositoryStore {
             .map_err(|_| "Branch request registry is unavailable")?
             .insert(request.request_id.clone())
         {
-            return Err(i18n::branch_duplicate_request_error(locale).into());
+            return Err(i18n::repository::branch_duplicate_request_error(locale).into());
         }
         let _guard = self
             .repository_gate(&request.target.repository_id)?
@@ -382,15 +180,15 @@ impl RepositoryStore {
             .await;
         let _write_guard = self.track_write();
         let root = self.registered_branch_path(request).await?;
-        self.ensure_branch_write_allowed(&root, locale).await?;
+        self.ensure_branch_base_write_allowed(&root, locale).await?;
         let before = self.branch_state(&root, locale).await?;
         if before.token()? != request.branch_token {
-            return Err(i18n::branch_token_stale_error(locale).into());
+            return Err(i18n::repository::branch_token_stale_error(locale).into());
         }
         let head = before
             .head
             .as_deref()
-            .ok_or_else(|| i18n::branch_unborn_head_error(locale))?;
+            .ok_or_else(|| i18n::repository::branch_unborn_head_error(locale))?;
         let reader = self.inner.reader.with_locale(locale);
         let entries = parse::worktrees(
             &reader
@@ -522,23 +320,23 @@ impl RepositoryStore {
                 }
             };
         if !before.working.is_empty() && checkout_head != head {
-            return Err(i18n::branch_dirty_cross_commit_error(locale).into());
+            return Err(i18n::repository::branch_dirty_cross_commit_error(locale).into());
         }
         // Recheck after all validation and any slow filesystem inspection.
-        self.ensure_branch_write_allowed(&root, locale).await?;
-        self.ensure_checkout_filters_allowed(&root, &checkout_head, locale)
+        self.ensure_branch_base_write_allowed(&root, locale).await?;
+        self.ensure_branch_target_write_allowed(&root, head, &checkout_head, &before, locale)
             .await?;
         if self.branch_state(&root, locale).await?.token()? != request.branch_token {
-            return Err(i18n::branch_token_stale_error(locale).into());
+            return Err(i18n::repository::branch_token_stale_error(locale).into());
         }
         let writer = reader.for_checkout(&root).await?;
         let args_ref: Vec<&str> = switch_args.iter().map(String::as_str).collect();
         let output = writer
             .write(&root, &args_ref)
             .await
-            .map_err(|error| i18n::branch_switch_failed_error(locale, &error))?;
+            .map_err(|error| i18n::repository::branch_switch_failed_error(locale, &error))?;
         if !output.success {
-            return Err(i18n::branch_switch_failed_error(
+            return Err(i18n::repository::branch_switch_failed_error(
                 locale,
                 String::from_utf8_lossy(&output.stderr).trim(),
             ));
@@ -558,6 +356,6 @@ impl RepositoryStore {
         }
         self.read_repository_locked(&root, locale)
             .await
-            .map_err(|error| i18n::branch_switched_read_failed_error(locale, &error))
+            .map_err(|error| i18n::repository::branch_switched_read_failed_error(locale, &error))
     }
 }

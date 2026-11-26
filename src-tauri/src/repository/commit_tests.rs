@@ -680,13 +680,13 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .unwrap_err();
     assert!(filter_err.contains("external Git filter"), "{filter_err}");
 
-    // Sparse / skip-worktree flag and tracked submodule entry are refused:
+    // Repository sparse-checkout and selected skip-worktree flag are refused:
     let sparse_fixture = Fixture::new().unwrap();
     let sparse_store = RepositoryStore::default();
     let sparse_snap = sparse_store.open(&sparse_fixture.root).await.unwrap();
     git(
         &sparse_fixture.root,
-        &["update-index", "--skip-worktree", "--", "pnpm-lock.yaml"],
+        &["config", "core.sparseCheckout", "true"],
     )
     .unwrap();
     let sparse_err = sparse_store
@@ -695,6 +695,28 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .unwrap_err();
     assert!(sparse_err.contains("skip-worktree"), "{sparse_err}");
 
+    let hidden_sel_fixture = Fixture::new().unwrap();
+    let hidden_sel_store = RepositoryStore::default();
+    let hidden_sel_snap = hidden_sel_store
+        .open(&hidden_sel_fixture.root)
+        .await
+        .unwrap();
+    git(
+        &hidden_sel_fixture.root,
+        &["update-index", "--skip-worktree", "--", "part.txt"],
+    )
+    .unwrap();
+    let hidden_sel_err = hidden_sel_store
+        .commit(&commit_request(
+            &hidden_sel_snap,
+            &["part.txt"],
+            "feat: selected hidden flag",
+        ))
+        .await
+        .unwrap_err();
+    assert!(hidden_sel_err.contains("skip-worktree"), "{hidden_sel_err}");
+
+    // Staged/dirty submodule change is still refused:
     let sub_fixture = Fixture::new().unwrap();
     let sub_store = RepositoryStore::default();
     let sub_snap = sub_store.open(&sub_fixture.root).await.unwrap();
@@ -1034,4 +1056,126 @@ async fn local_keep_invalidates_stale_tokens_excludes_by_default_preserves_stage
             .iter()
             .any(|f| f.path == "local-script.sh" && f.local_keep)
     );
+}
+
+#[tokio::test]
+async fn allows_normal_commits_with_untouched_submodules_and_unrelated_hidden_flags() {
+    let fixture = Fixture::new().unwrap();
+    // Commit a clean baseline first and add a tracked 160000 submodule entry with a matching nested repo.
+    let sub_dir = fixture.root.join("vendor/skill-sub");
+    fs::create_dir_all(&sub_dir).unwrap();
+    git(&sub_dir, &["init", "-b", "main"]).unwrap();
+    git(&sub_dir, &["config", "user.name", "Sub Tester"]).unwrap();
+    git(&sub_dir, &["config", "user.email", "sub@picket.invalid"]).unwrap();
+    git(&sub_dir, &["config", "commit.gpgSign", "false"]).unwrap();
+    fs::write(sub_dir.join("SKILL.md"), "# skill\n").unwrap();
+    git(&sub_dir, &["add", "SKILL.md"]).unwrap();
+    git(&sub_dir, &["commit", "-m", "feat: sub v1"]).unwrap();
+    let sub_v1 = text(&sub_dir, &["rev-parse", "HEAD"]);
+
+    git(
+        &fixture.root,
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
+    )
+    .unwrap();
+    git(
+        &fixture.root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sub_v1},vendor/skill-sub"),
+        ],
+    )
+    .unwrap();
+    git(&fixture.root, &["commit", "-m", "chore: track submodule"]).unwrap();
+
+    // Mark an unrelated tracked file with `--assume-unchanged` and modify it locally,
+    // plus create a normal change (`RULES.md`) to commit.
+    git(
+        &fixture.root,
+        &["update-index", "--assume-unchanged", "--", "pnpm-lock.yaml"],
+    )
+    .unwrap();
+    fs::write(fixture.root.join("pnpm-lock.yaml"), "hidden local edit\n").unwrap();
+    fs::write(fixture.root.join("RULES.md"), "# engineering rules\n").unwrap();
+
+    let store = RepositoryStore::default();
+    let snapshot = store.open(&fixture.root).await.unwrap();
+    assert_eq!(active(&snapshot).files.len(), 1);
+    assert_eq!(active(&snapshot).files[0].path, "RULES.md");
+
+    let (after_commit, landed) = store
+        .commit(&commit_request(
+            &snapshot,
+            &["RULES.md"],
+            "docs(engineering): add rules alongside untouched submodule",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        landed.title,
+        "docs(engineering): add rules alongside untouched submodule"
+    );
+    assert!(active(&after_commit).files.is_empty());
+    assert_eq!(
+        text(&fixture.root, &["show", "HEAD:RULES.md"]),
+        "# engineering rules"
+    );
+    // Untouched submodule pointer and index entry remain intact byte-for-byte:
+    let tree_sub = text(&fixture.root, &["ls-tree", "HEAD", "vendor/skill-sub"]);
+    assert!(
+        tree_sub.starts_with(&format!("160000 commit {sub_v1}\tvendor/skill-sub")),
+        "{tree_sub}"
+    );
+    let stage_sub = text(
+        &fixture.root,
+        &["ls-files", "--stage", "--", "vendor/skill-sub"],
+    );
+    assert!(
+        stage_sub.starts_with(&format!("160000 {sub_v1} 0\tvendor/skill-sub")),
+        "{stage_sub}"
+    );
+    // Unrelated `--assume-unchanged` flag and local working-tree edit are preserved:
+    let hidden_flag = text(&fixture.root, &["ls-files", "-v", "--", "pnpm-lock.yaml"]);
+    assert!(hidden_flag.starts_with("h "), "{hidden_flag}");
+    assert_eq!(
+        fs::read(fixture.root.join("pnpm-lock.yaml")).unwrap(),
+        b"hidden local edit\n"
+    );
+
+    // Modifying the submodule itself (dirty submodule commit) must still refuse commit writes:
+    fs::write(fixture.root.join("RULES.md"), "# engineering rules v2\n").unwrap();
+    let before_sub_dirty = store.open(&fixture.root).await.unwrap();
+    fs::write(sub_dir.join("SKILL.md"), "# skill v2\n").unwrap();
+    git(&sub_dir, &["commit", "-am", "feat: sub v2"]).unwrap();
+    let dirty_sub_err = store
+        .commit(&commit_request(
+            &before_sub_dirty,
+            &["RULES.md"],
+            "docs: blocked when submodule dirty",
+        ))
+        .await
+        .unwrap_err();
+    assert!(dirty_sub_err.contains("submodule"), "{dirty_sub_err}");
+
+    // Staged deletion of the submodule must also be detected and refused:
+    git(&sub_dir, &["checkout", &sub_v1]).unwrap();
+    let before_sub_rm = store.open(&fixture.root).await.unwrap();
+    git(&fixture.root, &["rm", "--cached", "vendor/skill-sub"]).unwrap();
+    let rm_sub_err = store
+        .commit(&commit_request(
+            &before_sub_rm,
+            &["RULES.md"],
+            "docs: blocked when submodule deletion staged",
+        ))
+        .await
+        .unwrap_err();
+    assert!(rm_sub_err.contains("submodule"), "{rm_sub_err}");
 }

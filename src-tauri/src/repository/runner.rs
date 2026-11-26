@@ -197,7 +197,7 @@ impl GitReader {
         let _active = Active(self.inner.clone());
         let mut cancelled = self.inner.cancelled.subscribe();
         if *cancelled.borrow() {
-            return Err(i18n::repo_shutting_down_error(locale).into());
+            return Err(i18n::repository::repo_shutting_down_error(locale).into());
         }
         let mut command = Command::new("/usr/bin/git");
         command
@@ -295,7 +295,7 @@ impl GitReader {
         });
         let result = tokio::select! {
             status = child.wait() => status.map_err(|_| "Git process exited unexpectedly; refresh to verify live status".to_string()),
-            _ = cancelled.changed() => { let _ = child.kill().await; Err(i18n::repo_shutting_down_error(locale).into()) },
+            _ = cancelled.changed() => { let _ = child.kill().await; Err(i18n::repository::repo_shutting_down_error(locale).into()) },
             _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => { let _ = child.kill().await; Err("Git command timed out; refresh to verify live status (writes are never retried automatically)".into()) },
         };
         let stdin_result = match writer {
@@ -323,9 +323,9 @@ impl GitReader {
         }
         if !status.success() && stderr.windows(12).any(|part| part == b"clean filter") {
             return Err(if mode == ExecutionMode::Read {
-                i18n::runner_external_filter_read_error(locale).into()
+                i18n::repository::runner_external_filter_read_error(locale).into()
             } else {
-                i18n::runner_external_filter_write_error(locale).into()
+                i18n::repository::runner_external_filter_write_error(locale).into()
             });
         }
         Ok(GitOutput {
@@ -348,7 +348,7 @@ impl GitReader {
     pub async fn text(&self, root: &Path, args: &[&str]) -> Result<String, String> {
         let bytes = self.bytes(root, args).await?;
         let mut text = String::from_utf8(bytes)
-            .map_err(|_| i18n::parse_non_utf8_path_error(self.locale).to_string())?;
+            .map_err(|_| i18n::repository::parse_non_utf8_path_error(self.locale).to_string())?;
         if text.ends_with('\n') {
             text.pop();
         }
