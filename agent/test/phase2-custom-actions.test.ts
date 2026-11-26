@@ -196,8 +196,11 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
   });
 
   it('drafts a structured custom action button via Create with Pi (read-only inspection + ask_user_question)', async () => {
-    const srv = await startMockOpenAiServer((_body, callIndex) => {
+    let generatorSystemPrompt = '';
+    const srv = await startMockOpenAiServer((body, callIndex) => {
       if (callIndex === 1) {
+        const messages = Array.isArray(body.messages) ? body.messages as Array<{ role?: string; content?: string }> : [];
+        generatorSystemPrompt = messages.find((m) => m.role === 'system')?.content ?? '';
         return {
           toolCalls: [{ id: 'g1', name: 'run_git', arguments: { args: ['tag', '-l'] } }],
         };
@@ -248,6 +251,9 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
     );
 
     await runner.run();
+    expect(generatorSystemPrompt).toContain('edit_repo_file');
+    expect(generatorSystemPrompt).toContain('run_repo_command');
+    expect(generatorSystemPrompt).toContain('commit_exact_scope');
     const drafted = events.find((e) => e.type === 'customActionDrafted');
     expect(drafted).toMatchObject({
       type: 'customActionDrafted',
@@ -256,6 +262,130 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
         prompt: 'Bump the patch semver tag from the latest v0.x.y tag and push it to origin.',
         summary: 'Creates and pushes the next semver release tag.',
       },
+    });
+  });
+
+  it('executes a full patch-release tool loop (edit_repo_file -> run_repo_command -> commit_exact_scope(editedPaths) -> tag -> atomic push)', async () => {
+    let seenSystemPrompt = '';
+    const srv = await startMockOpenAiServer((body, callIndex) => {
+      if (callIndex === 1) {
+        const messages = Array.isArray(body.messages) ? body.messages as Array<{ role?: string; content?: string }> : [];
+        seenSystemPrompt = messages.find((m) => m.role === 'system')?.content ?? '';
+        return {
+          toolCalls: [{
+            id: 'e1',
+            name: 'edit_repo_file',
+            arguments: {
+              path: 'package.json',
+              oldText: '"version": "0.2.0"',
+              newText: '"version": "0.2.1"',
+            },
+          }],
+        };
+      }
+      if (callIndex === 2) {
+        return {
+          toolCalls: [{
+            id: 'r1',
+            name: 'run_repo_command',
+            arguments: {
+              command: 'node',
+              args: ['scripts/package-dmg.mjs', '--check-version-only', '--tag', 'v0.2.1'],
+            },
+          }],
+        };
+      }
+      if (callIndex === 3) {
+        return {
+          toolCalls: [{
+            id: 'cm1',
+            name: 'commit_exact_scope',
+            arguments: {
+              editedPaths: ['package.json'],
+              message: 'chore(release): bump version to 0.2.1\n\n- Bump version manifest to 0.2.1',
+            },
+          }],
+        };
+      }
+      if (callIndex === 4) {
+        return {
+          toolCalls: [{
+            id: 'g1',
+            name: 'run_git',
+            arguments: { args: ['push', '--atomic', 'origin', 'main', 'refs/tags/v0.2.1'] },
+          }],
+        };
+      }
+      return {
+        text: JSON.stringify({
+          summary: 'Released v0.2.1 and triggered GitHub Actions.',
+          links: [{ label: 'Actions #101', url: 'https://github.com/dpbs-715/Picket/actions/runs/101' }],
+        }),
+      };
+    });
+    closers.push(srv.close);
+
+    const events: ProbeEvent[] = [];
+    const toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    let runner!: ReturnType<typeof createTaskRunner>;
+    runner = createTaskRunner(
+      {
+        type: 'runCustomAction',
+        requestId: 'req-rel-loop-1',
+        context: { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' },
+        model: {
+          provider: 'openai',
+          apiFormat: 'openai-completions',
+          modelId: 'mock-model',
+          baseUrl: srv.url,
+          apiKey: 'sk-mock',
+        },
+        branch: 'main',
+        detached: false,
+        remoteBranches: ['origin/main'],
+        actionLabel: 'Patch Release',
+        actionPrompt: 'Bump patch version, verify, commit, tag, and atomic push.',
+        extraPrompt: '',
+        selectedFiles: [],
+        unselectedPaths: [],
+        localKeepPaths: [],
+        locale: 'en',
+        commitLanguage: 'en',
+      },
+      (event) => {
+        events.push(event);
+        if (event.type === 'toolCall') {
+          toolCalls.push({ name: event.toolName, args: event.args });
+          queueMicrotask(() => {
+            runner.deliverToolResult?.({
+              type: 'toolResult',
+              requestId: event.requestId,
+              callId: event.callId,
+              ok: true,
+              content: '{"ok":true}',
+            });
+          });
+        }
+      },
+    );
+
+    await runner.run();
+    expect(seenSystemPrompt).toContain('edit_repo_file');
+    expect(seenSystemPrompt).toContain('run_repo_command');
+    expect(toolCalls.map((tc) => tc.name)).toEqual([
+      'edit_repo_file',
+      'run_repo_command',
+      'commit_exact_scope',
+      'run_git',
+    ]);
+    expect(toolCalls[2]?.args).toMatchObject({
+      editedPaths: ['package.json'],
+    });
+    const done = events.find((e) => e.type === 'customActionCompleted');
+    expect(done).toMatchObject({
+      type: 'customActionCompleted',
+      summary: 'Released v0.2.1 and triggered GitHub Actions.',
+      links: [{ label: 'Actions #101', url: 'https://github.com/dpbs-715/Picket/actions/runs/101' }],
     });
   });
 });

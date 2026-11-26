@@ -19,3 +19,7 @@ export {
   createManageSubmitWorktreeTool,
   createRecordActionCheckpointTool,
 } from './submit';
+export {
+  createEditRepoFileTool,
+  createRunRepoCommandTool,
+} from './workspace';

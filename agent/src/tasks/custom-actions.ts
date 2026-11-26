@@ -49,7 +49,7 @@ export function buildCustomActionPrompts(
   if (command.selectedFiles.length > 0) {
     parts.push(`Authorized selected files (${command.selectedFiles.length}):\n${formatPlanFilesPromptBlock(command.selectedFiles)}`);
   } else {
-    parts.push('Authorized selected files: 0 (no files are currently checked; do NOT commit local modifications unless the user selects them, though read-only actions, tagging, PR review, or creating PRs/issues from existing commits are completely fine).');
+    parts.push('Authorized selected files: 0 (no pre-existing local modifications are checked; do NOT commit pre-existing unselected changes, though read-only actions, tagging, PR/issue workflows, or files you explicitly edit via `edit_repo_file` and commit via `commit_exact_scope({ editedPaths, message })` are allowed).');
   }
   if (command.unselectedPaths.length > 0) {
     parts.push(`Unselected worktree files (off-limits for local commits):\n${command.unselectedPaths.slice(0, 40).map((p) => `- ${p}`).join('\n')}`);

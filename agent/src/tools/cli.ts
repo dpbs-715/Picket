@@ -175,21 +175,27 @@ export function createRunPlatformCliTool(bridge: ToolBridge): AgentTool<any, { c
   };
 }
 
-export function createCommitExactScopeTool(bridge: ToolBridge): AgentTool<any, { fileIds: string[] }> {
+export function createCommitExactScopeTool(
+  bridge: ToolBridge,
+): AgentTool<any, { fileIds: string[]; editedPaths: string[] }> {
   return {
     name: 'commit_exact_scope',
     label: 'Commit Exact Scope',
-    description: 'Create a local Git commit containing ONLY the specified `fileIds` from the user\'s authorized selected scope (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
+    description: 'Create a local Git commit containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` explicitly modified via `edit_repo_file` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['fileIds', 'message'],
+      required: ['message'],
       properties: {
         fileIds: {
           type: 'array',
-          minItems: 1,
           items: { type: 'string' },
           description: 'Exact `fileId`s from `Authorized selected files` to include in this commit.',
+        },
+        editedPaths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Repository-relative paths explicitly modified via `edit_repo_file` during this run to include in this commit.',
         },
         message: {
           type: 'string',
@@ -206,23 +212,27 @@ export function createCommitExactScopeTool(bridge: ToolBridge): AgentTool<any, {
       const fileIds = Array.isArray(params?.fileIds)
         ? params.fileIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
         : [];
+      const editedPaths = Array.isArray(params?.editedPaths)
+        ? params.editedPaths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0)
+        : [];
       const message = typeof params?.message === 'string' ? params.message.trim() : '';
-      if (fileIds.length === 0 || !message) {
+      if ((fileIds.length === 0 && editedPaths.length === 0) || !message) {
         return {
-          content: [{ type: 'text', text: 'commit_exact_scope requires non-empty `fileIds` and `message`.' }],
-          details: { fileIds },
+          content: [{ type: 'text', text: 'commit_exact_scope requires non-empty `message` and at least one entry in `fileIds` or `editedPaths`.' }],
+          details: { fileIds, editedPaths },
           isError: true,
         };
       }
       const payload: Record<string, unknown> = {
-        fileIds,
+        ...(fileIds.length > 0 ? { fileIds } : {}),
+        ...(editedPaths.length > 0 ? { editedPaths } : {}),
         message,
         ...(typeof params?.push === 'boolean' ? { push: params.push } : {}),
       };
       const response = await bridge.invokeHostTool('commit_exact_scope', payload, signal);
       return {
         content: [{ type: 'text', text: response.content }],
-        details: { fileIds },
+        details: { fileIds, editedPaths },
         isError: response.isError || !response.ok,
       };
     },
