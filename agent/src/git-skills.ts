@@ -1,11 +1,8 @@
-import commitSkillRaw from '../skills/commit/SKILL.md?raw';
-import cpushSkillRaw from '../skills/cpush/SKILL.md?raw';
-import pushSkillRaw from '../skills/push/SKILL.md?raw';
+import { SkillRegistry } from './skills';
 
-function stripFrontmatter(markdown: string): string {
-  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, '').trim();
-}
+const defaultRegistry = new SkillRegistry();
 
-export const COMMIT_SKILL_SPEC = stripFrontmatter(commitSkillRaw);
-export const PUSH_SKILL_SPEC = stripFrontmatter(pushSkillRaw);
-export const CPUSH_SKILL_SPEC = stripFrontmatter(cpushSkillRaw);
+export const COMMIT_SKILL_SPEC = defaultRegistry.getBundledDocSync('commit');
+export const PUSH_SKILL_SPEC = defaultRegistry.getBundledDocSync('push');
+export const CPUSH_SKILL_SPEC = defaultRegistry.getBundledDocSync('cpush');
+export const DCR_SKILL_SPEC = defaultRegistry.getBundledDocSync('dcr');

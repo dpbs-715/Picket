@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "sourceRepo": "https://github.com/dpbs-715/skills",
+  "syncedAt": "2026-11-26T01:47:22.945Z",
+  "skills": [
+    {
+      "name": "commit",
+      "description": "Use only when explicitly invoked as commit or called by an authorized coordinating skill such as cpush or submit. Create focused git commits with concise Conventional Commit messages.",
+      "entry": "commit/SKILL.md",
+      "files": [
+        "commit/SKILL.md"
+      ]
+    },
+    {
+      "name": "push",
+      "description": "Use only when explicitly invoked as push or called by a coordinating skill such as cpush. Push local commits, automatically integrating remote updates when only unpublished local commits need rebasing.",
+      "entry": "push/SKILL.md",
+      "files": [
+        "push/SKILL.md"
+      ]
+    },
+    {
+      "name": "cpush",
+      "description": "Use only when explicitly invoked as cpush, c-p, c&p, cnp, commit-push, \"commit and push\", or when the user asks to commit local repository changes and then push them in one workflow. Reuse commit and push, including push's automatic integration of remote updates for unpublished local commits.",
+      "entry": "cpush/SKILL.md",
+      "files": [
+        "cpush/SKILL.md"
+      ]
+    },
+    {
+      "name": "dcr",
+      "description": "Review git diffs with findings-first code review.",
+      "entry": "dcr/SKILL.md",
+      "files": [
+        "dcr/SKILL.md"
+      ]
+    },
+    {
+      "name": "create-issues",
+      "description": "Create or draft high-quality GitHub or GitLab issues with the official `gh` or `glab` CLI. Use whenever the user asks to file, open, submit, preview, or batch-create issues from bugs, requirements, TODOs, logs, or review findings. Create immediately when requested, add suitable existing metadata, and create an associated branch by default; preview or omit the branch only when the user asks. Do not use for merely explaining or reviewing an existing issue.",
+      "entry": "create-issues/SKILL.md",
+      "files": [
+        "create-issues/SKILL.md"
+      ]
+    },
+    {
+      "name": "create-pr",
+      "description": "Create a GitHub pull request or GitLab merge request from existing local or remote branches with `gh` or `glab`. Use when the user invokes `/create-pr`, `$create-pr`, asks to open, submit, preview, draft, or create a PR or MR, or wants to push a development branch and open it for review. Create immediately by default, including a required normal source-branch push; preview only when the user asks. Support `<source> to <target>` and `to <target>` branch syntax. Do not use for creating development branches, changing or committing code, reviewing an existing PR/MR, or merging one.",
+      "entry": "create-pr/SKILL.md",
+      "files": [
+        "create-pr/SKILL.md"
+      ]
+    },
+    {
+      "name": "review-pr",
+      "description": "Review an existing GitHub PR or GitLab MR with gh or glab, publish findings or LGTM, merge when the review and repository requirements pass and permissions allow, then close fully resolved linked Issues. Use for /review-pr, $review-pr, or requests to review and merge an existing PR/MR. Honor review-only and preview restrictions. Do not use to create PRs/MRs or review only local working-tree changes.",
+      "entry": "review-pr/SKILL.md",
+      "files": [
+        "review-pr/SKILL.md",
+        "review-pr/references/approval-restoration.md"
+      ]
+    },
+    {
+      "name": "submit",
+      "description": "Submit existing changes through an Issue, associated branch, commit/push, and PR or MR. Use for /submit, $submit, or requests for this workflow. Use to <target> then merge to review and merge into that target, or to <first> then <final> for two reviewed merges and final cleanup. Ask how to group independent features before making changes. Exclude generic form submission, feature implementation, and standalone commit, push, Issue, or PR requests.",
+      "entry": "submit/SKILL.md",
+      "files": [
+        "submit/SKILL.md",
+        "submit/references/cleanup.md",
+        "submit/references/gitlab.md",
+        "submit/references/merge-chain.md",
+        "submit/references/preview.md",
+        "submit/references/resume.md"
+      ]
+    }
+  ]
+}

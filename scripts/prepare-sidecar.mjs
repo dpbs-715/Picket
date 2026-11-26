@@ -40,11 +40,37 @@ const rawMarkdownPlugin = {
     }));
   },
 };
+const bundledSkillsPlugin = {
+  name: 'picket-bundled-skills',
+  setup(esbuildBuild) {
+    esbuildBuild.onResolve({ filter: /^virtual:picket-bundled-skills$/ }, () => ({
+      path: 'virtual:picket-bundled-skills',
+      namespace: 'picket-bundled-skills',
+    }));
+    esbuildBuild.onLoad({ filter: /.*/, namespace: 'picket-bundled-skills' }, async () => {
+      const skillsRoot = join(root, 'agent/skills');
+      const manifest = JSON.parse(await readFile(join(skillsRoot, 'skills-manifest.json'), 'utf8'));
+      const files = {};
+      for (const skill of manifest.skills) {
+        for (const relPath of skill.files) {
+          files[relPath] = await readFile(join(skillsRoot, relPath), 'utf8');
+        }
+      }
+      return {
+        contents: [
+          `export const BUNDLED_SKILLS_MANIFEST = ${JSON.stringify(manifest)};`,
+          `export const BUNDLED_SKILL_FILES = ${JSON.stringify(files)};`,
+        ].join('\n'),
+        loader: 'js',
+      };
+    });
+  },
+};
 const result = await build({
   absWorkingDir: root, entryPoints: ['agent/src/main.ts'],
   outfile: join(generated, 'pi-sidecar.mjs'), bundle: true, platform: 'node',
   target: 'node24', format: 'esm', legalComments: 'external', metafile: true,
-  plugins: [rawMarkdownPlugin],
+  plugins: [rawMarkdownPlugin, bundledSkillsPlugin],
   banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
 });
 const packageRoots = new Set();

@@ -8,8 +8,8 @@ description: Use only when explicitly invoked as cpush, c-p, c&p, cnp, commit-pu
 Read and follow these skills in order; they own commit grouping, verification,
 destination resolution, integration, retries, and blockers:
 
-1. `../commit/SKILL.md`
-2. `../push/SKILL.md`
+1. `{{REPO_ROOT}}/skills/commit/SKILL.md`
+2. `{{REPO_ROOT}}/skills/push/SKILL.md`
 
 Inspect `git status --short --branch`. If there are uncommitted changes, run
 the commit workflow, resolving unrelated work as it requires before pushing.

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm sidecar:prepare && vitest run",
     "sidecar:prepare": "node scripts/prepare-sidecar.mjs",
+    "skills:sync": "node scripts/sync-skills.mjs",
     "desktop": "node scripts/desktop.mjs",
     "package:verify": "node scripts/verify-package.mjs",
     "ui:verify": "node scripts/verify-workbench.mjs",

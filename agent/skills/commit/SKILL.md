@@ -38,9 +38,8 @@ Keep Conventional Commit tokens such as type, scope, `!`, and
 `BREAKING CHANGE:` in English. If neither flag is provided, use English unless
 the user clearly asks for another language.
 
-With `-ch`, keep the `<type>(<scope>):` prefix in English (for example
-`feat(editor): <Chinese subject>`) and write the subject after the colon and any
-body lines in Chinese.
+With `-ch`, write `feat(editor): 支持快捷键配置`. The `feat(editor):`
+prefix stays English; the subject after the colon is Chinese.
 
 ## Verification
 
@@ -48,21 +47,16 @@ Do not run tests by default. Run tests or validation only when the user asks.
 
 ## Commit Message
 
-Use a two-part Conventional Commits message (first-line subject, one blank line,
-then 1 to 4 concise `- ` bullet points):
+Use Conventional Commits:
 
 ```text
 <type>(<scope>): <subject>
-
-- <concrete change or intent 1>
-- <concrete change or intent 2>
 ```
 
-Keep the subject short, imperative, and without a trailing period.
+Keep the subject short, lowercase, imperative, and without a period.
 
-Always include a blank line followed by 1 to 4 concise `- ` bullet points
-detailing the concrete changes and their purpose or impact, without repeating
-the subject line verbatim.
+Use a body only when the reason, migration impact, or verification context would
+be lost from the subject alone.
 
 Use `!` and a `BREAKING CHANGE:` footer for breaking changes.
 
@@ -84,16 +78,23 @@ Use `!` and a `BREAKING CHANGE:` footer for breaking changes.
 
 ```text
 feat(auth): add token refresh
-
-- rotate expiring access tokens before API requests fail
-- clear cached session state when refresh is rejected
-```
-
-```text
 fix(report): preserve empty filter values
-
-- keep explicit empty query keys during filter serialization
+docs: clarify skill linking flow
+refactor(api)!: rename order endpoints
+feat(editor): 支持快捷键配置
+fix(report): 保留空筛选值
 ```
 
-When `-ch` is active, keep the English `<type>(<scope>):` prefix and write both
-the subject after the colon and every `- ` bullet line in concise Chinese.
+## Output
+
+After committing, respond with:
+
+```md
+Committed `<hash>`: `<message>`
+
+Included:
+- ...
+
+Verification:
+- Not run
+```
