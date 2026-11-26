@@ -371,7 +371,8 @@ pub fn reconcile_sessions_on_startup(
                 }
             }
             if session.summary.trim().is_empty() {
-                session.summary = i18n::action_interrupted_summary(locale, &session.action_label);
+                session.summary =
+                    i18n::actions::action_interrupted_summary(locale, &session.action_label);
             }
             changed = true;
         }
@@ -438,9 +439,9 @@ fn build_restored_ui_message(
         "interrupted" => Some(CustomActionUiMessage {
             id: format!("interrupted-action-{}", session.run_id),
             kind: "error".into(),
-            title: i18n::action_interrupted_title(locale, &session.action_label),
+            title: i18n::actions::action_interrupted_title(locale, &session.action_label),
             description: if session.summary.trim().is_empty() {
-                i18n::action_interrupted_summary(locale, &session.action_label)
+                i18n::actions::action_interrupted_summary(locale, &session.action_label)
             } else {
                 session.summary.clone()
             },
@@ -454,7 +455,7 @@ fn build_restored_ui_message(
         "done" => Some(CustomActionUiMessage {
             id: format!("done-action-{}", session.run_id),
             kind: "done".into(),
-            title: i18n::action_completed_title(locale, &session.action_label),
+            title: i18n::actions::action_completed_title(locale, &session.action_label),
             description: session.summary.clone(),
             scope: None,
             files: None,
