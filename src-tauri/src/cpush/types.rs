@@ -159,6 +159,8 @@ pub(crate) struct StoredCPushSession {
     pub plan_only: bool,
     #[serde(default)]
     pub auto_collapse: bool,
+    #[serde(default)]
+    pub notice_dismissed: bool,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
@@ -264,6 +266,18 @@ pub struct PullRebaseRequest {
 pub struct ReconcileCPushRequest {
     pub request_id: String,
     pub target: ReadTarget,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DismissCPushDoneRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub message_id: String,
     #[serde(default)]
     pub locale: Option<LanguageKind>,
 }

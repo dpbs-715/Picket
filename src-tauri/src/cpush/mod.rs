@@ -85,6 +85,22 @@ impl CPushCoordinator {
         self.inner.active_operations.load(Ordering::SeqCst) > 0
     }
 
+    pub fn has_active_operation_for_repo(&self, repository_id: &str) -> bool {
+        if self.inner.active_operations.load(Ordering::SeqCst) == 0 {
+            return false;
+        }
+        self.inner
+            .sessions
+            .lock()
+            .map(|sessions| {
+                sessions.values().any(|session| {
+                    session.repository_id == repository_id
+                        && matches!(session.session_status, CPushSessionStatus::Running)
+                })
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) fn track_operation(&self) -> ActiveOperationGuard {
         self.inner.active_operations.fetch_add(1, Ordering::SeqCst);
         ActiveOperationGuard {
@@ -713,6 +729,10 @@ impl CPushCoordinator {
                     });
                 }
             }
+            if session.session_status == CPushSessionStatus::Done && session.notice_dismissed {
+                memory.insert(session.worktree_id.clone(), session);
+                continue;
+            }
             public_sessions.push(session.to_public());
             memory.insert(session.worktree_id.clone(), session);
         }
@@ -722,6 +742,56 @@ impl CPushCoordinator {
             let _ = write_sessions_file_atomic(storage_dir, &updated_all);
         }
         Ok((public_sessions, warning))
+    }
+
+    /// Persist user acknowledgement ("Got it" / inline `×`) of a completed `Done` session
+    /// so its completed summary bar does not resurface after restarting Picket.
+    pub async fn dismiss_done_notice(
+        &self,
+        storage_dir: &Path,
+        request: &DismissCPushDoneRequest,
+    ) -> Result<bool, String> {
+        let req_locale = request.locale.unwrap_or_default();
+        repository::validate_request_id_with_locale(&request.request_id, req_locale)?;
+        let _guard = self.inner.storage_gate.lock().await;
+        let updated_all = {
+            let mut memory = self
+                .inner
+                .sessions
+                .lock()
+                .map_err(|_| "C-Push session cache lock is unavailable")?;
+            let Some(session) = memory.get_mut(&request.target.worktree_id) else {
+                return Ok(false);
+            };
+            if session.repository_id != request.target.repository_id
+                || session.session_status != CPushSessionStatus::Done
+            {
+                return Ok(false);
+            }
+            if let Some(run_id) = request
+                .run_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                && session.run_id != run_id
+            {
+                return Ok(false);
+            }
+            if let Some(msg) = &session.message
+                && !request.message_id.trim().is_empty()
+                && msg.id != request.message_id.trim()
+            {
+                return Ok(false);
+            }
+            if session.notice_dismissed && session.message.is_none() {
+                return Ok(false);
+            }
+            session.notice_dismissed = true;
+            session.message = None;
+            memory.values().cloned().collect::<Vec<_>>()
+        };
+        write_sessions_file_atomic(storage_dir, &updated_all)?;
+        Ok(true)
     }
 
     /// Reconcile `WaitingManual` / `Conflict` / `PushFailed` sessions when returning from IDE or Terminal (`R04`).
@@ -1126,6 +1196,7 @@ impl CPushCoordinator {
                     push_authorized: false,
                     plan_only: false,
                     auto_collapse: false,
+                    notice_dismissed: false,
                     locale,
                     commit_language: locale,
                 };
@@ -1242,6 +1313,7 @@ impl CPushCoordinator {
             push_authorized: false,
             plan_only: true,
             auto_collapse: false,
+            notice_dismissed: false,
             locale,
             commit_language: request.commit_language,
         };
@@ -1352,6 +1424,7 @@ impl CPushCoordinator {
                 push_authorized: true,
                 plan_only: false,
                 auto_collapse: false,
+                notice_dismissed: false,
                 locale,
                 commit_language: request.commit_language,
             };
@@ -1425,6 +1498,7 @@ impl CPushCoordinator {
             push_authorized: true,
             plan_only: false,
             auto_collapse: false,
+            notice_dismissed: false,
             locale,
             commit_language: request.commit_language,
         };
@@ -2372,6 +2446,7 @@ impl CPushCoordinator {
             qa_history: qa_wire,
             locale: session.locale,
             commit_language: session.commit_language,
+            skill_overrides: None,
         };
 
         let outcome = supervisor

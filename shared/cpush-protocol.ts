@@ -126,6 +126,14 @@ export interface ReconcileCPushRequest {
   locale?: AppLocale;
 }
 
+export interface DismissCPushDoneRequest {
+  requestId: string;
+  target: GitReadTarget;
+  runId?: string;
+  messageId: string;
+  locale?: AppLocale;
+}
+
 export interface RespondCPushRequest {
   requestId: string;
   target: GitReadTarget;

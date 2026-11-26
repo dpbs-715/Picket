@@ -1115,4 +1115,68 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
         text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]),
         text_git(&fixture.root, &["rev-parse", "HEAD"])
     );
+
+    // Cold restart BEFORE dismissal still restores the unread Done summary, while
+    // calling `dismiss_done_notice` persists the read state so cold restart stays clean:
+    let before_dismiss = CPushCoordinator::default()
+        .restore_with_locale(
+            temp.path(),
+            std::slice::from_ref(&snapshot),
+            LanguageKind::En,
+        )
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(before_dismiss.len(), 1);
+    assert_eq!(before_dismiss[0].session_status, CPushSessionStatus::Done);
+
+    let done_msg_id = executed
+        .session
+        .message
+        .as_ref()
+        .expect("done session message")
+        .id
+        .clone();
+    // Stale/mismatched run_id is ignored:
+    assert!(
+        !coordinator
+            .dismiss_done_notice(
+                temp.path(),
+                &DismissCPushDoneRequest {
+                    request_id: "dismiss-wrong-run".into(),
+                    target: target.clone(),
+                    run_id: Some("other-run".into()),
+                    message_id: done_msg_id.clone(),
+                    locale: Some(LanguageKind::En),
+                },
+            )
+            .await
+            .unwrap()
+    );
+    // Matching Done notice marks read and persists atomically:
+    assert!(
+        coordinator
+            .dismiss_done_notice(
+                temp.path(),
+                &DismissCPushDoneRequest {
+                    request_id: "dismiss-done-1".into(),
+                    target: target.clone(),
+                    run_id: Some(executed.session.run_id.clone()),
+                    message_id: done_msg_id,
+                    locale: Some(LanguageKind::En),
+                },
+            )
+            .await
+            .unwrap()
+    );
+
+    let after_dismiss = CPushCoordinator::default()
+        .restore_with_locale(temp.path(), &[snapshot], LanguageKind::En)
+        .await
+        .unwrap()
+        .0;
+    assert!(
+        after_dismiss.is_empty(),
+        "Dismissed Done C-Push summary must not resurface after restarting Picket"
+    );
 }

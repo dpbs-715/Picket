@@ -5,6 +5,7 @@ import {
   isMatchingCPushTarget,
   type CPushCommandReply,
   type CPushProgressEvent,
+  type DismissCPushDoneRequest,
   type PlanCPushRequest,
   type PullRebaseRequest,
   type ReconcileCPushRequest,
@@ -98,6 +99,13 @@ export async function reconcileDesktopCPush(
     return null;
   }
   return decoded;
+}
+
+export async function dismissDesktopCPushDone(
+  request: DismissCPushDoneRequest,
+): Promise<boolean> {
+  const result = await invoke('dismiss_cpush_done', { request });
+  return Boolean(result);
 }
 
 export async function respondDesktopCPush(
