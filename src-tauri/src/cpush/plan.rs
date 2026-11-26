@@ -8,15 +8,17 @@ use super::{
 use crate::{
     foundation::pi::{
         PiCPushCommitGroup, PiCPushPlan, PiCPushQaTurn, PiCommand, PiPaths, PiPlanFileEntry,
-        PiSupervisor, PiTaskOutcome, RequestContext,
+        PiSupervisor, PiTaskOutcome, PiToolExecutionResult, RequestContext,
     },
     i18n::{self, LanguageKind},
     models::store::{ModelStore, ResolvedRuntimeSpec},
     repository::{self, RepositoryStore, ai_context::FrozenCPushFile},
 };
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
 
 pub(super) fn validate_plan_in_rust(
@@ -53,6 +55,7 @@ pub(super) fn validate_plan_in_rust(
             summary,
             groups,
             skipped_file_ids,
+            skip_push,
         } => {
             if !allow_skips && !skipped_file_ids.is_empty() {
                 return Err(i18n::cpush::cpush_plan_unconfirmed_skip_error(locale).into());
@@ -108,6 +111,7 @@ pub(super) fn validate_plan_in_rust(
                 summary,
                 groups,
                 skipped_file_ids,
+                skip_push,
             })
         }
     }
@@ -235,7 +239,7 @@ impl CPushCoordinator {
         };
 
         let plan = self
-            .invoke_pi_planner(paths, supervisor, &spec, &run_id, &session)
+            .invoke_pi_planner(paths, supervisor, repo_store, &spec, &run_id, &session)
             .await?;
 
         let reply = self
@@ -325,7 +329,7 @@ impl CPushCoordinator {
                 session_status: CPushSessionStatus::Running,
                 message: None,
                 can_retry_remaining: false,
-                push_authorized: true,
+                push_authorized: request.push.unwrap_or(true) && !confirmed.skip_push,
                 plan_only: false,
                 auto_collapse: false,
                 notice_dismissed: false,
@@ -399,7 +403,7 @@ impl CPushCoordinator {
             session_status: CPushSessionStatus::Running,
             message: Some(progress_msg),
             can_retry_remaining: false,
-            push_authorized: true,
+            push_authorized: request.push.unwrap_or(true),
             plan_only: false,
             auto_collapse: false,
             notice_dismissed: false,
@@ -415,7 +419,7 @@ impl CPushCoordinator {
         });
 
         let plan = match self
-            .invoke_pi_planner(paths, supervisor, &spec, &run_id, &session)
+            .invoke_pi_planner(paths, supervisor, repo_store, &spec, &run_id, &session)
             .await
         {
             Ok(plan) => plan,
@@ -456,6 +460,7 @@ impl CPushCoordinator {
         &self,
         paths: &PiPaths,
         supervisor: &PiSupervisor,
+        repo_store: &RepositoryStore,
         spec: &ResolvedRuntimeSpec,
         request_id: &str,
         session: &StoredCPushSession,
@@ -505,11 +510,18 @@ impl CPushCoordinator {
             qa_history: qa_wire,
             locale: session.locale,
             commit_language: session.commit_language,
+            enable_tools: Some(true),
             skill_overrides: None,
         };
 
+        let tool_store = repo_store.clone();
+        let tool_target = self.session_read_target(session);
+        let tool_head = Arc::new(session.initial_head.clone());
+        let tool_files = Arc::new(session.frozen_files.clone());
+        let tool_locale = session.locale;
+
         let outcome = supervisor
-            .run_task(
+            .run_task_with_tools(
                 paths,
                 request_id.to_owned(),
                 context,
@@ -517,6 +529,58 @@ impl CPushCoordinator {
                 CPUSH_AI_IDLE_TIMEOUT,
                 Some(&spec.api_key),
                 |_| Ok(()),
+                move |_call_id, tool_name, args| {
+                    let store = tool_store.clone();
+                    let target = tool_target.clone();
+                    let head = Arc::clone(&tool_head);
+                    let files = Arc::clone(&tool_files);
+                    async move {
+                        match tool_name.as_str() {
+                            "read_scope_diff" => {
+                                let Some(path) = args.get("path").and_then(Value::as_str) else {
+                                    return PiToolExecutionResult::error(
+                                        "Missing `path` argument for read_scope_diff",
+                                    );
+                                };
+                                let start_line = args
+                                    .get("startLine")
+                                    .and_then(Value::as_u64)
+                                    .map(|n| n as usize);
+                                let end_line = args
+                                    .get("endLine")
+                                    .and_then(Value::as_u64)
+                                    .map(|n| n as usize);
+                                match store
+                                    .read_cpush_scope_diff(
+                                        &target,
+                                        head.as_deref(),
+                                        &files,
+                                        path,
+                                        start_line,
+                                        end_line,
+                                        tool_locale,
+                                    )
+                                    .await
+                                {
+                                    Ok(content) => PiToolExecutionResult::success(content),
+                                    Err(err) => PiToolExecutionResult::error(err),
+                                }
+                            }
+                            "read_repo_file" | "search_repo" => {
+                                match store
+                                    .execute_read_tool(&target, &tool_name, &args, tool_locale)
+                                    .await
+                                {
+                                    Ok(content) => PiToolExecutionResult::success(content),
+                                    Err(err) => PiToolExecutionResult::error(err),
+                                }
+                            }
+                            other => PiToolExecutionResult::error(format!(
+                                "Unsupported read-only tool `{other}` for C-Push planning"
+                            )),
+                        }
+                    }
+                },
             )
             .await?;
 
@@ -630,6 +694,7 @@ impl CPushCoordinator {
                 summary,
                 groups,
                 skipped_file_ids,
+                skip_push,
             } => {
                 if session.plan_only {
                     self.remove_in_memory(&session.worktree_id)?;
@@ -655,9 +720,13 @@ impl CPushCoordinator {
                             summary,
                             groups,
                             skipped_file_ids,
+                            skip_push,
                         }),
                         repository_snapshot: None,
                     });
+                }
+                if skip_push {
+                    session.push_authorized = false;
                 }
                 session.planned_groups = groups;
                 session.skipped_file_ids = skipped_file_ids;

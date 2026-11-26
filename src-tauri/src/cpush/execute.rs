@@ -317,6 +317,59 @@ impl CPushCoordinator {
             }
         }
 
+        if !session.push_authorized {
+            session.session_status = CPushSessionStatus::Done;
+            session.can_retry_remaining = false;
+            let commit_summaries = summarize_commits(&session.commits);
+            let mut done_timeline: Vec<CPushTimelineItem> = session
+                .commits
+                .iter()
+                .enumerate()
+                .map(|(i, c)| CPushTimelineItem {
+                    state: "done".into(),
+                    label: i18n::cpush::cpush_timeline_step_done(
+                        locale,
+                        i + 1,
+                        total,
+                        &c.short_oid,
+                        &c.title,
+                    ),
+                })
+                .collect();
+            done_timeline.push(CPushTimelineItem {
+                state: "done".into(),
+                label: i18n::cpush::cpush_timeline_local_only_done(locale).into(),
+            });
+            session.timeline = done_timeline;
+            session.message = Some(CPushUiMessage {
+                id: format!("done-commit-only-{}", session.run_id),
+                kind: "done".into(),
+                title: i18n::cpush::cpush_local_only_done_title(locale, session.commits.len()),
+                description: i18n::cpush::cpush_local_only_done_desc(locale).into(),
+                scope: Some(session.branch.clone()),
+                files: None,
+                commits: Some(commit_summaries),
+                options: None,
+                progress: None,
+            });
+            self.save_in_memory(session)?;
+            self.persist_all(storage_dir).await?;
+            let public = session.to_public();
+            let _ = on_progress(CPushProgressEvent {
+                protocol_version: CPUSH_PROTOCOL_VERSION,
+                session: public.clone(),
+                repository_snapshot: latest_snapshot.clone(),
+            });
+            return Ok(CPushCommandReply {
+                protocol_version: CPUSH_PROTOCOL_VERSION,
+                kind: "cPush",
+                request_id: request_id.to_owned(),
+                session: public,
+                prepared_plan: None,
+                repository_snapshot: latest_snapshot,
+            });
+        }
+
         // All planned local commits landed — proceed directly to remote sync & push (`M5`)!
         self.sync_and_push_commits(
             storage_dir,

@@ -210,6 +210,8 @@ pub struct CPushConfirmedPlan {
     pub groups: Vec<PiCPushCommitGroup>,
     #[serde(default)]
     pub skipped_file_ids: Vec<String>,
+    #[serde(default)]
+    pub skip_push: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +220,8 @@ pub struct CPushPreparedPlan {
     pub summary: String,
     pub groups: Vec<PiCPushCommitGroup>,
     pub skipped_file_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_push: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -230,6 +234,8 @@ pub struct StartCPushRequest {
     pub prompt: String,
     #[serde(default)]
     pub confirmed_plan: Option<CPushConfirmedPlan>,
+    #[serde(default)]
+    pub push: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]

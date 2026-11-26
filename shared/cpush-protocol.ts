@@ -84,12 +84,14 @@ export interface CPushPlanGroup {
 export interface CPushConfirmedPlan {
   groups: CPushPlanGroup[];
   skippedFileIds: string[];
+  skipPush?: boolean;
 }
 
 export interface CPushPreparedPlan {
   summary: string;
   groups: CPushPlanGroup[];
   skippedFileIds: string[];
+  skipPush?: boolean;
 }
 
 export interface StartCPushRequest {
@@ -99,6 +101,7 @@ export interface StartCPushRequest {
   selections: ModelFileSelection[];
   prompt: string;
   confirmedPlan?: CPushConfirmedPlan;
+  push?: boolean;
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
 }
@@ -387,10 +390,14 @@ function decodePreparedPlan(raw: unknown): CPushPreparedPlan | undefined {
   if (groups.length === 0 && raw.skippedFileIds.length === 0) {
     throw new Error('C-Push prepared plan cannot be completely empty.');
   }
+  if (!(raw.skipPush === undefined || raw.skipPush === null || typeof raw.skipPush === 'boolean')) {
+    throw new Error('Invalid C-Push prepared plan skipPush flag.');
+  }
   return {
     summary: raw.summary,
     groups,
     skippedFileIds: raw.skippedFileIds,
+    ...(raw.skipPush ? { skipPush: true } : {}),
   };
 }
 

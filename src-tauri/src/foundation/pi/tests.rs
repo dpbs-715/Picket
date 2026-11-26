@@ -62,6 +62,7 @@ fn pi_command_serializes_locale_and_commit_language_in_camel_case() {
         qa_history: Vec::new(),
         locale: LanguageKind::Zh,
         commit_language: LanguageKind::En,
+        enable_tools: Some(true),
         skill_overrides: None,
     })
     .unwrap();
@@ -69,6 +70,7 @@ fn pi_command_serializes_locale_and_commit_language_in_camel_case() {
     assert_eq!(plan["prompt"], "split lockfile");
     assert_eq!(plan["locale"], "zh");
     assert_eq!(plan["commitLanguage"], "en");
+    assert_eq!(plan["enableTools"], true);
 
     let resolve = serde_json::to_value(PiCommand::ResolveConflict {
         request_id: "req-conflict".into(),

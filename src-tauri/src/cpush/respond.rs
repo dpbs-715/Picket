@@ -548,7 +548,14 @@ impl CPushCoordinator {
         };
 
         let plan = match self
-            .invoke_pi_planner(paths, supervisor, &spec, &request.request_id, session)
+            .invoke_pi_planner(
+                paths,
+                supervisor,
+                repo_store,
+                &spec,
+                &request.request_id,
+                session,
+            )
             .await
         {
             Ok(plan) => plan,

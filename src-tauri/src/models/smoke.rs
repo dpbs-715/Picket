@@ -659,15 +659,24 @@ fn build_cpush_smoke_plan(raw_body: &str) -> String {
 
     // Clear scope (`C01`): no question needed, split >1 logical categories or single commit directly!
     let all_ids: Vec<String> = files.iter().map(|(id, _)| id.clone()).collect();
+    let skip_push = extra_instruction.contains("without pushing")
+        || extra_instruction.contains("skip push")
+        || extra_instruction.contains("local only")
+        || extra_instruction.contains("只提交不推送");
     serde_json::json!({
         "kind": "ready",
-        "summary": "Scope is unambiguous; generated commit plan directly",
+        "summary": if skip_push {
+            "Scope is unambiguous; generated local-only commit plan without pushing"
+        } else {
+            "Scope is unambiguous; generated commit plan directly"
+        },
         "groups": [{
             "id": "group-1",
             "fileIds": all_ids,
             "message": "feat(scope): commit selected scope changes\n\n- write local commit for the exact selected scope\n- preserve unselected files and unstaged drafts"
         }],
-        "skippedFileIds": []
+        "skippedFileIds": [],
+        "skipPush": skip_push
     })
     .to_string()
 }

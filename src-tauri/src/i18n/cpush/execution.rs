@@ -254,6 +254,35 @@ pub const fn cpush_dismiss_kept_local_desc(locale: LanguageKind) -> &'static str
     )
 }
 
+pub fn cpush_local_only_done_title(locale: LanguageKind, count: usize) -> String {
+    match locale {
+        LanguageKind::En => {
+            if count == 1 {
+                "Committed 1 commit locally (not pushed)".into()
+            } else {
+                format!("Committed {count} commits locally (not pushed)")
+            }
+        }
+        LanguageKind::Zh => format!("已完成 {count} 个本地提交（未推送）"),
+    }
+}
+
+pub const fn cpush_local_only_done_desc(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Local commits were saved on the current branch without pushing to remote; unselected files and unstaged drafts remain untouched.",
+        "本地提交已写入当前分支，未推送到远端；未选文件与未暂存草稿保持不变。",
+    )
+}
+
+pub const fn cpush_timeline_local_only_done(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Skipped remote push (local-only commit)",
+        "已跳过远端推送（仅本地提交）",
+    )
+}
+
 pub const fn cpush_option_confirm_continue_remaining(locale: LanguageKind) -> &'static str {
     tr(locale, "Continue remaining commits", "确认继续剩余提交")
 }

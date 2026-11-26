@@ -89,6 +89,7 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
                 }],
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -169,6 +170,7 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
                 selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -284,6 +286,7 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
         selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
         prompt: "clarify callback idempotency guard".into(),
         confirmed_plan: None,
+        push: None,
         locale: LanguageKind::En,
         commit_language: LanguageKind::En,
     };
@@ -559,6 +562,7 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
                 selections,
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -707,6 +711,7 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                 }],
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -747,6 +752,7 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                 selections: default_selections,
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -804,6 +810,7 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                 }],
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1016,7 +1023,9 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
                         message: "   ".into(),
                     }],
                     skipped_file_ids: vec![],
+                    skip_push: false,
                 }),
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1046,7 +1055,9 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
                         message: "feat: partial".into(),
                     }],
                     skipped_file_ids: vec![],
+                    skip_push: false,
                 }),
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1087,7 +1098,9 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
                 confirmed_plan: Some(CPushConfirmedPlan {
                     groups: edited_groups,
                     skipped_file_ids: split_plan.skipped_file_ids,
+                    skip_push: split_plan.skip_push,
                 }),
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1243,6 +1256,7 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                 }],
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1355,6 +1369,7 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                 }],
                 prompt: String::new(),
                 confirmed_plan: None,
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1439,7 +1454,9 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                         },
                     ],
                     skipped_file_ids: Vec::new(),
+                    skip_push: false,
                 }),
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -1458,4 +1475,176 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
     assert_eq!(opts.len(), 1);
     assert_eq!(opts[0].id, "dismiss-session");
     assert_eq!(opts[0].recommended, Some(true));
+}
+
+#[tokio::test]
+async fn cpush_supports_local_only_commit_and_on_demand_read_scope_diff() {
+    let temp = tempfile::tempdir().unwrap();
+    let models = make_models(temp.path());
+    let server = LocalModelSseServer::start().unwrap();
+    let saved = models
+        .create_provider_connection(
+            temp.path(),
+            &CreateProviderConnectionInput {
+                provider: ProviderKind::Custom,
+                connection_name: "CPush LocalOnly Gateway".into(),
+                base_url: format!("{}/v1", server.base_url),
+                api_key: "sk-cpush-local-only-key".into(),
+                model_name: "CPush Planner".into(),
+                model_id: "planner-v1".into(),
+                locale: LanguageKind::En,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let fixture = Fixture::new().unwrap();
+    let bare = attach_bare_remote(&fixture.root);
+    let initial_remote_oid = text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]);
+    fs::write(fixture.root.join(".env.local"), "SECRET=123\n").unwrap();
+
+    let repo_store = RepositoryStore::default();
+    let snapshot = repo_store.open(&fixture.root).await.unwrap();
+    let tree = &snapshot.worktrees[0];
+    let part = tree.files.iter().find(|f| f.path == "part.txt").unwrap();
+    let target = ReadTarget {
+        repository_id: tree.repository_id.clone(),
+        worktree_id: tree.worktree_id.clone(),
+        session_id: "sess-local-only".into(),
+        scope_version: tree.status_version.clone(),
+    };
+    let part_sel = vec![CommitSelection {
+        file_id: part.id.clone(),
+        commit_token: part.commit_token.clone(),
+    }];
+
+    // 1. On-demand read_cpush_scope_diff serves ONLY authorized selected files (staged-only for partial)
+    //    and blocks unselected files and sensitive files:
+    let extracted = repo_store
+        .extract_cpush_scope(&target, &part_sel, LanguageKind::En)
+        .await
+        .unwrap();
+    let part_diff = repo_store
+        .read_cpush_scope_diff(
+            &target,
+            extracted.initial_head.as_deref(),
+            &extracted.files,
+            "part.txt",
+            Some(1),
+            Some(50),
+            LanguageKind::En,
+        )
+        .await
+        .unwrap();
+    assert!(part_diff.contains("Authorized diff: part.txt"));
+    assert!(part_diff.contains("+first=2"));
+    assert!(!part_diff.contains("second=3"));
+
+    let unselected_err = repo_store
+        .read_cpush_scope_diff(
+            &target,
+            extracted.initial_head.as_deref(),
+            &extracted.files,
+            "pnpm-lock.yaml",
+            None,
+            None,
+            LanguageKind::En,
+        )
+        .await
+        .unwrap_err();
+    assert!(unselected_err.contains("not part of the authorized C-Push scope"));
+
+    let env_file = tree.files.iter().find(|f| f.path == ".env.local").unwrap();
+    let env_extracted = repo_store
+        .extract_cpush_scope(
+            &target,
+            &[CommitSelection {
+                file_id: env_file.id.clone(),
+                commit_token: env_file.commit_token.clone(),
+            }],
+            LanguageKind::En,
+        )
+        .await
+        .unwrap();
+    let sensitive_err = repo_store
+        .read_cpush_scope_diff(
+            &target,
+            env_extracted.initial_head.as_deref(),
+            &env_extracted.files,
+            ".env.local",
+            None,
+            None,
+            LanguageKind::En,
+        )
+        .await
+        .unwrap_err();
+    assert!(sensitive_err.contains("sensitive"));
+
+    let coordinator = CPushCoordinator::default();
+    let paths = PiPaths::development();
+    let supervisor = PiSupervisor::default();
+
+    // 2. Preview Plan with `+ Prompt` requesting local-only commit propagates `skip_push: true`:
+    let planned = coordinator
+        .plan_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &PlanCPushRequest {
+                request_id: "plan-local-only-1".into(),
+                target: target.clone(),
+                model_id: saved.model.id.clone(),
+                selections: part_sel.clone(),
+                prompt: "只提交不推送".into(),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    let prepared = planned.prepared_plan.expect("prepared plan expected");
+    assert!(prepared.skip_push);
+
+    // 3. Direct C-Push with `prompt: "commit locally without pushing"` commits locally without pushing to bare remote:
+    let local_done = coordinator
+        .start_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &StartCPushRequest {
+                request_id: "cpush-local-only-1".into(),
+                target: target.clone(),
+                model_id: saved.model.id.clone(),
+                selections: part_sel,
+                prompt: "commit locally without pushing".into(),
+                confirmed_plan: None,
+                push: None,
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(local_done.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(local_done.session.commits.len(), 1);
+    let done_msg = local_done.session.message.as_ref().unwrap();
+    assert!(done_msg.id.starts_with("done-commit-only-"));
+    assert_eq!(done_msg.title, "Committed 1 commit locally (not pushed)");
+    assert_eq!(
+        text_git(&fixture.root, &["rev-list", "--count", "HEAD"]),
+        "2"
+    );
+    assert_eq!(
+        text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]),
+        initial_remote_oid,
+        "local-only C-Push must NOT push commits to remote"
+    );
 }

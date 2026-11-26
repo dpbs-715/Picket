@@ -2,7 +2,8 @@ use super::{
     ExtractedCPushScope, FrozenCPushFile,
     patch::{
         CPUSH_MAX_FILE_PATCH_BYTES, CPUSH_MAX_TOTAL_PATCH_BYTES, CPUSH_MIN_PARTIAL_PATCH_BUDGET,
-        MAX_UNTRACKED_READ_BYTES, RawPatchOutcome, is_sensitive_local_file, read_change_raw_patch,
+        MAX_REVIEW_UNTRACKED_READ_BYTES, MAX_UNTRACKED_READ_BYTES, RawPatchOutcome,
+        is_sensitive_local_file, read_authorized_scope_diff, read_change_raw_patch,
         redact_sensitive_patch, truncate_patch_head_tail,
     },
 };
@@ -11,7 +12,8 @@ use crate::{
     repository::{
         RepositoryStore, Result,
         parse::WorktreeEntry,
-        types::{Change, CommitSelection, ReadTarget, RepositorySnapshot},
+        read_tools::validate_safe_repo_path,
+        types::{Change, CommitSelection, Range, ReadTarget, RepositorySnapshot},
     },
 };
 use std::collections::{HashMap, HashSet};
@@ -277,5 +279,93 @@ impl RepositoryStore {
             });
         }
         Ok((snapshot, selections))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn read_cpush_scope_diff(
+        &self,
+        target: &ReadTarget,
+        initial_head: Option<&str>,
+        frozen_files: &[FrozenCPushFile],
+        raw_path: &str,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+        locale: LanguageKind,
+    ) -> Result<String> {
+        let path = validate_safe_repo_path(raw_path)?;
+        let Some(frozen) = frozen_files.iter().find(|file| file.path == path) else {
+            return Err(format!(
+                "File `{path}` is not part of the authorized C-Push scope"
+            ));
+        };
+        if is_sensitive_local_file(&path) {
+            return Err(format!(
+                "Refused to read sensitive local file diff: `{path}`"
+            ));
+        }
+        if frozen.binary {
+            return Err(format!("Binary file `{path}` has no text diff"));
+        }
+
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
+        let worktree_reader = self
+            .inner
+            .reader
+            .with_locale(locale)
+            .for_worktree(&root)
+            .await?;
+
+        let git_status = if frozen.range_kind == "unstaged" && frozen.status == "A" {
+            "??".to_owned()
+        } else {
+            String::new()
+        };
+        let synthetic = Change {
+            id: frozen.file_id.clone(),
+            path: frozen.path.clone(),
+            previous_path: frozen.previous_path.clone(),
+            status: frozen.status.clone(),
+            git_status,
+            range: Range {
+                kind: frozen.range_kind.clone(),
+                added: frozen.added,
+                removed: frozen.removed,
+            },
+            binary: frozen.binary,
+            ignored_for_review: frozen.ignored_for_review,
+            local_keep: false,
+            content_version: frozen.content_version.clone(),
+            commit_token: String::new(),
+        };
+
+        let raw_patch = match read_change_raw_patch(
+            &worktree_reader,
+            &root,
+            initial_head,
+            &synthetic,
+            "--unified=3",
+            MAX_REVIEW_UNTRACKED_READ_BYTES,
+        )
+        .await?
+        {
+            RawPatchOutcome::Patch(text) => text,
+            RawPatchOutcome::Binary => {
+                return Err(format!("Binary file `{path}` has no text diff"));
+            }
+            RawPatchOutcome::NonUtf8 => {
+                return Err(format!("File `{path}` diff is not valid UTF-8 text"));
+            }
+            RawPatchOutcome::UntrackedTooLarge => {
+                return Err(format!(
+                    "Untracked file `{path}` exceeds the 512 KB diff read limit"
+                ));
+            }
+        };
+
+        let mut patches = HashMap::with_capacity(1);
+        patches.insert(path.clone(), raw_patch);
+        let (formatted, _, _, _) =
+            read_authorized_scope_diff(&patches, &path, start_line, end_line)?;
+        Ok(formatted)
     }
 }
