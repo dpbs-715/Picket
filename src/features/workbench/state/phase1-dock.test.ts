@@ -110,4 +110,84 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
     expect(askHtml).toContain('提交选择');
     expect(askHtml).toContain('取消');
   });
+
+  it('omits redundant local dismiss button on error cards that provide session options', () => {
+    const withOptions = fixture('question');
+    withOptions.worktrees[0].sessionStatus = 'needsDecision';
+    withOptions.worktrees[0].dockExpanded = true;
+    withOptions.worktrees[0].messages = [
+      {
+        id: 'err-step-1',
+        kind: 'error',
+        title: '提交 1/1 暂停',
+        description: '存在阻断错误',
+        options: [{ id: 'dismiss-session', label: '关闭本次会话', recommended: true }],
+      },
+    ];
+    const expandedWithOpts = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: 'zh',
+        children: createElement(MessageDock, {
+          worktree: withOptions.worktrees[0],
+          busy: false,
+          editorShort: 'IDEA',
+          onExpanded: () => {},
+          onDismiss: () => {},
+          onReply: () => {},
+          onRespond: () => {},
+          onOpenFile: () => {},
+          onReview: () => {},
+        }),
+      }),
+    );
+    expect(expandedWithOpts).toContain('关闭本次会话');
+    expect(expandedWithOpts).not.toContain('知道了');
+
+    withOptions.worktrees[0].dockExpanded = false;
+    const collapsedWithOpts = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: 'zh',
+        children: createElement(MessageDock, {
+          worktree: withOptions.worktrees[0],
+          busy: false,
+          editorShort: 'IDEA',
+          onExpanded: () => {},
+          onDismiss: () => {},
+          onReply: () => {},
+          onRespond: () => {},
+          onOpenFile: () => {},
+          onReview: () => {},
+        }),
+      }),
+    );
+    expect(collapsedWithOpts).not.toContain('message-collapsed-dismiss');
+
+    const standaloneError = fixture('question');
+    standaloneError.worktrees[0].dockExpanded = true;
+    standaloneError.worktrees[0].messages = [
+      {
+        id: 'err-standalone',
+        kind: 'error',
+        title: '操作失败',
+        description: '单次错误提示',
+      },
+    ];
+    const expandedStandalone = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: 'zh',
+        children: createElement(MessageDock, {
+          worktree: standaloneError.worktrees[0],
+          busy: false,
+          editorShort: 'IDEA',
+          onExpanded: () => {},
+          onDismiss: () => {},
+          onReply: () => {},
+          onRespond: () => {},
+          onOpenFile: () => {},
+          onReview: () => {},
+        }),
+      }),
+    );
+    expect(expandedStandalone).toContain('知道了');
+  });
 });

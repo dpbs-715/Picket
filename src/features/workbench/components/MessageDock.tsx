@@ -180,7 +180,7 @@ export function MessageDock(props: Props) {
               {!!secondary.length && <span className="dynamic-count">+{secondary.length}</span>}
               <Icon name="up" />
             </button>
-            {(primary.kind === 'done' || primary.kind === 'error') && (
+            {(primary.kind === 'done' || (primary.kind === 'error' && !primary.options?.length)) && (
               <IconButton
                 icon="close"
                 className="message-collapsed-dismiss"
@@ -488,7 +488,7 @@ export function MessageDock(props: Props) {
                       {t.dock.cancelAction}
                     </button>
                   )}
-                  {(primary.kind === 'done' || primary.kind === 'error') && (
+                  {(primary.kind === 'done' || (primary.kind === 'error' && !primary.options?.length)) && (
                     <button type="button" className="secondary" onClick={dismissDone}>{t.dock.gotIt}</button>
                   )}
                   {canReply && (

@@ -4,33 +4,36 @@ import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { useI18n } from '../../../i18n';
 import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
-import { MOTION_DURATION, MOTION_EASE, PresenceNotice, m, useInstantMotion } from '../../../ui/motion';
+import { PresenceNotice } from '../../../ui/motion';
 import {
   compactStatusSummary,
   hasEmptyValidPlanMessage,
   isActiveSession,
   isPlanOutdated,
-  isProtected,
   localKeepChanges,
   normalChanges,
   primaryAction,
   selectedFiles,
   selectedLocalKeepChanges,
-  splitPath,
   type CompactExpandTarget,
   type Repository,
   type WorkbenchState,
   type Worktree,
 } from '../state/workbench';
+import { CompactBranchesDrawer, type BranchSection } from './CompactBranchesDrawer';
+import {
+  CompactActionsDrawer,
+  CompactFilesDrawer,
+  CompactProjectsDrawer,
+  CompactRemoteDrawer,
+  type CompactDrawer,
+} from './CompactDrawers';
 
 interface CompactNotice {
   text: string;
   tone?: 'info' | 'success' | 'warning' | 'error';
   showModelSettings?: boolean;
 }
-
-type CompactDrawer = 'none' | 'projects' | 'branches' | 'remote' | 'files' | 'actions';
-type BranchSection = 'local' | 'remote' | 'worktree';
 
 interface Props {
   state: WorkbenchState;
@@ -70,7 +73,6 @@ interface Props {
 
 export function CompactBar(props: Props) {
   const { locale, t } = useI18n();
-  const instantMotion = useInstantMotion();
   const barRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const [drawer, setDrawer] = useState<CompactDrawer>('none');
@@ -309,404 +311,63 @@ export function CompactBar(props: Props) {
       </PresenceNotice>
 
       {effectiveDrawer === 'projects' && (
-        <m.div
-          key="drawer-projects"
-          className="compact-drawer scroll-area"
-          role="region"
-          aria-label={t.compact.projectDrawerLabel}
-          initial={instantMotion ? false : { opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-        >
-          {state.repositories.map((repo) => {
-            const trees = state.worktrees.filter((tree) => tree.repositoryId === repo.id);
-            const active = repo.id === repository?.id;
-            return (
-              <button
-                type="button"
-                className="compact-project-item"
-                key={repo.id}
-                aria-pressed={active}
-                onClick={() => {
-                  setDrawer('none');
-                  if (trees[0]) props.onSwitchWorktree(trees[0].worktreeId);
-                }}
-              >
-                <span className="mono truncate">{repo.name}</span>
-                <span className="muted small">
-                  {trees.length <= 1 ? t.header.singleWorktree : t.header.worktreeCount(trees.length)}
-                </span>
-              </button>
-            );
-          })}
-          {!state.repositories.length && (
-            <p className="muted menu-note">{t.header.noRepositoriesOpened}</p>
-          )}
-          <div className="menu-divider">
-            <button
-              type="button"
-              className="compact-open-repo-item"
-              disabled={props.opening}
-              onClick={() => {
-                setDrawer('none');
-                if (props.repositoryReadsAvailable) {
-                  props.onOpenRepository();
-                } else {
-                  props.onExpandTarget('repo');
-                }
-              }}
-            >
-              <Icon name="plus" />
-              {t.header.openLocalRepository}
-            </button>
-          </div>
-        </m.div>
+        <CompactProjectsDrawer
+          state={state}
+          repository={repository}
+          opening={props.opening}
+          repositoryReadsAvailable={props.repositoryReadsAvailable}
+          onCloseDrawer={() => setDrawer('none')}
+          onSwitchWorktree={props.onSwitchWorktree}
+          onOpenRepository={props.onOpenRepository}
+          onExpandTarget={props.onExpandTarget}
+        />
       )}
 
       {effectiveDrawer === 'branches' && worktree && (
-        <m.div
-          key="drawer-branches"
-          className="compact-drawer compact-branches-drawer scroll-area"
-          role="region"
-          aria-label={t.header.branchesTitle}
-          initial={instantMotion ? false : { opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-        >
-          <div className="branch-group-section">
-            <button
-              type="button"
-              className="branch-group-toggle"
-              aria-expanded={expandedSections.local}
-              onClick={() => toggleSection('local')}
-            >
-              <span className="row"><RotatingChevron open={expandedSections.local} /><span>{t.header.localBranches}</span></span>
-              <span className="branch-group-count muted small">{repository?.branches.length ?? 0}</span>
-            </button>
-            {expandedSections.local && (
-              <div className="branch-group-list" data-branch-group="local">
-                {repository?.branches.length ? repository.branches.map((branch) => (
-                  <button
-                    type="button"
-                    className="branch-item"
-                    key={branch.name}
-                    disabled={!branch.worktreeId && branchDisabled}
-                    aria-pressed={!worktree.detached && branch.name === worktree.branch}
-                    onClick={() => {
-                      if (branch.worktreeId) {
-                        setDrawer('none');
-                        props.onSwitchWorktree(branch.worktreeId);
-                      } else {
-                        void submitBranch('switchBranch', branch.name);
-                      }
-                    }}
-                  >
-                    <span className="row min-width-zero branch-item-main">
-                      <span className="mono truncate">{branch.name}</span>
-                      {isProtected(branch.name) && <span className="branch-tag">{t.common.protectedBranch}</span>}
-                    </span>
-                    {branch.worktreeId && branch.worktreeId !== worktree.worktreeId ? (
-                      <span className="branch-item-meta truncate">
-                        {t.header.jumpToWorktree(state.worktrees.find((tree) => tree.worktreeId === branch.worktreeId)?.label ?? '')}
-                      </span>
-                    ) : (
-                      !worktree.detached && branch.name === worktree.branch && <Icon name="check" />
-                    )}
-                  </button>
-                )) : (
-                  <p className="muted menu-note">{t.header.noLocalBranches}</p>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="branch-group-section">
-            <button
-              type="button"
-              className="branch-group-toggle"
-              aria-expanded={expandedSections.remote}
-              onClick={() => toggleSection('remote')}
-            >
-              <span className="row"><RotatingChevron open={expandedSections.remote} /><span>{t.header.remoteBranches}</span></span>
-              <span className="branch-group-count muted small">{remoteBranches.length}</span>
-            </button>
-            {expandedSections.remote && (
-              <div className="branch-group-list" data-branch-group="remote">
-                {remoteBranches.length ? remoteBranches.map((remoteBranch) => {
-                  const existingLocal = repository?.branches.find((item) => item.name === remoteBranch.localName);
-                  const isCurrent = !worktree.detached && worktree.branch === remoteBranch.localName;
-                  return (
-                    <button
-                      type="button"
-                      className="branch-item"
-                      key={remoteBranch.name}
-                      disabled={!existingLocal?.worktreeId && branchDisabled}
-                      aria-pressed={isCurrent}
-                      onClick={() => {
-                        if (existingLocal?.worktreeId) {
-                          setDrawer('none');
-                          props.onSwitchWorktree(existingLocal.worktreeId);
-                        } else if (existingLocal) {
-                          void submitBranch('switchBranch', existingLocal.name);
-                        } else {
-                          void submitBranch('checkoutRemoteBranch', remoteBranch.name);
-                        }
-                      }}
-                    >
-                      <span className="row min-width-zero branch-item-main">
-                        <span className="mono truncate">{remoteBranch.name}</span>
-                      </span>
-                      {existingLocal?.worktreeId && existingLocal.worktreeId !== worktree.worktreeId ? (
-                        <span className="branch-item-meta truncate">
-                          {t.header.jumpToWorktree(state.worktrees.find((tree) => tree.worktreeId === existingLocal.worktreeId)?.label ?? '')}
-                        </span>
-                      ) : isCurrent ? (
-                        <Icon name="check" />
-                      ) : (
-                        <span className="branch-item-meta branch-item-hover">
-                          {existingLocal ? t.header.switchAction : t.header.checkoutAction}
-                        </span>
-                      )}
-                    </button>
-                  );
-                }) : (
-                  <p className="muted menu-note">{t.header.noRemoteBranches}</p>
-                )}
-              </div>
-            )}
-          </div>
-          {repoWorktrees.length > 1 && (
-            <div className="branch-group-section">
-              <button
-                type="button"
-                className="branch-group-toggle"
-                aria-expanded={expandedSections.worktree}
-                onClick={() => toggleSection('worktree')}
-              >
-                <span className="row"><RotatingChevron open={expandedSections.worktree} /><span>{t.header.worktrees}</span></span>
-                <span className="branch-group-count muted small">{repoWorktrees.length}</span>
-              </button>
-              {expandedSections.worktree && (
-                <div className="branch-group-list" data-branch-group="worktree">
-                  {repoWorktrees.map((tree) => (
-                    <button
-                      type="button"
-                      className="branch-item"
-                      key={tree.worktreeId}
-                      aria-pressed={tree.worktreeId === worktree.worktreeId}
-                      onClick={() => {
-                        setDrawer('none');
-                        props.onSwitchWorktree(tree.worktreeId);
-                      }}
-                    >
-                      <span className="row min-width-zero branch-item-main">
-                        <span className={`status-dot status-${tree.sessionStatus}`} />
-                        <span className="mono truncate">{tree.label}</span>
-                        <span className="mono muted small truncate">{tree.detached ? t.common.detachedHead : tree.branch}</span>
-                      </span>
-                      <span className="branch-item-meta">
-                        {tree.readError ? t.header.worktreeUnavailable : tree.files.length ? t.header.worktreeChangesCount(tree.files.length) : t.header.worktreeClean}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </m.div>
+        <CompactBranchesDrawer
+          state={state}
+          repository={repository}
+          worktree={worktree}
+          repoWorktrees={repoWorktrees}
+          branchDisabled={branchDisabled}
+          expandedSections={expandedSections}
+          onToggleSection={toggleSection}
+          onCloseDrawer={() => setDrawer('none')}
+          onSwitchWorktree={props.onSwitchWorktree}
+          onSubmitBranch={submitBranch}
+        />
       )}
 
       {effectiveDrawer === 'remote' && worktree && (
-        <m.div
-          key="drawer-remote"
-          className="compact-drawer compact-remote-drawer"
-          role="region"
-          aria-label={t.header.remoteDetails}
-          initial={instantMotion ? false : { opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-        >
-          <div className="compact-remote-info">
-            <span className="muted small">{t.header.trackedRemoteBranch}</span>
-            {worktree.remote.kind === 'tracked' ? (
-              <>
-                <div className="compact-remote-branch-row">
-                  <span className="mono truncate">{worktree.remote.branch}</span>
-                  <span className="muted small">{t.header.aheadBehind(worktree.remote.ahead, worktree.remote.behind)}</span>
-                </div>
-                {worktree.remote.localOnly && (
-                  <p className="muted small compact-remote-tip">{t.header.remoteCountTipText}</p>
-                )}
-              </>
-            ) : (
-              <p className="warning help">{worktree.remote.reason}</p>
-            )}
-          </div>
-          <div className="menu-divider">
-            <button
-              type="button"
-              className="secondary compact-pull-button"
-              disabled={props.pullBusy || repoWorktrees.some(isActiveSession)}
-              onClick={() => {
-                setDrawer('none');
-                props.onPull();
-              }}
-            >
-              {props.pullBusy ? t.header.syncing : t.header.pullAndRebase}
-            </button>
-          </div>
-        </m.div>
+        <CompactRemoteDrawer
+          worktree={worktree}
+          repoWorktrees={repoWorktrees}
+          pullBusy={props.pullBusy}
+          onCloseDrawer={() => setDrawer('none')}
+          onPull={props.onPull}
+        />
       )}
 
       {effectiveDrawer === 'files' && worktree && (
-        <m.div
-          key="drawer-files"
-          className="compact-drawer compact-files-drawer scroll-area"
-          role="region"
-          aria-label={t.compact.filesDrawerLabel}
-          initial={instantMotion ? false : { opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-        >
-          {normalFiles.length === 0 && (
-            <p className="muted compact-files-empty">{t.changes.noNormalChanges}</p>
-          )}
-          {normalFiles.map((file) => {
-            const { directory, name } = splitPath(file.path);
-            const checked = worktree.selectedIds.includes(file.id);
-            return (
-              <label className="compact-file-row" key={file.id} data-file-path={file.path} title={file.path}>
-                <input
-                  type="checkbox"
-                  className="file-checkbox"
-                  checked={checked}
-                  aria-label={t.changes.selectFile(file.path)}
-                  onChange={() => props.onSelect(file.id)}
-                />
-                <span className={`git-status git-${file.status}`} aria-hidden="true">{file.status}</span>
-                <span className="file-name mono truncate">{name}</span>
-                {directory && <span className="file-directory mono truncate">{directory}</span>}
-                {file.range.kind === 'partial' && (
-                  <span className="accent file-badge">{t.changes.partialStagedBadge}</span>
-                )}
-              </label>
-            );
-          })}
-          {keptFiles.length > 0 && (
-            <div className="compact-keep-group">
-              <button
-                type="button"
-                className="compact-keep-toggle"
-                aria-expanded={localKeepOpen}
-                onClick={() => setLocalKeepOpen((prev) => !prev)}
-              >
-                <span className="row min-width-zero">
-                  <RotatingChevron open={localKeepOpen} />
-                  <span className="truncate">{t.changes.localKeepTitle}</span>
-                </span>
-                <span className="muted small mono">{keptFiles.length}</span>
-              </button>
-              {localKeepOpen && keptFiles.map((file) => {
-                const { directory, name } = splitPath(file.path);
-                const checked = worktree.selectedIds.includes(file.id);
-                return (
-                  <label className="compact-file-row compact-keep-row" key={file.id} data-file-path={file.path} title={file.path}>
-                    <input
-                      type="checkbox"
-                      className="file-checkbox"
-                      checked={checked}
-                      aria-label={t.changes.selectFile(file.path)}
-                      onChange={() => props.onSelect(file.id)}
-                    />
-                    <span className={`git-status git-${file.status}`} aria-hidden="true">{file.status}</span>
-                    <span className="file-name mono truncate">{name}</span>
-                    {directory && <span className="file-directory mono truncate">{directory}</span>}
-                  </label>
-                );
-              })}
-            </div>
-          )}
-        </m.div>
+        <CompactFilesDrawer
+          worktree={worktree}
+          normalFiles={normalFiles}
+          keptFiles={keptFiles}
+          localKeepOpen={localKeepOpen}
+          onToggleLocalKeep={() => setLocalKeepOpen((prev) => !prev)}
+          onSelect={props.onSelect}
+        />
       )}
 
       {effectiveDrawer === 'actions' && worktree && (
-        <m.div
-          key="drawer-actions"
-          className="compact-drawer compact-actions-drawer scroll-area"
-          role="region"
-          aria-label={t.compact.actionsDrawerLabel}
-          initial={instantMotion ? false : { opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-        >
-          <button
-            type="button"
-            className="compact-action-item"
-            aria-pressed={!props.activeAction}
-            onClick={() => {
-              props.onSelectAction(null);
-              setDrawer('none');
-            }}
-          >
-            <span className="model-menu-label">
-              <span className="model-menu-name truncate">{t.primaryActions.cPush}</span>
-              <span className="muted small truncate">{t.footer.defaultCPushSubtitle}</span>
-            </span>
-            {!props.activeAction && <Icon name="check" className="success" />}
-          </button>
-          {props.customActions.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className="compact-action-item"
-              aria-pressed={props.activeAction?.id === item.id}
-              onClick={() => {
-                props.onSelectAction(item.id);
-                setDrawer('none');
-              }}
-            >
-              <span className="model-menu-label">
-                <span className="model-menu-name truncate">{item.label}</span>
-                <span className="muted small mono truncate">{item.prompt}</span>
-              </span>
-              {props.activeAction?.id === item.id && <Icon name="check" className="success" />}
-            </button>
-          ))}
-          <div className="menu-divider compact-actions-divider">
-            <button
-              type="button"
-              className="compact-open-repo-item"
-              onClick={() => {
-                setDrawer('none');
-                props.onNewAction('create');
-              }}
-            >
-              <Icon name="sparkles" />
-              {t.footer.createWithPiMenuItem}
-            </button>
-            <button
-              type="button"
-              className="compact-open-repo-item"
-              onClick={() => {
-                setDrawer('none');
-                props.onNewAction('manual');
-              }}
-            >
-              <Icon name="plus" />
-              {t.footer.newActionMenuItem}
-            </button>
-            <button
-              type="button"
-              className="compact-open-repo-item"
-              onClick={() => {
-                setDrawer('none');
-                props.onManageActions();
-              }}
-            >
-              <Icon name="settings" />
-              {t.footer.manageActionsMenuItem}
-            </button>
-          </div>
-        </m.div>
+        <CompactActionsDrawer
+          customActions={props.customActions}
+          activeAction={props.activeAction}
+          onCloseDrawer={() => setDrawer('none')}
+          onSelectAction={props.onSelectAction}
+          onNewAction={props.onNewAction}
+          onManageActions={props.onManageActions}
+        />
       )}
 
       <footer className="compact-bottom">
