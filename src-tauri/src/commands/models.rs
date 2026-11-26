@@ -1,0 +1,143 @@
+//! Provider connection, model catalog, credential reveal, and code review IPC commands.
+
+use super::{picket_data_dir, runtime_paths};
+use crate::{
+    foundation::pi::PiSupervisor,
+    models::{
+        store::ModelStore,
+        types::{
+            ConnectionIdRequest, CreateProviderConnectionInput, ListModelsInput, ModelIdRequest,
+            ModelListReply, ModelMutateReply, ModelSaveReply, ModelStreamEvent, ModelTestReply,
+            ProviderRevealKeyReply, ProviderSaveReply, ProviderUpdateReply, ReviewScopeReply,
+            ReviewScopeRequest, SaveModelInput, TestConnectionInput, UpdateProviderConnectionInput,
+        },
+    },
+    repository::RepositoryStore,
+};
+use tauri::{State, ipc::Channel};
+
+#[tauri::command]
+pub async fn test_model_connection(
+    app: tauri::AppHandle,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    input: TestConnectionInput,
+) -> Result<ModelTestReply, String> {
+    let data_dir = picket_data_dir()?;
+    let paths = runtime_paths(&app)?;
+    models
+        .test_connection_with_storage(&data_dir, &paths, &supervisor, &input)
+        .await
+}
+
+#[tauri::command]
+pub async fn list_provider_models(
+    app: tauri::AppHandle,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    input: ListModelsInput,
+) -> Result<ModelListReply, String> {
+    let data_dir = picket_data_dir()?;
+    let paths = runtime_paths(&app)?;
+    models
+        .list_provider_models(&data_dir, &paths, &supervisor, &input)
+        .await
+}
+
+#[tauri::command]
+pub async fn create_provider_connection(
+    models: State<'_, ModelStore>,
+    input: CreateProviderConnectionInput,
+) -> Result<ProviderSaveReply, String> {
+    let data_dir = picket_data_dir()?;
+    models.create_provider_connection(&data_dir, &input).await
+}
+
+#[tauri::command]
+pub async fn update_provider_connection(
+    models: State<'_, ModelStore>,
+    input: UpdateProviderConnectionInput,
+) -> Result<ProviderUpdateReply, String> {
+    let data_dir = picket_data_dir()?;
+    models.update_provider_connection(&data_dir, &input).await
+}
+
+#[tauri::command]
+pub async fn delete_provider_connection(
+    models: State<'_, ModelStore>,
+    request: ConnectionIdRequest,
+) -> Result<ModelMutateReply, String> {
+    let data_dir = picket_data_dir()?;
+    models
+        .delete_provider_connection_with_locale(&data_dir, &request.connection_id, request.locale)
+        .await
+}
+
+#[tauri::command]
+pub async fn save_model(
+    models: State<'_, ModelStore>,
+    input: SaveModelInput,
+) -> Result<ModelSaveReply, String> {
+    let data_dir = picket_data_dir()?;
+    models.save_model(&data_dir, &input).await
+}
+
+#[tauri::command]
+pub async fn select_model(
+    models: State<'_, ModelStore>,
+    request: ModelIdRequest,
+) -> Result<ModelMutateReply, String> {
+    let data_dir = picket_data_dir()?;
+    models
+        .select_model_with_locale(&data_dir, &request.model_id, request.locale)
+        .await
+}
+
+#[tauri::command]
+pub async fn delete_model(
+    models: State<'_, ModelStore>,
+    request: ModelIdRequest,
+) -> Result<ModelMutateReply, String> {
+    let data_dir = picket_data_dir()?;
+    models
+        .delete_model_with_locale(&data_dir, &request.model_id, request.locale)
+        .await
+}
+
+#[tauri::command]
+pub async fn reveal_provider_api_key(
+    models: State<'_, ModelStore>,
+    request: ConnectionIdRequest,
+) -> Result<ProviderRevealKeyReply, String> {
+    let data_dir = picket_data_dir()?;
+    models
+        .reveal_provider_api_key(&data_dir, &request.connection_id, request.locale)
+        .await
+}
+
+#[tauri::command]
+pub async fn review_selected_scope(
+    app: tauri::AppHandle,
+    store: State<'_, RepositoryStore>,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    request: ReviewScopeRequest,
+    on_event: Channel<ModelStreamEvent>,
+) -> Result<ReviewScopeReply, String> {
+    let data_dir = picket_data_dir()?;
+    let paths = runtime_paths(&app)?;
+    models
+        .review_scope(&data_dir, &paths, &supervisor, &store, &request, |event| {
+            let _ = on_event.send(event);
+            Ok(())
+        })
+        .await
+}
+
+#[tauri::command]
+pub fn cancel_model_request(
+    supervisor: State<'_, PiSupervisor>,
+    request_id: String,
+) -> Result<(), String> {
+    supervisor.cancel(&request_id)
+}
