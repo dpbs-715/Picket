@@ -74,6 +74,10 @@ pub const fn action_tier2_edit_header(locale: LanguageKind) -> &'static str {
     tr(locale, "Confirm File Edit", "确认修改文件")
 }
 
+pub const fn action_tier2_create_header(locale: LanguageKind) -> &'static str {
+    tr(locale, "Confirm New File", "确认新建文件")
+}
+
 pub fn action_tier2_question(locale: LanguageKind, reason: &str) -> String {
     match locale {
         LanguageKind::En => format!("Confirm before running this write command: {reason}"),
@@ -85,6 +89,13 @@ pub fn action_tier2_edit_question(locale: LanguageKind, reason: &str) -> String 
     match locale {
         LanguageKind::En => format!("Confirm before modifying this repository file: {reason}"),
         LanguageKind::Zh => format!("即将修改当前仓库中的文件：{reason}"),
+    }
+}
+
+pub fn action_tier2_create_question(locale: LanguageKind, reason: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("Confirm before creating this new repository file: {reason}"),
+        LanguageKind::Zh => format!("即将在当前仓库中新建文件：{reason}"),
     }
 }
 
@@ -109,6 +120,18 @@ pub const fn action_tier2_edit_approve_desc(locale: LanguageKind) -> &'static st
         locale,
         "Write the exact text replacement shown in the preview below",
         "将下方预览中的修改写入当前仓库文件",
+    )
+}
+
+pub const fn action_tier2_create_approve_label(locale: LanguageKind) -> &'static str {
+    tr(locale, "Create file", "允许新建")
+}
+
+pub const fn action_tier2_create_approve_desc(locale: LanguageKind) -> &'static str {
+    tr(
+        locale,
+        "Create the new repository file shown in the preview below",
+        "在当前仓库创建下方预览中的新文件",
     )
 }
 
@@ -233,6 +256,13 @@ pub fn action_edited_file_label(locale: LanguageKind, path: &str) -> String {
     }
 }
 
+pub fn action_created_file_label(locale: LanguageKind, path: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("Created {path}"),
+        LanguageKind::Zh => format!("已新建 {path}"),
+    }
+}
+
 pub fn action_tool_status_label(locale: LanguageKind, tool_name: &str, detail: &str) -> String {
     match (locale, tool_name) {
         (LanguageKind::En, "check_cli_env") => "Checking local Git / gh / glab environment".into(),
@@ -247,6 +277,8 @@ pub fn action_tool_status_label(locale: LanguageKind, tool_name: &str, detail: &
         (LanguageKind::Zh, "run_repo_command") => format!("执行 {detail}"),
         (LanguageKind::En, "edit_repo_file") => format!("Editing {detail}"),
         (LanguageKind::Zh, "edit_repo_file") => format!("修改 {detail}"),
+        (LanguageKind::En, "write_repo_file") => format!("Creating {detail}"),
+        (LanguageKind::Zh, "write_repo_file") => format!("新建 {detail}"),
         (LanguageKind::En, "commit_exact_scope") => "Creating exact-scope local commit".into(),
         (LanguageKind::Zh, "commit_exact_scope") => "写入精确范围本地提交".into(),
         (LanguageKind::En, "sync_and_push") => "Syncing and pushing to remote".into(),

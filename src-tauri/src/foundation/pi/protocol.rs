@@ -121,6 +121,8 @@ pub enum PiCommand {
         locale: LanguageKind,
         commit_language: LanguageKind,
         #[serde(skip_serializing_if = "Option::is_none")]
+        enable_tools: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         skill_overrides: Option<RuntimeSkillOverrideCatalog>,
     },
     ResolveConflict {
@@ -151,6 +153,8 @@ pub enum PiCommand {
         commit_language: LanguageKind,
         #[serde(skip_serializing_if = "Option::is_none")]
         previous_checkpoint: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        follow_up_prompt: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         skill_overrides: Option<RuntimeSkillOverrideCatalog>,
     },
@@ -265,6 +269,8 @@ pub enum PiCPushPlan {
         summary: String,
         groups: Vec<PiCPushCommitGroup>,
         skipped_file_ids: Vec<String>,
+        #[serde(default)]
+        skip_push: bool,
     },
     Question {
         title: String,

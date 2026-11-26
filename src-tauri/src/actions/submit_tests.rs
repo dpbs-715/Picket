@@ -827,6 +827,7 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
                 url: "https://github.com/acme/demo/pull/101".into(),
             },
         ],
+        edited_file_hashes: Default::default(),
         submit_ledger: SubmitSessionLedger {
             workflow_kind: "submitPromote".into(),
             first_target: Some("v1.9.0".into()),

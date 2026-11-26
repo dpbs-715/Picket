@@ -6,7 +6,7 @@ use super::{
         ActionRunState, ActionToolContext, PersistStateFn, ProgressEmitFn, append_unique_links,
         format_tool_status_label, push_timeline_step,
     },
-    tools_cli, tools_git_ops, tools_submit, tools_workspace,
+    tools_cli, tools_command, tools_git_ops, tools_submit, tools_workspace,
 };
 use crate::{
     actions::{
@@ -78,8 +78,9 @@ async fn dispatch_action_tool(
             tools_cli::handle_run_platform_cli(&ctx, &call_id, &args, status_label).await
         }
         "edit_repo_file" => tools_workspace::handle_edit_repo_file(&ctx, &call_id, &args).await,
+        "write_repo_file" => tools_workspace::handle_write_repo_file(&ctx, &call_id, &args).await,
         "run_repo_command" => {
-            tools_workspace::handle_run_repo_command(&ctx, &call_id, &args, status_label).await
+            tools_command::handle_run_repo_command(&ctx, &call_id, &args, status_label).await
         }
         "commit_exact_scope" => tools_git_ops::handle_commit_exact_scope(&ctx, &args).await,
         "sync_and_push" => tools_git_ops::handle_sync_and_push(&ctx, &args).await,
@@ -183,38 +184,81 @@ impl CustomActionCoordinator {
         let initially_trusted = request.action.skip_write_confirm == Some(true)
             && request.action.trusted_prompt_hash.as_deref() == Some(expected_hash.as_str());
 
-        let prior_session = session_store::find_latest_resumable_session(
-            storage_dir,
-            &request.target.repository_id,
-            &request.target.worktree_id,
-            Some(&request.action.id),
-        )
-        .or_else(|| {
-            session_store::find_latest_resumable_session(
-                storage_dir,
-                &request.target.repository_id,
-                &request.target.worktree_id,
-                None,
-            )
-        })
-        .filter(|prior| {
-            matches!(
-                prior.status.as_str(),
-                "interrupted" | "failed" | "cancelled"
-            ) || (prior.status == "done"
-                && (active_tree.files.is_empty()
-                    || prior
-                        .submit_ledger
-                        .groups
-                        .iter()
-                        .any(|g| g.worktree_path.is_some() && !g.worktree_removed)))
-        });
+        let follow_up_prompt = request
+            .follow_up_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let has_follow_up = follow_up_prompt.is_some();
+
+        let prior_session = request
+            .resume_from_run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|rid| {
+                session_store::find_session_by_run_id(
+                    storage_dir,
+                    &request.target.repository_id,
+                    &request.target.worktree_id,
+                    rid,
+                )
+            })
+            .or_else(|| {
+                session_store::find_latest_resumable_session(
+                    storage_dir,
+                    &request.target.repository_id,
+                    &request.target.worktree_id,
+                    Some(&request.action.id),
+                )
+                .or_else(|| {
+                    session_store::find_latest_resumable_session(
+                        storage_dir,
+                        &request.target.repository_id,
+                        &request.target.worktree_id,
+                        None,
+                    )
+                })
+                .filter(|prior| {
+                    has_follow_up
+                        || matches!(
+                            prior.status.as_str(),
+                            "interrupted" | "failed" | "cancelled"
+                        )
+                        || (prior.status == "done"
+                            && (active_tree.files.is_empty()
+                                || !prior.edited_file_hashes.is_empty()
+                                || prior
+                                    .submit_ledger
+                                    .groups
+                                    .iter()
+                                    .any(|g| g.worktree_path.is_some() && !g.worktree_removed)))
+                })
+            });
         let previous_checkpoint = prior_session
             .as_ref()
             .map(session_store::format_resume_checkpoint_for_prompt);
         let initial_ledger = prior_session
             .as_ref()
             .map(|s| s.submit_ledger.clone())
+            .unwrap_or_default();
+        let local_keep_paths_set: HashSet<String> = live_snapshot
+            .repository
+            .local_keep_paths
+            .iter()
+            .cloned()
+            .collect();
+        let initial_edited_hashes = prior_session
+            .as_ref()
+            .filter(|s| !s.edited_file_hashes.is_empty())
+            .map(|s| {
+                tools_workspace::hydrate_verified_edited_hashes(
+                    &worktree_root,
+                    &s.edited_file_hashes,
+                    &local_keep_paths_set,
+                )
+            })
             .unwrap_or_default();
 
         let run_state = Arc::new(Mutex::new(ActionRunState {
@@ -225,7 +269,7 @@ impl CustomActionCoordinator {
             commits: Vec::new(),
             links: Vec::new(),
             committed_file_ids: HashSet::new(),
-            action_edited_hashes: std::collections::HashMap::new(),
+            action_edited_hashes: initial_edited_hashes,
             committed_edited_paths: HashSet::new(),
             skip_write_confirm: initially_trusted,
             trusted_action_update: None,
@@ -262,6 +306,12 @@ impl CustomActionCoordinator {
                         timeline: st.timeline.clone(),
                         commits: st.commits.clone(),
                         links: st.links.clone(),
+                        edited_file_hashes: st
+                            .action_edited_hashes
+                            .iter()
+                            .filter(|(path, _)| !st.committed_edited_paths.contains(*path))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
                         submit_ledger: st.submit_ledger.clone(),
                     };
                     let _ = session_store::upsert_session(&storage_dir, record);
@@ -354,6 +404,7 @@ impl CustomActionCoordinator {
             action_label: action_label.clone(),
             action_prompt: action_prompt.clone(),
             extra_prompt: request.extra_prompt.clone(),
+            follow_up_prompt,
             selected_files,
             unselected_paths,
             local_keep_paths: live_snapshot.repository.local_keep_paths.clone(),
@@ -363,12 +414,6 @@ impl CustomActionCoordinator {
             previous_checkpoint,
         };
 
-        let local_keep_paths_set: HashSet<String> = live_snapshot
-            .repository
-            .local_keep_paths
-            .iter()
-            .cloned()
-            .collect();
         let tool_ctx = Arc::new(ActionToolContext {
             coordinator: self.clone(),
             store: store.clone(),

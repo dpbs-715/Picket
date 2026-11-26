@@ -168,6 +168,10 @@ pub struct StartCustomActionRequest {
     pub selections: Vec<CommitSelection>,
     #[serde(default)]
     pub extra_prompt: String,
+    #[serde(default)]
+    pub follow_up_prompt: Option<String>,
+    #[serde(default)]
+    pub resume_from_run_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]

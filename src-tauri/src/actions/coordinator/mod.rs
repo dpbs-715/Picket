@@ -8,6 +8,7 @@ mod context;
 mod generator;
 mod runner;
 mod tools_cli;
+mod tools_command;
 mod tools_git_ops;
 mod tools_submit;
 mod tools_workspace;

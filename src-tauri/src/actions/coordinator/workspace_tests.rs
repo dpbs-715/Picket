@@ -6,18 +6,27 @@
 use super::{
     CustomActionCoordinator, SessionAuthGrants,
     context::{ActionRunState, ActionToolContext},
+    tools_command::handle_run_repo_command,
     tools_git_ops::handle_commit_exact_scope,
-    tools_workspace::{handle_edit_repo_file, handle_run_repo_command},
+    tools_workspace::{
+        handle_edit_repo_file, handle_write_repo_file, hydrate_verified_edited_hashes, sha256_hex,
+    },
 };
 use crate::{
-    actions::types::*,
+    actions::{
+        session_store::{
+            PersistedActionSession, find_session_by_run_id, format_resume_checkpoint_for_prompt,
+            now_millis, upsert_session,
+        },
+        types::*,
+    },
     i18n::LanguageKind,
     repository::{RepositoryStore, types::ReadTarget},
     skills::RuntimeSkillSnapshot,
 };
 use serde_json::json;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     os::unix::fs::PermissionsExt,
     path::Path,
@@ -373,7 +382,7 @@ echo "versionVerified=true tag=$1"
         !bad_commit.ok
             && bad_commit
                 .content
-                .contains("was not modified by `edit_repo_file`")
+                .contains("was not created or modified by this action")
     );
 
     // 8. Tampering with an edited file externally causes SHA-256 verification to abort commit:
@@ -391,7 +400,12 @@ echo "versionVerified=true tag=$1"
         }),
     )
     .await;
-    assert!(!tampered_commit.ok && tampered_commit.content.contains("modified externally"));
+    assert!(
+        !tampered_commit.ok
+            && tampered_commit
+                .content
+                .contains("changed externally on disk")
+    );
     fs::write(root.join("package.json"), saved_pkg).unwrap();
 
     // 9. Exact-scope commit of ONLY the 4 action-edited version files succeeds, leaving draft.ts & local.txt untouched:
@@ -433,4 +447,256 @@ echo "versionVerified=true tag=$1"
         fs::read_to_string(root.join("local.txt")).unwrap(),
         "keep-me=2\n"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_repo_file_command_diff_tracking_and_persisted_hash_hydration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    let storage = temp.path().join("storage");
+    let mock_bin = temp.path().join("bin");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(&storage).unwrap();
+    fs::create_dir_all(&mock_bin).unwrap();
+
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.name", "Picket Test"]);
+    git(&root, &["config", "user.email", "test@picket.local"]);
+
+    fs::write(root.join("src/app.ts"), "export const formatted = false;\n").unwrap();
+    fs::write(root.join("draft.ts"), "export const draft = 1;\n").unwrap();
+    fs::write(root.join("local.txt"), "keep=1\n").unwrap();
+    git(&root, &["add", "src/app.ts", "draft.ts", "local.txt"]);
+    git(&root, &["commit", "-m", "chore: baseline"]);
+
+    // Pre-existing unselected user draft and Local Keep change:
+    fs::write(root.join("draft.ts"), "export const draft = 2;\n").unwrap();
+    fs::write(root.join("local.txt"), "keep=2\n").unwrap();
+
+    // Mock command simulating a formatter/generator that updates clean `src/app.ts`, creates
+    // `generated/info.txt`, and even happens to touch `draft.ts` and `local.txt` (both off-limits):
+    let fmt_cmd = mock_bin.join("auto-fmt");
+    fs::write(
+        &fmt_cmd,
+        r#"#!/bin/sh
+printf 'export const formatted = true;\n' > src/app.ts
+mkdir -p generated
+printf 'generated=ok\n' > generated/info.txt
+printf 'export const draft = 2; // formatted\n' > draft.ts
+printf 'keep=2-touched\n' > local.txt
+echo "formatted"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&fmt_cmd, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let store = RepositoryStore::default();
+    let snap = store.open(&root).await.unwrap();
+    let tree = &snap.worktrees[0];
+    let target = ReadTarget {
+        repository_id: tree.repository_id.clone(),
+        worktree_id: tree.worktree_id.clone(),
+        session_id: "ws-closure-session".into(),
+        scope_version: tree.status_version.clone(),
+    };
+    let coordinator = CustomActionCoordinator::default();
+    coordinator.set_override_cli_dirs(Some(vec![mock_bin.clone()]));
+
+    let run_state = Arc::new(Mutex::new(ActionRunState {
+        timeline: Vec::new(),
+        commits: Vec::new(),
+        links: Vec::new(),
+        committed_file_ids: HashSet::new(),
+        action_edited_hashes: HashMap::new(),
+        committed_edited_paths: HashSet::new(),
+        skip_write_confirm: false,
+        trusted_action_update: None,
+        wrote_repo: false,
+        submit_ledger: Default::default(),
+    }));
+    let local_keep = HashSet::from(["local.txt".to_owned()]);
+    let ctx = ActionToolContext {
+        coordinator: coordinator.clone(),
+        store: store.clone(),
+        emit: Arc::new(|_, _, _, _| {}),
+        persist: Arc::new(|_, _| {}),
+        run_state: Arc::clone(&run_state),
+        grants: Arc::new(Mutex::new(SessionAuthGrants::default())),
+        skills: Arc::new(RuntimeSkillSnapshot::load_from_data_dir(&storage)),
+        root: root.clone(),
+        storage_dir: storage.clone(),
+        bundled_node_path: mock_bin.join("picket-node"),
+        remotes: Vec::new(),
+        frozen_selections: Vec::new(),
+        live_changes: tree.files.clone(),
+        local_keep_paths: local_keep.clone(),
+        target: target.clone(),
+        run_id: "run-ws-closure".into(),
+        action_id: "act-fmt".into(),
+        action_label: "Format & Changelog".into(),
+        expected_hash: "prompt-hash-fmt".into(),
+        locale: LanguageKind::En,
+    };
+
+    // 1. write_repo_file rejects existing files, sensitive files, and Local Keep:
+    let existing_err = handle_write_repo_file(
+        &ctx,
+        "w-exist",
+        &json!({ "path": "src/app.ts", "content": "overwrite" }),
+    )
+    .await;
+    assert!(!existing_err.ok && existing_err.content.contains("already exists"));
+
+    let env_err = handle_write_repo_file(
+        &ctx,
+        "w-env",
+        &json!({ "path": ".env.local", "content": "SECRET=1\n" }),
+    )
+    .await;
+    assert!(!env_err.ok && env_err.content.contains("sensitive"));
+
+    let keep_err = handle_write_repo_file(
+        &ctx,
+        "w-keep",
+        &json!({ "path": "local.txt", "content": "x" }),
+    )
+    .await;
+    assert!(!keep_err.ok && keep_err.content.contains("Local Keep"));
+
+    // 2. write_repo_file honors Tier-2 decline and creates new file atomically on approval:
+    let decline_task = respond_tier2(
+        coordinator.clone(),
+        "run-ws-closure",
+        "confirm-w-decl",
+        false,
+        false,
+    );
+    let declined = handle_write_repo_file(
+        &ctx,
+        "w-decl",
+        &json!({ "path": "docs/CHANGELOG.md", "content": "# Changelog\n" }),
+    )
+    .await;
+    decline_task.await.unwrap();
+    assert!(!declined.ok);
+    assert!(!root.join("docs/CHANGELOG.md").exists());
+
+    let approve_task = respond_tier2(
+        coordinator.clone(),
+        "run-ws-closure",
+        "confirm-w-ok",
+        true,
+        true,
+    );
+    let created = handle_write_repo_file(
+        &ctx,
+        "w-ok",
+        &json!({ "path": "docs/CHANGELOG.md", "content": "# Changelog\n- Added release notes\n" }),
+    )
+    .await;
+    approve_task.await.unwrap();
+    assert!(created.ok, "write_repo_file failed: {}", created.content);
+    assert_eq!(
+        fs::read_to_string(root.join("docs/CHANGELOG.md")).unwrap(),
+        "# Changelog\n- Added release notes\n"
+    );
+
+    // 3. run_repo_command auto-tracks clean/new files (`src/app.ts`, `generated/info.txt`)
+    //    while EXCLUDING pre-existing unselected `draft.ts` and Local Keep `local.txt`:
+    let fmt_res = handle_run_repo_command(
+        &ctx,
+        "cmd-fmt",
+        &json!({ "command": "auto-fmt", "args": [] }),
+        "Running auto-fmt".into(),
+    )
+    .await;
+    assert!(fmt_res.ok, "auto-fmt failed: {}", fmt_res.content);
+    assert!(fmt_res.content.contains("modifiedPaths"));
+    assert!(fmt_res.content.contains("src/app.ts"));
+    assert!(fmt_res.content.contains("generated/info.txt"));
+    assert!(!fmt_res.content.contains("draft.ts"));
+    assert!(!fmt_res.content.contains("local.txt"));
+
+    // Attempting to commit draft.ts via editedPaths is still refused:
+    let draft_commit = handle_commit_exact_scope(
+        &ctx,
+        &json!({
+            "editedPaths": ["draft.ts"],
+            "message": "chore: sneak draft\n\n- blocked"
+        }),
+    )
+    .await;
+    assert!(!draft_commit.ok);
+
+    // Committing the 3 tracked paths succeeds cleanly without leaking draft.ts or local.txt:
+    let commit_res = handle_commit_exact_scope(
+        &ctx,
+        &json!({
+            "editedPaths": ["docs/CHANGELOG.md", "src/app.ts", "generated/info.txt"],
+            "message": "chore: format code and add changelog\n\n- format src/app.ts\n- add docs/CHANGELOG.md and generated/info.txt"
+        }),
+    )
+    .await;
+    assert!(commit_res.ok, "commit failed: {}", commit_res.content);
+    let committed_files = git(&root, &["show", "--name-only", "--format=", "HEAD"]);
+    let committed_set: HashSet<&str> = committed_files.lines().collect();
+    assert_eq!(
+        committed_set,
+        HashSet::from(["docs/CHANGELOG.md", "src/app.ts", "generated/info.txt"])
+    );
+
+    // 4. Persisted edited_file_hashes checkpoint lookup & verified hydration across follow-up runs:
+    let followup_note = handle_write_repo_file(
+        &ctx,
+        "w-note",
+        &json!({ "path": "notes/release.md", "content": "Draft release note\n" }),
+    )
+    .await;
+    assert!(followup_note.ok);
+    let note_hash = sha256_hex(b"Draft release note\n");
+
+    let mut persisted_hashes = BTreeMap::new();
+    persisted_hashes.insert("notes/release.md".to_owned(), note_hash.clone());
+    persisted_hashes.insert("src/app.ts".to_owned(), "0000000000000000".to_owned());
+    persisted_hashes.insert("local.txt".to_owned(), sha256_hex(b"keep=2-touched\n"));
+
+    upsert_session(
+        &storage,
+        PersistedActionSession {
+            run_id: "run-ws-closure".into(),
+            repository_id: target.repository_id.clone(),
+            worktree_id: target.worktree_id.clone(),
+            action_id: "act-fmt".into(),
+            action_label: "Format & Changelog".into(),
+            action_prompt_hash: "prompt-hash-fmt".into(),
+            status: "done".into(),
+            updated_at_ms: now_millis(),
+            summary: "Wrote draft release note.".into(),
+            dismissed_message_id: None,
+            timeline: vec![CustomActionTimelineItem {
+                state: "done".into(),
+                label: "Created notes/release.md".into(),
+            }],
+            commits: vec![],
+            links: vec![],
+            edited_file_hashes: persisted_hashes.clone(),
+            submit_ledger: Default::default(),
+        },
+    )
+    .unwrap();
+
+    let found = find_session_by_run_id(
+        &storage,
+        &target.repository_id,
+        &target.worktree_id,
+        "run-ws-closure",
+    )
+    .expect("session should be found by run_id");
+    let checkpoint_text = format_resume_checkpoint_for_prompt(&found);
+    assert!(checkpoint_text.contains("notes/release.md"));
+    assert!(checkpoint_text.contains("Created notes/release.md"));
+
+    let hydrated = hydrate_verified_edited_hashes(&root, &found.edited_file_hashes, &local_keep);
+    assert_eq!(hydrated.len(), 1);
+    assert_eq!(hydrated.get("notes/release.md"), Some(&note_hash));
 }

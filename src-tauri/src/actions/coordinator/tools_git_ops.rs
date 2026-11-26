@@ -92,7 +92,7 @@ pub(super) async fn handle_commit_exact_scope(
         }
         let Some(expected_hash) = action_edited_hashes.get(&clean) else {
             return PiToolExecutionResult::error(format!(
-                "File `{clean}` was not modified by `edit_repo_file` in this run; cannot widen past authorized scope."
+                "File `{clean}` was not created or modified by this action (`edit_repo_file`, `write_repo_file`, or `run_repo_command`); cannot widen past authorized scope."
             ));
         };
         let live_bytes = match fs::read(ctx.root.join(&clean)) {
@@ -105,7 +105,7 @@ pub(super) async fn handle_commit_exact_scope(
         };
         if &sha256_hex(&live_bytes) != expected_hash {
             return PiToolExecutionResult::error(format!(
-                "Edited file `{clean}` was modified externally after `edit_repo_file`; refusing to commit unverified changes."
+                "Action-modified file `{clean}` changed externally on disk; refusing to commit unverified changes."
             ));
         }
         validated_edited_paths.push(clean);
@@ -177,7 +177,7 @@ pub(super) async fn handle_commit_exact_scope(
             };
             if &sha256_hex(&live_bytes) != expected_hash {
                 return PiToolExecutionResult::error(format!(
-                    "Edited file `{path}` was modified externally after `edit_repo_file`; refusing to commit unverified changes."
+                    "Action-modified file `{path}` changed externally on disk; refusing to commit unverified changes."
                 ));
             }
             let Some(live_change) = live_tree_files

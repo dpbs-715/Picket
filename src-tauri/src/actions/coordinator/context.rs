@@ -30,6 +30,7 @@ pub(super) type PersistStateFn = Arc<dyn Fn(&str, String) + Send + Sync>;
 pub(super) enum Tier2ConfirmKind {
     Command,
     FileEdit,
+    FileCreate,
 }
 
 #[derive(Default)]
@@ -99,6 +100,25 @@ impl ActionToolContext {
     ) -> Result<(), PiToolExecutionResult> {
         self.confirm_tier2_operation(
             Tier2ConfirmKind::FileEdit,
+            call_id,
+            reason,
+            preview,
+            allow_dont_ask_again,
+            declined_error,
+        )
+        .await
+    }
+
+    pub(super) async fn confirm_tier2_create(
+        &self,
+        call_id: &str,
+        reason: &str,
+        preview: &str,
+        allow_dont_ask_again: bool,
+        declined_error: &'static str,
+    ) -> Result<(), PiToolExecutionResult> {
+        self.confirm_tier2_operation(
+            Tier2ConfirmKind::FileCreate,
             call_id,
             reason,
             preview,
@@ -206,6 +226,12 @@ fn build_tier2_confirm_questionnaire(
             i18n::actions::action_tier2_edit_approve_label(locale),
             i18n::actions::action_tier2_edit_approve_desc(locale),
         ),
+        Tier2ConfirmKind::FileCreate => (
+            i18n::actions::action_tier2_create_header(locale),
+            i18n::actions::action_tier2_create_question(locale, reason),
+            i18n::actions::action_tier2_create_approve_label(locale),
+            i18n::actions::action_tier2_create_approve_desc(locale),
+        ),
     };
     AskUserQuestionRequest {
         questions: vec![AskUserQuestionItem {
@@ -311,7 +337,7 @@ pub(super) fn format_tool_status_label(
             let detail = format!("{cli} {sub}");
             i18n::actions::action_tool_status_label(locale, tool_name, detail.trim())
         }
-        "read_repo_file" | "edit_repo_file" => {
+        "read_repo_file" | "edit_repo_file" | "write_repo_file" => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or("file");
             i18n::actions::action_tool_status_label(locale, tool_name, path)
         }

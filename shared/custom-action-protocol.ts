@@ -60,6 +60,8 @@ export interface StartCustomActionRequest {
   action: CustomActionConfig;
   selections: ModelFileSelection[];
   extraPrompt: string;
+  followUpPrompt?: string;
+  resumeFromRunId?: string;
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
 }

@@ -15,6 +15,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     io::Write,
     os::unix::fs::PermissionsExt,
@@ -203,6 +204,8 @@ pub struct PersistedActionSession {
     pub commits: Vec<CPushLandedCommit>,
     #[serde(default)]
     pub links: Vec<CustomActionLink>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edited_file_hashes: BTreeMap<String, String>,
     #[serde(default)]
     pub submit_ledger: SubmitSessionLedger,
 }
@@ -300,6 +303,17 @@ pub fn upsert_session(storage_dir: &Path, session: PersistedActionSession) -> Re
     save_all_sessions(storage_dir, all)
 }
 
+pub fn find_session_by_run_id(
+    storage_dir: &Path,
+    repository_id: &str,
+    worktree_id: &str,
+    run_id: &str,
+) -> Option<PersistedActionSession> {
+    load_all_sessions(storage_dir).into_iter().find(|s| {
+        s.repository_id == repository_id && s.worktree_id == worktree_id && s.run_id == run_id
+    })
+}
+
 pub fn find_latest_resumable_session(
     storage_dir: &Path,
     repository_id: &str,
@@ -319,6 +333,7 @@ pub fn find_latest_resumable_session(
 pub fn has_meaningful_checkpoint(session: &PersistedActionSession) -> bool {
     !session.links.is_empty()
         || !session.commits.is_empty()
+        || !session.edited_file_hashes.is_empty()
         || !session.submit_ledger.groups.is_empty()
         || session.submit_ledger.promotion.is_some()
         || session.submit_ledger.cleanup.is_some()
@@ -574,6 +589,18 @@ pub fn format_resume_checkpoint_for_prompt(session: &PersistedActionSession) -> 
                 "  - {} {} (branch={})",
                 c.short_oid, c.title, c.branch
             ));
+        }
+    }
+    if !session.edited_file_hashes.is_empty() {
+        lines.push("Action-modified files recorded in previous run (available for commit_exact_scope if unchanged on disk):".into());
+        for path in session.edited_file_hashes.keys() {
+            lines.push(format!("  - {path}"));
+        }
+    }
+    if !session.timeline.is_empty() {
+        lines.push("Recent execution steps:".into());
+        for step in session.timeline.iter().rev().take(8).rev() {
+            lines.push(format!("  - [{}] {}", step.state, step.label));
         }
     }
     lines.join("\n")

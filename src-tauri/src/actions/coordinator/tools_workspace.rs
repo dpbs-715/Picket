@@ -1,22 +1,24 @@
-//! Controlled repository file editing (`edit_repo_file`) and discrete-argv project command
-//! execution (`run_repo_command`) handlers for Custom Actions.
+//! Controlled repository file editing (`edit_repo_file`) and creation (`write_repo_file`)
+//! handlers for Custom Actions, plus verified hash hydration across resumed runs.
 
-use super::context::{ActionToolContext, append_unique_links, push_timeline_step};
+use super::context::{ActionToolContext, push_timeline_step};
 use crate::{
-    actions::{
-        executor::{exec_controlled_git, exec_controlled_repo_command},
-        policy::{CommandDecision, classify_repo_command},
-    },
+    actions::executor::exec_controlled_git,
     foundation::pi::PiToolExecutionResult,
     i18n,
     repository::{ai_context::is_sensitive_local_file, read_tools::validate_safe_repo_path},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    io::Write,
+    path::{Component, Path, PathBuf},
+};
 use tempfile::NamedTempFile;
 
-const MAX_EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+pub(super) const MAX_EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EDIT_TEXT_BYTES: usize = 256 * 1024;
 const MAX_PREVIEW_CHARS: usize = 1600;
 
@@ -345,91 +347,207 @@ pub(super) async fn handle_edit_repo_file(
     )
 }
 
-pub(super) async fn handle_run_repo_command(
+fn format_create_preview(path: &str, content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = format!("New file: {path} ({} lines)\n", lines.len());
+    for line in lines.iter().take(32) {
+        out.push_str("+ ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    if lines.len() > 32 {
+        out.push_str(&format!("+ … ({} more lines)\n", lines.len() - 32));
+    }
+    if out.chars().count() > MAX_PREVIEW_CHARS {
+        let head: String = out.chars().take(MAX_PREVIEW_CHARS).collect();
+        format!("{head}\n… (preview truncated)")
+    } else {
+        out.trim_end().to_owned()
+    }
+}
+
+fn resolve_creatable_worktree_file(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let canon_root = fs::canonicalize(root)
+        .map_err(|_| "Cannot verify active worktree root directory.".to_owned())?;
+    let rel = Path::new(path);
+    let mut components = rel.components().peekable();
+    let mut cursor = canon_root.clone();
+    while let Some(comp) = components.next() {
+        let Component::Normal(seg) = comp else {
+            return Err(format!("Invalid repository path: `{path}`"));
+        };
+        cursor.push(seg);
+        let is_last = components.peek().is_none();
+        if is_last {
+            if fs::symlink_metadata(&cursor).is_ok() {
+                return Err(format!(
+                    "File `{path}` already exists. Use `edit_repo_file` for targeted edits to existing files."
+                ));
+            }
+            break;
+        }
+        if let Ok(meta) = fs::symlink_metadata(&cursor) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Refused to create `{path}` through symlinked parent directory."
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(format!(
+                    "Cannot create `{path}` because a parent path component is not a directory."
+                ));
+            }
+            let canon_dir = fs::canonicalize(&cursor)
+                .map_err(|_| format!("Cannot verify parent directory for `{path}`"))?;
+            if !canon_dir.starts_with(&canon_root) {
+                return Err(format!("Path escapes active worktree boundary: `{path}`"));
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(canon_root.join(rel))
+}
+
+fn create_new_file_atomically(full: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = full
+        .parent()
+        .ok_or_else(|| "Missing parent directory for atomic file creation".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("Failed creating parent directories: {err}"))?;
+    let mut temp = NamedTempFile::new_in(parent)
+        .map_err(|err| format!("Cannot create temporary file for atomic write: {err}"))?;
+    temp.write_all(bytes)
+        .map_err(|err| format!("Failed writing new file content: {err}"))?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|err| format!("Failed syncing new file to disk: {err}"))?;
+    temp.persist_noclobber(full).map_err(|err| {
+        format!(
+            "Failed creating file atomically without overwriting existing file: {}",
+            err.error
+        )
+    })?;
+    Ok(())
+}
+
+pub(super) fn hydrate_verified_edited_hashes(
+    root: &Path,
+    persisted: &BTreeMap<String, String>,
+    local_keep_paths: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut verified = HashMap::new();
+    for (path, expected_hash) in persisted {
+        let Ok(clean) = validate_safe_repo_path(path) else {
+            continue;
+        };
+        if clean != *path || is_sensitive_local_file(&clean) || local_keep_paths.contains(&clean) {
+            continue;
+        }
+        let Ok(full) = resolve_editable_worktree_file(root, &clean) else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(&full) else {
+            continue;
+        };
+        if sha256_hex(&bytes) == *expected_hash {
+            verified.insert(clean, expected_hash.clone());
+        }
+    }
+    verified
+}
+
+pub(super) async fn handle_write_repo_file(
     ctx: &ActionToolContext,
     call_id: &str,
     args: &Value,
-    status_label: String,
 ) -> PiToolExecutionResult {
-    let command = args
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    let raw_args: Vec<String> = args
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let timeout_secs = args.get("timeoutSecs").and_then(Value::as_u64);
-
-    let decision = classify_repo_command(command, &raw_args);
-    match decision {
-        CommandDecision::DenyRedline { code, reason } => {
-            return PiToolExecutionResult::error(format!(
-                "Blocked by Picket hard redline ({code}): {reason}"
-            ));
-        }
-        CommandDecision::AllowTier0 | CommandDecision::AllowTier1 => {}
-        CommandDecision::RequireConfirmTier2 {
-            reason,
-            preview,
-            allow_dont_ask_again,
-        } => {
-            if let Err(err_result) = ctx
-                .confirm_tier2_write(
-                    call_id,
-                    &reason,
-                    &preview,
-                    allow_dont_ask_again,
-                    "User declined to run the repository command.",
-                )
-                .await
-            {
-                return err_result;
-            }
-        }
+    let raw_path = args.get("path").and_then(Value::as_str).unwrap_or("");
+    let path = match validate_safe_repo_path(raw_path) {
+        Ok(clean) => clean,
+        Err(err) => return PiToolExecutionResult::error(err),
+    };
+    if is_sensitive_local_file(&path) {
+        return PiToolExecutionResult::error(format!(
+            "Refused to create sensitive local credential/environment file: `{path}`"
+        ));
+    }
+    if ctx.local_keep_paths.contains(&path) {
+        return PiToolExecutionResult::error(format!(
+            "Refused to create `{path}` because it is in Local Keep."
+        ));
     }
 
-    let override_dirs = ctx.coordinator.override_cli_dirs();
-    match exec_controlled_repo_command(
-        &ctx.root,
-        command,
-        &raw_args,
-        Some(&ctx.bundled_node_path),
-        override_dirs.as_deref(),
-        timeout_secs,
-    )
-    .await
+    let Some(content) = args.get("content").and_then(Value::as_str) else {
+        return PiToolExecutionResult::error(
+            "Missing required `content` string for `write_repo_file`.",
+        );
+    };
+    if content.contains('\0') {
+        return PiToolExecutionResult::error("`content` cannot contain NUL bytes.");
+    }
+    if content.len() > MAX_EDIT_TEXT_BYTES {
+        return PiToolExecutionResult::error(
+            "New file content exceeds the 256 KB per-file creation limit.",
+        );
+    }
+
+    if let Err(err) = resolve_creatable_worktree_file(&ctx.root, &path) {
+        return PiToolExecutionResult::error(err);
+    }
+
+    let preview = format_create_preview(&path, content);
+    let reason = format!("Creating new repository file `{path}`.");
+    if let Err(err_result) = ctx
+        .confirm_tier2_create(
+            call_id,
+            &reason,
+            &preview,
+            true,
+            "User declined to create the repository file.",
+        )
+        .await
     {
-        Ok(out) => {
-            let has_links = !out.extracted_links.is_empty();
-            if let Ok(mut st) = ctx.run_state.lock() {
-                append_unique_links(&mut st.links, out.extracted_links.clone());
-                push_timeline_step(
-                    &mut st.timeline,
-                    if out.success { "done" } else { "failed" },
-                    status_label,
-                );
-            }
-            if out.success && has_links {
-                (ctx.persist)("running", String::new());
-            }
-            let body = format!(
-                "exitCode: {:?}\nstdout:\n{}\nstderr:\n{}",
-                out.exit_code, out.stdout, out.stderr
-            );
-            if out.success {
-                PiToolExecutionResult::success(body)
-            } else {
-                PiToolExecutionResult::error(body)
-            }
-        }
-        Err(err) => PiToolExecutionResult::error(err),
+        return err_result;
     }
+
+    // TOCTOU re-check after confirmation.
+    let full = match resolve_creatable_worktree_file(&ctx.root, &path) {
+        Ok(f) => f,
+        Err(err) => return PiToolExecutionResult::error(err),
+    };
+
+    let bytes = content.as_bytes();
+    if let Err(err) = create_new_file_atomically(&full, bytes) {
+        return PiToolExecutionResult::error(err);
+    }
+    let written_hash = sha256_hex(bytes);
+
+    if let Ok(mut st) = ctx.run_state.lock() {
+        st.wrote_repo = true;
+        st.action_edited_hashes.insert(path.clone(), written_hash);
+        st.committed_edited_paths.remove(&path);
+        push_timeline_step(
+            &mut st.timeline,
+            "done",
+            i18n::actions::action_created_file_label(ctx.locale, &path),
+        );
+    }
+
+    let refreshed_snapshot = ctx
+        .store
+        .refresh_with_locale(&ctx.target, ctx.locale)
+        .await
+        .ok();
+    (ctx.emit)("running", None, None, refreshed_snapshot);
+    (ctx.persist)("running", String::new());
+
+    PiToolExecutionResult::success(
+        json!({
+            "created": true,
+            "path": path,
+            "preview": preview,
+        })
+        .to_string(),
+    )
 }
