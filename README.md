@@ -50,9 +50,15 @@ It pauses to ask only when a real decision is needed, leaving unselected files, 
 - **Local Keep**: Drag files (or right-click single or multi-selected rows) into the bottom **Local Keep** group to keep local-only edits out of **Select All**, **C-Push**, **Preview Plan**, and **Code Review** across every worktree of that repository — without touching `.gitignore`, `.git/info/exclude`, `skip-worktree`, or `assume-unchanged`.
 
 ### On-Demand Code Review
-- **Review selected changes before pushing**: Run structured AI code review against the exact selected scope, optionally carrying your `+ Prompt` context.
+- **Review selected changes before pushing**: Run structured AI code review (powered by the `dcr` skill with read-only repo context lookup) against the exact selected scope, optionally carrying your `+ Prompt` context.
 - **Actionable findings**: Issues are categorized as **High** or **Suggestion** with one-click navigation straight to the file and line number in your IDE.
 - **Honest coverage & incremental re-review**: Lockfiles, binaries, and oversized diffs are explicitly reported as skipped rather than silently marked clean. When reviewed files change, click **Re-review Changed Files** to refresh only what changed.
+
+### Custom Repository Actions & Hot-Synced Git Skills
+- **Main action switcher (Full & Compact)**: Keep `C-Push` as the default primary button, or switch via the Split Button menu (and Compact Mode drawer) to per-repository custom actions — such as multi-stage `submit` flows, PR reviews, or release tagging — usable even on a clean working tree.
+- **Create with Picket & sync across repos**: Define actions manually or chat with Picket in natural language to inspect branches, tags, and remotes and draft a ready-to-save action. Copy any action to all registered repositories as independent editable copies in one click.
+- **Controlled `gh` / `glab` & isolated `submit` recovery**: Reuse your existing local `gh` / `glab` authentication without extra tokens, enforce hard safety redlines and Tier-2 command previews (with prompt-hash-bound "Don't ask again"), isolate `submit` commits in managed worktrees with verified backup cleanup, and restore interrupted sessions across cold restarts.
+- **Built-in & hot-synced skills (`Settings → Skills`)**: Eight Git collaboration skills (`commit`, `push`, `cpush`, `dcr`, `create-issues`, `create-pr`, `review-pr`, `submit`) ship bundled offline. Sync updates or custom `SKILL.md` repositories on demand via controlled shallow `/usr/bin/git` clones into `~/.picket/skills/`, toggle individual skills on or off, or restore the built-in snapshot in one click without disrupting running tasks.
 
 ### Branches, Worktrees, Sync & Controlled Recovery
 - **IDEA-style branch menu**: Switch local branches, check out remote tracking branches, or jump directly to linked worktrees from one compact menu. `main` and `master` carry a lightweight **Protected** badge while allowing direct pushes; detached `HEAD` prompts you to switch to a local branch first.
