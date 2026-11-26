@@ -75,6 +75,30 @@ function verifyAppDataSecurity(appDataDir) {
     }
   }
 
+  const actionSessionsFile = join(appDataDir, 'action-sessions.json');
+  if (existsSync(actionSessionsFile)) {
+    const mode = statSync(actionSessionsFile).mode & 0o777;
+    if (mode !== 0o600) throw new Error(`Persisted file action-sessions.json does not have strict 0600 mode (got ${mode.toString(8)})`);
+    const raw = readFileSync(actionSessionsFile, 'utf8');
+    for (const forbidden of ['apiKey', 'smoke-token-', 'commitToken', 'branchToken', 'ghp_', 'glpat-']) {
+      if (raw.includes(forbidden)) {
+        throw new Error(`Persisted file action-sessions.json leaked sensitive token/secret marker: ${forbidden}`);
+      }
+    }
+  }
+
+  const skillsManifestFile = join(appDataDir, 'skills', 'skills-manifest.json');
+  if (existsSync(skillsManifestFile)) {
+    const mode = statSync(skillsManifestFile).mode & 0o777;
+    if (mode !== 0o600) throw new Error(`Persisted file skills/skills-manifest.json does not have strict 0600 mode (got ${mode.toString(8)})`);
+    const raw = readFileSync(skillsManifestFile, 'utf8');
+    for (const forbidden of ['apiKey', 'smoke-token-', 'commitToken', 'branchToken', 'ghp_', 'glpat-']) {
+      if (raw.includes(forbidden)) {
+        throw new Error(`Persisted file skills/skills-manifest.json leaked sensitive token/secret marker: ${forbidden}`);
+      }
+    }
+  }
+
   const credentialsFile = join(appDataDir, 'credentials.json');
   if (!existsSync(credentialsFile)) throw new Error('Expected persisted credentials.json missing after UI smoke');
   const credMode = statSync(credentialsFile).mode & 0o777;

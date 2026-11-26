@@ -1,4 +1,8 @@
 import type { RefObject } from 'react';
+import {
+  isCustomActionWriteTrusted,
+  type CustomActionConfig,
+} from '../../../../shared/custom-action-protocol';
 import { useI18n } from '../../../i18n';
 import { Icon, IconButton } from '../../../ui/controls';
 import { splitPath } from '../state/workbench';
@@ -8,6 +12,7 @@ interface Props {
   files: Change[];
   plan?: EditableCommitPlan;
   planOutdated: boolean;
+  activeAction?: CustomActionConfig;
   hasWorktree?: boolean;
   hasModel: boolean;
   canPlan: boolean;
@@ -18,12 +23,57 @@ interface Props {
   onEditPlanGroup(groupId: string, message: string): void;
   onClearPlan(): void;
   onConfigureModel(): void;
+  onEditAction?(action: CustomActionConfig): void;
+  onSwitchBackCPush?(): void;
 }
 
 export function CommitPanel(props: Props) {
   const { t } = useI18n();
   const emphasizePrimary = props.hasWorktree ?? true;
   const fileById = new Map(props.files.map((file) => [file.id, file]));
+
+  if (props.activeAction) {
+    const activeAction = props.activeAction;
+    const trusted = isCustomActionWriteTrusted(activeAction);
+    return (
+      <div className="commit-plan-panel" ref={props.panelRef}>
+        <div className="plan-region">
+          <div className="custom-action-preview-card">
+            <div className="custom-action-preview-head">
+              <div className="row min-width-zero">
+                <Icon name="sparkles" className="accent" />
+                <strong className="truncate">{activeAction.label}</strong>
+                <span className="branch-tag">{t.actions.customActionBadge}</span>
+                {trusted && <span className="branch-tag">{t.actions.autoApproveBadge}</span>}
+              </div>
+              <div className="row">
+                {props.onEditAction && (
+                  <button
+                    type="button"
+                    className="secondary compact"
+                    onClick={() => props.onEditAction!(activeAction)}
+                  >
+                    <Icon name="pencil" />
+                    {t.actions.previewEditAction}
+                  </button>
+                )}
+                {props.onSwitchBackCPush && (
+                  <button
+                    type="button"
+                    className="secondary compact"
+                    onClick={props.onSwitchBackCPush}
+                  >
+                    {t.actions.switchBackCPush}
+                  </button>
+                )}
+              </div>
+            </div>
+            <pre className="custom-action-prompt-preview mono scroll-area">{activeAction.prompt}</pre>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return <div className="commit-plan-panel" ref={props.panelRef}>
     <div className="plan-region">

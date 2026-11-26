@@ -1,19 +1,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod actions;
 mod cpush;
 mod foundation;
 mod i18n;
 mod models;
 mod repository;
+mod skills;
 mod startup_splash;
 mod tray;
 mod updater;
 mod window_motion;
 
+use actions::{
+    CustomActionCoordinator,
+    types::{
+        CustomActionCommandReply, CustomActionProgressEvent, DismissCustomActionDoneRequest,
+        GenerateCustomActionProgressEvent, GenerateCustomActionReply, GenerateCustomActionRequest,
+        RespondCustomActionRequest, StartCustomActionRequest,
+    },
+};
 use cpush::{
     CPushCoordinator,
     types::{
-        CPushCommandReply, CPushProgressEvent, PlanCPushRequest, PullRebaseRequest,
-        ReconcileCPushRequest, RespondCPushRequest, StartCPushRequest,
+        CPushCommandReply, CPushProgressEvent, DismissCPushDoneRequest, PlanCPushRequest,
+        PullRebaseRequest, ReconcileCPushRequest, RespondCPushRequest, StartCPushRequest,
     },
 };
 use foundation::lifecycle::{DesktopLifecycle, exit_after_cleanup};
@@ -23,10 +33,10 @@ use models::{
     smoke::ModelSmokeState,
     store::ModelStore,
     types::{
-        ConnectionIdRequest, CreateProviderConnectionInput, ModelIdRequest, ModelMutateReply,
-        ModelSaveReply, ModelStreamEvent, ModelTestReply, ProviderRevealKeyReply,
-        ProviderSaveReply, ProviderUpdateReply, ReviewScopeReply, ReviewScopeRequest,
-        SaveModelInput, TestConnectionInput, UpdateProviderConnectionInput,
+        ConnectionIdRequest, CreateProviderConnectionInput, ListModelsInput, ModelIdRequest,
+        ModelListReply, ModelMutateReply, ModelSaveReply, ModelStreamEvent, ModelTestReply,
+        ProviderRevealKeyReply, ProviderSaveReply, ProviderUpdateReply, ReviewScopeReply,
+        ReviewScopeRequest, SaveModelInput, TestConnectionInput, UpdateProviderConnectionInput,
     },
 };
 use repository::{
@@ -37,6 +47,13 @@ use repository::{
         BranchReply, BranchRequest, EditorKind, LocalKeepReply, LocalKeepRequest, OpenFileReply,
         OpenFileRequest, OpenRequest, ReadReply, RefreshRequest, WorkbenchRestoreReply,
         WorkbenchSaveRequest,
+    },
+};
+use skills::{
+    SkillManager,
+    sync::{
+        GetSkillsStateRequest, ResetSkillsRequest, SkillsStateSnapshot, SyncSkillsRequest,
+        UpdateEnabledSkillsRequest,
     },
 };
 use tauri::{Manager, State, ipc::Channel};
@@ -277,6 +294,7 @@ async fn load_workbench_state(
     persistence: State<'_, WorkbenchPersistence>,
     models: State<'_, ModelStore>,
     cpush: State<'_, CPushCoordinator>,
+    actions: State<'_, CustomActionCoordinator>,
 ) -> Result<WorkbenchRestoreReply, String> {
     let data_dir = picket_data_dir()?;
     let lifecycle = app.state::<DesktopLifecycle>();
@@ -329,6 +347,7 @@ async fn load_workbench_state(
             None => c_warn,
         });
     }
+    restored.action_sessions = Some(actions.restore_sessions(&data_dir, restored.locale));
     Ok(restored)
 }
 
@@ -343,6 +362,20 @@ async fn test_model_connection(
     let paths = runtime_paths(&app)?;
     models
         .test_connection_with_storage(&data_dir, &paths, &supervisor, &input)
+        .await
+}
+
+#[tauri::command]
+async fn list_provider_models(
+    app: tauri::AppHandle,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    input: ListModelsInput,
+) -> Result<ModelListReply, String> {
+    let data_dir = picket_data_dir()?;
+    let paths = runtime_paths(&app)?;
+    models
+        .list_provider_models(&data_dir, &paths, &supervisor, &input)
         .await
 }
 
@@ -473,15 +506,20 @@ async fn plan_cpush(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn start_cpush(
     app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     models: State<'_, ModelStore>,
     supervisor: State<'_, PiSupervisor>,
     cpush: State<'_, CPushCoordinator>,
+    actions: State<'_, CustomActionCoordinator>,
     request: StartCPushRequest,
     on_event: Channel<CPushProgressEvent>,
 ) -> Result<CPushCommandReply, String> {
+    if actions.has_active_operation_for_repo(&request.target.repository_id) {
+        return Err(i18n::action_cpush_busy_error(request.locale).into());
+    }
     let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
     cpush
@@ -532,9 +570,15 @@ async fn respond_cpush(
 async fn pull_rebase_repository(
     store: State<'_, RepositoryStore>,
     cpush: State<'_, CPushCoordinator>,
+    actions: State<'_, CustomActionCoordinator>,
     request: PullRebaseRequest,
     on_event: Channel<CPushProgressEvent>,
 ) -> Result<CPushCommandReply, String> {
+    if actions.has_active_operation_for_repo(&request.target.repository_id) {
+        return Err(
+            i18n::action_pull_busy_error(request.locale.unwrap_or(i18n::LanguageKind::En)).into(),
+        );
+    }
     let data_dir = picket_data_dir()?;
     cpush
         .pull_rebase(&data_dir, &store, &request, |event| {
@@ -552,6 +596,135 @@ async fn reconcile_cpush_session(
 ) -> Result<Option<CPushProgressEvent>, String> {
     let data_dir = picket_data_dir()?;
     cpush.reconcile_worktree(&data_dir, &store, &request).await
+}
+
+#[tauri::command]
+async fn dismiss_cpush_done(
+    cpush: State<'_, CPushCoordinator>,
+    request: DismissCPushDoneRequest,
+) -> Result<bool, String> {
+    let data_dir = picket_data_dir()?;
+    cpush.dismiss_done_notice(&data_dir, &request).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn start_custom_action(
+    app: tauri::AppHandle,
+    store: State<'_, RepositoryStore>,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    cpush: State<'_, CPushCoordinator>,
+    actions: State<'_, CustomActionCoordinator>,
+    request: StartCustomActionRequest,
+    on_event: Channel<CustomActionProgressEvent>,
+) -> Result<CustomActionCommandReply, String> {
+    let data_dir = picket_data_dir()?;
+    let paths = runtime_paths(&app)?;
+    actions
+        .start_custom_action(
+            &data_dir,
+            &paths,
+            &supervisor,
+            &models,
+            &store,
+            &cpush,
+            &request,
+            move |event| {
+                let _ = on_event.send(event);
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+fn respond_custom_action(
+    actions: State<'_, CustomActionCoordinator>,
+    request: RespondCustomActionRequest,
+) -> Result<bool, String> {
+    actions.respond_question(&request)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn generate_custom_action(
+    app: tauri::AppHandle,
+    store: State<'_, RepositoryStore>,
+    models: State<'_, ModelStore>,
+    supervisor: State<'_, PiSupervisor>,
+    actions: State<'_, CustomActionCoordinator>,
+    request: GenerateCustomActionRequest,
+    on_event: Channel<GenerateCustomActionProgressEvent>,
+) -> Result<GenerateCustomActionReply, String> {
+    let data_dir = picket_data_dir()?;
+    let paths = runtime_paths(&app)?;
+    actions
+        .generate_custom_action(
+            &data_dir,
+            &paths,
+            &supervisor,
+            &models,
+            &store,
+            &request,
+            move |event| {
+                let _ = on_event.send(event);
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+fn cancel_custom_action(
+    supervisor: State<'_, PiSupervisor>,
+    request_id: String,
+) -> Result<(), String> {
+    supervisor.cancel(&request_id)
+}
+
+#[tauri::command]
+fn dismiss_custom_action_done(
+    actions: State<'_, CustomActionCoordinator>,
+    request: DismissCustomActionDoneRequest,
+) -> Result<bool, String> {
+    let data_dir = picket_data_dir()?;
+    actions.dismiss_done_notice(&data_dir, &request)
+}
+
+#[tauri::command]
+async fn get_skills_state(
+    skills: State<'_, SkillManager>,
+    request: Option<GetSkillsStateRequest>,
+) -> Result<SkillsStateSnapshot, String> {
+    let _ = request;
+    let data_dir = picket_data_dir()?;
+    Ok(skills.get_state(&data_dir).await)
+}
+
+#[tauri::command]
+async fn sync_skills(
+    skills: State<'_, SkillManager>,
+    request: SyncSkillsRequest,
+) -> Result<SkillsStateSnapshot, String> {
+    let data_dir = picket_data_dir()?;
+    skills.sync_skills(&data_dir, &request).await
+}
+
+#[tauri::command]
+async fn set_enabled_skills(
+    skills: State<'_, SkillManager>,
+    request: UpdateEnabledSkillsRequest,
+) -> Result<SkillsStateSnapshot, String> {
+    let data_dir = picket_data_dir()?;
+    skills.set_enabled_skills(&data_dir, &request).await
+}
+
+#[tauri::command]
+async fn reset_skills_to_bundled(
+    skills: State<'_, SkillManager>,
+    request: ResetSkillsRequest,
+) -> Result<SkillsStateSnapshot, String> {
+    let data_dir = picket_data_dir()?;
+    skills.reset_to_bundled(&data_dir, &request).await
 }
 
 #[tauri::command]
@@ -657,7 +830,8 @@ async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Result<
             && req.body.contains("User review instructions / context")
             && req.body.contains("+first=2")
             && !req.body.contains("+second=3")
-            && !req.body.contains("pnpm-lock.yaml")
+            && !req.body.contains("lock: updated")
+            && !req.body.contains("### File: pnpm-lock.yaml")
     });
     if !saw_conn || plan_count != 1 || !saw_review {
         return Err("Model smoke server did not observe connection test, single scoped preview plan (without re-planning on confirmed C-Push), and lockfile-filtered review requests".into());
@@ -969,6 +1143,7 @@ async fn install_update(
     updater: State<'_, UpdateManager>,
     repositories: State<'_, RepositoryStore>,
     cpush: State<'_, CPushCoordinator>,
+    actions: State<'_, CustomActionCoordinator>,
     request: InstallUpdateRequest,
 ) -> Result<UpdateStateSnapshot, String> {
     updater
@@ -978,6 +1153,7 @@ async fn install_update(
             request.locale,
             &repositories,
             &cpush,
+            &actions,
         )
         .await
 }
@@ -1054,6 +1230,8 @@ fn main() {
         .manage(repository::smoke::SmokeState::default())
         .manage(PiSupervisor::default())
         .manage(CPushCoordinator::default())
+        .manage(CustomActionCoordinator::default())
+        .manage(SkillManager::default())
         .manage(UpdateManager::default())
         .manage(startup_splash::StartupSplashCoordinator::default())
         .manage(tray::TrayCoordinator::default())
@@ -1105,6 +1283,7 @@ fn main() {
             load_workbench_state,
             save_workbench_state,
             test_model_connection,
+            list_provider_models,
             create_provider_connection,
             update_provider_connection,
             delete_provider_connection,
@@ -1119,6 +1298,16 @@ fn main() {
             respond_cpush,
             pull_rebase_repository,
             reconcile_cpush_session,
+            dismiss_cpush_done,
+            start_custom_action,
+            respond_custom_action,
+            generate_custom_action,
+            cancel_custom_action,
+            dismiss_custom_action_done,
+            get_skills_state,
+            sync_skills,
+            set_enabled_skills,
+            reset_skills_to_bundled,
             start_model_smoke_server,
             set_smoke_local_auth,
             verify_model_m3_smoke,

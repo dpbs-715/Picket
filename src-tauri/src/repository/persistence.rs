@@ -18,6 +18,74 @@ const MIN_FULL_WINDOW_WIDTH: u32 = 400;
 const MIN_FULL_WINDOW_HEIGHT: u32 = 480;
 const MAX_STORED_WINDOW_DIMENSION: u32 = 16_384;
 const MAX_STORED_WINDOW_COORD_ABS: i32 = 65_536;
+const MAX_CUSTOM_ACTIONS_PER_REPO: usize = 30;
+const MAX_CUSTOM_ACTION_ID_CHARS: usize = 64;
+const MAX_CUSTOM_ACTION_LABEL_CHARS: usize = 48;
+const MAX_CUSTOM_ACTION_PROMPT_CHARS: usize = 4_000;
+
+pub(crate) fn compute_custom_action_prompt_hash(prompt: &str) -> String {
+    let normalized = prompt.replace("\r\n", "\n");
+    hash(normalized.trim().as_bytes())
+}
+
+fn sanitize_custom_action(raw: PersistedCustomAction) -> Option<PersistedCustomAction> {
+    let id = raw.id.trim().to_owned();
+    let label = raw.label.trim().to_owned();
+    let prompt = raw.prompt.replace("\r\n", "\n").trim().to_owned();
+    if id.is_empty()
+        || id.chars().count() > MAX_CUSTOM_ACTION_ID_CHARS
+        || label.is_empty()
+        || label.chars().count() > MAX_CUSTOM_ACTION_LABEL_CHARS
+        || prompt.is_empty()
+        || prompt.chars().count() > MAX_CUSTOM_ACTION_PROMPT_CHARS
+    {
+        return None;
+    }
+    let template_key = raw
+        .template_key
+        .map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty() && key.chars().count() <= MAX_CUSTOM_ACTION_ID_CHARS);
+    let expected_hash = compute_custom_action_prompt_hash(&prompt);
+    let trusted = raw.skip_write_confirm == Some(true)
+        && raw.trusted_prompt_hash.as_deref() == Some(expected_hash.as_str());
+    Some(PersistedCustomAction {
+        id,
+        template_key,
+        label,
+        prompt,
+        skip_write_confirm: trusted.then_some(true),
+        trusted_prompt_hash: trusted.then_some(expected_hash),
+    })
+}
+
+fn validate_custom_actions(actions: &[PersistedCustomAction]) -> bool {
+    if actions.len() > MAX_CUSTOM_ACTIONS_PER_REPO {
+        return false;
+    }
+    let mut seen_ids = HashSet::with_capacity(actions.len());
+    for action in actions {
+        let id = action.id.trim();
+        let label = action.label.trim();
+        let prompt = action.prompt.replace("\r\n", "\n");
+        let prompt_trimmed = prompt.trim();
+        if id.is_empty()
+            || id.chars().count() > MAX_CUSTOM_ACTION_ID_CHARS
+            || !seen_ids.insert(id.to_owned())
+            || label.is_empty()
+            || label.chars().count() > MAX_CUSTOM_ACTION_LABEL_CHARS
+            || prompt_trimmed.is_empty()
+            || prompt_trimmed.chars().count() > MAX_CUSTOM_ACTION_PROMPT_CHARS
+        {
+            return false;
+        }
+        if let Some(ref key) = action.template_key
+            && key.trim().chars().count() > MAX_CUSTOM_ACTION_ID_CHARS
+        {
+            return false;
+        }
+    }
+    true
+}
 
 fn is_valid_window_preferences(prefs: &PersistedWindowPreferences) -> bool {
     if let Some(size) = prefs.full_size
@@ -138,6 +206,7 @@ fn empty_restore_reply(warning: Option<String>) -> WorkbenchRestoreReply {
         models: None,
         active_model_id: None,
         c_push_sessions: None,
+        action_sessions: None,
         warning,
     }
 }
@@ -206,6 +275,18 @@ fn sanitize_repository_settings(
         .filter(|entry| !entry.repository_id.is_empty() && seen.insert(entry.repository_id.clone()))
         .map(|mut entry| {
             entry.local_keep_paths.clear();
+            let mut seen_actions = HashSet::new();
+            entry.custom_actions = entry
+                .custom_actions
+                .into_iter()
+                .filter_map(sanitize_custom_action)
+                .filter(|action| seen_actions.insert(action.id.clone()))
+                .take(MAX_CUSTOM_ACTIONS_PER_REPO)
+                .collect();
+            entry.active_action_id = entry
+                .active_action_id
+                .map(|id| id.trim().to_owned())
+                .filter(|id| !id.is_empty() && entry.custom_actions.iter().any(|a| a.id == *id));
             entry
         })
         .collect()
@@ -353,6 +434,7 @@ impl WorkbenchPersistence {
             models: None,
             active_model_id: None,
             c_push_sessions: None,
+            action_sessions: None,
             warning,
         })
     }
@@ -385,6 +467,7 @@ impl WorkbenchPersistence {
                     .local_keep_paths
                     .iter()
                     .all(|path| is_valid_local_keep_path(path))
+                || !validate_custom_actions(&setting.custom_actions)
                 || !seen_repo_settings.insert(setting.repository_id.as_str())
             {
                 return Err(i18n::persistence_invalid_repo_settings_entry(locale).into());

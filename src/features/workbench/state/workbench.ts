@@ -1,4 +1,5 @@
 import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
+import type { AskUserQuestionRequest } from '../../../../shared/ask-user-protocol';
 import type {
   CPushCommandReply,
   CPushLandedCommit,
@@ -8,6 +9,17 @@ import type {
   CPushQaItem,
   CPushTimelineItem,
 } from '../../../../shared/cpush-protocol';
+import {
+  CUSTOM_ACTION_LIMITS,
+  computeCustomActionPromptHash,
+  sanitizeCustomActionConfig,
+  type CustomActionCommandReply,
+  type CustomActionConfig,
+  type CustomActionLink,
+  type CustomActionProgressEvent,
+  type CustomActionSyncResult,
+  type CustomActionTimelineItem,
+} from '../../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitLocalKeepReply, GitReadReply, GitReadTarget, GitRemoteBranch } from '../../../../shared/git-read-protocol';
 import { DEFAULT_APP_LOCALE, DEFAULT_COMMIT_LANGUAGE, type AppLocale, type CommitLanguage } from '../../../../shared/language-protocol';
@@ -20,8 +32,10 @@ import {
 } from '../../../../shared/workbench-persistence-protocol';
 import { getMessages } from '../../../i18n/messages';
 import {
+  applyCustomActionProgress,
   applyLocalKeepUpdate,
   finishCPushCommand,
+  finishCustomActionCommand,
   finishRepositoryBranch,
   finishRepositoryLocalKeep,
   finishRepositoryRead,
@@ -64,7 +78,9 @@ export interface Message {
   scope?: string;
   files?: { id: string; label: string; badge?: string }[];
   commits?: { hash: string; title: string }[];
-  options?: { id: string; label: string; recommended?: boolean }[];
+  links?: { label: string; url: string }[];
+  options?: { id: string; label: string; description?: string; recommended?: boolean; preview?: string }[];
+  questionnaire?: AskUserQuestionRequest;
   progress?: { completed: number; total: number; label: string };
 }
 
@@ -88,6 +104,16 @@ export interface ActiveCPushState {
   commits: CPushLandedCommit[];
   canRetryRemaining: boolean;
   planOnly?: boolean;
+}
+
+export interface ActiveCustomActionState {
+  runId: string;
+  actionId: string;
+  actionLabel: string;
+  pendingCallId?: string;
+  timeline: CustomActionTimelineItem[];
+  commits: CPushLandedCommit[];
+  links: CustomActionLink[];
 }
 
 export interface Worktree extends Target {
@@ -118,6 +144,7 @@ export interface Worktree extends Target {
   sessionStatus: 'idle' | 'running' | 'needsDecision' | 'conflict' | 'waitingManual' | 'pushFailed' | 'done';
   messages: Message[];
   cPush?: ActiveCPushState;
+  customAction?: ActiveCustomActionState;
   tab: 'commit' | 'review';
   dockExpanded: boolean;
   replies: Record<string, string>;
@@ -140,6 +167,8 @@ export interface RepositorySettings {
   editor: EditorId;
   commitLanguage: CommitLanguage;
   localKeepPaths?: string[];
+  customActions?: CustomActionConfig[];
+  activeActionId?: string | null;
 }
 
 export interface WorkbenchState {
@@ -287,6 +316,101 @@ export function localKeepPathsFor(state: WorkbenchState, repositoryId?: string |
   const fromSettings = state.repositorySettings[repositoryId]?.localKeepPaths;
   if (fromSettings) return fromSettings;
   return state.repositories.find((repository) => repository.id === repositoryId)?.localKeepPaths ?? [];
+}
+
+export function customActionsFor(state: WorkbenchState, repositoryId?: string | null): CustomActionConfig[] {
+  if (!repositoryId) return [];
+  return state.repositorySettings[repositoryId]?.customActions ?? [];
+}
+
+export function activeCustomActionFor(state: WorkbenchState, repositoryId?: string | null): CustomActionConfig | undefined {
+  if (!repositoryId) return undefined;
+  const settings = state.repositorySettings[repositoryId];
+  const activeId = settings?.activeActionId;
+  if (!activeId) return undefined;
+  return settings.customActions?.find((item) => item.id === activeId);
+}
+
+export function computeSyncCustomActionAcrossRepos(
+  state: WorkbenchState,
+  sourceRepositoryId: string,
+  action: CustomActionConfig,
+  overwrite = false,
+): { repositorySettings: Record<string, RepositorySettings>; result: CustomActionSyncResult } {
+  const sanitized = sanitizeCustomActionConfig(action);
+  const templateKey = sanitized.templateKey ?? sanitized.id;
+  const normalizedLabel = sanitized.label.toLowerCase();
+  const nextSettings: Record<string, RepositorySettings> = { ...state.repositorySettings };
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  // Ensure the source repository's copy records the same templateKey so future syncs recognize lineage.
+  const sourcePrev = nextSettings[sourceRepositoryId];
+  if (sourcePrev?.customActions?.some((item) => item.id === sanitized.id && !item.templateKey)) {
+    nextSettings[sourceRepositoryId] = {
+      ...sourcePrev,
+      customActions: sourcePrev.customActions.map((item) =>
+        item.id === sanitized.id ? { ...item, templateKey } : item,
+      ),
+    };
+  }
+
+  for (const repo of state.repositories) {
+    if (repo.id === sourceRepositoryId) continue;
+    const prev = nextSettings[repo.id];
+    const existingList = prev?.customActions ?? [];
+    const matchIndex = existingList.findIndex(
+      (item) => (item.templateKey && item.templateKey === templateKey)
+        || item.label.trim().toLowerCase() === normalizedLabel,
+    );
+    if (matchIndex >= 0) {
+      if (!overwrite) {
+        skipped += 1;
+        continue;
+      }
+      const existing = existingList[matchIndex];
+      const replaced = sanitizeCustomActionConfig({
+        id: existing.id,
+        templateKey,
+        label: sanitized.label,
+        prompt: sanitized.prompt,
+      });
+      const updatedList = existingList.map((item, idx) => (idx === matchIndex ? replaced : item));
+      nextSettings[repo.id] = {
+        editor: prev?.editor ?? effectiveEditorFor(state, repo.id),
+        commitLanguage: prev?.commitLanguage ?? effectiveCommitLanguageFor(state, repo.id),
+        ...(prev?.localKeepPaths?.length ? { localKeepPaths: prev.localKeepPaths } : {}),
+        customActions: updatedList,
+        ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+      };
+      updated += 1;
+      continue;
+    }
+    if (existingList.length >= CUSTOM_ACTION_LIMITS.maxPerRepo) {
+      skipped += 1;
+      continue;
+    }
+    const copy: CustomActionConfig = sanitizeCustomActionConfig({
+      id: `act-${crypto.randomUUID().slice(0, 12)}`,
+      templateKey,
+      label: sanitized.label,
+      prompt: sanitized.prompt,
+    });
+    nextSettings[repo.id] = {
+      editor: prev?.editor ?? effectiveEditorFor(state, repo.id),
+      commitLanguage: prev?.commitLanguage ?? effectiveCommitLanguageFor(state, repo.id),
+      ...(prev?.localKeepPaths?.length ? { localKeepPaths: prev.localKeepPaths } : {}),
+      customActions: [...existingList, copy],
+      ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+    };
+    added += 1;
+  }
+
+  return {
+    repositorySettings: nextSettings,
+    result: { added, updated, skipped },
+  };
 }
 
 export function normalChanges(worktree: Pick<Worktree, 'files'>): Change[] {
@@ -502,7 +626,12 @@ export function compactStatusSummary(
   return { tone: 'ready', label: t.selectedReady(selectedCount, total), expandTarget: 'changes' };
 }
 
-export function primaryAction(worktree: Worktree | undefined, hasModel: boolean, locale: AppLocale = DEFAULT_APP_LOCALE) {
+export function primaryAction(
+  worktree: Worktree | undefined,
+  hasModel: boolean,
+  locale: AppLocale = DEFAULT_APP_LOCALE,
+  activeCustomAction?: CustomActionConfig,
+) {
   const labels = getMessages(locale).primaryActions;
   if (worktree && isActiveSession(worktree)) {
     return {
@@ -520,6 +649,14 @@ export function primaryAction(worktree: Worktree | undefined, hasModel: boolean,
       disabled: false,
     };
   }
+  if (activeCustomAction) {
+    return {
+      label: activeCustomAction.label,
+      configureModel: false,
+      resume: false,
+      disabled: !worktree || !!worktree.readError,
+    };
+  }
   return {
     label: labels.cPush,
     configureModel: false,
@@ -533,13 +670,23 @@ export type WorkbenchEvent =
   | { type: 'planPrepared'; target: Target; requestId: string; modelId: string; plan: CPushPreparedPlan }
   | { type: 'reviewed'; target: Target; requestId: string; findings: Finding[]; skippedPaths: string[]; reviewedFileIds?: string[] }
   | { type: 'files'; target: Target; nextScopeVersion: string; files: Change[]; changedPaths: string[] }
-  | { type: 'cPushProgress'; progress: CPushProgressEvent };
+  | { type: 'cPushProgress'; progress: CPushProgressEvent }
+  | { type: 'customActionProgress'; progress: CustomActionProgressEvent };
 
 export type WorkbenchAction =
   | { type: 'workbenchHydrated'; restored: WorkbenchRestoreReply }
   | { type: 'cPushStarted'; worktreeId: string; runId: string; frozenTarget: Target; frozenFileIds: string[]; modelId: string; expandDock: boolean }
   | { type: 'cPushSettled'; reply: CPushCommandReply; expandDock?: boolean }
   | { type: 'cPushStartFailed'; worktreeId: string; runId: string }
+  | { type: 'customActionStarted'; worktreeId: string; runId: string; actionId: string; actionLabel: string; expandDock: boolean }
+  | { type: 'customActionSettled'; reply: CustomActionCommandReply; expandDock?: boolean }
+  | { type: 'customActionFailed'; worktreeId: string; runId: string; message?: string }
+  | { type: 'selectActiveAction'; repositoryId: string; actionId: string | null }
+  | { type: 'saveCustomAction'; repositoryId: string; action: CustomActionConfig; selectAsActive?: boolean }
+  | { type: 'deleteCustomAction'; repositoryId: string; actionId: string }
+  | { type: 'syncCustomActionToAllRepos'; sourceRepositoryId: string; action: CustomActionConfig; overwrite?: boolean }
+  | { type: 'trustCustomActionWrites'; repositoryId: string; actionId: string; trustedPromptHash: string }
+  | { type: 'resetCustomActionWriteTrust'; repositoryId: string; actionId: string }
   | { type: 'repositoryBranchStarted'; repositoryId: string; requestId: string }
   | { type: 'repositoryBranchFinished'; repositoryId: string; reply: GitBranchReply }
   | { type: 'repositoryBranchFailed'; repositoryId: string; requestId: string }
@@ -558,6 +705,7 @@ export type WorkbenchAction =
   | { type: 'planCleared'; worktreeId: string }
   | { type: 'tab'; worktreeId: string; tab: Worktree['tab'] }
   | { type: 'dock'; worktreeId: string; expanded: boolean }
+  | { type: 'dismissMessage'; worktreeId: string; messageId: string }
   | { type: 'reply'; worktreeId: string; messageId: string; text: string }
   | { type: 'request'; target: Target; kind: 'plan' | 'review'; requestId: string; fileIds?: string[] }
   | { type: 'requestFailed'; target: Target; kind: 'plan' | 'review'; requestId: string; error?: string }
@@ -597,7 +745,7 @@ function matchesTarget(worktree: Worktree, target: Target) {
 }
 
 function receiveEvent(worktree: Worktree, event: WorkbenchEvent, keepSet: ReadonlySet<string>): Worktree {
-  if (event.type === 'cPushProgress') return worktree;
+  if (event.type === 'cPushProgress' || event.type === 'customActionProgress') return worktree;
   if (!matchesTarget(worktree, event.target)) return worktree;
   switch (event.type) {
     case 'message':
@@ -679,6 +827,213 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   if (action.type === 'workbenchHydrated') return hydrateWorkbench(state, action.restored);
   if (action.type === 'event' && action.event.type === 'cPushProgress') {
     return receiveCPushProgress(state, action.event.progress);
+  }
+  if (action.type === 'event' && action.event.type === 'customActionProgress') {
+    return applyCustomActionProgress(state, action.event.progress);
+  }
+  if (action.type === 'customActionStarted') {
+    const t = getMessages(state.locale).workbench;
+    return {
+      ...state,
+      worktrees: state.worktrees.map((tree) => {
+        if (tree.worktreeId !== action.worktreeId || (isActiveSession(tree) && !tree.cPush?.planOnly)) return tree;
+        const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+        const progressMsg: Message = {
+          id: `progress-${action.runId}`,
+          kind: 'progress',
+          title: action.actionLabel,
+          description: t.cPushInitialDescription,
+          progress: { completed: 1, total: 3, label: t.cPushInitialProgressLabel },
+        };
+        return {
+          ...tree,
+          sessionStatus: 'running',
+          dockExpanded: action.expandDock ? true : tree.dockExpanded,
+          messages: [...reviewMessages, progressMsg],
+          cPush: undefined,
+          customAction: {
+            runId: action.runId,
+            actionId: action.actionId,
+            actionLabel: action.actionLabel,
+            timeline: [{ state: 'active', label: action.actionLabel }],
+            commits: [],
+            links: [],
+          },
+        };
+      }),
+    };
+  }
+  if (action.type === 'customActionSettled') {
+    return finishCustomActionCommand(state, action.reply, action.expandDock);
+  }
+  if (action.type === 'customActionFailed') {
+    return {
+      ...state,
+      worktrees: state.worktrees.map((tree) => {
+        if (tree.worktreeId !== action.worktreeId || tree.customAction?.runId !== action.runId) {
+          return tree;
+        }
+        const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+        const errorMsg: Message | undefined = action.message
+          ? {
+              id: `error-${action.runId}`,
+              kind: 'error',
+              title: tree.customAction.actionLabel,
+              description: action.message,
+            }
+          : undefined;
+        return {
+          ...tree,
+          sessionStatus: 'idle',
+          dockExpanded: false,
+          messages: errorMsg ? [...reviewMessages, errorMsg] : reviewMessages,
+          customAction: undefined,
+        };
+      }),
+    };
+  }
+  if (action.type === 'selectActiveAction') {
+    const prev = state.repositorySettings[action.repositoryId];
+    const actions = prev?.customActions ?? [];
+    const nextActiveId = action.actionId && actions.some((item) => item.id === action.actionId)
+      ? action.actionId
+      : undefined;
+    const keepPaths = localKeepPathsFor(state, action.repositoryId);
+    return {
+      ...state,
+      repositorySettings: {
+        ...state.repositorySettings,
+        [action.repositoryId]: {
+          editor: effectiveEditorFor(state, action.repositoryId),
+          commitLanguage: effectiveCommitLanguageFor(state, action.repositoryId),
+          ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
+          ...(actions.length ? { customActions: actions } : {}),
+          ...(nextActiveId ? { activeActionId: nextActiveId } : {}),
+        },
+      },
+      settingsModified: true,
+    };
+  }
+  if (action.type === 'saveCustomAction') {
+    const sanitized = sanitizeCustomActionConfig(action.action);
+    if (!sanitized.id || !sanitized.label || !sanitized.prompt) return state;
+    const prev = state.repositorySettings[action.repositoryId];
+    const existing = prev?.customActions ?? [];
+    const idx = existing.findIndex((item) => item.id === sanitized.id);
+    let nextActions: CustomActionConfig[];
+    if (idx >= 0) {
+      const prior = existing[idx];
+      const promptUnchanged = prior.prompt === sanitized.prompt;
+      const merged = sanitizeCustomActionConfig({
+        ...sanitized,
+        templateKey: sanitized.templateKey ?? prior.templateKey,
+        ...(promptUnchanged && prior.skipWriteConfirm && prior.trustedPromptHash
+          ? { skipWriteConfirm: prior.skipWriteConfirm, trustedPromptHash: prior.trustedPromptHash }
+          : {}),
+      });
+      nextActions = existing.map((item, i) => (i === idx ? merged : item));
+    } else {
+      if (existing.length >= CUSTOM_ACTION_LIMITS.maxPerRepo) return state;
+      nextActions = [...existing, sanitized];
+    }
+    const nextActiveId = action.selectAsActive
+      ? sanitized.id
+      : prev?.activeActionId && nextActions.some((item) => item.id === prev.activeActionId)
+        ? prev.activeActionId
+        : undefined;
+    const keepPaths = localKeepPathsFor(state, action.repositoryId);
+    return {
+      ...state,
+      repositorySettings: {
+        ...state.repositorySettings,
+        [action.repositoryId]: {
+          editor: effectiveEditorFor(state, action.repositoryId),
+          commitLanguage: effectiveCommitLanguageFor(state, action.repositoryId),
+          ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
+          customActions: nextActions,
+          ...(nextActiveId ? { activeActionId: nextActiveId } : {}),
+        },
+      },
+      settingsModified: true,
+    };
+  }
+  if (action.type === 'deleteCustomAction') {
+    const prev = state.repositorySettings[action.repositoryId];
+    const existing = prev?.customActions ?? [];
+    const nextActions = existing.filter((item) => item.id !== action.actionId);
+    if (nextActions.length === existing.length) return state;
+    const nextActiveId = prev?.activeActionId === action.actionId ? undefined : prev?.activeActionId ?? undefined;
+    const keepPaths = localKeepPathsFor(state, action.repositoryId);
+    return {
+      ...state,
+      repositorySettings: {
+        ...state.repositorySettings,
+        [action.repositoryId]: {
+          editor: effectiveEditorFor(state, action.repositoryId),
+          commitLanguage: effectiveCommitLanguageFor(state, action.repositoryId),
+          ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
+          ...(nextActions.length ? { customActions: nextActions } : {}),
+          ...(nextActiveId ? { activeActionId: nextActiveId } : {}),
+        },
+      },
+      settingsModified: true,
+    };
+  }
+  if (action.type === 'syncCustomActionToAllRepos') {
+    const { repositorySettings, result } = computeSyncCustomActionAcrossRepos(
+      state,
+      action.sourceRepositoryId,
+      action.action,
+      Boolean(action.overwrite),
+    );
+    if (result.added === 0 && result.updated === 0) return state;
+    return {
+      ...state,
+      repositorySettings,
+      settingsModified: true,
+    };
+  }
+  if (action.type === 'trustCustomActionWrites' || action.type === 'resetCustomActionWriteTrust') {
+    const prev = state.repositorySettings[action.repositoryId];
+    const existing = prev?.customActions ?? [];
+    let changed = false;
+    const nextActions = existing.map((item) => {
+      if (item.id !== action.actionId) return item;
+      if (action.type === 'resetCustomActionWriteTrust') {
+        if (!item.skipWriteConfirm && !item.trustedPromptHash) return item;
+        changed = true;
+        return sanitizeCustomActionConfig({
+          id: item.id,
+          ...(item.templateKey ? { templateKey: item.templateKey } : {}),
+          label: item.label,
+          prompt: item.prompt,
+        });
+      }
+      const expected = computeCustomActionPromptHash(item.prompt);
+      if (expected !== action.trustedPromptHash) return item;
+      changed = true;
+      return {
+        ...item,
+        skipWriteConfirm: true,
+        trustedPromptHash: expected,
+      };
+    });
+    if (!changed) return state;
+    const keepPaths = localKeepPathsFor(state, action.repositoryId);
+    return {
+      ...state,
+      repositorySettings: {
+        ...state.repositorySettings,
+        [action.repositoryId]: {
+          editor: effectiveEditorFor(state, action.repositoryId),
+          commitLanguage: effectiveCommitLanguageFor(state, action.repositoryId),
+          ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
+          customActions: nextActions,
+          ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+        },
+      },
+      settingsModified: true,
+    };
   }
   if (action.type === 'cPushStarted') {
     const t = getMessages(state.locale).workbench;
@@ -831,6 +1186,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   }
   if (action.type === 'editor') {
     if (action.repositoryId) {
+      const prev = state.repositorySettings[action.repositoryId];
       const keepPaths = localKeepPathsFor(state, action.repositoryId);
       return {
         ...state,
@@ -841,6 +1197,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             editor: action.editor,
             commitLanguage: effectiveCommitLanguageFor(state, action.repositoryId),
             ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
+            ...(prev?.customActions?.length ? { customActions: prev.customActions } : {}),
+            ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
           },
         },
         settingsModified: true,
@@ -850,6 +1208,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   }
   if (action.type === 'commitLanguage') {
     if (action.repositoryId) {
+      const prev = state.repositorySettings[action.repositoryId];
       const keepPaths = localKeepPathsFor(state, action.repositoryId);
       return {
         ...state,
@@ -859,6 +1218,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             editor: effectiveEditorFor(state, action.repositoryId),
             commitLanguage: action.commitLanguage,
             ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
+            ...(prev?.customActions?.length ? { customActions: prev.customActions } : {}),
+            ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
           },
         },
         settingsModified: true,
@@ -1005,6 +1366,23 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       }
       case 'tab': return { ...worktree, tab: action.tab, dockExpanded: false };
       case 'dock': return { ...worktree, dockExpanded: action.expanded };
+      case 'dismissMessage': {
+        const nextMessages = worktree.messages.filter((message) => message.id !== action.messageId);
+        const nextReplies = { ...worktree.replies };
+        delete nextReplies[action.messageId];
+        const stillHasDone = nextMessages.some((message) => message.kind === 'done');
+        const nextSessionStatus = worktree.sessionStatus === 'done' && !stillHasDone
+          ? 'idle'
+          : worktree.sessionStatus;
+        return {
+          ...worktree,
+          messages: nextMessages,
+          replies: nextReplies,
+          sessionStatus: nextSessionStatus,
+          customAction: nextSessionStatus === 'idle' ? undefined : worktree.customAction,
+          dockExpanded: false,
+        };
+      }
       case 'reply': return { ...worktree, replies: { ...worktree.replies, [action.messageId]: action.text } };
     }
   }) };

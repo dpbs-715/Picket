@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
 import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { useI18n } from '../../../i18n';
@@ -24,10 +25,11 @@ import {
 
 interface CompactNotice {
   text: string;
+  tone?: 'info' | 'success' | 'warning' | 'error';
   showModelSettings?: boolean;
 }
 
-type CompactDrawer = 'none' | 'projects' | 'branches' | 'remote' | 'files';
+type CompactDrawer = 'none' | 'projects' | 'branches' | 'remote' | 'files' | 'actions';
 type BranchSection = 'local' | 'remote' | 'worktree';
 
 interface Props {
@@ -35,6 +37,8 @@ interface Props {
   repository?: Repository;
   worktree?: Worktree;
   hasModel: boolean;
+  customActions: CustomActionConfig[];
+  activeAction?: CustomActionConfig;
   opening: boolean;
   branchBusy: boolean;
   pullBusy: boolean;
@@ -50,6 +54,9 @@ interface Props {
   onPull(): void;
   onSelect(fileId: string): void;
   onSelectAll(): void;
+  onSelectAction(actionId: string | null): void;
+  onNewAction(mode: 'manual' | 'create'): void;
+  onManageActions(): void;
   onExpand(): void;
   onExpandTarget(target: CompactExpandTarget): void;
   onPin(): void;
@@ -92,7 +99,7 @@ export function CompactBar(props: Props) {
 
   const effectiveDrawer: CompactDrawer =
     (drawer === 'files' && !canShowSelectionTrigger)
-    || ((drawer === 'branches' || drawer === 'remote') && !worktree)
+    || ((drawer === 'branches' || drawer === 'remote' || drawer === 'actions') && !worktree)
       ? 'none'
       : drawer;
 
@@ -135,9 +142,10 @@ export function CompactBar(props: Props) {
   }, [effectiveDrawer]);
 
   const status = compactStatusSummary(worktree, props.hasModel, locale);
-  const action = primaryAction(worktree, props.hasModel, locale);
+  const action = primaryAction(worktree, props.hasModel, locale, props.activeAction);
+  const showSplitToggle = Boolean(props.hasModel && worktree && !action.resume && !action.configureModel);
   const primaryDisabled = action.disabled
-    || (!!worktree?.detached && !action.resume && !action.configureModel)
+    || (!!worktree?.detached && !props.activeAction && !action.resume && !action.configureModel)
     || (props.busy && !action.resume && !action.configureModel);
 
   const primaryIcon = action.configureModel
@@ -146,7 +154,9 @@ export function CompactBar(props: Props) {
       ? worktree?.sessionStatus === 'pushFailed' || worktree?.sessionStatus === 'conflict'
         ? 'alert'
         : 'history'
-      : 'upload';
+      : props.activeAction
+        ? 'sparkles'
+        : 'upload';
 
   useLayoutEffect(() => {
     const bar = barRef.current;
@@ -166,6 +176,8 @@ export function CompactBar(props: Props) {
     keptFiles.length,
     localKeepOpen,
     normalFiles.length,
+    props.customActions.length,
+    props.activeAction?.id,
     props.notice?.text,
     props.onDesiredHeightChange,
     remoteBranches.length,
@@ -270,22 +282,30 @@ export function CompactBar(props: Props) {
       </header>
 
       <PresenceNotice show={Boolean(props.notice?.text)} motionKey={`compact-notice:${props.notice?.text ?? ''}`}>
-        {props.notice?.text && (
-          <div className="operation-notice compact-notice" role="alert">
-            <span className="operation-notice-body">
-              <Icon name="alert" className="operation-notice-icon" />
-              <span className="truncate" title={props.notice.text}>{props.notice.text}</span>
-            </span>
-            <div className="operation-notice-actions">
-              {props.notice.showModelSettings && (
-                <button type="button" className="secondary operation-notice-action" onClick={props.onOpenModelSettings}>
-                  {t.workbench.openModelSettingsAction}
-                </button>
-              )}
-              <IconButton icon="close" label={t.common.dismissNotice} onClick={props.onDismissNotice} />
+        {props.notice?.text && (() => {
+          const tone = props.notice.tone ?? 'info';
+          const noticeIcon = tone === 'success' ? 'check' : tone === 'info' ? 'help' : 'alert';
+          return (
+            <div
+              className={`operation-notice compact-notice operation-notice-${tone}`}
+              data-notice-tone={tone}
+              role={tone === 'error' || tone === 'warning' ? 'alert' : 'status'}
+            >
+              <span className="operation-notice-body">
+                <Icon name={noticeIcon} className="operation-notice-icon" />
+                <span className="truncate" title={props.notice.text}>{props.notice.text}</span>
+              </span>
+              <div className="operation-notice-actions">
+                {props.notice.showModelSettings && (
+                  <button type="button" className="secondary operation-notice-action" onClick={props.onOpenModelSettings}>
+                    {t.workbench.openModelSettingsAction}
+                  </button>
+                )}
+                <IconButton icon="close" label={t.common.dismissNotice} onClick={props.onDismissNotice} />
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </PresenceNotice>
 
       {effectiveDrawer === 'projects' && (
@@ -608,6 +628,87 @@ export function CompactBar(props: Props) {
         </m.div>
       )}
 
+      {effectiveDrawer === 'actions' && worktree && (
+        <m.div
+          key="drawer-actions"
+          className="compact-drawer compact-actions-drawer scroll-area"
+          role="region"
+          aria-label={t.compact.actionsDrawerLabel}
+          initial={instantMotion ? false : { opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+        >
+          <button
+            type="button"
+            className="compact-action-item"
+            aria-pressed={!props.activeAction}
+            onClick={() => {
+              props.onSelectAction(null);
+              setDrawer('none');
+            }}
+          >
+            <span className="model-menu-label">
+              <span className="model-menu-name truncate">{t.primaryActions.cPush}</span>
+              <span className="muted small truncate">{t.footer.defaultCPushSubtitle}</span>
+            </span>
+            {!props.activeAction && <Icon name="check" className="success" />}
+          </button>
+          {props.customActions.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              className="compact-action-item"
+              aria-pressed={props.activeAction?.id === item.id}
+              onClick={() => {
+                props.onSelectAction(item.id);
+                setDrawer('none');
+              }}
+            >
+              <span className="model-menu-label">
+                <span className="model-menu-name truncate">{item.label}</span>
+                <span className="muted small mono truncate">{item.prompt}</span>
+              </span>
+              {props.activeAction?.id === item.id && <Icon name="check" className="success" />}
+            </button>
+          ))}
+          <div className="menu-divider compact-actions-divider">
+            <button
+              type="button"
+              className="compact-open-repo-item"
+              onClick={() => {
+                setDrawer('none');
+                props.onNewAction('create');
+              }}
+            >
+              <Icon name="sparkles" />
+              {t.footer.createWithPiMenuItem}
+            </button>
+            <button
+              type="button"
+              className="compact-open-repo-item"
+              onClick={() => {
+                setDrawer('none');
+                props.onNewAction('manual');
+              }}
+            >
+              <Icon name="plus" />
+              {t.footer.newActionMenuItem}
+            </button>
+            <button
+              type="button"
+              className="compact-open-repo-item"
+              onClick={() => {
+                setDrawer('none');
+                props.onManageActions();
+              }}
+            >
+              <Icon name="settings" />
+              {t.footer.manageActionsMenuItem}
+            </button>
+          </div>
+        </m.div>
+      )}
+
       <footer className="compact-bottom">
         {!worktree ? (
           <button
@@ -689,11 +790,12 @@ export function CompactBar(props: Props) {
           </div>
         )}
 
-        <div className={`primary-button-group compact-primary-group ${action.resume ? `resume-button-group resume-${worktree?.sessionStatus ?? 'running'}` : ''}`}>
+        <div className={`primary-button-group compact-primary-group ${showSplitToggle ? 'is-split' : ''} ${action.resume ? `resume-button-group resume-${worktree?.sessionStatus ?? 'running'}` : ''}`}>
           <button
             type="button"
-            className="primary"
+            className="primary action-split-main"
             disabled={primaryDisabled}
+            title={action.label}
             onClick={
               action.configureModel
                 ? props.onConfigureModel
@@ -703,8 +805,20 @@ export function CompactBar(props: Props) {
             }
           >
             <Icon name={primaryIcon} />
-            {action.label}
+            <span className="truncate">{action.label}</span>
           </button>
+          {showSplitToggle && (
+            <button
+              type="button"
+              className="primary action-split-toggle"
+              aria-label={t.footer.switchActionAriaLabel}
+              aria-expanded={effectiveDrawer === 'actions'}
+              disabled={props.busy}
+              onClick={() => setDrawer(effectiveDrawer === 'actions' ? 'none' : 'actions')}
+            >
+              <RotatingChevron open={effectiveDrawer === 'actions'} direction="down-up" />
+            </button>
+          )}
         </div>
       </footer>
     </div>

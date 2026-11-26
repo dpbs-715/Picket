@@ -11,6 +11,8 @@ export const LANGUAGE_OPTIONS: readonly { id: AppLocale; label: string }[] = [
 export interface Messages {
   common: {
     closeOverlay(title: string): string;
+    back: string;
+    backTo(label: string): string;
     dismissNotice: string;
     cancel: string;
     binary: string;
@@ -189,15 +191,79 @@ export interface Messages {
     viewReview: string;
     openConflictInEditor(editorShort: string): string;
     gotIt: string;
+    dismissDone: string;
+    recommendedBadge: string;
+    multiSelectHint: string;
+    showPreview: string;
+    hidePreview: string;
+    submitAnswers: string;
+    cancelQuestion: string;
+    dontAskAgainDefault: string;
+    customOptionPlaceholder: string;
     replyLabel: string;
     conflictReplyPlaceholder: string;
     questionReplyPlaceholder: string;
     sendReply: string;
+    cancelAction: string;
   };
   footer: {
     addModel: string;
     selectModelTitle: string;
     manageModelsMenuItem: string;
+    switchActionTitle: string;
+    switchActionAriaLabel: string;
+    defaultCPushSubtitle: string;
+    newActionMenuItem: string;
+    createWithPiMenuItem: string;
+    manageActionsMenuItem: string;
+  };
+  actions: {
+    customActionBadge: string;
+    previewEditAction: string;
+    switchBackCPush: string;
+    previewContextHint: string;
+    newModalTitle: string;
+    editModalTitle: string;
+    manageModalTitle: string;
+    repoScopedNote: string;
+    creationModeLabel: string;
+    modeManual: string;
+    modeCreateWithPi: string;
+    createShortButton: string;
+    createNeedsModel: string;
+    createDescribeLabel: string;
+    createDescribePlaceholder: string;
+    createContextHint: string;
+    createInspectingStatus: string;
+    createFailedFallback: string;
+    createPromptRequired: string;
+    generateButton: string;
+    cancelGenerateButton: string;
+    labelField: string;
+    labelPlaceholder: string;
+    promptField: string;
+    promptPlaceholder: string;
+    selectAfterSaveLabel: string;
+    writeTrustActiveNote: string;
+    resetWriteTrustButton: string;
+    syncReposHint(otherRepoCount: number): string;
+    syncToAllButton: string;
+    syncResultSummary(added: number, updated: number, skipped: number): string;
+    syncOverwriteSkippedButton(skipped: number): string;
+    deleteButton: string;
+    saveButton: string;
+    activeBadge: string;
+    autoApproveBadge: string;
+    emptyManagerHint: string;
+    editActionLabel(label: string): string;
+    deleteActionLabel(label: string): string;
+    validationLabelRequired: string;
+    validationPromptRequired: string;
+    validationDuplicateLabel: string;
+    validationBeforeSync: string;
+    actionSavedNotice(label: string): string;
+    actionDeletedNotice(label: string): string;
+    actionCancelledNotice: string;
   };
   compact: {
     expandWindow: string;
@@ -205,6 +271,7 @@ export interface Messages {
     switchProject: string;
     projectDrawerLabel: string;
     filesDrawerLabel: string;
+    actionsDrawerLabel: string;
     selectedTrigger(selected: number, total: number): string;
     noModelBadge: string;
     planBadge(count: number, outdated: boolean): string;
@@ -236,6 +303,13 @@ export interface Messages {
   };
   settings: {
     title: string;
+    tabsLabel: string;
+    tabs: {
+      general: string;
+      models: string;
+      skills: string;
+    };
+    appSectionHeading: string;
     currentProject: string;
     projectDefaults: string;
     noProjectBadge: string;
@@ -273,6 +347,36 @@ export interface Messages {
       maxOutputTokens: number;
       baseUrl?: string;
     }): string;
+    skills: {
+      heading: string;
+      modeBundled: string;
+      modeSynced: string;
+      syncButton: string;
+      syncingButton: string;
+      restoreBundledButton: string;
+      restoringButton: string;
+      sourceRepoLabel: string;
+      editSourceButton: string;
+      cancelEditSource: string;
+      resetSourceDefault: string;
+      sourceRepoPlaceholder: string;
+      commitLabel(shortSha: string): string;
+      syncedAtLabel(formatted: string): string;
+      bundledSummary: string;
+      enabledSummary(enabled: number, total: number): string;
+      toggleListLabel(expanded: boolean): string;
+      badgeSynced: string;
+      badgeBuiltIn: string;
+      badgeCustom: string;
+      refsCount(count: number): string;
+      bundledReadonlyHint: string;
+      nextRunHint: string;
+      syncSuccessNotice(count: number, shortSha: string): string;
+      resetSuccessNotice: string;
+      syncErrorFallback: string;
+      toggleErrorFallback: string;
+      resetErrorFallback: string;
+    };
     updates: {
       heading: string;
       currentVersion(version: string): string;
@@ -314,6 +418,15 @@ export interface Messages {
     displayNameLabel: string;
     displayNamePlaceholder: string;
     modelIdLabel: string;
+    fetchModels: string;
+    refreshModels: string;
+    fetchingModels: string;
+    fetchedModelsCount(count: number): string;
+    fetchedModelsEmpty: string;
+    fetchModelsErrorFallback: string;
+    toggleFetchedModels(count: number): string;
+    fetchedModelsListLabel: string;
+    noMatchingFetchedModels: string;
     baseUrlLabel: string;
     apiKeyTipLabel: string;
     apiKeyTipText: string;
@@ -393,6 +506,7 @@ export interface Messages {
     browserPinUnsupported: string;
     browserWindowUnsupported: string;
     disconnectedUpdater: string;
+    disconnectedSkills: string;
     cPushPlanMismatch: string;
     cPushStartMismatch: string;
     pullRebaseMismatch: string;
@@ -473,6 +587,8 @@ export interface Messages {
 const en: Messages = {
   common: {
     closeOverlay: (title) => `Close ${title}`,
+    back: 'Back',
+    backTo: (label) => `Back to ${label}`,
     dismissNotice: 'Dismiss notice',
     cancel: 'Cancel',
     binary: 'Binary',
@@ -681,15 +797,85 @@ const en: Messages = {
     viewReview: 'View',
     openConflictInEditor: (editorShort) => `Open conflicted file in ${editorShort}`,
     gotIt: 'Got it',
+    dismissDone: 'Dismiss completed notice',
+    recommendedBadge: 'Recommended',
+    multiSelectHint: 'Select one or more',
+    showPreview: 'Preview',
+    hidePreview: 'Hide preview',
+    submitAnswers: 'Submit',
+    cancelQuestion: 'Cancel',
+    dontAskAgainDefault: 'Do not ask again for this action',
+    customOptionPlaceholder: 'Or enter a custom answer…',
     replyLabel: 'Reply to active message',
     conflictReplyPlaceholder: 'Enter merge instructions and press Enter…',
     questionReplyPlaceholder: 'Or enter custom instructions and press Enter…',
     sendReply: 'Send Reply',
+    cancelAction: 'Cancel',
   },
   footer: {
     addModel: 'Add Model',
     selectModelTitle: 'Select Model',
     manageModelsMenuItem: 'Manage Models…',
+    switchActionTitle: 'Switch Action',
+    switchActionAriaLabel: 'Switch primary action',
+    defaultCPushSubtitle: 'Default smart split commit & push',
+    newActionMenuItem: 'New Action…',
+    createWithPiMenuItem: 'Create with Picket…',
+    manageActionsMenuItem: 'Manage Actions…',
+  },
+  actions: {
+    customActionBadge: 'Custom Action',
+    previewEditAction: 'Edit',
+    switchBackCPush: 'C-Push',
+    previewContextHint: 'Runs with current branch, checked files, and optional + Prompt instructions.',
+    newModalTitle: 'New Custom Action',
+    editModalTitle: 'Edit Custom Action',
+    manageModalTitle: 'Manage Actions',
+    repoScopedNote: 'Bound to this repository',
+    creationModeLabel: 'Creation mode',
+    modeManual: 'Manual',
+    modeCreateWithPi: 'Create with Picket',
+    createShortButton: 'Create',
+    createNeedsModel: 'Configure a model first so Picket can inspect this repository and draft the button for you.',
+    createDescribeLabel: 'Describe what this button should do',
+    createDescribePlaceholder: 'e.g. Bump a semver git tag (v0.x.y) and push it to origin, or review open PRs on GitHub…',
+    createContextHint: 'Picket inspects your remotes, branches, tags, and built-in Git skills read-only before drafting an editable button.',
+    createInspectingStatus: 'Inspecting repository context…',
+    createFailedFallback: 'Could not generate button draft. Check your model connection or switch to Manual.',
+    createPromptRequired: 'Describe the workflow you want Picket to generate.',
+    generateButton: 'Generate Draft',
+    cancelGenerateButton: 'Stop',
+    labelField: 'Button Label',
+    labelPlaceholder: 'e.g. Release Tag, Review PR, Open PR',
+    promptField: 'Prompt or Skill Command',
+    promptPlaceholder: 'e.g. git tag v0.2.0 and push to origin, or create-pr to main…',
+    selectAfterSaveLabel: 'Switch to this action after saving',
+    writeTrustActiveNote: 'Write confirmations skipped',
+    resetWriteTrustButton: 'Reset',
+    syncReposHint: (count) => `${count} other repo${count === 1 ? '' : 's'}`,
+    syncToAllButton: 'Sync to All Repos',
+    syncResultSummary: (added, updated, skipped) => {
+      const parts: string[] = [];
+      if (added > 0) parts.push(`added to ${added}`);
+      if (updated > 0) parts.push(`updated ${updated}`);
+      if (skipped > 0) parts.push(`skipped ${skipped}`);
+      return parts.length ? `Synced: ${parts.join(', ')}.` : 'Already in all other repos.';
+    },
+    syncOverwriteSkippedButton: (skipped) => `Overwrite ${skipped}`,
+    deleteButton: 'Delete',
+    saveButton: 'Save Action',
+    activeBadge: 'Active',
+    autoApproveBadge: 'No write prompt',
+    emptyManagerHint: 'No custom actions yet.',
+    editActionLabel: (label) => `Edit action ${label}`,
+    deleteActionLabel: (label) => `Delete action ${label}`,
+    validationLabelRequired: 'Enter a button label.',
+    validationPromptRequired: 'Enter a prompt or command for this button.',
+    validationDuplicateLabel: 'Another button in this repository already uses that label.',
+    validationBeforeSync: 'Fill in both the label and prompt before syncing to other repositories.',
+    actionSavedNotice: (label) => `Saved custom action "${label}".`,
+    actionDeletedNotice: (label) => `Deleted custom action "${label}".`,
+    actionCancelledNotice: 'Cancelled running custom action.',
   },
   compact: {
     expandWindow: 'Expand Workbench',
@@ -697,6 +883,7 @@ const en: Messages = {
     switchProject: 'Switch project',
     projectDrawerLabel: 'Opened repositories',
     filesDrawerLabel: 'Changed files',
+    actionsDrawerLabel: 'Switch primary action',
     selectedTrigger: (selected, total) => `Selected ${selected}/${total}`,
     noModelBadge: 'No model',
     planBadge: (count, outdated) => (outdated ? `Plan ${count} · Outdated ▸` : `Plan ${count} ▸`),
@@ -728,29 +915,36 @@ const en: Messages = {
   },
   settings: {
     title: 'Settings',
+    tabsLabel: 'Settings sections',
+    tabs: {
+      general: 'General',
+      models: 'Models',
+      skills: 'Skills',
+    },
+    appSectionHeading: 'App',
     currentProject: 'Current Project',
     projectDefaults: 'Project Defaults',
     noProjectBadge: 'No repo open',
-    editorIntegration: 'Editor Integration',
+    editorIntegration: 'Editor',
     editorIntegrationTipLabel: 'Editor integration info',
     editorIntegrationTip: (cli, hasRepository) =>
-      `Invokes ${cli} to open files, staged diffs, and review line numbers for ${hasRepository ? 'this project' : 'new projects'}; automatically detects installed editors.`,
+      `Uses ${cli} for ${hasRepository ? 'this project' : 'new projects'}.`,
     noEditorsDetected: 'No supported editors detected',
-    noEditorsHelp: 'Install IntelliJ IDEA, RustRover, WebStorm, VS Code, or Cursor and reopen to detect.',
+    noEditorsHelp: 'Install IDEA, RustRover, WebStorm, VS Code, or Cursor.',
     preferredEditor: 'Preferred Editor',
-    commitLanguage: 'Commit Message Language',
+    commitLanguage: 'Commit Language',
     commitLanguageTipLabel: 'Commit message language info',
     commitLanguageTip: (hasRepository) =>
-      `Controls the summary and bullet language for previewed commit plans and C-Push commits in ${hasRepository ? 'this project' : 'new projects'}. Conventional Commit prefixes (feat, fix, etc.) stay in English.`,
-    appLanguage: 'App Language',
+      `Commit message language for ${hasRepository ? 'this project' : 'new projects'}.`,
+    appLanguage: 'Language',
     modelsHeading: 'Models',
     addProvider: 'Provider',
     addChildModel: 'Model',
-    noModelsConfigured: 'No models configured yet',
+    noModelsConfigured: 'No models yet',
     addFirstProvider: 'Add First Provider',
     activeModelBadge: 'Active',
     connectionModelCount: (count) => `${count} model${count === 1 ? '' : 's'}`,
-    emptyConnectionHint: 'No models under this connection yet.',
+    emptyConnectionHint: 'No models yet.',
     toggleConnectionLabel: (name, expanded) => `${expanded ? 'Collapse' : 'Expand'} connection ${name}`,
     editConnectionLabel: (name) => `Edit connection ${name}`,
     deleteConnectionLabel: (name) => `Delete connection ${name}`,
@@ -764,25 +958,55 @@ const en: Messages = {
     deleteModelLabel: (name) => `Delete model ${name}`,
     modelDetailTitle: ({ connectionName, providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
       `${connectionName} · ${providerLabel} (${formatShort}) · ${modelId} · Context ${contextWindow} / Max output ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
+    skills: {
+      heading: 'Skills',
+      modeBundled: 'Built-in',
+      modeSynced: 'Synced',
+      syncButton: 'Sync',
+      syncingButton: 'Syncing…',
+      restoreBundledButton: 'Restore Built-in',
+      restoringButton: 'Restoring…',
+      sourceRepoLabel: 'Skill source repository',
+      editSourceButton: 'Edit',
+      cancelEditSource: 'Cancel',
+      resetSourceDefault: 'Default',
+      sourceRepoPlaceholder: 'https://github.com/dpbs-715/skills',
+      commitLabel: (shortSha) => shortSha,
+      syncedAtLabel: (formatted) => formatted,
+      bundledSummary: 'Built-in',
+      enabledSummary: (enabled, total) => `${enabled}/${total}`,
+      toggleListLabel: (expanded) => (expanded ? 'Collapse skills list' : 'Expand skills list'),
+      badgeSynced: 'Synced',
+      badgeBuiltIn: 'Built-in',
+      badgeCustom: 'Custom',
+      refsCount: (count) => `+${count}`,
+      bundledReadonlyHint: '',
+      nextRunHint: '',
+      syncSuccessNotice: (_count, shortSha) => `Synced (${shortSha}).`,
+      resetSuccessNotice: 'Restored built-in skills.',
+      syncErrorFallback: 'Sync failed; existing skills kept.',
+      toggleErrorFallback: 'Unable to update skills.',
+      resetErrorFallback: 'Unable to restore built-in skills.',
+    },
     updates: {
-      heading: 'About & Updates',
+      heading: 'Version',
       currentVersion: (version) => `v${version}`,
       checkButton: 'Check for Updates',
       checking: 'Checking…',
-      upToDate: 'You’re up to date.',
+      upToDate: 'Up to date',
       availableTitle: (version) => `v${version} available`,
       updateAndRestart: 'Update & Restart',
       downloading: (percent, downloadedMb, totalMb) => `Downloading… ${percent}% (${downloadedMb} / ${totalMb} MB)`,
       downloadingUnknown: (downloadedMb) => `Downloading… ${downloadedMb} MB`,
-      installing: 'Installing update & restarting…',
+      installing: 'Installing & restarting…',
       downloadFromGithub: 'Download on GitHub',
       retry: 'Retry',
-      gitBusyNote: 'Wait for the active Git or C-Push task to finish before installing the update.',
+      gitBusyNote: 'Wait for the active Git task to finish first.',
       blockers: {
-        devBuild: 'In-app updates require the packaged macOS app bundle.',
-        readOnlyVolume: 'Move Picket.app into Applications first, or download the latest DMG from GitHub.',
-        appTranslocation: 'Move Picket.app into Applications and reopen it to enable in-app updates.',
-        signingKeyUnconfigured: 'Update signing key is not configured in this build yet; download from GitHub instead.',
+        devBuild: 'Requires the packaged macOS app bundle.',
+        readOnlyVolume: 'Move Picket.app to Applications first.',
+        appTranslocation: 'Move Picket.app to Applications and reopen.',
+        signingKeyUnconfigured: 'Signing key not configured; download on GitHub.',
       },
     },
   },
@@ -795,21 +1019,30 @@ const en: Messages = {
     connectionSectionHeading: 'Connection',
     firstModelSectionHeading: 'First Model',
     connectionNameLabel: 'Connection Name',
-    connectionNamePlaceholder: 'Defaults to provider name when empty',
+    connectionNamePlaceholder: 'Optional',
     parentConnectionLabel: 'Connection',
-    connectionIdentityLockedNote: 'Provider type and base URL identify this connection. Create a new provider connection to use a different endpoint.',
-    rotateKeyImpactNote: (count) => `Applies to all ${count} model${count === 1 ? '' : 's'} under this connection.`,
-    testNeedsModelHint: 'Add at least one model under this connection before testing.',
+    connectionIdentityLockedNote: '',
+    rotateKeyImpactNote: (count) => `Updates all ${count} model${count === 1 ? '' : 's'} under this connection.`,
+    testNeedsModelHint: 'Add a model first to test.',
     advancedToggle: 'Advanced',
     apiFormatLabel: 'API Format',
     displayNameLabel: 'Display Name',
-    displayNamePlaceholder: 'Defaults to Model ID when empty',
+    displayNamePlaceholder: 'Optional',
     modelIdLabel: 'Model ID',
+    fetchModels: 'Fetch Models',
+    refreshModels: 'Refresh',
+    fetchingModels: 'Fetching…',
+    fetchedModelsCount: (count) => `${count} models`,
+    fetchedModelsEmpty: 'No models returned; enter manually.',
+    fetchModelsErrorFallback: 'Unable to fetch models; enter manually.',
+    toggleFetchedModels: (count) => `Toggle fetched models list (${count})`,
+    fetchedModelsListLabel: 'Fetched provider models',
+    noMatchingFetchedModels: 'No matches — Enter uses custom ID.',
     baseUrlLabel: 'Base URL',
     apiKeyTipLabel: 'API Key storage info',
-    apiKeyTipText: 'Stored locally in ~/.picket/credentials.json (0600 permissions); never written to models.json, logs, or ordinary UI state.',
-    apiKeyKeepPlaceholder: 'Leave empty to keep saved key, or enter a new key',
-    apiKeyEnterPlaceholder: 'Enter API key',
+    apiKeyTipText: 'Saved locally in ~/.picket/credentials.json (0600).',
+    apiKeyKeepPlaceholder: 'Leave blank to keep',
+    apiKeyEnterPlaceholder: 'API key',
     revealApiKeyLabel: 'Reveal saved API key',
     hideApiKeyLabel: 'Hide API key',
     revealingApiKeyLabel: 'Authenticating…',
@@ -906,6 +1139,7 @@ const en: Messages = {
     browserPinUnsupported: 'Window pinning is unavailable in browser preview. Run pnpm desktop dev to open the desktop app.',
     browserWindowUnsupported: 'Window resizing and pinning are unavailable in browser preview; compact layout is previewed inside the page.',
     disconnectedUpdater: 'Desktop update service is unavailable in browser preview.',
+    disconnectedSkills: 'Desktop skill sync is unavailable in browser preview.',
     cPushPlanMismatch: 'C-Push plan reply target or request identity mismatch; ignored reply.',
     cPushStartMismatch: 'C-Push start reply target or request identity mismatch; ignored reply.',
     pullRebaseMismatch: 'Pull & rebase reply target or request identity mismatch. Refresh to verify Git status.',
@@ -994,6 +1228,8 @@ const en: Messages = {
 const zh: Messages = {
   common: {
     closeOverlay: (title) => `关闭${title}`,
+    back: '返回',
+    backTo: (label) => `返回${label}`,
     dismissNotice: '关闭操作提示',
     cancel: '取消',
     binary: '二进制',
@@ -1200,15 +1436,85 @@ const zh: Messages = {
     viewReview: '查看',
     openConflictInEditor: (editorShort) => `在 ${editorShort} 中打开冲突文件`,
     gotIt: '知道了',
+    dismissDone: '关闭已完成提示',
+    recommendedBadge: '推荐',
+    multiSelectHint: '可多选',
+    showPreview: '预览',
+    hidePreview: '收起预览',
+    submitAnswers: '提交选择',
+    cancelQuestion: '取消',
+    dontAskAgainDefault: '此按钮不再提示',
+    customOptionPlaceholder: '或输入自定义说明…',
     replyLabel: '回复当前事项',
     conflictReplyPlaceholder: '输入合并要求，回车发送…',
     questionReplyPlaceholder: '或输入更具体的要求，回车发送…',
     sendReply: '发送回复',
+    cancelAction: '取消执行',
   },
   footer: {
     addModel: '添加模型',
     selectModelTitle: '选择模型',
     manageModelsMenuItem: '管理模型…',
+    switchActionTitle: '切换主动作',
+    switchActionAriaLabel: '切换主按钮动作',
+    defaultCPushSubtitle: '默认智能拆分提交并推送',
+    newActionMenuItem: '新建自定义按钮…',
+    createWithPiMenuItem: '跟 Picket 对话创建…',
+    manageActionsMenuItem: '管理按钮…',
+  },
+  actions: {
+    customActionBadge: '自定义按钮',
+    previewEditAction: '编辑',
+    switchBackCPush: '切回 C-Push',
+    previewContextHint: '点击主按钮将自动附带当前分支、已选文件范围以及可选的 + 提示词。',
+    newModalTitle: '新建自定义按钮',
+    editModalTitle: '编辑自定义按钮',
+    manageModalTitle: '管理自定义按钮',
+    repoScopedNote: '仅绑定当前仓库',
+    creationModeLabel: '创建方式',
+    modeManual: '手动填写',
+    modeCreateWithPi: '跟 Picket 对话创建',
+    createShortButton: '对话创建',
+    createNeedsModel: '请先配置模型，Picket 才能探测当前仓库上下文并帮你生成按钮草稿。',
+    createDescribeLabel: '用自然语言描述你想要的一键流程',
+    createDescribePlaceholder: '例如：帮我建个发版打 semver tag 并推送 origin 的按钮，或一键审查 GitHub PR…',
+    createContextHint: 'Picket 将只读探测当前仓库远端、分支、Tag 习惯和内置 Git 技能，生成后可自由微调再保存。',
+    createInspectingStatus: '正在探测仓库上下文…',
+    createFailedFallback: '生成按钮草稿失败，请检查模型连接或切到手动填写。',
+    createPromptRequired: '请先描述你希望这个按钮执行的流程。',
+    generateButton: '生成草稿',
+    cancelGenerateButton: '停止生成',
+    labelField: '按钮名称',
+    labelPlaceholder: '例如：发版打 Tag、审 PR、提 PR',
+    promptField: '预设指令或提示词',
+    promptPlaceholder: '例如：git tag v0.2.0 && git push origin v0.2.0，或 create-pr to main…',
+    selectAfterSaveLabel: '保存后切换到此按钮',
+    writeTrustActiveNote: '已开启写入免确认',
+    resetWriteTrustButton: '重置',
+    syncReposHint: (count) => `其他 ${count} 个仓库`,
+    syncToAllButton: '同步到所有仓库',
+    syncResultSummary: (added, updated, skipped) => {
+      const parts: string[] = [];
+      if (added > 0) parts.push(`新增 ${added} 个`);
+      if (updated > 0) parts.push(`覆盖 ${updated} 个`);
+      if (skipped > 0) parts.push(`跳过 ${skipped} 个`);
+      return parts.length ? `已同步：${parts.join('，')}。` : '其他仓库均已存在。';
+    },
+    syncOverwriteSkippedButton: (skipped) => `覆盖 ${skipped} 个`,
+    deleteButton: '删除',
+    saveButton: '保存按钮',
+    activeBadge: '当前选中',
+    autoApproveBadge: '写入免确认',
+    emptyManagerHint: '暂无自定义按钮。',
+    editActionLabel: (label) => `编辑按钮 ${label}`,
+    deleteActionLabel: (label) => `删除按钮 ${label}`,
+    validationLabelRequired: '请填写按钮名称。',
+    validationPromptRequired: '请填写预设指令或提示词。',
+    validationDuplicateLabel: '当前仓库已存在同名按钮，请换一个名称。',
+    validationBeforeSync: '请先填好按钮名称和指令再同步到其他仓库。',
+    actionSavedNotice: (label) => `已保存自定义按钮「${label}」。`,
+    actionDeletedNotice: (label) => `已删除自定义按钮「${label}」。`,
+    actionCancelledNotice: '已取消正在执行的自定义按钮。',
   },
   compact: {
     expandWindow: '展开完整工作台',
@@ -1216,6 +1522,7 @@ const zh: Messages = {
     switchProject: '切换项目',
     projectDrawerLabel: '已打开仓库',
     filesDrawerLabel: '变更文件',
+    actionsDrawerLabel: '切换主按钮动作',
     selectedTrigger: (selected, total) => `已选 ${selected}/${total}`,
     noModelBadge: '未配模型',
     planBadge: (count, outdated) => (outdated ? `计划 ${count} · 已过期 ▸` : `计划 ${count} ▸`),
@@ -1247,29 +1554,36 @@ const zh: Messages = {
   },
   settings: {
     title: '设置',
+    tabsLabel: '设置分区',
+    tabs: {
+      general: '通用',
+      models: '模型',
+      skills: '技能',
+    },
+    appSectionHeading: '应用',
     currentProject: '当前项目',
     projectDefaults: '默认项目配置',
     noProjectBadge: '未打开仓库',
-    editorIntegration: '编辑器联动',
+    editorIntegration: '编辑器',
     editorIntegrationTipLabel: '编辑器联动说明',
     editorIntegrationTip: (cli, hasRepository) =>
-      `为${hasRepository ? '当前项目' : '新打开项目'}调用 ${cli} 打开文件、已暂存 Diff 与审查行号；自动识别本机已安装编辑器并独立保存。`,
-    noEditorsDetected: '未检测到已安装的受支持编辑器',
-    noEditorsHelp: '安装 IntelliJ IDEA、RustRover、WebStorm、VS Code 或 Cursor 后重新打开即可识别。',
+      `${hasRepository ? '当前项目' : '新项目'}使用 ${cli}。`,
+    noEditorsDetected: '未检测到受支持编辑器',
+    noEditorsHelp: '请安装 IDEA、RustRover、WebStorm、VS Code 或 Cursor。',
     preferredEditor: '首选编辑器',
-    commitLanguage: '提交说明语言',
+    commitLanguage: '提交语言',
     commitLanguageTipLabel: '提交说明语言说明',
     commitLanguageTip: (hasRepository) =>
-      `控制${hasRepository ? '当前项目' : '新打开项目'}预生成计划与 C-Push 拆分提交的标题描述及要点语言；Conventional Commit 前缀（如 feat、fix）保持英文。`,
+      `${hasRepository ? '当前项目' : '新项目'}的提交说明语言。`,
     appLanguage: '界面语言',
-    modelsHeading: '模型设置',
+    modelsHeading: '模型',
     addProvider: '供应商',
     addChildModel: '模型',
-    noModelsConfigured: '尚未配置可用模型',
+    noModelsConfigured: '尚未配置模型',
     addFirstProvider: '添加第一个供应商',
     activeModelBadge: '当前使用',
     connectionModelCount: (count) => `${count} 个模型`,
-    emptyConnectionHint: '该连接下还没有模型。',
+    emptyConnectionHint: '暂无模型。',
     toggleConnectionLabel: (name, expanded) => `${expanded ? '收起' : '展开'}供应商连接 ${name}`,
     editConnectionLabel: (name) => `编辑连接 ${name}`,
     deleteConnectionLabel: (name) => `删除连接 ${name}`,
@@ -1283,25 +1597,55 @@ const zh: Messages = {
     deleteModelLabel: (name) => `删除模型 ${name}`,
     modelDetailTitle: ({ connectionName, providerLabel, formatShort, modelId, contextWindow, maxOutputTokens, baseUrl }) =>
       `${connectionName} · ${providerLabel}（${formatShort}）· ${modelId} · 上下文 ${contextWindow} / 最大输出 ${maxOutputTokens}${baseUrl ? ` · ${baseUrl}` : ''}`,
+    skills: {
+      heading: '技能',
+      modeBundled: '随包内置',
+      modeSynced: '已热同步',
+      syncButton: '同步',
+      syncingButton: '同步中…',
+      restoreBundledButton: '恢复内置',
+      restoringButton: '恢复中…',
+      sourceRepoLabel: '技能源仓库',
+      editSourceButton: '修改',
+      cancelEditSource: '取消',
+      resetSourceDefault: '默认',
+      sourceRepoPlaceholder: 'https://github.com/dpbs-715/skills',
+      commitLabel: (shortSha) => shortSha,
+      syncedAtLabel: (formatted) => formatted,
+      bundledSummary: '随包内置',
+      enabledSummary: (enabled, total) => `${enabled}/${total}`,
+      toggleListLabel: (expanded) => (expanded ? '收起技能列表' : '展开技能列表'),
+      badgeSynced: '热同步',
+      badgeBuiltIn: '内置',
+      badgeCustom: '自定义',
+      refsCount: (count) => `+${count}`,
+      bundledReadonlyHint: '',
+      nextRunHint: '',
+      syncSuccessNotice: (_count, shortSha) => `已同步（${shortSha}）。`,
+      resetSuccessNotice: '已恢复内置技能。',
+      syncErrorFallback: '同步失败，原有技能不变。',
+      toggleErrorFallback: '更新技能失败。',
+      resetErrorFallback: '恢复内置技能失败。',
+    },
     updates: {
-      heading: '关于与更新',
+      heading: '版本',
       currentVersion: (version) => `v${version}`,
       checkButton: '检查更新',
       checking: '检查中…',
-      upToDate: '当前已是最新版本。',
+      upToDate: '已是最新',
       availableTitle: (version) => `发现新版本 v${version}`,
-      updateAndRestart: '立即更新并重启',
+      updateAndRestart: '更新并重启',
       downloading: (percent, downloadedMb, totalMb) => `正在下载… ${percent}%（${downloadedMb} / ${totalMb} MB）`,
       downloadingUnknown: (downloadedMb) => `正在下载… ${downloadedMb} MB`,
-      installing: '正在安装更新并重启…',
+      installing: '正在安装并重启…',
       downloadFromGithub: '前往 GitHub 下载',
       retry: '重试',
-      gitBusyNote: '当前有 Git 或 C-Push 任务正在执行，请等完成后再更新。',
+      gitBusyNote: '请等当前 Git 任务完成后再更新。',
       blockers: {
-        devBuild: '应用内更新仅适用于已打包的 macOS 应用。',
-        readOnlyVolume: '请先将 Picket.app 拖入「应用程序」，或前往 GitHub 手动下载。',
-        appTranslocation: '请将 Picket.app 移入「应用程序」并重新打开后再使用应用内更新。',
-        signingKeyUnconfigured: '当前构建尚未配置更新验签公钥，请前往 GitHub 手动下载。',
+        devBuild: '仅适用于已打包的 macOS 应用。',
+        readOnlyVolume: '请先将 Picket.app 移入「应用程序」。',
+        appTranslocation: '请移入「应用程序」后重新打开。',
+        signingKeyUnconfigured: '未配置更新公钥，请前往 GitHub 下载。',
       },
     },
   },
@@ -1314,21 +1658,30 @@ const zh: Messages = {
     connectionSectionHeading: '连接信息',
     firstModelSectionHeading: '首个模型',
     connectionNameLabel: '连接名称',
-    connectionNamePlaceholder: '为空时使用供应商名称',
+    connectionNamePlaceholder: '选填',
     parentConnectionLabel: '所属连接',
-    connectionIdentityLockedNote: '供应商类型与接口地址为当前连接身份；如需更换目标地址，请新建一条连接。',
-    rotateKeyImpactNote: (count) => `将用于这条连接下的 ${count} 个模型。`,
-    testNeedsModelHint: '请先在该连接下至少添加一个模型后再测试连接。',
+    connectionIdentityLockedNote: '',
+    rotateKeyImpactNote: (count) => `将同步更新该连接下的 ${count} 个模型。`,
+    testNeedsModelHint: '请先添加模型后再测试。',
     advancedToggle: '高级选项',
     apiFormatLabel: '接口格式',
     displayNameLabel: '显示名称',
-    displayNamePlaceholder: '为空时使用模型 ID',
+    displayNamePlaceholder: '选填',
     modelIdLabel: '模型 ID',
+    fetchModels: '拉取列表',
+    refreshModels: '刷新',
+    fetchingModels: '拉取中…',
+    fetchedModelsCount: (count) => `${count} 个模型`,
+    fetchedModelsEmpty: '未返回模型列表，请手动填写。',
+    fetchModelsErrorFallback: '拉取失败，请手动填写模型 ID。',
+    toggleFetchedModels: (count) => `展开或收起已拉取的 ${count} 个模型`,
+    fetchedModelsListLabel: '从供应商拉取的模型列表',
+    noMatchingFetchedModels: '无匹配项，回车可使用当前输入。',
     baseUrlLabel: '接口地址（Base URL）',
     apiKeyTipLabel: 'API Key 存储说明',
-    apiKeyTipText: '密钥以 0600 权限保存在本机 ~/.picket/credentials.json，不写入 models.json、日志或常规界面状态。',
-    apiKeyKeepPlaceholder: '留空则保留原密钥；输入新值则替换',
-    apiKeyEnterPlaceholder: '输入密钥',
+    apiKeyTipText: '以 0600 权限保存于本机 ~/.picket/credentials.json。',
+    apiKeyKeepPlaceholder: '留空保持不变',
+    apiKeyEnterPlaceholder: '输入 API Key',
     revealApiKeyLabel: '显示已保存的完整密钥',
     hideApiKeyLabel: '隐藏完整密钥',
     revealingApiKeyLabel: '正在验证身份…',
@@ -1422,6 +1775,7 @@ const zh: Messages = {
     browserPinUnsupported: '浏览器预览不能设置窗口置顶。请使用 pnpm desktop dev 打开桌面应用。',
     browserWindowUnsupported: '浏览器预览不支持调整原生窗口大小或置顶；当前仅在页面内预览紧凑布局。',
     disconnectedUpdater: '浏览器预览未连接桌面更新服务。',
+    disconnectedSkills: '浏览器预览未连接桌面技能同步服务。',
     cPushPlanMismatch: 'C-Push 预生成计划回执的目标或请求身份不匹配，已忽略该回执。',
     cPushStartMismatch: 'C-Push 启动回执的目标工作树或请求身份不匹配，已忽略该回执。',
     pullRebaseMismatch: '拉取并变基回执的目标工作树或请求身份不匹配，请刷新核对实际 Git 状态。',

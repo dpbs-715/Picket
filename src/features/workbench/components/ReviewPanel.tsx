@@ -14,6 +14,15 @@ interface Props {
   onCancel?(): void;
   onOpenFile(fileId: string, line: number): void;
 }
+function splitSkippedEntry(entry: string): { path: string; suffix?: string } {
+  const match = /^(.*?)(\s+\([^)]+\)|\uFF08[^\uFF09]+\uFF09)$/.exec(entry);
+  if (!match) return { path: entry };
+  const path = match[1].trimEnd();
+  const suffix = match[2];
+  if (!path || !suffix) return { path: entry };
+  return { path, suffix };
+}
+
 export function ReviewPanel(props: Props) {
   const { t } = useI18n();
   const review = props.worktree?.review;
@@ -52,7 +61,25 @@ export function ReviewPanel(props: Props) {
           <span className="finding-location"><span className="mono muted">{splitPath(finding.path).name}:{finding.line}</span><span className={finding.severity === 'high' ? 'danger' : 'warning'}>{finding.severity === 'high' ? t.review.severityHigh : t.review.severitySuggestion} <Icon name="external" /></span></span>
           <strong>{finding.title}</strong><span className="muted">{finding.reason}</span>
         </button>)}
-      {!!review.skippedPaths.length && <div className="review-coverage"><p className="warning row">{t.review.skippedHeading}<HelpTip align="start" label={t.review.skippedTipLabel} text={t.review.skippedTipText} /></p>{review.skippedPaths.map((path) => <p className="mono muted truncate" key={path} title={path}>{path}</p>)}</div>}
+      {!!review.skippedPaths.length && (
+        <div className="review-coverage">
+          <p className="warning row">
+            {t.review.skippedHeading}
+            <HelpTip align="start" label={t.review.skippedTipLabel} text={t.review.skippedTipText} />
+          </p>
+          <div className="review-skipped-list">
+            {review.skippedPaths.map((entry) => {
+              const parsed = splitSkippedEntry(entry);
+              return (
+                <div className="review-skipped-item" key={entry} title={entry}>
+                  <span className="mono review-skipped-path truncate">{parsed.path}</span>
+                  {parsed.suffix && <span className="review-skipped-reason muted">{parsed.suffix}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   </div>;
 }

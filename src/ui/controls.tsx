@@ -5,7 +5,7 @@ import { useI18n } from '../i18n';
 import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from './motion';
 
 const iconPaths = {
-  down: 'm6 9 6 6 6-6', up: 'm6 15 6-6 6 6', right: 'm9 6 6 6-6 6',
+  down: 'm6 9 6 6 6-6', up: 'm6 15 6-6 6 6', right: 'm9 6 6 6-6 6', left: 'm15 18-6-6 6-6',
   close: 'm6 6 12 12M6 18 18 6', check: 'm5 12 4 4L19 6', plus: 'M12 5v14M5 12h14',
   history: 'M3 11a9 9 0 1 1 3 8M3 4v7h7M12 7v5l3 2',
   pin: 'm16 3 5 5-4 1-4 5v4l-3-3-6 6M4 11h4l5-4 1-4',
@@ -134,7 +134,7 @@ export function Popover({
       initial={instant ? false : { opacity: 0, scale: 0.97, y: offset }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={instant ? undefined : { opacity: 0, scale: 0.97, y: offset * 0.75 }}
-      transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+      transition={instant ? { duration: 0 } : { duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
     >
       {children}
     </m.div>
@@ -147,14 +147,20 @@ export function Overlay({
   title,
   children,
   onClose,
+  onBack,
+  backLabel,
   covered = false,
+  depth = 0,
   closeDisabled = false,
   variant = 'sheet',
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  onBack?: () => void;
+  backLabel?: string;
   covered?: boolean;
+  depth?: number;
   closeDisabled?: boolean;
   variant?: OverlayVariant;
 }) {
@@ -165,6 +171,8 @@ export function Overlay({
   const isPresent = useIsPresent();
   const latestClose = useRef(onClose);
   latestClose.current = onClose;
+  const latestBack = useRef(onBack);
+  latestBack.current = onBack;
   const latestCloseDisabled = useRef(closeDisabled);
   latestCloseDisabled.current = closeDisabled;
   const inert = covered || !isPresent;
@@ -174,7 +182,7 @@ export function Overlay({
     const panel = ref.current!;
     const autofocusTarget = panel.querySelector<HTMLElement>('[data-autofocus]:not(:disabled)');
     const initialTarget = autofocusTarget
-      ?? panel.querySelector<HTMLElement>('button:not([data-help-tip]):not(:disabled), input, select, [tabindex="0"]:not([data-help-tip])')
+      ?? panel.querySelector<HTMLElement>('button:not([data-help-tip]):not([data-overlay-back]):not(:disabled), input, select, [tabindex="0"]:not([data-help-tip])')
       ?? panel;
     initialTarget.focus();
     if (autofocusTarget instanceof HTMLInputElement) {
@@ -184,6 +192,10 @@ export function Overlay({
     const trap = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
+        if (latestBack.current) {
+          latestBack.current();
+          return;
+        }
         if (!latestCloseDisabled.current) latestClose.current();
         return;
       }
@@ -214,7 +226,7 @@ export function Overlay({
     : variant === 'standalone'
       ? { opacity: 1 }
       : { opacity: 1, y: 0 };
-  const exitProps = instant || variant === 'standalone'
+  const exitProps = instant || covered || variant === 'standalone'
     ? undefined
     : variant === 'drill'
       ? { opacity: 0, x: 14, transition: { duration: 0.13, ease: MOTION_EASE } }
@@ -224,7 +236,9 @@ export function Overlay({
     <m.div
       ref={ref}
       className="overlay"
+      style={{ zIndex: 40 + depth * 10 }}
       data-overlay-variant={variant}
+      data-overlay-depth={depth}
       role="dialog"
       aria-modal={!covered}
       aria-labelledby={id}
@@ -233,10 +247,27 @@ export function Overlay({
       initial={initialProps}
       animate={animateProps}
       exit={exitProps}
-      transition={{ duration: variant === 'standalone' ? MOTION_DURATION.fast : MOTION_DURATION.overlay, ease: MOTION_EASE }}
+      transition={instant ? { duration: 0 } : { duration: variant === 'standalone' ? MOTION_DURATION.fast : MOTION_DURATION.overlay, ease: MOTION_EASE }}
     >
       <div className="overlay-heading" data-tauri-drag-region>
-        <h1 id={id} data-tauri-drag-region>{title}</h1>
+        <div className="overlay-heading-leading" data-tauri-drag-region>
+          {onBack && (
+            <>
+              <button
+                type="button"
+                className="overlay-back-button"
+                data-overlay-back
+                aria-label={backLabel ? t.common.backTo(backLabel) : t.common.back}
+                onClick={onBack}
+              >
+                <Icon name="left" />
+                {backLabel && <span className="truncate">{backLabel}</span>}
+              </button>
+              <span className="overlay-heading-sep" aria-hidden="true">/</span>
+            </>
+          )}
+          <h1 id={id} className="truncate" data-tauri-drag-region>{title}</h1>
+        </div>
         <IconButton icon="close" label={t.common.closeOverlay(title)} disabled={closeDisabled} onClick={onClose} />
       </div>
       {children}

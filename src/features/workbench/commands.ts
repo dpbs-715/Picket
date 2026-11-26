@@ -1,15 +1,26 @@
+import type { AskUserQuestionResponse } from '../../../shared/ask-user-protocol';
 import type { CPushCommandReply, CPushConfirmedPlan } from '../../../shared/cpush-protocol';
+import type {
+  CustomActionCommandReply,
+  CustomActionConfig,
+  GenerateCustomActionProgressEvent,
+  GenerateCustomActionReply,
+  GenerateCustomActionRequest,
+  RespondCustomActionRequest,
+} from '../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../shared/ide-protocol';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
 import type {
   CreateProviderConnectionInput,
+  ListModelsInput,
   ModelFileSelection,
   ModelMutateReply,
   ModelSaveReply,
   ProviderRevealKeyReply,
   ProviderSaveReply,
   ProviderUpdateReply,
+  RemoteModelOption,
   ReviewScopeReply,
   SaveModelInput,
   TestConnectionInput,
@@ -17,7 +28,9 @@ import type {
 } from '../../../shared/model-protocol';
 import type { GitLocalKeepReply, GitReadReply } from '../../../shared/git-read-protocol';
 import { PICKET_RELEASES_URL, type UpdateStateSnapshot } from '../../../shared/update-protocol';
+import type { SkillsStateSnapshot } from '../../../shared/skills-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../shared/workbench-persistence-protocol';
+import { initialBrowserSkillsSnapshot } from '../../desktop/skills';
 import { initialBrowserUpdateSnapshot } from '../../desktop/updater';
 import { getMessages } from '../../i18n/messages';
 import type { EditorId, Target, WorkbenchEvent } from './state/workbench';
@@ -31,8 +44,9 @@ export type WorkbenchCommand =
   | { kind: 'openFile'; target: Target; requestId: string; fileId: string; editor: EditorId; line?: number; locale?: AppLocale }
   | { kind: 'planCPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
   | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; confirmedPlan?: CPushConfirmedPlan; locale?: AppLocale; commitLanguage?: CommitLanguage }
+  | { kind: 'runCustomAction'; target: Target; requestId: string; action: CustomActionConfig; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; extraPrompt: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
   | { kind: 'review'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; changedPaths?: string[]; locale?: AppLocale }
-  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; modelId?: string; locale?: AppLocale }
+  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; questionnaireResponse?: AskUserQuestionResponse; modelId?: string; locale?: AppLocale }
   | { kind: 'selectModel' | 'deleteModel'; modelId: string; locale?: AppLocale }
   | { kind: 'deleteProviderConnection'; connectionId: string; locale?: AppLocale };
 
@@ -44,16 +58,26 @@ export type WorkbenchCommandReply =
   | ReviewScopeReply
   | ModelMutateReply
   | CPushCommandReply
+  | CustomActionCommandReply
   | void;
 
 export interface WorkbenchBackend {
   repositoryReadsAvailable?: boolean;
   execute(command: WorkbenchCommand): Promise<WorkbenchCommandReply>;
+  respondCustomAction?(request: RespondCustomActionRequest): Promise<boolean>;
+  generateCustomAction?(
+    request: GenerateCustomActionRequest,
+    onProgress?: (event: GenerateCustomActionProgressEvent) => void,
+  ): Promise<GenerateCustomActionReply>;
+  cancelCustomAction?(requestId: string): Promise<void>;
   reconcileSession?(target: Target, locale?: AppLocale): Promise<void>;
+  dismissCPushDone?(target: Target, runId: string | undefined, messageId: string, locale?: AppLocale): Promise<void>;
+  dismissCustomActionDone?(target: Target, runId: string | undefined, messageId: string, locale?: AppLocale): Promise<void>;
   cancelRequest?(requestId: string): Promise<void>;
   loadWorkbenchState?(): Promise<WorkbenchRestoreReply>;
   saveWorkbenchState?(request: WorkbenchSaveRequest): Promise<void>;
   testModel(input: TestConnectionInput): Promise<string>;
+  listProviderModels?(input: ListModelsInput): Promise<RemoteModelOption[]>;
   createProviderConnection(input: CreateProviderConnectionInput): Promise<ProviderSaveReply>;
   updateProviderConnection(input: UpdateProviderConnectionInput): Promise<ProviderUpdateReply>;
   saveModel(input: SaveModelInput): Promise<ModelSaveReply>;
@@ -64,6 +88,10 @@ export interface WorkbenchBackend {
   cancelUpdate?(locale?: AppLocale): Promise<UpdateStateSnapshot>;
   openReleasePage?(locale?: AppLocale): Promise<void>;
   subscribeUpdateState?(receive: (snapshot: UpdateStateSnapshot) => void): () => void;
+  getSkillsState?(locale?: AppLocale): Promise<SkillsStateSnapshot>;
+  syncSkills?(sourceRepo: string | undefined, locale?: AppLocale): Promise<SkillsStateSnapshot>;
+  setEnabledSkills?(enabledSkills: string[], locale?: AppLocale): Promise<SkillsStateSnapshot>;
+  resetSkills?(locale?: AppLocale): Promise<SkillsStateSnapshot>;
   subscribe?(receive: (event: WorkbenchEvent) => void): () => void;
 }
 
@@ -72,12 +100,15 @@ export interface WorkbenchBackend {
 export const disconnectedBackend: WorkbenchBackend = {
   async execute(command) {
     const t = getMessages(command.locale).desktop;
-    if (['planCPush', 'review', 'selectModel', 'deleteModel', 'deleteProviderConnection', 'cPush', 'respond'].includes(command.kind)) {
+    if (['planCPush', 'review', 'selectModel', 'deleteModel', 'deleteProviderConnection', 'cPush', 'runCustomAction', 'respond'].includes(command.kind)) {
       throw new Error(t.disconnectedModelOrCPush);
     }
     throw new Error(t.disconnectedGit);
   },
   async testModel(input) {
+    throw new Error(getMessages(input.locale).desktop.disconnectedTestModel);
+  },
+  async listProviderModels(input) {
     throw new Error(getMessages(input.locale).desktop.disconnectedTestModel);
   },
   async createProviderConnection(input) {
@@ -108,5 +139,17 @@ export const disconnectedBackend: WorkbenchBackend = {
     if (typeof window !== 'undefined') {
       window.open(PICKET_RELEASES_URL, '_blank', 'noopener,noreferrer');
     }
+  },
+  async getSkillsState() {
+    return initialBrowserSkillsSnapshot();
+  },
+  async syncSkills(_sourceRepo, locale) {
+    throw new Error(getMessages(locale).desktop.disconnectedSkills);
+  },
+  async setEnabledSkills(_enabledSkills, locale) {
+    throw new Error(getMessages(locale).desktop.disconnectedSkills);
+  },
+  async resetSkills(locale) {
+    throw new Error(getMessages(locale).desktop.disconnectedSkills);
   },
 };

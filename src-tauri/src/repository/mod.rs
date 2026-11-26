@@ -14,6 +14,7 @@ mod parse;
 pub mod persistence;
 #[cfg(test)]
 mod persistence_tests;
+pub mod read_tools;
 pub mod remote;
 mod runner;
 pub mod smoke;

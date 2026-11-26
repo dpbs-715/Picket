@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import type { AskUserQuestionResponse } from '../../../shared/ask-user-protocol';
+import type { CustomActionConfig } from '../../../shared/custom-action-protocol';
+import type { SkillsStateSnapshot } from '../../../shared/skills-protocol';
 import type { UpdateStateSnapshot } from '../../../shared/update-protocol';
 import {
   WINDOW_DIMENSIONS,
   type WindowPosition,
   type WindowSize,
 } from '../../../shared/workbench-persistence-protocol';
+import { initialBrowserSkillsSnapshot } from '../../desktop/skills';
 import { initialBrowserUpdateSnapshot } from '../../desktop/updater';
 import {
   subscribeTrayMainAction,
@@ -31,6 +35,8 @@ import {
   m,
   useInstantMotion,
 } from '../../ui/motion';
+import { CustomActionModal } from '../actions/CustomActionModal';
+import { CustomActionsManagerModal } from '../actions/CustomActionsManagerModal';
 import { ModelEntryForm } from '../settings/ModelEntryForm';
 import type { ModelConfiguration, ProviderConnection } from '../settings/modelProviders';
 import { ProviderConnectionForm } from '../settings/ProviderConnectionForm';
@@ -46,9 +52,12 @@ import { MessageDock } from './components/MessageDock';
 import { ReviewPanel } from './components/ReviewPanel';
 import { serializeWorkbenchPersistence } from './state/repositories';
 import {
+  activeCustomActionFor,
   activeValidPlan,
   computeNextCompactPreferences,
   computeNextPinPreferences,
+  computeSyncCustomActionAcrossRepos,
+  customActionsFor,
   defaultWindowPreferences,
   editors,
   effectiveCommitLanguageFor,
@@ -78,9 +87,13 @@ interface Props {
   windowController?: WindowController;
 }
 
+type NoticeTone = 'info' | 'success' | 'warning' | 'error';
+
 interface NoticeItem {
   text: string;
+  tone?: NoticeTone;
   showModelSettings?: boolean;
+  seq?: number;
 }
 
 type PendingModeFocus = { kind: CompactExpandTarget | 'addModel' };
@@ -104,6 +117,11 @@ type ModelOverlayState =
   | { kind: 'addModel'; connection: ProviderConnection }
   | { kind: 'editModel'; connection: ProviderConnection; model: ModelConfiguration };
 
+type ActionOverlayItem =
+  | { kind: 'manage' }
+  | { kind: 'create'; mode: 'manual' | 'create' }
+  | { kind: 'edit'; action: CustomActionConfig };
+
 export function Workbench({
   initialState,
   backend = disconnectedBackend,
@@ -115,10 +133,14 @@ export function Workbench({
   settingsSessionRef.current = settingsSession;
   const [modelOverlay, setModelOverlay] = useState<ModelOverlayState>({ kind: 'closed' });
   const modelOverlayOpen = modelOverlay.kind !== 'closed';
+  const [actionStack, setActionStack] = useState<ActionOverlayItem[]>([]);
+  const actionOverlayOpen = actionStack.length > 0;
   const [emptyTab, setEmptyTab] = useState<'commit' | 'review'>('commit');
   const [promptOpen, setPromptOpen] = useState(false);
   const promptFocusRequestedRef = useRef(false);
   const [feedback, setFeedback] = useState<Record<string, NoticeItem>>({});
+  const [noticePaused, setNoticePaused] = useState(false);
+  const noticeSeqRef = useRef(0);
   const [pending, setPending] = useState<string[]>([]);
   const inFlight = useRef(new Set<string>());
   const cancelledRequests = useRef(new Set<string>());
@@ -126,6 +148,10 @@ export function Workbench({
   const [pinBusy, setPinBusy] = useState(false);
   const pinInFlight = useRef(false);
   const [updateState, setUpdateState] = useState<UpdateStateSnapshot>(() => initialBrowserUpdateSnapshot());
+  const [skillsState, setSkillsState] = useState<SkillsStateSnapshot>(() => initialBrowserSkillsSnapshot());
+  const [skillsBusy, setSkillsBusy] = useState<'sync' | 'toggle' | 'reset' | null>(null);
+  const [skillsError, setSkillsError] = useState('');
+  const [skillsNotice, setSkillsNotice] = useState('');
   const desiredCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
   const collapsedCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
   const pendingModeFocusRef = useRef<PendingModeFocus | null>(null);
@@ -165,6 +191,9 @@ export function Workbench({
   const model = state.models.find((model) => model.id === state.activeModelId);
   const activeEditor = effectiveEditorFor(state, worktree?.repositoryId);
   const activeCommitLanguage = effectiveCommitLanguageFor(state, worktree?.repositoryId);
+  const activeRepoCustomActions = customActionsFor(state, worktree?.repositoryId);
+  const activeCustomAction = activeCustomActionFor(state, worktree?.repositoryId);
+  const otherRepoCount = repository ? Math.max(0, state.repositories.length - 1) : 0;
   const editor = editors.find((item) => item.id === activeEditor) ?? editors[0];
   const editorShort = state.installedEditors?.length === 0 ? 'IDE' : editor.short;
   const selected = worktree ? selectedFiles(worktree) : [];
@@ -175,15 +204,19 @@ export function Workbench({
   const opening = pending.includes('global:openRepository');
   const branchBusy = !!worktree && pending.includes(`${worktree.repositoryId}:write`);
   const pullBusy = !!worktree && pending.includes(`${worktree.repositoryId}:pull`);
+  const customActionBusy = !!worktree && pending.includes(`${worktree.repositoryId}:customAction`);
   const localKeepBusy = !!worktree && pending.some((key) => key.startsWith(`${worktree.repositoryId}:localKeep:`));
   const gitBusyForUpdate = branchBusy
     || pullBusy
     || localKeepBusy
-    || pending.some((key) => key.endsWith(':cPush') || key.endsWith(':respond') || key.endsWith(':pull'));
+    || pending.some((key) => key.endsWith(':cPush') || key.endsWith(':respond') || key.endsWith(':pull') || key.endsWith(':customAction'));
   const hasUpdate = updateState.phase === 'available'
     || updateState.phase === 'downloading'
     || updateState.phase === 'installing';
-  const busy = refreshing || branchBusy || pullBusy || localKeepBusy || pending.some((key) => key.startsWith(`${viewKey}:`) && !key.endsWith(':planCPush') && !key.endsWith(':review'));
+  const busy = refreshing || branchBusy || pullBusy || customActionBusy || localKeepBusy || pending.some((key) => key.startsWith(`${viewKey}:`) && !key.endsWith(':planCPush') && !key.endsWith(':review'));
+  const dockBusy = worktree?.customAction?.pendingCallId
+    ? pending.includes(`${worktree.worktreeId}:respondCustomAction`)
+    : busy;
 
   function isEditingCommitInput(): boolean {
     const active = typeof document !== 'undefined' ? document.activeElement : null;
@@ -319,6 +352,7 @@ export function Workbench({
       desiredCompactHeightRef.current = applied.size.height;
       collapsedCompactHeightRef.current = applied.size.height;
       setModelOverlay({ kind: 'closed' });
+      setActionStack([]);
       settingsSessionRef.current = null;
       setSettingsSession(null);
       dispatch({
@@ -332,6 +366,7 @@ export function Workbench({
       });
     } catch (error) {
       setModelOverlay({ kind: 'closed' });
+      setActionStack([]);
       settingsSessionRef.current = null;
       setSettingsSession(null);
       notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
@@ -421,6 +456,16 @@ export function Workbench({
       unsubscribe?.();
     };
   }, [backend]);
+  useEffect(() => {
+    if (!backend.getSkillsState) return;
+    let mounted = true;
+    void backend.getSkillsState(latestState.current.locale).then((snapshot) => {
+      if (mounted) setSkillsState(snapshot);
+    }).catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [backend, settingsOpen]);
   useEffect(() => {
     const isSmoke = Boolean((globalThis as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__);
     if (!hydrated || initialState || !backend.repositoryReadsAvailable || !backend.checkForUpdate || isSmoke) {
@@ -696,6 +741,7 @@ export function Workbench({
         setSettingsSession(null);
       }
       setModelOverlay({ kind: 'closed' });
+      setActionStack([]);
       dispatch({ type: 'switch', worktreeId: targetTree.worktreeId, expand: action.openDock || undefined });
       if (action.openDock && activeSurfaceRef.current === 'compact') {
         void expandFromCompact('dock');
@@ -723,10 +769,23 @@ export function Workbench({
     };
   }, [initialState, windowController.isDesktopWindow]);
 
-  function notify(text: string, key = viewKey, showModelSettings = false) {
+  function notify(
+    text: string,
+    key = viewKey,
+    options: boolean | { showModelSettings?: boolean; tone?: NoticeTone } = false,
+  ) {
+    const resolved = typeof options === 'boolean'
+      ? { showModelSettings: options, tone: (text ? 'error' : 'info') as NoticeTone }
+      : { showModelSettings: Boolean(options.showModelSettings), tone: options.tone ?? (text ? 'error' : 'info') };
+    noticeSeqRef.current += 1;
+    const seq = noticeSeqRef.current;
     setFeedback((previous) => ({
       ...previous,
-      [key]: { text, ...(showModelSettings && text ? { showModelSettings: true } : {}) },
+      [key]: {
+        text,
+        ...(text ? { tone: resolved.tone, seq } : {}),
+        ...(resolved.showModelSettings && text ? { showModelSettings: true } : {}),
+      },
     }));
   }
 
@@ -790,6 +849,7 @@ export function Workbench({
       settingsSessionRef.current = null;
       setSettingsSession(null);
       setModelOverlay({ kind: 'closed' });
+      setActionStack([]);
       pinInFlight.current = false;
       setPinBusy(false);
       dispatch({
@@ -861,7 +921,8 @@ export function Workbench({
     const branching = command.kind === 'switchBranch' || command.kind === 'checkoutRemoteBranch' ? command : undefined;
     const pulling = command.kind === 'pull' ? command : undefined;
     const settingLocalKeep = command.kind === 'setLocalKeep' ? command : undefined;
-    const key = branching ? `${branching.target.repositoryId}:write` : pulling ? `${pulling.target.repositoryId}:pull` : settingLocalKeep ? `${settingLocalKeep.target.repositoryId}:localKeep:${settingLocalKeep.requestId}` : command.kind === 'openRepository' ? 'global:openRepository' : command.kind === 'refresh' ? `${command.target.repositoryId}:refresh` : `${targetKey}:${command.kind}`;
+    const runningCustomAction = command.kind === 'runCustomAction' ? command : undefined;
+    const key = branching ? `${branching.target.repositoryId}:write` : pulling ? `${pulling.target.repositoryId}:pull` : runningCustomAction ? `${runningCustomAction.target.repositoryId}:customAction` : settingLocalKeep ? `${settingLocalKeep.target.repositoryId}:localKeep:${settingLocalKeep.requestId}` : command.kind === 'openRepository' ? 'global:openRepository' : command.kind === 'refresh' ? `${command.target.repositoryId}:refresh` : `${targetKey}:${command.kind}`;
     if (inFlight.current.has(key)) return false;
     inFlight.current.add(key); setPending([...inFlight.current]);
     const reading = command.kind === 'openRepository' || command.kind === 'refresh' ? command : undefined;
@@ -947,6 +1008,21 @@ export function Workbench({
         }
         return true;
       }
+      if (command.kind === 'runCustomAction') {
+        if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'customAction') {
+          const expandDock = !isEditingCommitInput()
+            && !latestState.current.windowPrefs.compactMode
+            && reply.status === 'done'
+            && Boolean(reply.message);
+          dispatch({ type: 'customActionSettled', reply, expandDock });
+          if (reply.status === 'cancelled') {
+            notify(getMessages(latestState.current.locale).actions.actionCancelledNotice, targetKey, { tone: 'info' });
+          } else {
+            notify('', targetKey);
+          }
+        }
+        return true;
+      }
       if (command.kind === 'cPush' || command.kind === 'respond' || command.kind === 'pull') {
         if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'cPush') {
           const expandDock = command.kind === 'pull'
@@ -964,6 +1040,7 @@ export function Workbench({
                   ? currentMessages.pullRebaseTrackedDone(syncedRemote.branch)
                   : currentMessages.pullRebaseDone,
                 targetKey,
+                { tone: 'success' },
               );
             } else {
               notify('', targetKey);
@@ -980,7 +1057,11 @@ export function Workbench({
         }
         const shortName = editors.find((item) => item.id === reply.editor)?.short ?? reply.editor;
         const fileName = splitPath(reply.filePath).name;
-        notify(getMessages(latestState.current.locale).workbench.openedInEditor(shortName, reply.action, fileName, reply.line), targetKey);
+        notify(
+          getMessages(latestState.current.locale).workbench.openedInEditor(shortName, reply.action, fileName, reply.line),
+          targetKey,
+          { tone: 'success' },
+        );
       }
       if (settingLocalKeep) {
         if (!reply || !('kind' in reply) || reply.kind !== 'localKeep' || reply.requestId !== settingLocalKeep.requestId) {
@@ -1003,6 +1084,7 @@ export function Workbench({
             ? currentMessages.remoteBranchCheckedOut(landedBranch, branching.branch)
             : currentMessages.branchSwitched(landedBranch),
           reply.snapshot.activeWorktreeId,
+          { tone: 'success' },
         );
       }
       if (reading && readKey) {
@@ -1046,6 +1128,9 @@ export function Workbench({
       if (command.kind === 'cPush') {
         dispatch({ type: 'cPushStartFailed', worktreeId: command.target.worktreeId, runId: command.requestId });
       }
+      if (command.kind === 'runCustomAction') {
+        dispatch({ type: 'customActionFailed', worktreeId: command.target.worktreeId, runId: command.requestId, message });
+      }
       if (pulling && backend.repositoryReadsAvailable) {
         void execute({ kind: 'refresh', target: pulling.target, requestId: crypto.randomUUID(), locale: latestState.current.locale }, true);
       }
@@ -1066,7 +1151,7 @@ export function Workbench({
           ...(reading.kind === 'refresh' ? { worktreeId: reading.target.worktreeId, error: message } : {}),
         });
       }
-      const modelRelatedCommand = ['planCPush', 'review', 'cPush', 'respond', 'selectModel', 'deleteModel', 'deleteProviderConnection'].includes(command.kind);
+      const modelRelatedCommand = ['planCPush', 'review', 'cPush', 'runCustomAction', 'respond', 'selectModel', 'deleteModel', 'deleteProviderConnection'].includes(command.kind);
       notify(message, targetKey, modelRelatedCommand && isModelErrorText(message));
       return false;
     } finally { inFlight.current.delete(key); setPending([...inFlight.current]); }
@@ -1078,7 +1163,7 @@ export function Workbench({
   }
   async function runPlan() {
     if (!worktree || !model || !canPlan || worktree.requests.plan) return;
-    if (worktree.detached) { notify(t.workbench.detachedPrimaryBlocked); return; }
+    if (worktree.detached) { notify(t.workbench.detachedPrimaryBlocked, viewKey, { tone: 'warning' }); return; }
     const target = targetOf(worktree);
     const requestId = crypto.randomUUID();
     const fileIds = selected.map((file) => file.id);
@@ -1103,7 +1188,7 @@ export function Workbench({
     const target = targetOf(worktree), requestId = crypto.randomUUID();
     const targetFiles = selected.filter((file) => !changedOnly || worktree.review.changedPaths.includes(file.path));
     const fileIds = targetFiles.map((file) => file.id);
-    if (!fileIds.length) { notify(t.workbench.noChangedFilesToReReview); return; }
+    if (!fileIds.length) { notify(t.workbench.noChangedFilesToReReview, viewKey, { tone: 'info' }); return; }
     const selections = targetFiles.every((file) => !!file.commitToken)
       ? targetFiles.map((file) => ({ fileId: file.id, commitToken: file.commitToken! }))
       : undefined;
@@ -1126,7 +1211,7 @@ export function Workbench({
     cancelledRequests.current.add(active.id);
     dispatch({ type: 'requestFailed', target: targetOf(worktree), kind, requestId: active.id });
     void backend.cancelRequest?.(active.id).catch(() => {});
-    notify(kind === 'plan' ? t.workbench.cancelledPlan : t.workbench.cancelledReview);
+    notify(kind === 'plan' ? t.workbench.cancelledPlan : t.workbench.cancelledReview, viewKey, { tone: 'info' });
   }
   function cancelActiveModelRequests(tree: typeof worktree) {
     if (!tree) return;
@@ -1211,12 +1296,44 @@ export function Workbench({
       }
       return;
     }
+    if (activeCustomAction) {
+      if (inFlight.current.has(`${worktree.repositoryId}:customAction`) || inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
+      if (!model || worktree.readError) return;
+      const requestId = crypto.randomUUID();
+      const target = targetOf(worktree);
+      const fileIds = selected.map((file) => file.id);
+      const selections = selected.length > 0 && selected.every((file) => !!file.commitToken)
+        ? selected.map((file) => ({ fileId: file.id, commitToken: file.commitToken! }))
+        : undefined;
+      const expandDock = !isEditingCommitInput() && !compactMode;
+      dispatch({
+        type: 'customActionStarted',
+        worktreeId: worktree.worktreeId,
+        runId: requestId,
+        actionId: activeCustomAction.id,
+        actionLabel: activeCustomAction.label,
+        expandDock,
+      });
+      void execute({
+        kind: 'runCustomAction',
+        target,
+        requestId,
+        action: activeCustomAction,
+        fileIds,
+        selections,
+        modelId: model.id,
+        extraPrompt: promptText,
+        locale: state.locale,
+        commitLanguage: activeCommitLanguage,
+      });
+      return;
+    }
     if (inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
-    if (worktree.detached) { notify(t.workbench.detachedPrimaryBlocked); return; }
+    if (worktree.detached) { notify(t.workbench.detachedPrimaryBlocked, viewKey, { tone: 'warning' }); return; }
     if (model && selected.length && !worktree.readError) {
       const validPlan = activeValidPlan(worktree);
       if (validPlan && validPlan.groups.some((group) => !group.message.trim())) {
-        notify(t.commit.emptyPlanMessageError);
+        notify(t.commit.emptyPlanMessageError, viewKey, { tone: 'warning' });
         return;
       }
       if (worktree.plan && !validPlan) {
@@ -1257,23 +1374,73 @@ export function Workbench({
       });
     }
   }
-  async function respond(message: Message, answer: { optionId?: string; text?: string }) {
+  async function respond(
+    message: Message,
+    answer: { optionId?: string; text?: string; questionnaireResponse?: AskUserQuestionResponse },
+  ) {
     if (!worktree) return;
     const id = worktree.worktreeId;
+    if (worktree.customAction?.pendingCallId && answer.questionnaireResponse && backend.respondCustomAction) {
+      const respKey = `${id}:respondCustomAction`;
+      if (inFlight.current.has(respKey)) return;
+      inFlight.current.add(respKey);
+      setPending([...inFlight.current]);
+      try {
+        await backend.respondCustomAction({
+          requestId: crypto.randomUUID(),
+          runId: worktree.customAction.runId,
+          callId: worktree.customAction.pendingCallId,
+          response: answer.questionnaireResponse,
+          locale: state.locale,
+        });
+      } catch (error) {
+        const errText = error instanceof Error ? error.message : t.workbench.genericOperationFailed;
+        notify(errText, id);
+      } finally {
+        inFlight.current.delete(respKey);
+        setPending([...inFlight.current]);
+      }
+      return;
+    }
     const target = worktree.cPush?.frozenTarget ?? targetOf(worktree);
     const runId = worktree.cPush?.runId;
+    const { questionnaireResponse, ...wireAnswer } = answer;
     if (await execute({
       kind: 'respond',
       target,
       requestId: crypto.randomUUID(),
       ...(runId ? { runId } : {}),
       ...(model ? { modelId: model.id } : {}),
+      ...(questionnaireResponse ? { questionnaireResponse } : {}),
       messageId: message.id,
       locale: state.locale,
-      ...answer,
+      ...wireAnswer,
     })) {
       dispatch({ type: 'reply', worktreeId: id, messageId: message.id, text: '' });
     }
+  }
+  function cancelActiveCustomAction() {
+    const runId = worktree?.customAction?.runId;
+    if (!runId) return;
+    void backend.cancelCustomAction?.(runId).catch(() => {});
+  }
+  function openActionOverlayFromCompact(next: ActionOverlayItem) {
+    setActionStack([next]);
+    void expandFromCompact();
+  }
+  function syncActionToAllRepos(action: CustomActionConfig, overwrite: boolean) {
+    const repoId = worktree?.repositoryId;
+    if (!repoId) return { added: 0, updated: 0, skipped: 0 };
+    const { result } = computeSyncCustomActionAcrossRepos(latestState.current, repoId, action, overwrite);
+    if (result.added > 0 || result.updated > 0) {
+      dispatch({
+        type: 'syncCustomActionToAllRepos',
+        sourceRepositoryId: repoId,
+        action,
+        overwrite,
+      });
+    }
+    return result;
   }
   async function selectModel(id: string) {
     if (await execute({ kind: 'selectModel', modelId: id, locale: state.locale })) dispatch({ type: 'modelSelected', modelId: id });
@@ -1322,6 +1489,66 @@ export function Workbench({
       setUpdateState((previous) => ({ ...previous, phase: 'error', error: message }));
     });
   }
+  async function handleSyncSkills(sourceRepo?: string): Promise<boolean> {
+    if (!backend.syncSkills || skillsBusy) return false;
+    setSkillsBusy('sync');
+    setSkillsError('');
+    setSkillsNotice('');
+    try {
+      const next = await backend.syncSkills(sourceRepo, latestState.current.locale);
+      setSkillsState(next);
+      const enabledCount = next.skills.filter((item) => item.enabled).length;
+      const shortSha = (next.sourceCommit ?? '').slice(0, 7) || 'HEAD';
+      setSkillsNotice(getMessages(latestState.current.locale).settings.skills.syncSuccessNotice(enabledCount, shortSha));
+      return true;
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : getMessages(latestState.current.locale).settings.skills.syncErrorFallback;
+      setSkillsError(message);
+      return false;
+    } finally {
+      setSkillsBusy(null);
+    }
+  }
+  async function handleToggleSkill(name: string, enabled: boolean) {
+    if (!backend.setEnabledSkills || skillsBusy) return;
+    const currentEnabled = new Set(skillsState.skills.filter((item) => item.enabled).map((item) => item.name));
+    if (enabled) currentEnabled.add(name);
+    else currentEnabled.delete(name);
+    setSkillsBusy('toggle');
+    setSkillsError('');
+    setSkillsNotice('');
+    try {
+      const next = await backend.setEnabledSkills([...currentEnabled], latestState.current.locale);
+      setSkillsState(next);
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : getMessages(latestState.current.locale).settings.skills.toggleErrorFallback;
+      setSkillsError(message);
+    } finally {
+      setSkillsBusy(null);
+    }
+  }
+  async function handleResetSkills() {
+    if (!backend.resetSkills || skillsBusy) return;
+    setSkillsBusy('reset');
+    setSkillsError('');
+    setSkillsNotice('');
+    try {
+      const next = await backend.resetSkills(latestState.current.locale);
+      setSkillsState(next);
+      setSkillsNotice(getMessages(latestState.current.locale).settings.skills.resetSuccessNotice);
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : getMessages(latestState.current.locale).settings.skills.resetErrorFallback;
+      setSkillsError(message);
+    } finally {
+      setSkillsBusy(null);
+    }
+  }
   const highCount = worktree?.review.findings.filter((finding) => finding.severity === 'high').length ?? 0;
   const suggestionCount = (worktree?.review.findings.length ?? 0) - highCount;
   const noFilesReviewed = worktree?.review.reviewedFileIds !== undefined && worktree.review.reviewedFileIds.length === 0 && (worktree.review.skippedPaths.length ?? 0) > 0;
@@ -1337,6 +1564,21 @@ export function Workbench({
             : t.review.tabStatusPassed
       : '';
   const activeNotice = feedback[viewKey];
+
+  useEffect(() => {
+    if (!activeNotice?.text || noticePaused) return;
+    if (activeNotice.tone !== 'success' && activeNotice.tone !== 'info') return;
+    const noticeKey = viewKey;
+    const noticeSeq = activeNotice.seq;
+    const timer = window.setTimeout(() => {
+      setFeedback((previous) => {
+        const current = previous[noticeKey];
+        if (!current || current.seq !== noticeSeq) return previous;
+        return { ...previous, [noticeKey]: { text: '' } };
+      });
+    }, 3600);
+    return () => window.clearTimeout(timer);
+  }, [activeNotice?.text, activeNotice?.tone, activeNotice?.seq, noticePaused, viewKey]);
 
   const syncTabIndicator = useCallback(() => {
     const activeButton = tab === 'commit' ? commitTabRef.current : reviewTabRef.current;
@@ -1402,6 +1644,8 @@ export function Workbench({
           repository={repository}
           worktree={worktree}
           hasModel={!!model}
+          customActions={activeRepoCustomActions}
+          activeAction={activeCustomAction}
           opening={opening}
           branchBusy={branchBusy}
           pullBusy={pullBusy}
@@ -1417,6 +1661,9 @@ export function Workbench({
           onPull={() => { if (worktree) void execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
           onSelect={(fileId) => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
           onSelectAll={() => { if (worktree) { cancelActiveModelRequests(worktree); dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
+          onSelectAction={(actionId) => { if (worktree) dispatch({ type: 'selectActiveAction', repositoryId: worktree.repositoryId, actionId }); }}
+          onNewAction={(mode) => openActionOverlayFromCompact({ kind: 'create', mode })}
+          onManageActions={() => openActionOverlayFromCompact({ kind: 'manage' })}
           onExpand={() => void expandFromCompact()}
           onExpandTarget={(target) => void expandFromCompact(target)}
           onPin={() => void togglePin()}
@@ -1432,7 +1679,7 @@ export function Workbench({
       {presentation.mountWorkbenchContent && (
         <m.div
           className="workbench-content"
-          inert={settingsOpen || modelOverlayOpen}
+          inert={settingsOpen || modelOverlayOpen || actionOverlayOpen}
           initial={instantMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
@@ -1456,24 +1703,36 @@ export function Workbench({
             onBranch={async (kind, branch) => worktree ? execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
             onPull={() => { if (worktree) void execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
           />
-          <PresenceNotice show={Boolean(activeNotice?.text)} motionKey={`notice:${viewKey}:${activeNotice?.text ?? ''}`}>
-            {activeNotice?.text && (
-              <div className="operation-notice" role="alert">
-                <span className="operation-notice-body">
-                  <Icon name="alert" className="operation-notice-icon" />
-                  <span>{activeNotice.text}</span>
-                </span>
-                <div className="operation-notice-actions">
-                  {activeNotice.showModelSettings && (
-                    <button type="button" className="secondary operation-notice-action" onClick={() => openSettingsFromWorkbench(true)}>
-                      {t.workbench.openModelSettingsAction}
-                    </button>
-                  )}
-                  <IconButton icon="close" label={t.common.dismissNotice} onClick={() => notify('')} />
-                </div>
-              </div>
-            )}
-          </PresenceNotice>
+          <div className="operation-notice-layer">
+            <PresenceNotice show={Boolean(activeNotice?.text)} motionKey={`notice:${viewKey}:${activeNotice?.seq ?? 0}:${activeNotice?.text ?? ''}`}>
+              {activeNotice?.text && (() => {
+                const tone = activeNotice.tone ?? 'info';
+                const noticeIcon = tone === 'success' ? 'check' : tone === 'info' ? 'help' : 'alert';
+                return (
+                  <div
+                    className={`operation-notice operation-notice-${tone}`}
+                    data-notice-tone={tone}
+                    role={tone === 'error' || tone === 'warning' ? 'alert' : 'status'}
+                    onMouseEnter={() => setNoticePaused(true)}
+                    onMouseLeave={() => setNoticePaused(false)}
+                  >
+                    <span className="operation-notice-body">
+                      <Icon name={noticeIcon} className="operation-notice-icon" />
+                      <span>{activeNotice.text}</span>
+                    </span>
+                    <div className="operation-notice-actions">
+                      {activeNotice.showModelSettings && (
+                        <button type="button" className="secondary operation-notice-action" onClick={() => openSettingsFromWorkbench(true)}>
+                          {t.workbench.openModelSettingsAction}
+                        </button>
+                      )}
+                      <IconButton icon="close" label={t.common.dismissNotice} onClick={() => { setNoticePaused(false); notify(''); }} />
+                    </div>
+                  </div>
+                );
+              })()}
+            </PresenceNotice>
+          </div>
           <ChangesPanel
             worktree={worktree}
             editorShort={editorShort}
@@ -1567,6 +1826,7 @@ export function Workbench({
                     files={worktree?.files ?? []}
                     plan={worktree?.plan}
                     planOutdated={planOutdated}
+                    activeAction={activeCustomAction}
                     hasWorktree={!!worktree}
                     hasModel={!!model}
                     canPlan={canPlan}
@@ -1577,6 +1837,8 @@ export function Workbench({
                     onEditPlanGroup={(groupId, message) => { if (worktree) dispatch({ type: 'planGroupEdited', worktreeId: worktree.worktreeId, groupId, message }); }}
                     onClearPlan={() => { if (worktree) dispatch({ type: 'planCleared', worktreeId: worktree.worktreeId }); }}
                     onConfigureModel={openConfigureModel}
+                    onEditAction={(action) => setActionStack([{ kind: 'edit', action }])}
+                    onSwitchBackCPush={() => { if (worktree) dispatch({ type: 'selectActiveAction', repositoryId: worktree.repositoryId, actionId: null }); }}
                   />
                 ) : (
                   <ReviewPanel
@@ -1592,7 +1854,35 @@ export function Workbench({
                 )}
               </div>
             </div>
-            {worktree && <MessageDock worktree={worktree} busy={busy} editorShort={editorShort} onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })} onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })} onRespond={(message, answer) => void respond(message, answer)} onOpenFile={openFile} onReview={() => setTab('review')} />}
+            {worktree && (
+              <MessageDock
+                worktree={worktree}
+                busy={dockBusy}
+                editorShort={editorShort}
+                onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })}
+                onDismiss={(message) => {
+                  const dismissTarget = worktree.cPush?.frozenTarget ?? targetOf(worktree);
+                  const dismissCPushRunId = worktree.cPush?.runId;
+                  const dismissActionRunId = worktree.customAction?.runId;
+                  const isCustomActionMessage = Boolean(
+                    worktree.customAction
+                    || message.id.startsWith('done-action-')
+                    || message.id.startsWith('interrupted-action-'),
+                  );
+                  dispatch({ type: 'dismissMessage', worktreeId: worktree.worktreeId, messageId: message.id });
+                  if (isCustomActionMessage) {
+                    void backend.dismissCustomActionDone?.(targetOf(worktree), dismissActionRunId, message.id, state.locale).catch(() => {});
+                  } else if (message.kind === 'done') {
+                    void backend.dismissCPushDone?.(dismissTarget, dismissCPushRunId, message.id, state.locale).catch(() => {});
+                  }
+                }}
+                onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })}
+                onRespond={(message, answer) => void respond(message, answer)}
+                onOpenFile={openFile}
+                onReview={() => setTab('review')}
+                onCancelCustomAction={cancelActiveCustomAction}
+              />
+            )}
           </section>
           <ActionFooter
             key={`footer:${viewKey}`}
@@ -1600,10 +1890,15 @@ export function Workbench({
             connections={state.connections}
             models={state.models}
             activeModelId={state.activeModelId}
+            customActions={activeRepoCustomActions}
+            activeAction={activeCustomAction}
             busy={busy}
             onConfigureModel={openConfigureModel}
             onManageModels={() => openSettingsFromWorkbench(true)}
             onSelectModel={(id) => void selectModel(id)}
+            onSelectAction={(actionId) => { if (worktree) dispatch({ type: 'selectActiveAction', repositoryId: worktree.repositoryId, actionId }); }}
+            onNewAction={(mode) => setActionStack([{ kind: 'create', mode }])}
+            onManageActions={() => setActionStack([{ kind: 'manage' }])}
             onPrimary={primary}
           />
         </m.div>
@@ -1631,6 +1926,13 @@ export function Workbench({
           onAddModel={(connection) => setModelOverlay({ kind: 'addModel', connection })}
           onEditModel={(connection, target) => setModelOverlay({ kind: 'editModel', connection, model: target })}
           onDeleteModel={(id) => void deleteModel(id)}
+          skillsState={skillsState}
+          skillsBusy={skillsBusy}
+          skillsError={skillsError}
+          skillsNotice={skillsNotice}
+          onSyncSkills={handleSyncSkills}
+          onToggleSkill={(name, enabled) => void handleToggleSkill(name, enabled)}
+          onResetSkills={() => void handleResetSkills()}
           updateState={updateState}
           gitBusyForUpdate={gitBusyForUpdate}
           onCheckUpdate={() => void handleCheckUpdate()}
@@ -1646,14 +1948,119 @@ export function Workbench({
       )}
       </MotionPresence>
       <MotionPresence>
+      {presentation.surface !== 'compact' && worktree && repository && actionStack.map((item, idx) => {
+        const isCovered = idx < actionStack.length - 1 || modelOverlayOpen;
+        const hasParent = idx > 0;
+        if (item.kind === 'manage') {
+          return (
+            <CustomActionsManagerModal
+              key={`manage-actions:${repository.id}`}
+              depth={idx}
+              covered={isCovered}
+              repositoryName={repository.name}
+              actions={activeRepoCustomActions}
+              activeActionId={activeCustomAction?.id ?? null}
+              otherRepoCount={otherRepoCount}
+              onClose={() => setActionStack([])}
+              onSelectActive={(actionId) => {
+                dispatch({ type: 'selectActiveAction', repositoryId: worktree.repositoryId, actionId });
+              }}
+              onNewAction={(mode) => setActionStack((prev) => [...prev, { kind: 'create', mode }])}
+              onEditAction={(action) => setActionStack((prev) => [...prev, { kind: 'edit', action }])}
+              onDeleteAction={(actionId) => {
+                const target = activeRepoCustomActions.find((a) => a.id === actionId);
+                dispatch({ type: 'deleteCustomAction', repositoryId: worktree.repositoryId, actionId });
+                if (target) notify(t.actions.actionDeletedNotice(target.label), viewKey, { tone: 'info' });
+              }}
+              onSyncToAllRepos={(action, overwrite) => syncActionToAllRepos(action, overwrite)}
+            />
+          );
+        }
+        return (
+          <CustomActionModal
+            key={item.kind === 'edit' ? `edit-action:${item.action.id}` : `new-action:${item.mode}`}
+            depth={idx}
+            covered={isCovered}
+            repositoryName={repository.name}
+            existingActions={activeRepoCustomActions}
+            initialAction={item.kind === 'edit' ? item.action : undefined}
+            initialMode={item.kind === 'create' ? item.mode : 'manual'}
+            otherRepoCount={otherRepoCount}
+            hasModel={!!model}
+            canGenerateWithPi={Boolean(model && backend.generateCustomAction)}
+            onBack={hasParent ? () => setActionStack((prev) => prev.slice(0, -1)) : undefined}
+            backLabel={hasParent ? t.actions.manageModalTitle : undefined}
+            onClose={() => setActionStack([])}
+            onConfigureModel={() => setModelOverlay({ kind: 'createProvider', keepActiveModel: false })}
+            onSave={(savedAction, selectAsActive) => {
+              dispatch({
+                type: 'saveCustomAction',
+                repositoryId: worktree.repositoryId,
+                action: savedAction,
+                selectAsActive,
+              });
+              setActionStack((prev) => (prev.length > 1 && !selectAsActive ? prev.slice(0, -1) : []));
+              notify(t.actions.actionSavedNotice(savedAction.label), viewKey, { tone: 'success' });
+            }}
+            onDelete={(actionId) => {
+              const target = activeRepoCustomActions.find((a) => a.id === actionId);
+              dispatch({ type: 'deleteCustomAction', repositoryId: worktree.repositoryId, actionId });
+              setActionStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : []));
+              if (target) notify(t.actions.actionDeletedNotice(target.label), viewKey, { tone: 'info' });
+            }}
+            onSyncToAllRepos={(action, overwrite) => syncActionToAllRepos(action, overwrite)}
+            onResetWriteTrust={(actionId) => {
+              dispatch({ type: 'resetCustomActionWriteTrust', repositoryId: worktree.repositoryId, actionId });
+            }}
+            onGenerateWithPi={backend.generateCustomAction && model
+              ? (requestId, userRequest, onProgress) => backend.generateCustomAction!(
+                  {
+                    requestId,
+                    target: targetOf(worktree),
+                    modelId: model.id,
+                    userRequest,
+                    existingLabels: activeRepoCustomActions.map((a) => a.label),
+                    locale: state.locale,
+                  },
+                  onProgress,
+                )
+              : undefined}
+            onRespondGenerateQuestion={backend.respondCustomAction
+              ? (runId, callId, response) => backend.respondCustomAction!({
+                  requestId: crypto.randomUUID(),
+                  runId,
+                  callId,
+                  response,
+                  locale: state.locale,
+                })
+              : undefined}
+            onCancelGenerate={(runId) => {
+              void backend.cancelCustomAction?.(runId).catch(() => {});
+            }}
+          />
+        );
+      })}
+      </MotionPresence>
+      <MotionPresence>
       {presentation.surface !== 'compact' && modelOverlay.kind === 'createProvider' && (
         <ProviderConnectionForm
           key="create-provider"
-          overlayVariant={settingsOpen ? 'drill' : 'sheet'}
+          depth={settingsOpen ? 1 : actionStack.length}
+          overlayVariant={settingsOpen || actionOverlayOpen ? 'drill' : 'sheet'}
           mode="create"
           keepActiveModel={modelOverlay.keepActiveModel}
-          onClose={() => setModelOverlay({ kind: 'closed' })}
+          onBack={settingsOpen || actionOverlayOpen ? () => setModelOverlay({ kind: 'closed' }) : undefined}
+          backLabel={settingsOpen ? t.settings.tabs.models : actionOverlayOpen ? t.actions.newModalTitle : undefined}
+          closeDisabled={settingsOpen && pinBusy && settingsSession?.returnTo === 'compact'}
+          onClose={() => {
+            setModelOverlay({ kind: 'closed' });
+            if (settingsOpen) void closeSettings();
+            else if (actionOverlayOpen) setActionStack([]);
+          }}
           test={(input) => backend.testModel({ ...input, locale: state.locale })}
+          listModels={backend.listProviderModels
+            ? (input) => backend.listProviderModels!({ ...input, locale: state.locale })
+            : undefined}
           create={(input) => backend.createProviderConnection({ ...input, locale: state.locale })}
           onCreated={(reply) => {
             const closeSettingsAfter = !modelOverlay.keepActiveModel;
@@ -1664,7 +2071,7 @@ export function Workbench({
               activeModelId: reply.activeModelId,
             });
             setModelOverlay({ kind: 'closed' });
-            if (closeSettingsAfter) {
+            if (settingsOpen && closeSettingsAfter) {
               void closeSettings();
             }
           }}
@@ -1673,6 +2080,7 @@ export function Workbench({
       {presentation.surface !== 'compact' && modelOverlay.kind === 'editProvider' && (
         <ProviderConnectionForm
           key={`edit-provider:${modelOverlay.connection.id}`}
+          depth={settingsOpen ? 1 : 0}
           overlayVariant={settingsOpen ? 'drill' : 'sheet'}
           mode="edit"
           connection={
@@ -1680,7 +2088,13 @@ export function Workbench({
             ?? modelOverlay.connection
           }
           childModels={state.models.filter((m) => m.connectionId === modelOverlay.connection.id)}
-          onClose={() => setModelOverlay({ kind: 'closed' })}
+          onBack={settingsOpen ? () => setModelOverlay({ kind: 'closed' }) : undefined}
+          backLabel={settingsOpen ? t.settings.tabs.models : undefined}
+          closeDisabled={settingsOpen && pinBusy && settingsSession?.returnTo === 'compact'}
+          onClose={() => {
+            setModelOverlay({ kind: 'closed' });
+            if (settingsOpen) void closeSettings();
+          }}
           test={(input) => backend.testModel({ ...input, locale: state.locale })}
           update={(input) => backend.updateProviderConnection({ ...input, locale: state.locale })}
           revealApiKey={
@@ -1708,14 +2122,24 @@ export function Workbench({
               ? `edit-model:${modelOverlay.model.id}`
               : `add-model:${modelOverlay.connection.id}`
           }
+          depth={settingsOpen ? 1 : 0}
           overlayVariant={settingsOpen ? 'drill' : 'sheet'}
           connection={
             state.connections.find((c) => c.id === modelOverlay.connection.id)
             ?? modelOverlay.connection
           }
           initialModel={modelOverlay.kind === 'editModel' ? modelOverlay.model : undefined}
-          onClose={() => setModelOverlay({ kind: 'closed' })}
+          onBack={settingsOpen ? () => setModelOverlay({ kind: 'closed' }) : undefined}
+          backLabel={settingsOpen ? t.settings.tabs.models : undefined}
+          closeDisabled={settingsOpen && pinBusy && settingsSession?.returnTo === 'compact'}
+          onClose={() => {
+            setModelOverlay({ kind: 'closed' });
+            if (settingsOpen) void closeSettings();
+          }}
           test={(input) => backend.testModel({ ...input, locale: state.locale })}
+          listModels={backend.listProviderModels
+            ? (input) => backend.listProviderModels!({ ...input, locale: state.locale })
+            : undefined}
           save={(input) => backend.saveModel({ ...input, locale: state.locale })}
           onSaved={(reply) => {
             dispatch({

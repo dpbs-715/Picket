@@ -280,6 +280,15 @@ async fn write_tree(reader: &GitReader, root: &Path, index: &Path) -> Result<Str
 }
 
 impl RepositoryStore {
+    pub(crate) async fn worktree_root_for_target(
+        &self,
+        target: &ReadTarget,
+        locale: LanguageKind,
+    ) -> Result<PathBuf> {
+        let (_, root) = self.registered_worktree_root(target, locale).await?;
+        Ok(root)
+    }
+
     pub(super) async fn registered_worktree_root(
         &self,
         target: &ReadTarget,

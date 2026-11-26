@@ -8,6 +8,14 @@ import { disconnectedBackend } from '../features/workbench/commands';
 import type { WorkbenchEvent } from '../features/workbench/state/workbench';
 import { getMessages } from '../i18n/messages';
 import {
+  cancelDesktopCustomAction,
+  dismissDesktopCustomActionDone,
+  generateDesktopCustomAction,
+  respondDesktopCustomAction,
+  startDesktopCustomAction,
+} from './actions';
+import {
+  dismissDesktopCPushDone,
   planDesktopCPush,
   pullRebaseDesktop,
   reconcileDesktopCPush,
@@ -19,6 +27,7 @@ import {
   createDesktopProviderConnection,
   deleteDesktopModel,
   deleteDesktopProviderConnection,
+  listDesktopProviderModels,
   revealDesktopProviderApiKey,
   reviewDesktopScope,
   saveDesktopModel,
@@ -26,6 +35,12 @@ import {
   testDesktopModelConnection,
   updateDesktopProviderConnection,
 } from './models';
+import {
+  getDesktopSkillsState,
+  resetDesktopSkills,
+  setDesktopEnabledSkills,
+  syncDesktopSkills,
+} from './skills';
 import {
   cancelUpdate,
   checkForUpdate,
@@ -44,6 +59,7 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
   ...disconnectedBackend,
   repositoryReadsAvailable: true,
   testModel: testDesktopModelConnection,
+  listProviderModels: listDesktopProviderModels,
   createProviderConnection: createDesktopProviderConnection,
   updateProviderConnection: updateDesktopProviderConnection,
   saveModel: saveDesktopModel,
@@ -54,7 +70,14 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
   cancelUpdate,
   openReleasePage,
   subscribeUpdateState,
+  getSkillsState: getDesktopSkillsState,
+  syncSkills: syncDesktopSkills,
+  setEnabledSkills: setDesktopEnabledSkills,
+  resetSkills: resetDesktopSkills,
   cancelRequest: cancelDesktopModelRequest,
+  respondCustomAction: respondDesktopCustomAction,
+  generateCustomAction: generateDesktopCustomAction,
+  cancelCustomAction: cancelDesktopCustomAction,
   subscribe(receive) {
     eventSubscribers.add(receive);
     return () => { eventSubscribers.delete(receive); };
@@ -68,6 +91,24 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
     if (progress) {
       emitWorkbenchEvent({ type: 'cPushProgress', progress });
     }
+  },
+  async dismissCPushDone(target, runId, messageId, locale) {
+    await dismissDesktopCPushDone({
+      requestId: crypto.randomUUID(),
+      target,
+      ...(runId ? { runId } : {}),
+      messageId,
+      ...(locale ? { locale } : {}),
+    });
+  },
+  async dismissCustomActionDone(target, runId, messageId, locale) {
+    await dismissDesktopCustomActionDone({
+      requestId: crypto.randomUUID(),
+      target,
+      ...(runId ? { runId } : {}),
+      messageId,
+      ...(locale ? { locale } : {}),
+    });
   },
   async loadWorkbenchState() {
     return decodeWorkbenchRestoreReply(await invoke('load_workbench_state'));
@@ -136,6 +177,21 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
           ...(command.commitLanguage ? { commitLanguage: command.commitLanguage } : {}),
         },
         (progress) => emitWorkbenchEvent({ type: 'cPushProgress', progress }),
+      );
+    }
+    if (command.kind === 'runCustomAction') {
+      return startDesktopCustomAction(
+        {
+          requestId: command.requestId,
+          target: command.target,
+          modelId: command.modelId,
+          action: command.action,
+          selections: command.selections ?? [],
+          extraPrompt: command.extraPrompt,
+          ...(command.locale ? { locale: command.locale } : {}),
+          ...(command.commitLanguage ? { commitLanguage: command.commitLanguage } : {}),
+        },
+        (progress) => emitWorkbenchEvent({ type: 'customActionProgress', progress }),
       );
     }
     if (command.kind === 'pull') {

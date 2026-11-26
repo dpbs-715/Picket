@@ -38,6 +38,8 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
                     editor: EditorKind::Rustrover,
                     commit_language: LanguageKind::En,
                     local_keep_paths: vec![],
+                    custom_actions: vec![],
+                    active_action_id: None,
                 }],
                 window_preferences: Some(PersistedWindowPreferences {
                     pinned: true,
@@ -128,6 +130,8 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
             editor: EditorKind::Rustrover,
             commit_language: LanguageKind::En,
             local_keep_paths: vec![],
+            custom_actions: vec![],
+            active_action_id: None,
         }]
     );
     assert_eq!(
@@ -179,6 +183,8 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                     editor: EditorKind::Webstorm,
                     commit_language: LanguageKind::Zh,
                     local_keep_paths: vec![],
+                    custom_actions: vec![],
+                    active_action_id: None,
                 }],
                 window_preferences: None,
                 active_worktree_id: Some(wt_id.clone()),
@@ -283,12 +289,16 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                             editor: EditorKind::Idea,
                             commit_language: LanguageKind::En,
                             local_keep_paths: vec![],
+                            custom_actions: vec![],
+                            active_action_id: None,
                         },
                         PersistedRepositorySettings {
                             repository_id: "dup".into(),
                             editor: EditorKind::Vscode,
                             commit_language: LanguageKind::Zh,
                             local_keep_paths: vec![],
+                            custom_actions: vec![],
+                            active_action_id: None,
                         },
                     ],
                     window_preferences: None,
@@ -633,4 +643,73 @@ async fn persists_local_keep_by_canonical_common_dir_across_worktrees_restarts_a
         !moved.local_keep,
         "rename v1 must evaluate by new path without migrating old path"
     );
+}
+
+#[tokio::test]
+async fn persists_custom_actions_cold_restores_and_invalidates_stale_write_trust() {
+    let fixture = Fixture::new().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let store = RepositoryStore::default();
+    let persistence = WorkbenchPersistence::default();
+    let opened = store.open(&fixture.root).await.unwrap();
+
+    let trusted_prompt = "git tag v0.2.0 && git push origin v0.2.0";
+    let valid_hash = persistence::compute_custom_action_prompt_hash(trusted_prompt);
+
+    persistence
+        .save(
+            storage.path(),
+            &store,
+            WorkbenchSaveRequest {
+                revision: 1,
+                locale: LanguageKind::En,
+                editor: EditorKind::Idea,
+                default_commit_language: LanguageKind::En,
+                repository_settings: vec![PersistedRepositorySettings {
+                    repository_id: opened.repository.id.clone(),
+                    editor: EditorKind::Idea,
+                    commit_language: LanguageKind::En,
+                    local_keep_paths: vec![],
+                    custom_actions: vec![
+                        PersistedCustomAction {
+                            id: "act-trusted".into(),
+                            template_key: Some("tpl-tag".into()),
+                            label: "Release Tag".into(),
+                            prompt: trusted_prompt.into(),
+                            skip_write_confirm: Some(true),
+                            trusted_prompt_hash: Some(valid_hash.clone()),
+                        },
+                        PersistedCustomAction {
+                            id: "act-edited".into(),
+                            template_key: None,
+                            label: "Edited Tag".into(),
+                            prompt: "git tag v0.3.0 && git push origin v0.3.0".into(),
+                            skip_write_confirm: Some(true),
+                            trusted_prompt_hash: Some(valid_hash),
+                        },
+                    ],
+                    active_action_id: Some("act-trusted".into()),
+                }],
+                window_preferences: None,
+                active_worktree_id: Some(opened.active_worktree_id.clone()),
+                empty_prompt: String::new(),
+                worktrees: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    let restored = WorkbenchPersistence::default()
+        .restore(storage.path(), &RepositoryStore::default())
+        .await
+        .unwrap();
+    assert_eq!(restored.repository_settings.len(), 1);
+    let repo_cfg = &restored.repository_settings[0];
+    assert_eq!(repo_cfg.active_action_id.as_deref(), Some("act-trusted"));
+    assert_eq!(repo_cfg.custom_actions.len(), 2);
+    assert_eq!(repo_cfg.custom_actions[0].skip_write_confirm, Some(true));
+    assert!(repo_cfg.custom_actions[0].trusted_prompt_hash.is_some());
+    // Edited prompt hash mismatch must automatically revoke skip_write_confirm:
+    assert_eq!(repo_cfg.custom_actions[1].skip_write_confirm, None);
+    assert_eq!(repo_cfg.custom_actions[1].trusted_prompt_hash, None);
 }

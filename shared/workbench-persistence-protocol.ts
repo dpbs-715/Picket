@@ -1,5 +1,12 @@
 import { decodeCPushSessionSnapshot } from './cpush-protocol';
 import type { CPushSessionSnapshot } from './cpush-protocol';
+import {
+  CUSTOM_ACTION_LIMITS,
+  decodeActionSessionSnapshot,
+  decodeCustomActionConfig,
+  type ActionSessionSnapshot,
+  type CustomActionConfig,
+} from './custom-action-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION, isValidRepoRelativePath } from './git-read-protocol';
 import type { GitRepositorySnapshot } from './git-read-protocol';
 import { isGitEditorId } from './ide-protocol';
@@ -48,6 +55,8 @@ export interface PersistedRepositorySettings {
   editor: GitEditorId;
   commitLanguage: CommitLanguage;
   localKeepPaths?: string[];
+  customActions?: CustomActionConfig[];
+  activeActionId?: string | null;
 }
 
 export interface PersistedWorktreeState {
@@ -88,6 +97,7 @@ export interface WorkbenchRestoreReply {
   models?: SavedModelConfiguration[];
   activeModelId?: string | null;
   cPushSessions?: CPushSessionSnapshot[];
+  actionSessions?: ActionSessionSnapshot[];
   warning: string | null;
 }
 
@@ -147,18 +157,39 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
         || seen.has(entry.repositoryId)
         || !isGitEditorId(entry.editor)
         || !isAppLocale(entry.commitLanguage)
-        || !(entry.localKeepPaths === undefined || (Array.isArray(entry.localKeepPaths) && entry.localKeepPaths.every(isValidRepoRelativePath)))) {
+        || !(entry.localKeepPaths === undefined || (Array.isArray(entry.localKeepPaths) && entry.localKeepPaths.every(isValidRepoRelativePath)))
+        || !(entry.customActions === undefined || Array.isArray(entry.customActions))
+        || !(entry.activeActionId === undefined || entry.activeActionId === null || typeof entry.activeActionId === 'string')) {
         return fail();
       }
       seen.add(entry.repositoryId);
       const localKeepPaths = Array.isArray(entry.localKeepPaths)
         ? [...new Set(entry.localKeepPaths)]
         : undefined;
+      let customActions: CustomActionConfig[] | undefined;
+      if (Array.isArray(entry.customActions)) {
+        if (entry.customActions.length > CUSTOM_ACTION_LIMITS.maxPerRepo) return fail();
+        const seenActionIds = new Set<string>();
+        customActions = entry.customActions.map((rawAction) => {
+          const decoded = decodeCustomActionConfig(rawAction);
+          if (seenActionIds.has(decoded.id)) return fail();
+          seenActionIds.add(decoded.id);
+          return decoded;
+        });
+      }
+      const rawActiveActionId = typeof entry.activeActionId === 'string' && entry.activeActionId.trim()
+        ? entry.activeActionId.trim()
+        : null;
+      const activeActionId = rawActiveActionId && customActions?.some((item) => item.id === rawActiveActionId)
+        ? rawActiveActionId
+        : undefined;
       return {
         repositoryId: entry.repositoryId,
         editor: entry.editor,
         commitLanguage: entry.commitLanguage,
         ...(localKeepPaths !== undefined ? { localKeepPaths } : {}),
+        ...(customActions !== undefined && customActions.length > 0 ? { customActions } : {}),
+        ...(activeActionId !== undefined ? { activeActionId } : {}),
       };
     });
   })();
@@ -197,6 +228,10 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
   const cPushSessions = value.cPushSessions === undefined ? undefined : (() => {
     if (!Array.isArray(value.cPushSessions)) return fail();
     return value.cPushSessions.map(decodeCPushSessionSnapshot);
+  })();
+  const actionSessions = value.actionSessions === undefined ? undefined : (() => {
+    if (!Array.isArray(value.actionSessions)) return fail();
+    return value.actionSessions.map(decodeActionSessionSnapshot);
   })();
   const installedEditors = value.installedEditors === undefined ? undefined : (() => {
     if (!Array.isArray(value.installedEditors) || !value.installedEditors.every(isGitEditorId)) return fail();
@@ -238,6 +273,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
     ...(models !== undefined ? { models } : {}),
     ...(value.activeModelId !== undefined ? { activeModelId: value.activeModelId } : {}),
     ...(cPushSessions !== undefined ? { cPushSessions } : {}),
+    ...(actionSessions !== undefined ? { actionSessions } : {}),
     warning: value.warning,
   };
 }

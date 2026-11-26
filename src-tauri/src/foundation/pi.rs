@@ -1,10 +1,13 @@
 use crate::{
     i18n::{self, LanguageKind},
     repository::ai_context::ExtractedDiffFile,
+    skills::RuntimeSkillOverrideCatalog,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::HashMap,
+    future::Future,
     path::PathBuf,
     process::Stdio,
     sync::{
@@ -138,6 +141,12 @@ pub enum PiCommand {
         model: PiProviderSpec,
         locale: LanguageKind,
     },
+    ListModels {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        locale: LanguageKind,
+    },
     ReviewScope {
         request_id: String,
         context: RequestContext,
@@ -147,6 +156,10 @@ pub enum PiCommand {
         files: Vec<ExtractedDiffFile>,
         skipped_paths: Vec<String>,
         locale: LanguageKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        enable_tools: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skill_overrides: Option<RuntimeSkillOverrideCatalog>,
     },
     #[serde(rename = "planCPush")]
     PlanCPush {
@@ -161,6 +174,8 @@ pub enum PiCommand {
         qa_history: Vec<PiCPushQaTurn>,
         locale: LanguageKind,
         commit_language: LanguageKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skill_overrides: Option<RuntimeSkillOverrideCatalog>,
     },
     ResolveConflict {
         request_id: String,
@@ -173,6 +188,47 @@ pub enum PiCommand {
         files: Vec<PiConflictFile>,
         locale: LanguageKind,
     },
+    RunCustomAction {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        branch: String,
+        detached: bool,
+        remote_branches: Vec<String>,
+        action_label: String,
+        action_prompt: String,
+        extra_prompt: String,
+        selected_files: Vec<PiPlanFileEntry>,
+        unselected_paths: Vec<String>,
+        local_keep_paths: Vec<String>,
+        locale: LanguageKind,
+        commit_language: LanguageKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        previous_checkpoint: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skill_overrides: Option<RuntimeSkillOverrideCatalog>,
+    },
+    GenerateCustomAction {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        branch: String,
+        existing_labels: Vec<String>,
+        user_request: String,
+        locale: LanguageKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skill_overrides: Option<RuntimeSkillOverrideCatalog>,
+    },
+    ToolResult {
+        request_id: String,
+        call_id: String,
+        ok: bool,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
     Cancel {
         request_id: String,
     },
@@ -183,10 +239,43 @@ impl PiCommand {
     pub const fn locale(&self) -> LanguageKind {
         match self {
             Self::TestConnection { locale, .. }
+            | Self::ListModels { locale, .. }
             | Self::ReviewScope { locale, .. }
             | Self::PlanCPush { locale, .. }
-            | Self::ResolveConflict { locale, .. } => *locale,
-            Self::Probe { .. } | Self::Cancel { .. } | Self::Shutdown => LanguageKind::En,
+            | Self::ResolveConflict { locale, .. }
+            | Self::RunCustomAction { locale, .. }
+            | Self::GenerateCustomAction { locale, .. } => *locale,
+            Self::Probe { .. } | Self::ToolResult { .. } | Self::Cancel { .. } | Self::Shutdown => {
+                LanguageKind::En
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PiToolExecutionResult {
+    pub ok: bool,
+    pub content: String,
+    pub details: Option<Value>,
+    pub is_error: bool,
+}
+
+impl PiToolExecutionResult {
+    pub fn success(content: impl Into<String>) -> Self {
+        Self {
+            ok: true,
+            content: content.into(),
+            details: None,
+            is_error: false,
+        }
+    }
+
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            content: content.into(),
+            details: None,
+            is_error: true,
         }
     }
 }
@@ -255,6 +344,33 @@ pub struct PiConflictResolution {
     pub resolved_files: Vec<PiResolvedConflictFile>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiRemoteModelOption {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiActionLink {
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiCustomActionDraft {
+    pub label: String,
+    pub prompt: String,
+    pub summary: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -281,10 +397,29 @@ pub enum PiEvent {
         context: RequestContext,
         delta: String,
     },
+    ToolCall {
+        request_id: String,
+        context: RequestContext,
+        call_id: String,
+        tool_name: String,
+        args: Value,
+    },
+    ToolProgress {
+        request_id: String,
+        context: RequestContext,
+        call_id: String,
+        tool_name: String,
+        status: String,
+    },
     Completed {
         request_id: String,
         context: RequestContext,
         text: String,
+    },
+    ModelsListed {
+        request_id: String,
+        context: RequestContext,
+        models: Vec<PiRemoteModelOption>,
     },
     ReviewCompleted {
         request_id: String,
@@ -301,6 +436,18 @@ pub enum PiEvent {
         request_id: String,
         context: RequestContext,
         resolution: PiConflictResolution,
+    },
+    CustomActionCompleted {
+        request_id: String,
+        context: RequestContext,
+        summary: String,
+        #[serde(default)]
+        links: Vec<PiActionLink>,
+    },
+    CustomActionDrafted {
+        request_id: String,
+        context: RequestContext,
+        draft: PiCustomActionDraft,
     },
     Cancelled {
         request_id: String,
@@ -332,7 +479,22 @@ impl PiEvent {
                 context,
                 ..
             }
+            | Self::ToolCall {
+                request_id,
+                context,
+                ..
+            }
+            | Self::ToolProgress {
+                request_id,
+                context,
+                ..
+            }
             | Self::Completed {
+                request_id,
+                context,
+                ..
+            }
+            | Self::ModelsListed {
                 request_id,
                 context,
                 ..
@@ -348,6 +510,16 @@ impl PiEvent {
                 ..
             }
             | Self::ConflictResolved {
+                request_id,
+                context,
+                ..
+            }
+            | Self::CustomActionCompleted {
+                request_id,
+                context,
+                ..
+            }
+            | Self::CustomActionDrafted {
                 request_id,
                 context,
                 ..
@@ -368,10 +540,28 @@ impl PiEvent {
 
 #[derive(Debug)]
 pub enum PiTaskOutcome {
-    Completed { text: String },
-    ReviewCompleted { findings: Vec<PiReviewFinding> },
-    CPushPlanCompleted { plan: PiCPushPlan },
-    ConflictResolved { resolution: PiConflictResolution },
+    Completed {
+        text: String,
+    },
+    ModelsListed {
+        models: Vec<PiRemoteModelOption>,
+    },
+    ReviewCompleted {
+        findings: Vec<PiReviewFinding>,
+    },
+    CPushPlanCompleted {
+        plan: PiCPushPlan,
+    },
+    ConflictResolved {
+        resolution: PiConflictResolution,
+    },
+    CustomActionCompleted {
+        summary: String,
+        links: Vec<PiActionLink>,
+    },
+    CustomActionDrafted {
+        draft: PiCustomActionDraft,
+    },
     Cancelled,
 }
 
@@ -638,8 +828,41 @@ impl PiSupervisor {
         command: &PiCommand,
         idle_timeout: Duration,
         secret_to_redact: Option<&str>,
-        mut on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
+        on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
     ) -> Result<PiTaskOutcome, String> {
+        self.run_task_with_tools(
+            paths,
+            request_id,
+            expected_context,
+            command,
+            idle_timeout,
+            secret_to_redact,
+            on_event,
+            |_call_id, tool_name, _args| async move {
+                PiToolExecutionResult::error(format!(
+                    "Tool `{tool_name}` is not enabled for this request"
+                ))
+            },
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_task_with_tools<F, Fut>(
+        &self,
+        paths: &PiPaths,
+        request_id: String,
+        expected_context: RequestContext,
+        command: &PiCommand,
+        idle_timeout: Duration,
+        secret_to_redact: Option<&str>,
+        mut on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
+        mut on_tool_call: F,
+    ) -> Result<PiTaskOutcome, String>
+    where
+        F: FnMut(String, String, Value) -> Fut + Send,
+        Fut: Future<Output = PiToolExecutionResult> + Send,
+    {
         let locale = command.locale();
         let scrub = |raw: String| -> String {
             let Some(secret) = secret_to_redact.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -780,7 +1003,41 @@ impl PiSupervisor {
                 }
                 on_event(&event)?;
                 match event {
+                    PiEvent::ToolCall {
+                        call_id,
+                        tool_name,
+                        args,
+                        ..
+                    } => {
+                        let tool_future = on_tool_call(call_id.clone(), tool_name, args);
+                        tokio::pin!(tool_future);
+                        let outcome = tokio::select! {
+                            biased;
+                            change = cancelled.changed(), if !cancel_sent => {
+                                change.map_err(|_| i18n::pi_cancel_channel_closed(locale).to_string())?;
+                                write_command(&mut stdin, &PiCommand::Cancel { request_id: request_id.clone() }).await?;
+                                cancel_sent = true;
+                                continue;
+                            }
+                            result = &mut tool_future => result,
+                        };
+                        write_command(
+                            &mut stdin,
+                            &PiCommand::ToolResult {
+                                request_id: request_id.clone(),
+                                call_id,
+                                ok: outcome.ok,
+                                content: outcome.content,
+                                details: outcome.details,
+                                is_error: Some(outcome.is_error),
+                            },
+                        )
+                        .await?;
+                    }
                     PiEvent::Completed { text, .. } => return Ok(PiTaskOutcome::Completed { text }),
+                    PiEvent::ModelsListed { models, .. } => {
+                        return Ok(PiTaskOutcome::ModelsListed { models });
+                    }
                     PiEvent::ReviewCompleted { findings, .. } => {
                         return Ok(PiTaskOutcome::ReviewCompleted { findings });
                     }
@@ -789,6 +1046,12 @@ impl PiSupervisor {
                     }
                     PiEvent::ConflictResolved { resolution, .. } => {
                         return Ok(PiTaskOutcome::ConflictResolved { resolution });
+                    }
+                    PiEvent::CustomActionCompleted { summary, links, .. } => {
+                        return Ok(PiTaskOutcome::CustomActionCompleted { summary, links });
+                    }
+                    PiEvent::CustomActionDrafted { draft, .. } => {
+                        return Ok(PiTaskOutcome::CustomActionDrafted { draft });
                     }
                     PiEvent::Cancelled { .. } => return Ok(PiTaskOutcome::Cancelled),
                     PiEvent::Failed { message, .. } => return Err(message),
@@ -839,7 +1102,8 @@ async fn write_command<T: Serialize>(
 ) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(command).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
-    stdin.write_all(&bytes).await.map_err(|e| e.to_string())
+    stdin.write_all(&bytes).await.map_err(|e| e.to_string())?;
+    stdin.flush().await.map_err(|e| e.to_string())
 }
 
 async fn next_event(
@@ -899,11 +1163,14 @@ mod tests {
             files: Vec::new(),
             skipped_paths: Vec::new(),
             locale: LanguageKind::Zh,
+            enable_tools: Some(true),
+            skill_overrides: None,
         })
         .unwrap();
         assert_eq!(review["type"], "reviewScope");
         assert_eq!(review["prompt"], "focus on auth");
         assert_eq!(review["locale"], "zh");
+        assert_eq!(review["enableTools"], true);
 
         let plan = serde_json::to_value(PiCommand::PlanCPush {
             request_id: "req-plan".into(),
@@ -917,6 +1184,7 @@ mod tests {
             qa_history: Vec::new(),
             locale: LanguageKind::Zh,
             commit_language: LanguageKind::En,
+            skill_overrides: None,
         })
         .unwrap();
         assert_eq!(plan["type"], "planCPush");
@@ -1158,5 +1426,125 @@ mod tests {
             err,
             "Model request timed out; current draft and selection were preserved"
         );
+    }
+
+    #[tokio::test]
+    async fn bidirectional_tool_call_roundtrip_and_cancellation_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let tool_script = directory.path().join("tool-loop.mjs");
+        std::fs::write(
+            &tool_script,
+            r#"
+            import { createInterface } from 'node:readline';
+            const emit = (e) => process.stdout.write(JSON.stringify(e) + '\n');
+            emit({ type: 'ready', protocolVersion: 1, piCoreVersion: '1.6.0', nodeVersion: process.versions.node, pid: process.pid });
+            const rl = createInterface({ input: process.stdin });
+            let active = null;
+            rl.on('line', (line) => {
+              const cmd = JSON.parse(line);
+              if (cmd.type === 'shutdown') { process.exit(0); return; }
+              if (cmd.type === 'cancel') {
+                if (active) emit({ requestId: active.requestId, context: active.context, type: 'cancelled' });
+                active = null;
+                return;
+              }
+              if (cmd.type === 'toolResult') {
+                if (active && cmd.callId === 'tc-1') {
+                  emit({
+                    requestId: active.requestId,
+                    context: active.context,
+                    type: 'completed',
+                    text: `tool-reply:${cmd.content}`,
+                  });
+                  active = null;
+                }
+                return;
+              }
+              active = { requestId: cmd.requestId, context: cmd.context };
+              emit({ requestId: cmd.requestId, context: cmd.context, type: 'started' });
+              emit({
+                requestId: cmd.requestId,
+                context: cmd.context,
+                type: 'toolCall',
+                callId: 'tc-1',
+                toolName: 'read_repo_file',
+                args: { path: 'src/auth.ts' },
+              });
+            });
+        "#,
+        )
+        .unwrap();
+
+        let supervisor = PiSupervisor::default();
+        let context = RequestContext {
+            repository_id: "repo-1".into(),
+            worktree_id: "wt-1".into(),
+            session_id: "sess-1".into(),
+            scope_version: "scope-1".into(),
+        };
+        let paths = PiPaths {
+            node: PiPaths::development().node,
+            script: tool_script,
+        };
+        let cmd = PiCommand::TestConnection {
+            request_id: "req-tool-roundtrip".into(),
+            context: context.clone(),
+            model: sample_model(),
+            locale: LanguageKind::En,
+        };
+        let outcome = supervisor
+            .run_task_with_tools(
+                &paths,
+                "req-tool-roundtrip".into(),
+                context.clone(),
+                &cmd,
+                Duration::from_secs(5),
+                None,
+                |_| Ok(()),
+                |call_id, tool_name, args| async move {
+                    assert_eq!(call_id, "tc-1");
+                    assert_eq!(tool_name, "read_repo_file");
+                    assert_eq!(args["path"], "src/auth.ts");
+                    PiToolExecutionResult::success("export const ok = true;")
+                },
+            )
+            .await
+            .unwrap();
+        match outcome {
+            PiTaskOutcome::Completed { text } => {
+                assert_eq!(text, "tool-reply:export const ok = true;");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+
+        // Verify cancellation while a tool handler is suspended waiting (e.g. ask_user_question).
+        let cancel_sup = supervisor.clone();
+        let cancel_cmd = PiCommand::TestConnection {
+            request_id: "req-tool-cancel".into(),
+            context: context.clone(),
+            model: sample_model(),
+            locale: LanguageKind::En,
+        };
+        let cancelled_outcome = supervisor
+            .run_task_with_tools(
+                &paths,
+                "req-tool-cancel".into(),
+                context,
+                &cancel_cmd,
+                Duration::from_secs(5),
+                None,
+                |_| Ok(()),
+                |_call_id, _tool_name, _args| {
+                    let sup = cancel_sup.clone();
+                    async move {
+                        let _ = sup.cancel("req-tool-cancel");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        PiToolExecutionResult::success("unreachable")
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(cancelled_outcome, PiTaskOutcome::Cancelled));
     }
 }

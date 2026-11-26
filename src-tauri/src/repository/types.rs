@@ -181,12 +181,29 @@ pub struct PersistedWindowPreferences {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PersistedCustomAction {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_key: Option<String>,
+    pub label: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_write_confirm: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_prompt_hash: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersistedRepositorySettings {
     pub repository_id: String,
     pub editor: EditorKind,
     pub commit_language: LanguageKind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_keep_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_actions: Vec<PersistedCustomAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_action_id: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -241,6 +258,8 @@ pub struct WorkbenchRestoreReply {
     pub active_model_id: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub c_push_sessions: Option<Vec<crate::cpush::types::CPushSessionSnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_sessions: Option<Vec<crate::actions::session_store::ActionSessionSnapshot>>,
     pub warning: Option<String>,
 }
 #[derive(Serialize)]

@@ -1,4 +1,10 @@
 import type { CPushCommandReply, CPushProgressEvent, CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
+import {
+  computeCustomActionPromptHash,
+  type CustomActionCommandReply,
+  type CustomActionProgressEvent,
+  type TrustedActionUpdate,
+} from '../../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import { isValidRepoRelativePath } from '../../../../shared/git-read-protocol';
 import type { GitLocalKeepReply, GitReadReply, GitRepositorySnapshot, GitWorktree } from '../../../../shared/git-read-protocol';
@@ -168,6 +174,8 @@ function mergeSnapshot(state: WorkbenchState, snapshot: GitRepositorySnapshot, f
     editor: existingSettings?.editor ?? effectiveEditorFor(state, null),
     commitLanguage: existingSettings?.commitLanguage ?? state.defaultCommitLanguage,
     ...(resolvedKeepPaths.length ? { localKeepPaths: resolvedKeepPaths } : {}),
+    ...(existingSettings?.customActions?.length ? { customActions: existingSettings.customActions } : {}),
+    ...(existingSettings?.activeActionId ? { activeActionId: existingSettings.activeActionId } : {}),
   };
   const repositorySettings = {
     ...state.repositorySettings,
@@ -233,12 +241,15 @@ export function applyLocalKeepUpdate(
   );
   if (!mutated && !hasFileMismatch) return state;
   const nextKeepList = [...keepSet].sort();
+  const existingSettings = state.repositorySettings[repositoryId];
   const repositorySettings: Record<string, RepositorySettings> = {
     ...state.repositorySettings,
     [repositoryId]: {
       editor: effectiveEditorFor(state, repositoryId),
       commitLanguage: effectiveCommitLanguageFor(state, repositoryId),
       ...(nextKeepList.length ? { localKeepPaths: nextKeepList } : {}),
+      ...(existingSettings?.customActions?.length ? { customActions: existingSettings.customActions } : {}),
+      ...(existingSettings?.activeActionId ? { activeActionId: existingSettings.activeActionId } : {}),
     },
   };
   const repositories = state.repositories.map((repo) =>
@@ -337,6 +348,8 @@ export function serializeWorkbenchPersistence(state: WorkbenchState, revision: n
       editor: cfg.editor,
       commitLanguage: cfg.commitLanguage,
       ...(cfg.localKeepPaths?.length ? { localKeepPaths: [...cfg.localKeepPaths] } : {}),
+      ...(cfg.customActions?.length ? { customActions: cfg.customActions.map((item) => ({ ...item })) } : {}),
+      ...(cfg.activeActionId ? { activeActionId: cfg.activeActionId } : {}),
     })),
     windowPreferences,
     activeWorktreeId: state.activeWorktreeId,
@@ -486,9 +499,139 @@ export function receiveCPushProgress(state: WorkbenchState, progress: CPushProgr
   return applyCPushSnapshot(state, progress.session, progress.repositorySnapshot);
 }
 
+function applyTrustedUpdate(state: WorkbenchState, update?: TrustedActionUpdate): WorkbenchState {
+  if (!update) return state;
+  const prev = state.repositorySettings[update.repositoryId];
+  const existing = prev?.customActions;
+  if (!existing?.length) return state;
+  let changed = false;
+  const nextActions = existing.map((item) => {
+    if (item.id !== update.actionId) return item;
+    if (computeCustomActionPromptHash(item.prompt) !== update.trustedPromptHash) return item;
+    changed = true;
+    return {
+      ...item,
+      skipWriteConfirm: true,
+      trustedPromptHash: update.trustedPromptHash,
+    };
+  });
+  if (!changed) return state;
+  return {
+    ...state,
+    repositorySettings: {
+      ...state.repositorySettings,
+      [update.repositoryId]: {
+        ...prev,
+        customActions: nextActions,
+      },
+    },
+    settingsModified: true,
+  };
+}
+
+export function applyCustomActionProgress(
+  state: WorkbenchState,
+  progress: CustomActionProgressEvent,
+): WorkbenchState {
+  let nextState = progress.repositorySnapshot
+    ? mergeSnapshot(state, progress.repositorySnapshot, false)
+    : state;
+  nextState = applyTrustedUpdate(nextState, progress.trustedActionUpdate);
+  const nextStatus: Worktree['sessionStatus'] =
+    progress.status === 'running'
+      ? 'running'
+      : progress.status === 'needsDecision'
+        ? 'needsDecision'
+        : progress.status === 'done'
+          ? 'done'
+          : 'idle';
+  return {
+    ...nextState,
+    worktrees: nextState.worktrees.map((tree) => {
+      if (tree.repositoryId !== progress.repositoryId || tree.worktreeId !== progress.worktreeId) {
+        return tree;
+      }
+      const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+      const nextMessages: Message[] = progress.message
+        ? [...reviewMessages, progress.message]
+        : reviewMessages;
+      const shouldExpand = progress.status === 'needsDecision'
+        ? true
+        : progress.status === 'done' || progress.status === 'cancelled'
+          ? false
+          : tree.dockExpanded;
+      return {
+        ...tree,
+        sessionStatus: nextStatus,
+        dockExpanded: shouldExpand,
+        messages: nextMessages,
+        cPush: undefined,
+        customAction: progress.status === 'cancelled' || progress.status === 'failed'
+          ? undefined
+          : {
+              runId: progress.runId,
+              actionId: progress.actionId,
+              actionLabel: progress.actionLabel,
+              ...(progress.pendingCallId ? { pendingCallId: progress.pendingCallId } : {}),
+              timeline: progress.timeline,
+              commits: progress.commits,
+              links: progress.links,
+            },
+      };
+    }),
+  };
+}
+
+export function finishCustomActionCommand(
+  state: WorkbenchState,
+  reply: CustomActionCommandReply,
+  expandDockOnSettle?: boolean,
+): WorkbenchState {
+  let nextState = reply.repositorySnapshot
+    ? mergeSnapshot(state, reply.repositorySnapshot, false)
+    : state;
+  nextState = applyTrustedUpdate(nextState, reply.trustedActionUpdate);
+  const nextStatus: Worktree['sessionStatus'] = reply.status === 'done' ? 'done' : 'idle';
+  return {
+    ...nextState,
+    worktrees: nextState.worktrees.map((tree) => {
+      if (tree.repositoryId !== reply.repositoryId || tree.worktreeId !== reply.worktreeId) {
+        return tree;
+      }
+      const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+      const nextMessages: Message[] = reply.message
+        ? [...reviewMessages, reply.message]
+        : reviewMessages;
+      const nextDockExpanded = reply.status === 'cancelled'
+        ? false
+        : reply.status === 'done'
+          ? Boolean(expandDockOnSettle)
+          : Boolean(reply.message);
+      return {
+        ...tree,
+        sessionStatus: nextStatus,
+        dockExpanded: nextDockExpanded,
+        messages: nextMessages,
+        cPush: undefined,
+        customAction: reply.status === 'done'
+          ? {
+              runId: reply.runId,
+              actionId: reply.actionId,
+              actionLabel: reply.actionLabel,
+              timeline: reply.timeline,
+              commits: reply.commits,
+              links: reply.links,
+            }
+          : undefined,
+      };
+    }),
+  };
+}
+
 export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchRestoreReply): WorkbenchState {
   const persistedByWorktree = new Map(restored.worktrees.map((item) => [item.worktreeId, item]));
   const cPushByWorktree = new Map((restored.cPushSessions ?? []).map((item) => [item.worktreeId, item]));
+  const actionByWorktree = new Map((restored.actionSessions ?? []).map((item) => [item.worktreeId, item]));
   const userEditedEmpty = state.emptyPrompt.length > 0;
   const hydratedConnections = restored.connections === undefined
     ? state.connections
@@ -517,10 +660,16 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
   const repositorySettings: Record<string, RepositorySettings> = {};
   for (const entry of restored.repositorySettings ?? []) {
     const keepPaths = entry.localKeepPaths?.filter(isValidRepoRelativePath) ?? [];
+    const customActions = entry.customActions?.length ? entry.customActions : undefined;
+    const activeActionId = entry.activeActionId && customActions?.some((item) => item.id === entry.activeActionId)
+      ? entry.activeActionId
+      : undefined;
     repositorySettings[entry.repositoryId] = {
       editor: resolveEditor(entry.editor),
       commitLanguage: entry.commitLanguage,
       ...(keepPaths.length ? { localKeepPaths: [...new Set(keepPaths)].sort() } : {}),
+      ...(customActions ? { customActions } : {}),
+      ...(activeActionId ? { activeActionId } : {}),
     };
   }
   for (const snapshot of restored.snapshots) {
@@ -533,15 +682,22 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       editor: existing?.editor ?? resolveEditor(restored.editor),
       commitLanguage: existing?.commitLanguage ?? restoredDefaultCommitLang,
       ...(mergedKeep?.length ? { localKeepPaths: mergedKeep } : {}),
+      ...(existing?.customActions?.length ? { customActions: existing.customActions } : {}),
+      ...(existing?.activeActionId ? { activeActionId: existing.activeActionId } : {}),
     };
   }
   if (state.settingsModified) {
     for (const [repositoryId, cfg] of Object.entries(state.repositorySettings)) {
-      const keepPaths = cfg.localKeepPaths ?? repositorySettings[repositoryId]?.localKeepPaths;
+      const existing = repositorySettings[repositoryId];
+      const keepPaths = cfg.localKeepPaths ?? existing?.localKeepPaths;
+      const customActions = cfg.customActions ?? existing?.customActions;
+      const activeActionId = cfg.activeActionId !== undefined ? cfg.activeActionId : existing?.activeActionId;
       repositorySettings[repositoryId] = {
         editor: resolveEditor(cfg.editor),
         commitLanguage: cfg.commitLanguage,
         ...(keepPaths?.length ? { localKeepPaths: keepPaths } : {}),
+        ...(customActions?.length ? { customActions } : {}),
+        ...(activeActionId ? { activeActionId } : {}),
       };
     }
   }
@@ -578,11 +734,12 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
     const repoKeepPaths = repositorySettings[snapshot.repository.id]?.localKeepPaths ?? [];
     const keepSet = new Set(repoKeepPaths);
     const hasSnapshotKeepList = snapshot.repository.localKeepPaths !== undefined || repoKeepPaths.length > 0;
-    const worktrees = snapshot.worktrees.map((rawIncoming) => {
+    const worktrees = snapshot.worktrees.map((rawIncoming): Worktree => {
       const incoming = normalizeWorktreeLocalKeep(rawIncoming, keepSet, hasSnapshotKeepList);
       const base = projectWorktree(incoming);
       const saved = persistedByWorktree.get(incoming.worktreeId);
       const savedCPush = cPushByWorktree.get(incoming.worktreeId);
+      const savedAction = actionByWorktree.get(incoming.worktreeId);
       const withSavedPrompt: Worktree = (!saved || incoming.readError) ? base : (() => {
         const selectedIds = saved.unselectedIds !== undefined
           ? (() => {
@@ -604,30 +761,48 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
           tab: saved.tab,
         };
       })();
-      if (!savedCPush || savedCPush.sessionStatus === 'idle') return withSavedPrompt;
-      return {
-        ...withSavedPrompt,
-        sessionId: savedCPush.sessionId,
-        sessionStatus: savedCPush.sessionStatus,
-        messages: savedCPush.message ? [savedCPush.message] : [],
-        dockExpanded: false,
-        cPush: {
-          runId: savedCPush.runId,
-          frozenTarget: {
-            repositoryId: savedCPush.repositoryId,
-            worktreeId: savedCPush.worktreeId,
-            sessionId: savedCPush.sessionId,
-            scopeVersion: savedCPush.frozenScopeVersion,
+      if (savedCPush && savedCPush.sessionStatus !== 'idle') {
+        return {
+          ...withSavedPrompt,
+          sessionId: savedCPush.sessionId,
+          sessionStatus: savedCPush.sessionStatus,
+          messages: savedCPush.message ? [savedCPush.message] : [],
+          dockExpanded: false,
+          cPush: {
+            runId: savedCPush.runId,
+            frozenTarget: {
+              repositoryId: savedCPush.repositoryId,
+              worktreeId: savedCPush.worktreeId,
+              sessionId: savedCPush.sessionId,
+              scopeVersion: savedCPush.frozenScopeVersion,
+            },
+            frozenFileIds: savedCPush.frozenFileIds,
+            promptRevisionAtStart: withSavedPrompt.prompt.revision,
+            modelId: savedCPush.modelId,
+            timeline: savedCPush.timeline,
+            qaLog: savedCPush.qaLog,
+            commits: savedCPush.commits,
+            canRetryRemaining: savedCPush.canRetryRemaining,
           },
-          frozenFileIds: savedCPush.frozenFileIds,
-          promptRevisionAtStart: withSavedPrompt.prompt.revision,
-          modelId: savedCPush.modelId,
-          timeline: savedCPush.timeline,
-          qaLog: savedCPush.qaLog,
-          commits: savedCPush.commits,
-          canRetryRemaining: savedCPush.canRetryRemaining,
-        },
-      };
+        };
+      }
+      if (savedAction?.message) {
+        return {
+          ...withSavedPrompt,
+          sessionStatus: savedAction.status === 'done' ? 'done' : 'idle',
+          messages: [savedAction.message],
+          dockExpanded: false,
+          customAction: {
+            runId: savedAction.runId,
+            actionId: savedAction.actionId,
+            actionLabel: savedAction.actionLabel,
+            timeline: savedAction.timeline,
+            commits: savedAction.commits,
+            links: savedAction.links,
+          },
+        };
+      }
+      return withSavedPrompt;
     });
     next = {
       ...next,

@@ -3,6 +3,7 @@ mod tests;
 pub mod types;
 
 use crate::{
+    actions::CustomActionCoordinator,
     cpush::CPushCoordinator,
     foundation::lifecycle::cleanup_for_restart,
     i18n::{self, LanguageKind},
@@ -386,6 +387,7 @@ impl UpdateManager {
         locale: LanguageKind,
         repositories: &RepositoryStore,
         cpush: &CPushCoordinator,
+        actions: &CustomActionCoordinator,
     ) -> Result<UpdateStateSnapshot, String> {
         let (update, mut cancel_rx, base_snapshot) = {
             let mut guard = self
@@ -397,7 +399,9 @@ impl UpdateManager {
             }
             let current = Self::ensure_snapshot(&mut guard, app);
             let pending_version = guard.pending_update.as_ref().map(|u| u.version.as_str());
-            let git_busy = repositories.has_active_write() || cpush.has_active_operation();
+            let git_busy = repositories.has_active_write()
+                || cpush.has_active_operation()
+                || actions.has_active_operation();
             validate_install_preconditions(
                 current.install_blocker,
                 git_busy,
@@ -535,7 +539,10 @@ impl UpdateManager {
         };
 
         // Re-check Git activity right before touching Picket.app on disk:
-        if repositories.has_active_write() || cpush.has_active_operation() {
+        if repositories.has_active_write()
+            || cpush.has_active_operation()
+            || actions.has_active_operation()
+        {
             let message = i18n::updater_git_busy_error(locale).to_owned();
             let mut guard = self
                 .inner
