@@ -221,11 +221,11 @@ fn validate_source_repo(
             .chars()
             .any(|c| c.is_control() || c.is_whitespace())
     {
-        return Err(i18n::skills_invalid_source_url_error(locale).into());
+        return Err(i18n::skills::skills_invalid_source_url_error(locale).into());
     }
     let lower = candidate.to_ascii_lowercase();
     if lower.starts_with("ext::") || lower.starts_with("fd::") {
-        return Err(i18n::skills_invalid_source_url_error(locale).into());
+        return Err(i18n::skills::skills_invalid_source_url_error(locale).into());
     }
     let allowed = lower.starts_with("https://")
         || lower.starts_with("http://")
@@ -234,7 +234,7 @@ fn validate_source_repo(
         || candidate.starts_with("git@")
         || candidate.starts_with('/');
     if !allowed {
-        return Err(i18n::skills_invalid_source_url_error(locale).into());
+        return Err(i18n::skills::skills_invalid_source_url_error(locale).into());
     }
     let display = sanitize_display_source_repo(candidate);
     Ok((candidate.to_owned(), display))
@@ -772,7 +772,10 @@ impl SkillManager {
         .await?;
         if !ok_clone {
             let sanitized_err = err_clone.replace(&clone_url, &display_repo);
-            return Err(i18n::skills_sync_clone_failed_error(locale, &sanitized_err));
+            return Err(i18n::skills::skills_sync_clone_failed_error(
+                locale,
+                &sanitized_err,
+            ));
         }
 
         let (ok_head, head_out, _) =
@@ -803,7 +806,9 @@ impl SkillManager {
 
         if let Err(err) = stage_result {
             let _ = fs::remove_dir_all(&stage_dir);
-            return Err(i18n::skills_sync_validation_failed_error(locale, &err));
+            return Err(i18n::skills::skills_sync_validation_failed_error(
+                locale, &err,
+            ));
         }
 
         Ok(build_skills_state_snapshot(storage_dir))
@@ -818,7 +823,7 @@ impl SkillManager {
         let locale = request.locale;
         let skills_dir = storage_dir.join("skills");
         let Some(mut manifest) = load_stored_manifest(&skills_dir) else {
-            return Err(i18n::skills_not_synced_yet_error(locale).into());
+            return Err(i18n::skills::skills_not_synced_yet_error(locale).into());
         };
         let available: HashSet<&str> = manifest.skills.iter().map(|s| s.name.as_str()).collect();
         let mut seen = HashSet::new();

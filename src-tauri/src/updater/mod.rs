@@ -138,16 +138,16 @@ pub(crate) fn blocker_message(
 ) -> Option<&'static str> {
     match blocker {
         UpdateInstallBlocker::None => None,
-        UpdateInstallBlocker::DevBuild => Some(i18n::updater_blocker_dev_build(locale)),
+        UpdateInstallBlocker::DevBuild => Some(i18n::updater::updater_blocker_dev_build(locale)),
         UpdateInstallBlocker::ReadOnlyVolume => {
-            Some(i18n::updater_blocker_read_only_volume(locale))
+            Some(i18n::updater::updater_blocker_read_only_volume(locale))
         }
         UpdateInstallBlocker::AppTranslocation => {
-            Some(i18n::updater_blocker_app_translocation(locale))
+            Some(i18n::updater::updater_blocker_app_translocation(locale))
         }
-        UpdateInstallBlocker::SigningKeyUnconfigured => {
-            Some(i18n::updater_blocker_signing_key_unconfigured(locale))
-        }
+        UpdateInstallBlocker::SigningKeyUnconfigured => Some(
+            i18n::updater::updater_blocker_signing_key_unconfigured(locale),
+        ),
     }
 }
 
@@ -174,14 +174,14 @@ pub(crate) fn classify_updater_error(
         | UpdaterError::SignatureUtf8(_)
         | UpdaterError::MissingSignedVersion
         | UpdaterError::SignedVersionMismatch { .. } => {
-            i18n::updater_signature_error(locale).to_owned()
+            i18n::updater::updater_signature_error(locale).to_owned()
         }
         other => {
             let detail = other.to_string();
             if installing {
-                i18n::updater_install_failed_error(locale, &detail)
+                i18n::updater::updater_install_failed_error(locale, &detail)
             } else {
-                i18n::updater_check_failed_error(locale, &detail)
+                i18n::updater::updater_check_failed_error(locale, &detail)
             }
         }
     }
@@ -195,14 +195,14 @@ pub(crate) fn validate_install_preconditions(
     locale: LanguageKind,
 ) -> Result<(), String> {
     if git_busy {
-        return Err(i18n::updater_git_busy_error(locale).to_owned());
+        return Err(i18n::updater::updater_git_busy_error(locale).to_owned());
     }
     if let Some(msg) = blocker_message(blocker, locale) {
         return Err(msg.to_owned());
     }
     let trimmed = requested_version.trim();
     if trimmed.is_empty() || pending_version != Some(trimmed) {
-        return Err(i18n::updater_no_pending_update_error(locale).to_owned());
+        return Err(i18n::updater::updater_no_pending_update_error(locale).to_owned());
     }
     Ok(())
 }
@@ -395,7 +395,7 @@ impl UpdateManager {
                 .lock()
                 .map_err(|_| "Updater state lock is unavailable".to_string())?;
             if guard.in_flight {
-                return Err(i18n::updater_busy_error(locale).to_owned());
+                return Err(i18n::updater::updater_busy_error(locale).to_owned());
             }
             let current = Self::ensure_snapshot(&mut guard, app);
             let pending_version = guard.pending_update.as_ref().map(|u| u.version.as_str());
@@ -412,7 +412,7 @@ impl UpdateManager {
             let update = guard
                 .pending_update
                 .clone()
-                .ok_or_else(|| i18n::updater_no_pending_update_error(locale).to_owned())?;
+                .ok_or_else(|| i18n::updater::updater_no_pending_update_error(locale).to_owned())?;
             let (tx, rx) = watch::channel(false);
             guard.in_flight = true;
             guard.cancel_tx = Some(tx);
@@ -543,7 +543,7 @@ impl UpdateManager {
             || cpush.has_active_operation()
             || actions.has_active_operation()
         {
-            let message = i18n::updater_git_busy_error(locale).to_owned();
+            let message = i18n::updater::updater_git_busy_error(locale).to_owned();
             let mut guard = self
                 .inner
                 .lock()
@@ -600,7 +600,8 @@ impl UpdateManager {
                 Err(message)
             }
             Err(join_err) => {
-                let message = i18n::updater_install_failed_error(locale, &join_err.to_string());
+                let message =
+                    i18n::updater::updater_install_failed_error(locale, &join_err.to_string());
                 let mut guard = self
                     .inner
                     .lock()
@@ -625,7 +626,7 @@ impl UpdateManager {
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| i18n::updater_state_lock_error(locale).to_owned())?;
+            .map_err(|_| i18n::updater::updater_state_lock_error(locale).to_owned())?;
         if let Some(tx) = guard.cancel_tx.as_ref() {
             let _ = tx.send(true);
         }
@@ -637,9 +638,11 @@ impl UpdateManager {
         let status = std::process::Command::new("/usr/bin/open")
             .arg(RELEASE_PAGE_URL)
             .status()
-            .map_err(|err| i18n::updater_open_release_page_error(locale, &err.to_string()))?;
+            .map_err(|err| {
+                i18n::updater::updater_open_release_page_error(locale, &err.to_string())
+            })?;
         if !status.success() {
-            return Err(i18n::updater_open_release_page_error(
+            return Err(i18n::updater::updater_open_release_page_error(
                 locale,
                 &format!("open exited with {status}"),
             ));

@@ -100,7 +100,7 @@ fn enforces_git_busy_guard_blockers_and_version_matching_before_install() {
         .unwrap_err();
         assert_eq!(
             err_zh,
-            crate::i18n::updater_git_busy_error(LanguageKind::Zh)
+            crate::i18n::updater::updater_git_busy_error(LanguageKind::Zh)
         );
     }
     assert!(!cpush.has_active_operation());
@@ -185,7 +185,7 @@ fn formats_timestamps_sanitizes_notes_classifies_signature_errors_and_rejects_un
         classify_updater_error(&UpdaterError::MissingSignedVersion, LanguageKind::Zh, true);
     assert_eq!(
         sig_err_zh,
-        crate::i18n::updater_signature_error(LanguageKind::Zh)
+        crate::i18n::updater::updater_signature_error(LanguageKind::Zh)
     );
 
     // Wire contracts reject unknown fields (including arbitrary URL injection on open_release_page):

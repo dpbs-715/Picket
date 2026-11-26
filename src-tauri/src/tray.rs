@@ -172,28 +172,28 @@ pub fn build_tray_tooltip(snapshot: &TrayStateSnapshot) -> String {
         .iter()
         .any(|r| r.session_status == TraySessionStatus::Conflict)
     {
-        return i18n::tray_tooltip_conflict(locale).to_string();
+        return i18n::desktop::tray_tooltip_conflict(locale).to_string();
     }
     if snapshot
         .repositories
         .iter()
         .any(|r| r.session_status == TraySessionStatus::NeedsDecision)
     {
-        return i18n::tray_tooltip_needs_decision(locale).to_string();
+        return i18n::desktop::tray_tooltip_needs_decision(locale).to_string();
     }
     if snapshot
         .repositories
         .iter()
         .any(|r| r.session_status == TraySessionStatus::PushFailed)
     {
-        return i18n::tray_tooltip_push_failed(locale).to_string();
+        return i18n::desktop::tray_tooltip_push_failed(locale).to_string();
     }
     if snapshot
         .repositories
         .iter()
         .any(|r| r.session_status == TraySessionStatus::Running)
     {
-        return i18n::tray_tooltip_running(locale).to_string();
+        return i18n::desktop::tray_tooltip_running(locale).to_string();
     }
     let changed_repos = snapshot
         .repositories
@@ -201,10 +201,10 @@ pub fn build_tray_tooltip(snapshot: &TrayStateSnapshot) -> String {
         .filter(|r| r.change_count > 0 || r.ahead > 0 || r.behind > 0 || r.read_error.is_some())
         .count();
     if changed_repos > 0 {
-        return i18n::tray_tooltip_changed_repos(locale, changed_repos);
+        return i18n::desktop::tray_tooltip_changed_repos(locale, changed_repos);
     }
     if snapshot.has_update {
-        return i18n::tray_tooltip_update_available(locale).to_string();
+        return i18n::desktop::tray_tooltip_update_available(locale).to_string();
     }
     "Picket".to_string()
 }
