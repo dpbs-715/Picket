@@ -872,7 +872,7 @@ export function ChangesPanel(props: Props) {
             initial={instantMotion ? false : { opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={instantMotion ? undefined : { opacity: 0, scale: 0.96 }}
-            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+            transition={instantMotion ? { duration: 0 } : { duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
           >
             <button
               type="button"

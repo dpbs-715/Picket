@@ -77,9 +77,11 @@ export function MotionPresence({
   mode?: 'sync' | 'wait' | 'popLayout';
 }) {
   const instant = useInstantMotion();
-  if (instant) return <>{children}</>;
+  // Always keep AnimatePresence mounted so toggling `instant` (for example on macOS
+  // Space/screen switches that fire `visibilitychange`) never changes the React element
+  // type and never unmounts stateful children (modals, forms, MessageDock, popovers).
   return (
-    <AnimatePresence initial={initial} mode={mode}>
+    <AnimatePresence initial={instant ? false : initial} mode={mode}>
       {children}
     </AnimatePresence>
   );
@@ -105,15 +107,9 @@ export function Collapse({
     }
   }, [open, instant]);
 
-  if (instant) {
-    if (!open) return null;
-    return (
-      <div id={id} className={`motion-collapse ${className}`.trim()} data-motion-mode="instant">
-        {children}
-      </div>
-    );
-  }
-
+  // Keep a stable AnimatePresence -> m.div tree across `instant` transitions so inputs
+  // inside Collapse (such as the + Prompt textarea and Advanced model options) never
+  // unmount or lose cursor/state on visibilitychange or reduced-motion changes.
   return (
     <AnimatePresence initial={false}>
       {open && (
@@ -121,16 +117,18 @@ export function Collapse({
           key="collapse-body"
           id={id}
           className={`motion-collapse ${className}`.trim()}
-          data-motion-mode="animated"
-          initial={{ height: 0, opacity: 0 }}
+          data-motion-mode={instant ? 'instant' : 'animated'}
+          initial={instant ? false : { height: 0, opacity: 0 }}
           animate={{ height: 'auto', opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          transition={{
+          exit={instant ? undefined : { height: 0, opacity: 0 }}
+          transition={instant ? { duration: 0 } : {
             height: { duration: MOTION_DURATION.base, ease: MOTION_EASE },
             opacity: { duration: MOTION_DURATION.fast, ease: MOTION_EASE },
           }}
-          style={{ overflow: overflowVisible ? 'visible' : 'hidden' }}
-          onAnimationStart={() => setOverflowVisible(false)}
+          style={{ overflow: instant || overflowVisible ? 'visible' : 'hidden' }}
+          onAnimationStart={() => {
+            if (!instant) setOverflowVisible(false);
+          }}
           onAnimationComplete={(definition) => {
             if (open && typeof definition === 'object' && definition !== null && 'height' in definition) {
               setOverflowVisible(true);
@@ -154,19 +152,16 @@ export function PresenceNotice({
   children: ReactNode;
 }) {
   const instant = useInstantMotion();
-  if (instant) {
-    return show ? <>{children}</> : null;
-  }
   return (
     <AnimatePresence initial={false}>
       {show && (
         <m.div
           key={motionKey}
           className="motion-notice-shell"
-          initial={{ height: 0, opacity: 0 }}
+          initial={instant ? false : { height: 0, opacity: 0 }}
           animate={{ height: 'auto', opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          transition={{
+          exit={instant ? undefined : { height: 0, opacity: 0 }}
+          transition={instant ? { duration: 0 } : {
             height: { duration: MOTION_DURATION.base, ease: MOTION_EASE },
             opacity: { duration: MOTION_DURATION.fast, ease: MOTION_EASE },
           }}

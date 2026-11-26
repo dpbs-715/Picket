@@ -590,6 +590,7 @@ mod macos {
     struct CompletionPayload {
         ns_window: usize,
         generation: u64,
+        target_frame: NSRect,
         final_min_size: NSSize,
         primary_height: f64,
         pinned: bool,
@@ -659,6 +660,10 @@ mod macos {
         let ns_window = payload.ns_window as *mut c_void;
         if !ns_window.is_null() && ANIMATION_GENERATION.load(Ordering::SeqCst) == payload.generation
         {
+            let current = unsafe { window_frame(ns_window) };
+            if !frames_within_epsilon(current, payload.target_frame) {
+                unsafe { set_window_frame_instant(ns_window, payload.target_frame) };
+            }
             unsafe { set_window_content_min_size(ns_window, payload.final_min_size) };
         }
         let after_frame = unsafe { window_frame(ns_window) };
@@ -678,18 +683,28 @@ mod macos {
         }
     }
 
+    struct FallbackSnapTarget {
+        generation: u64,
+        target_frame: NSRect,
+        final_min_size: NSSize,
+        primary_height: f64,
+        pinned: bool,
+        previous_position: LogicalPoint,
+        previous_size: LogicalExtent,
+    }
+
     pub async fn animate_main_window(
         window: tauri::WebviewWindow,
         req: ValidatedRequest,
     ) -> Result<AnimateWindowFrameReply, String> {
         let (tx, rx) = oneshot::channel::<AnimateWindowFrameReply>();
-        let (err_tx, err_rx) = oneshot::channel::<Result<(), String>>();
+        let (err_tx, err_rx) = oneshot::channel::<Result<Option<FallbackSnapTarget>, String>>();
         let win_for_main = window.clone();
 
         window
             .run_on_main_thread(move || {
                 let _pool = AutoreleasePoolGuard::new();
-                let result = (|| -> Result<(), String> {
+                let result = (|| -> Result<Option<FallbackSnapTarget>, String> {
                     let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
                     if ns_window.is_null() {
                         return Err("Native NSWindow pointer is unavailable".into());
@@ -744,7 +759,7 @@ mod macos {
                             size: content_size_to_extent(after_content.size),
                             animated: false,
                         });
-                        return Ok(());
+                        return Ok(None);
                     }
 
                     let anim_ctx_cls = unsafe { objc_getClass(c"NSAnimationContext".as_ptr()) };
@@ -764,7 +779,7 @@ mod macos {
                             size: content_size_to_extent(after_content.size),
                             animated: false,
                         });
-                        return Ok(());
+                        return Ok(None);
                     }
 
                     unsafe {
@@ -774,6 +789,7 @@ mod macos {
                     let payload = Arc::new(CompletionPayload {
                         ns_window: ns_window as usize,
                         generation,
+                        target_frame,
                         final_min_size,
                         primary_height,
                         pinned: effective_pinned,
@@ -863,13 +879,21 @@ mod macos {
                         drop(Arc::from_raw(raw_payload));
                     }
 
-                    Ok(())
+                    Ok(Some(FallbackSnapTarget {
+                        generation,
+                        target_frame,
+                        final_min_size,
+                        primary_height,
+                        pinned: effective_pinned,
+                        previous_position,
+                        previous_size,
+                    }))
                 })();
                 let _ = err_tx.send(result);
             })
             .map_err(|e| e.to_string())?;
 
-        err_rx
+        let fallback_target = err_rx
             .await
             .map_err(|_| "Window frame animation task did not run on main thread".to_string())??;
 
@@ -877,7 +901,55 @@ mod macos {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(_)) | Err(_) => {
-                // Fallback read if the OS animation context was cancelled (e.g. window hidden).
+                // Fallback snap if the OS animation context was cancelled/dropped (e.g. window occluded).
+                if let Some(FallbackSnapTarget {
+                    generation,
+                    target_frame,
+                    final_min_size,
+                    primary_height,
+                    pinned,
+                    previous_position,
+                    previous_size,
+                }) = fallback_target
+                {
+                    let (snap_tx, snap_rx) = oneshot::channel::<AnimateWindowFrameReply>();
+                    let win_snap = window.clone();
+                    if window
+                        .run_on_main_thread(move || {
+                            let _pool = AutoreleasePoolGuard::new();
+                            if let Ok(ns_window) = win_snap.ns_window()
+                                && !ns_window.is_null()
+                            {
+                                if ANIMATION_GENERATION.load(Ordering::SeqCst) == generation {
+                                    let current = unsafe { window_frame(ns_window) };
+                                    if !frames_within_epsilon(current, target_frame) {
+                                        unsafe {
+                                            set_window_frame_instant(ns_window, target_frame)
+                                        };
+                                    }
+                                    unsafe {
+                                        set_window_content_min_size(ns_window, final_min_size)
+                                    };
+                                }
+                                let after_frame = unsafe { window_frame(ns_window) };
+                                let after_content =
+                                    unsafe { window_content_rect(ns_window, after_frame) };
+                                let _ = snap_tx.send(AnimateWindowFrameReply {
+                                    pinned,
+                                    previous_position,
+                                    previous_size,
+                                    position: appkit_frame_to_top_left(after_frame, primary_height),
+                                    size: content_size_to_extent(after_content.size),
+                                    animated: false,
+                                });
+                            }
+                        })
+                        .is_ok()
+                        && let Ok(reply) = snap_rx.await
+                    {
+                        return Ok(reply);
+                    }
+                }
                 read_current_reply_fallback(&window, req)
             }
         }
