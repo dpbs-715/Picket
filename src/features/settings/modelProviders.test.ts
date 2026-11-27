@@ -190,4 +190,57 @@ describe('Provider connection and model form validation rules', () => {
       maxOutputTokens: 16_384,
     });
   });
+
+  it('auto-matches DeepSeek family presets (V4/Flash, V3.x, R1/Distill, Coder) without false prefix hits', () => {
+    expect(resolveDefaultTokenLimits('deepseek', 'openai-completions', 'deepseek-flash')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 393_216,
+    });
+    expect(resolveDefaultTokenLimits('deepseek', 'openai-completions', 'deepseek-v4-pro')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 393_216,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'deepseek/DeepSeek-V4.1-Flash-1017')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 393_216,
+    });
+    expect(resolveDefaultTokenLimits('deepseek', 'openai-completions', 'deepseek-reasoner')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 65_536,
+    });
+    expect(resolveDefaultTokenLimits('deepseek', 'openai-completions', 'deepseek-chat')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 8_192,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'deepseek-ai/DeepSeek-V3.2-Exp')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 65_536,
+    });
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'deepseek-v3-0324')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 8_192,
+    });
+    expect(resolveDefaultTokenLimits('ollama', 'openai-completions', 'deepseek-r1-distill-qwen-32b')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 32_768,
+    });
+    expect(resolveDefaultTokenLimits('ollama', 'openai-completions', 'deepseek-r1:8b')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 65_536,
+    });
+    expect(resolveDefaultTokenLimits('ollama', 'openai-completions', 'deepseek-coder-v2:16b')).toEqual({
+      contextWindow: 131_072,
+      maxOutputTokens: 8_192,
+    });
+    expect(resolveDefaultTokenLimits('ollama', 'openai-completions', 'deepseek-coder:33b')).toEqual({
+      contextWindow: 16_384,
+      maxOutputTokens: 4_096,
+    });
+    // Non-matching lookalike must not falsely match deepseek-v4:
+    expect(resolveDefaultTokenLimits('custom', 'openai-completions', 'deepseek-v40')).toEqual({
+      contextWindow: 128_000,
+      maxOutputTokens: 16_384,
+    });
+    expect(formatTokenCount(393_216)).toBe('384K');
+  });
 });

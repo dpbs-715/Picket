@@ -3,7 +3,7 @@
     "minContextWindow": 4096,
     "maxContextWindow": 2000000,
     "minMaxOutputTokens": 256,
-    "maxMaxOutputTokens": 131072
+    "maxMaxOutputTokens": 393216
   },
   "defaults": {
     "contextWindow": 128000,
@@ -62,10 +62,10 @@
       "needsUrl": false,
       "defaultBaseUrl": "https://api.deepseek.com",
       "placeholderUrl": "",
-      "exampleModelId": "deepseek-chat",
-      "exampleName": "DeepSeek V3",
-      "defaultContextWindow": 128000,
-      "defaultMaxOutputTokens": 8192
+      "exampleModelId": "deepseek-flash",
+      "exampleName": "DeepSeek Flash",
+      "defaultContextWindow": 1048576,
+      "defaultMaxOutputTokens": 393216
     },
     "ollama": {
       "label": "Ollama (Local)",
@@ -161,6 +161,91 @@
     {
       "pattern": "moonshot-v1-8k",
       "contextWindow": 8192,
+      "maxOutputTokens": 4096
+    },
+    {
+      "pattern": "deepseek-v4.1-pro",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-v4.1-flash",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-v4.1",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-v4-pro",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-v4-flash",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-v4",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-flash",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216
+    },
+    {
+      "pattern": "deepseek-reasoner",
+      "contextWindow": 131072,
+      "maxOutputTokens": 65536
+    },
+    {
+      "pattern": "deepseek-chat",
+      "contextWindow": 131072,
+      "maxOutputTokens": 8192
+    },
+    {
+      "pattern": "deepseek-v3.2",
+      "contextWindow": 131072,
+      "maxOutputTokens": 65536
+    },
+    {
+      "pattern": "deepseek-v3.1",
+      "contextWindow": 131072,
+      "maxOutputTokens": 65536
+    },
+    {
+      "pattern": "deepseek-v3",
+      "contextWindow": 131072,
+      "maxOutputTokens": 8192
+    },
+    {
+      "pattern": "deepseek-r1-distill",
+      "contextWindow": 131072,
+      "maxOutputTokens": 32768
+    },
+    {
+      "pattern": "deepseek-r1",
+      "contextWindow": 131072,
+      "maxOutputTokens": 65536
+    },
+    {
+      "pattern": "deepseek-v2.5",
+      "contextWindow": 131072,
+      "maxOutputTokens": 8192
+    },
+    {
+      "pattern": "deepseek-coder-v2",
+      "contextWindow": 131072,
+      "maxOutputTokens": 8192
+    },
+    {
+      "pattern": "deepseek-coder",
+      "contextWindow": 16384,
       "maxOutputTokens": 4096
     }
   ]

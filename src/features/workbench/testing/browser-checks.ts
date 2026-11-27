@@ -3277,13 +3277,19 @@ export async function verifyWorkbench(root: Root) {
     const readPresetOut = () => document.querySelector<HTMLInputElement>('input[aria-label="Max Output Tokens"]')!;
     type(presetModelInput, 'kimi-k3.1-pro'); await tick();
     assert(readPresetCtx().value === '1048576' && readPresetOut().value === '131072', `Typing kimi-k3.1-pro should auto-fill 1048576 / 131072 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
+    type(presetModelInput, 'deepseek-v4-pro'); await tick();
+    assert(readPresetCtx().value === '1048576' && readPresetOut().value === '393216', `Typing deepseek-v4-pro should auto-fill 1048576 / 393216 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
+    type(presetModelInput, 'deepseek-reasoner'); await tick();
+    assert(readPresetCtx().value === '131072' && readPresetOut().value === '65536', `Typing deepseek-reasoner should auto-fill 131072 / 65536 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
+    type(presetModelInput, 'deepseek-chat'); await tick();
+    assert(readPresetCtx().value === '131072' && readPresetOut().value === '8192', `Typing deepseek-chat should auto-fill 131072 / 8192 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
     type(presetModelInput, 'kimi-k2.6'); await tick();
     assert(readPresetCtx().value === '262144' && readPresetOut().value === '32768', `Switching to kimi-k2.6 should update untouched defaults to 262144 / 32768 (got ${readPresetCtx().value} / ${readPresetOut().value})`);
     type(readPresetCtx(), '500000'); await tick();
     type(presetModelInput, 'kimi-k2.8'); await tick();
     assert(readPresetCtx().value === '500000' && readPresetOut().value === '131072', `Manual contextWindow edit must not be overwritten while untouched maxOutputTokens updates (got ${readPresetCtx().value} / ${readPresetOut().value})`);
     await click('Cancel');
-    checks.push('Model ID preset auto-fill for Kimi models while preserving manual user overrides');
+    checks.push('Model ID preset auto-fill for Kimi & DeepSeek models while preserving manual user overrides');
   }
 
   // Fetch remote provider models + filter/select + manual fallback (both Add Provider and Add Model):

@@ -246,6 +246,95 @@ mod tests {
             ),
             (128_000, 16_384)
         );
+        // DeepSeek family presets (V4/Flash, V3.x, R1/Distill, Coder):
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Deepseek,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-flash")
+            ),
+            (1_048_576, 393_216)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Custom,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek/DeepSeek-V4.1-Pro-0813")
+            ),
+            (1_048_576, 393_216)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Deepseek,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-reasoner")
+            ),
+            (131_072, 65_536)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Deepseek,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-chat")
+            ),
+            (131_072, 8_192)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Custom,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-v3.2-exp")
+            ),
+            (131_072, 65_536)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Custom,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-v3-0324")
+            ),
+            (131_072, 8_192)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Ollama,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-r1-distill-qwen-32b")
+            ),
+            (131_072, 32_768)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Ollama,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-r1:8b")
+            ),
+            (131_072, 65_536)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Ollama,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-coder-v2:16b")
+            ),
+            (131_072, 8_192)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Ollama,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-coder:33b")
+            ),
+            (16_384, 4_096)
+        );
+        assert_eq!(
+            resolve_default_token_limits(
+                ProviderKind::Custom,
+                Some(ApiFormatKind::OpenaiCompletions),
+                Some("deepseek-v40")
+            ),
+            (128_000, 16_384)
+        );
         // Every preset in shared/model-defaults.json must itself pass token limit validation:
         for preset in &model_defaults().model_presets {
             assert!(
