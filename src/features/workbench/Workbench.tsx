@@ -269,7 +269,16 @@ export function Workbench({
   const activeCommitLanguage = effectiveCommitLanguageFor(state, worktree?.repositoryId);
   const activeRepoCustomActions = customActionsFor(state, worktree?.repositoryId);
   const activeCustomAction = activeCustomActionFor(state, worktree?.repositoryId);
-  const otherRepoCount = repository ? Math.max(0, state.repositories.length - 1) : 0;
+  const otherRepositories = repository
+    ? state.repositories
+        .filter((item) => item.id !== repository.id)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          existingActions: customActionsFor(state, item.id),
+        }))
+    : [];
+  const otherRepoCount = otherRepositories.length;
   const editor = editors.find((item) => item.id === activeEditor) ?? editors[0];
   const editorShort = state.installedEditors?.length === 0 ? 'IDE' : editor.short;
   const selected = worktree ? selectedFiles(worktree) : [];
@@ -388,6 +397,10 @@ export function Workbench({
     }
   }, [state.locale]);
 
+  useEffect(() => {
+    setNoticePaused(false);
+  }, [windowMode.presentation.surface, setNoticePaused]);
+
   if (!hydrated && windowController.isDesktopWindow && !initialState) {
     return <div className="workbench-hydrating" aria-busy="true" />;
   }
@@ -440,8 +453,15 @@ export function Workbench({
                 onSettings={(drawerWasOpen) => void windowMode.openSettingsFromCompact({ focusModels: false, drawerWasOpen })}
                 onPrimary={commands.primary}
                 onConfigureModel={windowMode.openConfigureModelFromCompact}
-                onOpenModelSettings={() => void windowMode.openSettingsFromCompact({ focusModels: true })}
-                onDismissNotice={() => notify('')}
+                onOpenModelSettings={(transientExpanded) => {
+                  setNoticePaused(false);
+                  void windowMode.openSettingsFromCompact({ focusModels: true, drawerWasOpen: transientExpanded ?? true });
+                }}
+                onNoticePauseChange={setNoticePaused}
+                onDismissNotice={() => {
+                  setNoticePaused(false);
+                  notify('');
+                }}
                 onDesiredHeightChange={windowMode.handleDesiredCompactHeight}
               />
             </m.div>
@@ -598,6 +618,7 @@ export function Workbench({
             activeCommitLanguage={activeCommitLanguage}
             activeRepoCustomActions={activeRepoCustomActions}
             activeCustomAction={activeCustomAction}
+            otherRepositories={otherRepositories}
             otherRepoCount={otherRepoCount}
             activeNotice={activeNotice}
             skillsState={services.skillsState}

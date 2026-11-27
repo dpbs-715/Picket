@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   CUSTOM_ACTION_LIMITS,
   isCustomActionWriteTrusted,
   normalizeCustomActionPrompt,
   sanitizeCustomActionConfig,
   type CustomActionConfig,
-  type CustomActionSyncResult,
   type GenerateCustomActionProgressEvent,
   type GenerateCustomActionReply,
 } from '../../../shared/custom-action-protocol';
@@ -18,13 +17,17 @@ import type {
 import { useI18n } from '../../i18n';
 import { Icon, Overlay } from '../../ui/controls';
 import { MessageBlocks } from '../workbench/components/MessageBlocks';
+import {
+  classifyCustomActionSyncTarget,
+  type CustomActionSyncRepoTarget,
+} from '../workbench/state/workbench';
 
 interface Props {
   repositoryName: string;
   existingActions: CustomActionConfig[];
   initialAction?: CustomActionConfig;
   initialMode?: 'manual' | 'create';
-  otherRepoCount: number;
+  otherRepositories: CustomActionSyncRepoTarget[];
   hasModel: boolean;
   canGenerateWithPi: boolean;
   covered?: boolean;
@@ -32,9 +35,8 @@ interface Props {
   onBack?(): void;
   backLabel?: string;
   onClose(): void;
-  onSave(action: CustomActionConfig, selectAsActive: boolean): void;
+  onSave(action: CustomActionConfig, selectAsActive: boolean, syncTargetRepositoryIds: string[]): void;
   onDelete?(actionId: string): void;
-  onSyncToAllRepos?(action: CustomActionConfig, overwrite: boolean): CustomActionSyncResult;
   onResetWriteTrust?(actionId: string): void;
   onGenerateWithPi?(
     requestId: string,
@@ -61,8 +63,45 @@ export function CustomActionModal(props: Props) {
   const [selectAfterSave, setSelectAfterSave] = useState(!isEditing);
   const [draftSummary, setDraftSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [syncResult, setSyncResult] = useState<CustomActionSyncResult | null>(null);
+  const [selectedSyncRepoIds, setSelectedSyncRepoIds] = useState<string[]>([]);
   const [trustReset, setTrustReset] = useState(false);
+  const selectAllSyncRef = useRef<HTMLInputElement>(null);
+
+  const syncTargets = props.otherRepositories.map((repo) => ({
+    ...repo,
+    status: classifyCustomActionSyncTarget(repo.existingActions, {
+      id: props.initialAction?.id,
+      templateKey: props.initialAction?.templateKey,
+      label,
+    }),
+  }));
+  const selectableSyncIds = syncTargets
+    .filter((repo) => repo.status !== 'full')
+    .map((repo) => repo.id);
+  const effectiveSelectedSyncIds = selectedSyncRepoIds.filter((id) => selectableSyncIds.includes(id));
+  const allSyncSelected = selectableSyncIds.length > 0
+    && effectiveSelectedSyncIds.length === selectableSyncIds.length;
+  const someSyncSelected = effectiveSelectedSyncIds.length > 0 && !allSyncSelected;
+
+  useLayoutEffect(() => {
+    if (selectAllSyncRef.current) {
+      selectAllSyncRef.current.indeterminate = someSyncSelected;
+    }
+  }, [someSyncSelected, allSyncSelected]);
+
+  function toggleSelectAllSyncRepos() {
+    if (allSyncSelected) {
+      setSelectedSyncRepoIds([]);
+    } else {
+      setSelectedSyncRepoIds(selectableSyncIds);
+    }
+  }
+
+  function toggleSyncRepo(repoId: string) {
+    setSelectedSyncRepoIds((prev) =>
+      prev.includes(repoId) ? prev.filter((id) => id !== repoId) : [...prev, repoId],
+    );
+  }
 
   // Create with Pi state
   const [nlRequest, setNlRequest] = useState('');
@@ -128,25 +167,7 @@ export function CustomActionModal(props: Props) {
         : {}),
     });
     setError(null);
-    props.onSave(built, selectAfterSave);
-  }
-
-  function handleSync(overwrite: boolean) {
-    if (!props.onSyncToAllRepos) return;
-    const cleanLabel = label.trim();
-    const cleanPrompt = normalizeCustomActionPrompt(prompt);
-    if (!cleanLabel || !cleanPrompt) {
-      setError(t.actions.validationBeforeSync);
-      return;
-    }
-    const candidate = sanitizeCustomActionConfig({
-      id: props.initialAction?.id ?? `act-${crypto.randomUUID().slice(0, 12)}`,
-      ...(props.initialAction?.templateKey ? { templateKey: props.initialAction.templateKey } : {}),
-      label: cleanLabel,
-      prompt: cleanPrompt,
-    });
-    setError(null);
-    setSyncResult(props.onSyncToAllRepos(candidate, overwrite));
+    props.onSave(built, selectAfterSave, effectiveSelectedSyncIds);
   }
 
   async function handleGenerate() {
@@ -543,27 +564,65 @@ export function CustomActionModal(props: Props) {
                 </div>
               )}
 
-              {props.otherRepoCount > 0 && props.onSyncToAllRepos && (
-                <div className="action-sync-card">
-                  <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
-                    <span className="muted small">{t.actions.syncReposHint(props.otherRepoCount)}</span>
-                    <button type="button" className="secondary compact" onClick={() => handleSync(false)}>
-                      <Icon name="copy" />
-                      {t.actions.syncToAllButton}
-                    </button>
+              {syncTargets.length > 0 && (
+                <div className="action-sync-section" data-sync-picker>
+                  <div className="action-sync-section-head">
+                    <span className="action-sync-section-title">{t.actions.syncReposSectionTitle}</span>
+                    <span className={`action-sync-count mono ${effectiveSelectedSyncIds.length > 0 ? 'is-active' : ''}`}>
+                      {t.actions.syncSelectedCount(effectiveSelectedSyncIds.length, syncTargets.length)}
+                    </span>
                   </div>
-                  {syncResult && (
-                    <div className="action-sync-result">
-                      <span className="small">
-                        {t.actions.syncResultSummary(syncResult.added, syncResult.updated, syncResult.skipped)}
-                      </span>
-                      {syncResult.skipped > 0 && (
-                        <button type="button" className="secondary compact" onClick={() => handleSync(true)}>
-                          {t.actions.syncOverwriteSkippedButton(syncResult.skipped)}
-                        </button>
-                      )}
+                  <div className="action-sync-card is-picker">
+                    <label className={`action-sync-select-all ${selectableSyncIds.length === 0 ? 'is-disabled' : ''}`}>
+                      <input
+                        ref={selectAllSyncRef}
+                        type="checkbox"
+                        data-sync-select-all
+                        checked={allSyncSelected}
+                        disabled={selectableSyncIds.length === 0}
+                        aria-checked={someSyncSelected ? 'mixed' : allSyncSelected}
+                        onChange={toggleSelectAllSyncRepos}
+                      />
+                      <span className="action-sync-select-all-label">{t.actions.syncSelectAllLabel}</span>
+                      <span className="action-sync-on-save-hint">{t.actions.syncOnSaveHint}</span>
+                    </label>
+                    <div className="action-sync-repo-list scroll-area" role="group" aria-label={t.actions.syncReposSectionTitle}>
+                      {syncTargets.map((repo) => {
+                        const disabled = repo.status === 'full';
+                        const checked = !disabled && effectiveSelectedSyncIds.includes(repo.id);
+                        const badge = repo.status === 'synced'
+                          ? (checked
+                              ? { text: t.actions.syncStatusWillUpdate, tone: 'indigo' }
+                              : { text: t.actions.syncStatusSynced, tone: 'muted' })
+                          : repo.status === 'sameLabel'
+                            ? (checked
+                                ? { text: t.actions.syncStatusWillOverwrite, tone: 'amber' }
+                                : { text: t.actions.syncStatusSameName, tone: 'amber' })
+                            : repo.status === 'full'
+                              ? { text: t.actions.syncStatusFull, tone: 'muted' }
+                              : null;
+                        return (
+                          <label
+                            key={repo.id}
+                            data-sync-repo-id={repo.id}
+                            className={`action-sync-repo-row ${checked ? 'is-checked' : ''} ${disabled ? 'is-disabled' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={disabled}
+                              onChange={() => toggleSyncRepo(repo.id)}
+                            />
+                            <Icon name="folder" />
+                            <span className="mono truncate action-sync-repo-name" title={repo.name}>{repo.name}</span>
+                            {badge && (
+                              <span className={`action-sync-badge is-${badge.tone}`}>{badge.text}</span>
+                            )}
+                          </label>
+                        );
+                      })}
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </div>
@@ -588,7 +647,9 @@ export function CustomActionModal(props: Props) {
                     {t.common.cancel}
                   </button>
                   <button type="submit" className="primary">
-                    {t.actions.saveButton}
+                    {effectiveSelectedSyncIds.length > 0
+                      ? t.actions.saveAndSyncButton(effectiveSelectedSyncIds.length)
+                      : t.actions.saveButton}
                   </button>
                 </div>
               </div>

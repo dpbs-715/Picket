@@ -139,16 +139,44 @@ export function activeCustomActionFor(state: WorkbenchState, repositoryId?: stri
   return settings.customActions?.find((item) => item.id === activeId);
 }
 
+export type CustomActionSyncRepoStatus = 'new' | 'synced' | 'sameLabel' | 'full';
+
+export interface CustomActionSyncRepoTarget {
+  id: string;
+  name: string;
+  existingActions: CustomActionConfig[];
+}
+
+export function classifyCustomActionSyncTarget(
+  existingActions: readonly CustomActionConfig[],
+  candidate: { id?: string; templateKey?: string; label: string },
+): CustomActionSyncRepoStatus {
+  const templateKey = candidate.templateKey ?? candidate.id;
+  const normalizedLabel = candidate.label.trim().toLowerCase();
+  if (templateKey && existingActions.some((item) => item.templateKey === templateKey)) {
+    return 'synced';
+  }
+  if (normalizedLabel && existingActions.some((item) => item.label.trim().toLowerCase() === normalizedLabel)) {
+    return 'sameLabel';
+  }
+  if (existingActions.length >= CUSTOM_ACTION_LIMITS.maxPerRepo) {
+    return 'full';
+  }
+  return 'new';
+}
+
 export function computeSyncCustomActionAcrossRepos(
   state: WorkbenchState,
   sourceRepositoryId: string,
   action: CustomActionConfig,
   overwrite = false,
+  targetRepositoryIds?: readonly string[],
 ): { repositorySettings: Record<string, RepositorySettings>; result: CustomActionSyncResult } {
   const sanitized = sanitizeCustomActionConfig(action);
   const templateKey = sanitized.templateKey ?? sanitized.id;
   const normalizedLabel = sanitized.label.toLowerCase();
   const nextSettings: Record<string, RepositorySettings> = { ...state.repositorySettings };
+  const allowedTargets = targetRepositoryIds ? new Set(targetRepositoryIds) : null;
   let added = 0;
   let updated = 0;
   let skipped = 0;
@@ -166,14 +194,18 @@ export function computeSyncCustomActionAcrossRepos(
 
   for (const repo of state.repositories) {
     if (repo.id === sourceRepositoryId) continue;
+    if (allowedTargets && !allowedTargets.has(repo.id)) continue;
     const prev = nextSettings[repo.id];
     const existingList = prev?.customActions ?? [];
-    const matchIndex = existingList.findIndex(
-      (item) => (item.templateKey && item.templateKey === templateKey)
-        || item.label.trim().toLowerCase() === normalizedLabel,
-    );
+    const byTemplateIndex = existingList.findIndex((item) => item.templateKey && item.templateKey === templateKey);
+    const byLabelIndex = existingList.findIndex((item) => item.label.trim().toLowerCase() === normalizedLabel);
+    const matchIndex = byTemplateIndex >= 0 ? byTemplateIndex : byLabelIndex;
     if (matchIndex >= 0) {
       if (!overwrite) {
+        skipped += 1;
+        continue;
+      }
+      if (byTemplateIndex >= 0 && byLabelIndex >= 0 && byTemplateIndex !== byLabelIndex) {
         skipped += 1;
         continue;
       }

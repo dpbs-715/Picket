@@ -111,7 +111,7 @@ export function CompactRemoteDrawer({
   return (
     <m.div
       key="drawer-remote"
-      className="compact-drawer compact-remote-drawer"
+      className="compact-drawer compact-remote-drawer scroll-area"
       role="region"
       aria-label={t.header.remoteDetails}
       initial={instantMotion ? false : { opacity: 0, y: -4 }}

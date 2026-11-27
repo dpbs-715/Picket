@@ -13,7 +13,9 @@ import { ProviderConnectionForm } from '../../settings/ProviderConnectionForm';
 import { SettingsPanel } from '../../settings/SettingsPanel';
 import type { WorkbenchBackend } from '../commands';
 import {
+  computeSyncCustomActionAcrossRepos,
   targetOf,
+  type CustomActionSyncRepoTarget,
   type EditorId,
   type Repository,
   type WorkbenchPresentation,
@@ -48,6 +50,7 @@ interface Props {
   activeCommitLanguage: CommitLanguage;
   activeRepoCustomActions: CustomActionConfig[];
   activeCustomAction: CustomActionConfig | undefined;
+  otherRepositories: CustomActionSyncRepoTarget[];
   otherRepoCount: number;
   activeNotice: NoticeItem | undefined;
   skillsState: SkillsStateSnapshot;
@@ -91,6 +94,7 @@ export function WorkbenchOverlays({
   activeCommitLanguage,
   activeRepoCustomActions,
   activeCustomAction,
+  otherRepositories,
   otherRepoCount,
   activeNotice,
   skillsState,
@@ -202,22 +206,45 @@ export function WorkbenchOverlays({
               existingActions={activeRepoCustomActions}
               initialAction={item.kind === 'edit' ? item.action : undefined}
               initialMode={item.kind === 'create' ? item.mode : 'manual'}
-              otherRepoCount={otherRepoCount}
+              otherRepositories={otherRepositories}
               hasModel={!!model}
               canGenerateWithPi={Boolean(model && backend.generateCustomAction)}
               onBack={hasParent ? () => setActionStack((prev) => prev.slice(0, -1)) : undefined}
               backLabel={hasParent ? t.actions.manageModalTitle : undefined}
               onClose={() => setActionStack([])}
               onConfigureModel={() => setModelOverlay({ kind: 'createProvider', keepActiveModel: false })}
-              onSave={(savedAction, selectAsActive) => {
+              onSave={(savedAction, selectAsActive, syncTargetRepositoryIds) => {
+                const syncResult = syncTargetRepositoryIds.length > 0
+                  ? computeSyncCustomActionAcrossRepos(
+                      state,
+                      worktree.repositoryId,
+                      savedAction,
+                      true,
+                      syncTargetRepositoryIds,
+                    ).result
+                  : null;
                 dispatch({
                   type: 'saveCustomAction',
                   repositoryId: worktree.repositoryId,
                   action: savedAction,
                   selectAsActive,
+                  ...(syncTargetRepositoryIds.length > 0
+                    ? { syncTargetRepositoryIds, syncOverwrite: true }
+                    : {}),
                 });
                 setActionStack((prev) => (prev.length > 1 && !selectAsActive ? prev.slice(0, -1) : []));
-                notify(t.actions.actionSavedNotice(savedAction.label), viewKey, { tone: 'success' });
+                notify(
+                  syncResult
+                    ? t.actions.actionSavedWithSyncNotice(
+                        savedAction.label,
+                        syncResult.added,
+                        syncResult.updated,
+                        syncResult.skipped,
+                      )
+                    : t.actions.actionSavedNotice(savedAction.label),
+                  viewKey,
+                  { tone: 'success' },
+                );
               }}
               onDelete={(actionId) => {
                 const target = activeRepoCustomActions.find((a) => a.id === actionId);
@@ -225,7 +252,6 @@ export function WorkbenchOverlays({
                 setActionStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : []));
                 if (target) notify(t.actions.actionDeletedNotice(target.label), viewKey, { tone: 'info' });
               }}
-              onSyncToAllRepos={(action, overwrite) => onSyncActionToAllRepos(action, overwrite)}
               onResetWriteTrust={(actionId) => {
                 dispatch({ type: 'resetCustomActionWriteTrust', repositoryId: worktree.repositoryId, actionId });
               }}

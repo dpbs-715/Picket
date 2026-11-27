@@ -141,28 +141,30 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
     const existing = prev?.customActions ?? [];
     const idx = existing.findIndex((item) => item.id === sanitized.id);
     let nextActions: CustomActionConfig[];
+    let savedAction: CustomActionConfig;
     if (idx >= 0) {
       const prior = existing[idx];
       const promptUnchanged = prior.prompt === sanitized.prompt;
-      const merged = sanitizeCustomActionConfig({
+      savedAction = sanitizeCustomActionConfig({
         ...sanitized,
         templateKey: sanitized.templateKey ?? prior.templateKey,
         ...(promptUnchanged && prior.skipWriteConfirm && prior.trustedPromptHash
           ? { skipWriteConfirm: prior.skipWriteConfirm, trustedPromptHash: prior.trustedPromptHash }
           : {}),
       });
-      nextActions = existing.map((item, i) => (i === idx ? merged : item));
+      nextActions = existing.map((item, i) => (i === idx ? savedAction : item));
     } else {
       if (existing.length >= CUSTOM_ACTION_LIMITS.maxPerRepo) return state;
-      nextActions = [...existing, sanitized];
+      savedAction = sanitized;
+      nextActions = [...existing, savedAction];
     }
     const nextActiveId = action.selectAsActive
-      ? sanitized.id
+      ? savedAction.id
       : prev?.activeActionId && nextActions.some((item) => item.id === prev.activeActionId)
         ? prev.activeActionId
         : undefined;
     const keepPaths = localKeepPathsFor(state, action.repositoryId);
-    return {
+    const savedState: WorkbenchState = {
       ...state,
       repositorySettings: {
         ...state.repositorySettings,
@@ -175,6 +177,20 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
         },
       },
       settingsModified: true,
+    };
+    const syncTargets = action.syncTargetRepositoryIds;
+    if (!syncTargets?.length) return savedState;
+    const { repositorySettings, result } = computeSyncCustomActionAcrossRepos(
+      savedState,
+      action.repositoryId,
+      savedAction,
+      action.syncOverwrite ?? true,
+      syncTargets,
+    );
+    if (result.added === 0 && result.updated === 0) return savedState;
+    return {
+      ...savedState,
+      repositorySettings,
     };
   }
   if (action.type === 'deleteCustomAction') {
@@ -205,6 +221,7 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
       action.sourceRepositoryId,
       action.action,
       Boolean(action.overwrite),
+      action.targetRepositoryIds,
     );
     if (result.added === 0 && result.updated === 0) return state;
     return {

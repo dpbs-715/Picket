@@ -2451,7 +2451,127 @@ export async function verifyWorkbench(root: Root) {
       && document.querySelector<HTMLButtonElement>('.compact-bottom button.primary')?.disabled === true,
     'Detached HEAD in Compact Mode must explain reason in Row 2 and disable C-Push',
   );
-  checks.push('Pinned Compact Mode: browser-preview boundary, 2-row ~86px layout, project & file drawers, ▸ jump targets, non-auto-expand, and background notifications');
+
+  // (d) Compact Mode notice & drawer height invariants WITH real animations enabled (no clipped Row 2):
+  setInstantMotion(false);
+  try {
+    const noticeWin = createControlledWindow({ x: 180, y: 120 }, { width: 400, height: 86 });
+    const noticeCompact = fixture('compact');
+    noticeCompact.worktrees[0].branchToken = 'branch-token-notice';
+    noticeCompact.repositories[0].branches = [
+      ...noticeCompact.repositories[0].branches,
+      ...Array.from({ length: 12 }, (_, idx) => ({ name: `feat/branch-${idx + 1}` })),
+    ];
+    await mount(
+      noticeCompact,
+      {
+        ...disconnectedBackend,
+        async execute(command) {
+          if (command.kind === 'pull') {
+            return {
+              protocolVersion: 1,
+              kind: 'cPush',
+              requestId: command.requestId,
+              session: {
+                runId: 'pull-compact-1',
+                repositoryId: command.target.repositoryId,
+                worktreeId: command.target.worktreeId,
+                sessionId: command.target.sessionId,
+                frozenScopeVersion: command.target.scopeVersion,
+                modelId: command.modelId ?? '',
+                frozenFileIds: [],
+                committedFileIds: [],
+                skippedFileIds: [],
+                sessionStatus: 'idle',
+                message: null,
+                timeline: [],
+                qaLog: [],
+                commits: [],
+                canRetryRemaining: false,
+                autoCollapse: true,
+              },
+            };
+          }
+          if (command.kind === 'switchBranch') {
+            throw new Error('Cannot switch branch while uncommitted changes conflict with target branch.');
+          }
+          return disconnectedBackend.execute(command);
+        },
+      },
+      noticeWin.controller,
+    );
+    await tick();
+
+    // 1. Trigger Pull & Rebase completion notice with real animations -> window MUST grow immediately so Row 2 is never clipped:
+    await clickElement(document.querySelector<HTMLButtonElement>('.compact-remote-button')!);
+    await tick();
+    await click('Pull & Rebase');
+    await tick();
+    const compactBarEl = () => document.querySelector<HTMLElement>('.compact-bar')!;
+    const compactBottomEl = () => document.querySelector<HTMLElement>('.compact-bottom')!;
+    assert(
+      Boolean(document.querySelector('.compact-notice'))
+        && noticeWin.getSize().height >= Math.ceil(compactBarEl().scrollHeight)
+        && noticeWin.getSize().height > 105
+        && compactBottomEl().getBoundingClientRect().bottom <= noticeWin.getSize().height + 1,
+      `Compact notice with real animations must immediately expand window to fit Row 2 (winH=${noticeWin.getSize().height}, scrollH=${compactBarEl().scrollHeight}, bottom=${compactBottomEl().getBoundingClientRect().bottom})`,
+    );
+
+    // 2. Opening Settings while a notice is visible and closing Settings after dismissal must restore ~86px (not poisoned ~117px):
+    await click('Settings');
+    await tick();
+    await click('Close Settings');
+    await tick();
+    await click('Dismiss notice');
+    await tick();
+    assert(
+      !document.querySelector('.compact-notice')
+        && noticeWin.getSize().height <= 94,
+      `Dismissing compact notice with real animations must immediately shrink window back to ~86px (winH=${noticeWin.getSize().height})`,
+    );
+
+    // 3. Failed branch switch keeps full Branches Drawer open AND shows error notice simultaneously -> total height must stay <= 280px with Row 2 unclipped:
+    await clickElement(document.querySelector<HTMLButtonElement>('.compact-branch-button')!);
+    await tick();
+    const failingBranchBtn = [...document.querySelectorAll<HTMLButtonElement>('.compact-branches-drawer [data-branch-group="local"] .branch-item')]
+      .find((item) => item.textContent?.includes('feat/branch-1'))!;
+    await clickElement(failingBranchBtn);
+    await tick();
+    assert(
+      Boolean(document.querySelector('.compact-branches-drawer'))
+        && Boolean(document.querySelector('.compact-notice'))
+        && compactBarEl().classList.contains('has-notice')
+        && compactBarEl().scrollHeight <= 280
+        && noticeWin.getSize().height >= Math.ceil(compactBarEl().scrollHeight)
+        && compactBottomEl().getBoundingClientRect().bottom <= noticeWin.getSize().height + 1,
+      `Compact notice + open full-height drawer must stay <= 280px without clipping Row 2 (winH=${noticeWin.getSize().height}, scrollH=${compactBarEl().scrollHeight}, bottom=${compactBottomEl().getBoundingClientRect().bottom})`,
+    );
+
+    // 4. Long error message inside CompactRemoteDrawer must scroll inside max-height without overflowing into Row 2:
+    const longRemoteErr = fixture('compact');
+    longRemoteErr.worktrees[0].remote = {
+      kind: 'error',
+      reason: 'fatal: unable to access remote repository: '.repeat(24),
+    };
+    const remoteErrWin = createControlledWindow({ x: 180, y: 120 }, { width: 400, height: 86 });
+    await mount(longRemoteErr, disconnectedBackend, remoteErrWin.controller);
+    await tick();
+    await clickElement(document.querySelector<HTMLButtonElement>('.compact-remote-button')!);
+    await tick();
+    const remoteDrawerEl = document.querySelector<HTMLElement>('.compact-remote-drawer')!;
+    const remoteBarEl = document.querySelector<HTMLElement>('.compact-bar')!;
+    const remoteBottomEl = document.querySelector<HTMLElement>('.compact-bottom')!;
+    assert(
+      getComputedStyle(remoteDrawerEl).overflowY === 'auto'
+        && remoteBarEl.scrollHeight <= 280
+        && remoteErrWin.getSize().height >= Math.ceil(remoteBarEl.scrollHeight)
+        && remoteBottomEl.getBoundingClientRect().bottom <= remoteErrWin.getSize().height + 1,
+      `CompactRemoteDrawer with long error must scroll cleanly without pushing Row 2 off-screen (overflowY=${getComputedStyle(remoteDrawerEl).overflowY}, scrollH=${remoteBarEl.scrollHeight}, winH=${remoteErrWin.getSize().height})`,
+    );
+  } finally {
+    setInstantMotion(true);
+  }
+  checks.push('Pinned Compact Mode: browser-preview boundary, 2-row ~86px layout, project & file drawers, ▸ jump targets, non-auto-expand, animated notice height sync, drawer+notice <=280px cap, and background notifications');
 
   // 18. Provider key hints, Edit Connection reveal (30s / toggle / blur / close auto-hide), key rotation impact, adding child models under a connection, and footer duplicate-name disambiguation:
   const fakeRevealedSecret = 'fake-revealed-gateway-secret-9001';
@@ -3438,9 +3558,13 @@ export async function verifyWorkbench(root: Root) {
         && document.querySelector<HTMLTextAreaElement>('.custom-action-form textarea')?.value.includes('git tag -a v0.2.0'),
       'Create with Pi draft did not populate the editable button form',
     );
-    await click('Sync to All Repos');
-    assert(text().includes('added to 1'), 'Sync to All Repos did not copy custom action to the second registered repo');
-    await click('Save Action');
+    await clickElement(document.querySelector<HTMLInputElement>('[data-sync-select-all]')!);
+    assert(
+      document.querySelector<HTMLButtonElement>('.custom-action-form button[type="submit"]')?.textContent?.trim() === 'Save & Sync (1)',
+      'Selecting all sync targets after Create with Pi draft must update Save button to Save & Sync (1)',
+    );
+    await click('Save & Sync (1)');
+    assert(text().includes('added to 1'), 'Save & Sync (1) did not copy custom action to the second registered repo');
 
     // Active button is now "Release Tag", ActionContextStrip shows compact 1-line pill that expands into full preview drawer, and main button is clickable on clean tree!
     const mainBtn = document.querySelector<HTMLButtonElement>('.action-split-main')!;
@@ -3954,6 +4078,159 @@ export async function verifyWorkbench(root: Root) {
     await click('Close Add Provider');
     assert(!document.querySelector('.overlay'), 'Closing Add Provider via × must return straight to workbench');
     checks.push('Zero-flash Overlay Navigation Stack (Manage Actions -> Manual/Create -> Back/Close) and bottom-pinned form footers');
+  }
+
+  // CustomActionModal selective repo sync with tri-state Select All, deferred until clicking Save:
+  {
+    const baseState = fixture('typing');
+    const multiRepoState: WorkbenchState = {
+      ...baseState,
+      repositories: [
+        ...baseState.repositories,
+        {
+          id: 'web',
+          name: 'picket-web',
+          branches: [{ name: 'main', worktreeId: 'web-tree' }],
+        },
+      ],
+      worktrees: [
+        ...baseState.worktrees,
+        {
+          ...baseState.worktrees[0],
+          repositoryId: 'web',
+          worktreeId: 'web-tree',
+          sessionId: 'web-session',
+          label: 'main',
+          path: '/test-only/picket-web',
+          branch: 'main',
+          files: [],
+          selectedIds: [],
+          unselectedIds: [],
+          prompt: { text: '', revision: 0 },
+          messages: [],
+        },
+      ],
+      repositorySettings: {
+        ...baseState.repositorySettings,
+        web: {
+          editor: 'idea',
+          commitLanguage: 'en',
+          customActions: [{ id: 'act-web-existing', label: 'Release Tag', prompt: 'npm version patch' }],
+        },
+      },
+    };
+    await mount(multiRepoState);
+
+    await click('Switch primary action');
+    await click('New Action…');
+    assert(Boolean(document.querySelector('[data-sync-picker]')), 'New Custom Action modal must render selective sync picker when other repos exist');
+
+    const selectAllInput = () => document.querySelector<HTMLInputElement>('[data-sync-select-all]')!;
+    const cliRow = () => document.querySelector<HTMLElement>('[data-sync-repo-id="cli"]')!;
+    const webRow = () => document.querySelector<HTMLElement>('[data-sync-repo-id="web"]')!;
+    const cliCheckbox = () => cliRow().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const webCheckbox = () => webRow().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const saveSubmitButton = () => document.querySelector<HTMLButtonElement>('.custom-action-form button[type="submit"]')!;
+
+    assert(
+      !selectAllInput().checked && !selectAllInput().indeterminate
+        && !cliCheckbox().checked && !webCheckbox().checked
+        && saveSubmitButton().textContent?.trim() === 'Save Action',
+      'Sync picker must start unchecked with default Save Action label',
+    );
+
+    const labelInput = document.querySelector<HTMLInputElement>('.custom-action-form input[maxlength]')!;
+    const promptTextarea = document.querySelector<HTMLTextAreaElement>('.custom-action-form textarea')!;
+    type(labelInput, 'Release Tag');
+    type(promptTextarea, 'git tag v0.2.0 && git push origin v0.2.0');
+    assert(
+      (webRow().textContent ?? '').includes('Same name'),
+      `Matching existing label in picket-web must show Same name badge (got: ${webRow().textContent})`,
+    );
+
+    // Check only `cli` -> Select All becomes indeterminate, button becomes Save & Sync (1):
+    await clickElement(cliCheckbox());
+    assert(
+      !selectAllInput().checked && selectAllInput().indeterminate
+        && cliCheckbox().checked && !webCheckbox().checked
+        && saveSubmitButton().textContent?.trim() === 'Save & Sync (1)',
+      `Checking 1 of 2 repos must set Select All indeterminate and update submit button (text=${saveSubmitButton().textContent})`,
+    );
+
+    // Clicking Select All selects both and marks picket-web as Will overwrite:
+    await clickElement(selectAllInput());
+    assert(
+      selectAllInput().checked && !selectAllInput().indeterminate
+        && cliCheckbox().checked && webCheckbox().checked
+        && (webRow().textContent ?? '').includes('Will overwrite')
+        && saveSubmitButton().textContent?.trim() === 'Save & Sync (2)',
+      'Clicking Select All must check all repos and show Will overwrite for same-name target',
+    );
+
+    const switchRepoTo = async (currentRepoName: string, targetRepoName: string) => {
+      await click(currentRepoName);
+      const targetBtn = [...document.querySelectorAll<HTMLButtonElement>('.repository-menu button')]
+        .find((b) => b.textContent?.includes(targetRepoName));
+      assert(targetBtn, `Missing repository menu entry: ${targetRepoName}`);
+      await clickElement(targetBtn);
+    };
+
+    // Clicking Cancel must NOT sync anything to cli:
+    await click('Cancel');
+    assert(!document.querySelector('.overlay'), 'Cancel must close CustomActionModal');
+    await switchRepoTo('my-order-service', 'picket-cli');
+    await click('Switch primary action');
+    assert(
+      !(document.querySelector('.popover')?.textContent ?? '').includes('Release Tag'),
+      'Cancelling modal after ticking sync targets must NOT sync action to other repositories',
+    );
+    await click('Switch primary action');
+
+    // Switch back to my-order-service, create action selecting ONLY picket-cli, and click Save & Sync (1):
+    await switchRepoTo('picket-cli', 'my-order-service');
+    await click('Switch primary action');
+    await click('New Action…');
+    type(document.querySelector<HTMLInputElement>('.custom-action-form input[maxlength]')!, 'Release Tag');
+    type(document.querySelector<HTMLTextAreaElement>('.custom-action-form textarea')!, 'git tag v0.2.0 && git push origin v0.2.0');
+    await clickElement(cliCheckbox());
+    await clickElement(saveSubmitButton());
+    assert(!document.querySelector('.overlay'), 'Clicking Save & Sync must save and close modal');
+
+    // Verify picket-cli received the synced action while picket-web kept its original prompt untouched:
+    await switchRepoTo('my-order-service', 'picket-cli');
+    await click('Switch primary action');
+    assert(
+      (document.querySelector('.popover')?.textContent ?? '').includes('Release Tag'),
+      'Selected target repository picket-cli must receive the synced action on Save',
+    );
+    await click('Switch primary action');
+
+    await switchRepoTo('picket-cli', 'picket-web');
+    await click('Switch primary action');
+    await click('Manage Actions…');
+    assert(
+      (document.querySelector('.overlay')?.textContent ?? '').includes('npm version patch'),
+      'Unchecked repository picket-web must keep its original Release Tag prompt untouched',
+    );
+    await click('Close Manage Actions');
+
+    // Edit action in my-order-service and verify picket-cli shows Synced -> Will update when checked:
+    await switchRepoTo('picket-web', 'my-order-service');
+    await click('Switch primary action');
+    await click('Manage Actions…');
+    await click('Edit action Release Tag');
+    assert(
+      (cliRow().textContent ?? '').includes('Synced') && !cliCheckbox().checked,
+      `Previously synced repo must show Synced badge and stay unchecked by default on Edit (got: ${cliRow().textContent})`,
+    );
+    await clickElement(cliCheckbox());
+    assert(
+      (cliRow().textContent ?? '').includes('Will update')
+        && saveSubmitButton().textContent?.trim() === 'Save & Sync (1)',
+      'Checking previously synced repo on Edit must display Will update and Save & Sync (1)',
+    );
+    await click('Close Edit Custom Action');
+    checks.push('CustomActionModal selective repo sync: tri-state Select All, Same name/Synced/Will update badges, Cancel leaves repos untouched, Save syncs only checked repos');
   }
 
   // Menu bar tray popover: read-only cards, urgency sort, clean-workspace auto-folding, zero search box, and clean actions:

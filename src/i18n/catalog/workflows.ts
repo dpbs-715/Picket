@@ -42,11 +42,21 @@ export interface WorkflowMessages {
     writeTrustActiveNote: string;
     resetWriteTrustButton: string;
     syncReposHint(otherRepoCount: number): string;
+    syncReposSectionTitle: string;
+    syncSelectAllLabel: string;
+    syncOnSaveHint: string;
+    syncSelectedCount(selected: number, total: number): string;
+    syncStatusSynced: string;
+    syncStatusWillUpdate: string;
+    syncStatusSameName: string;
+    syncStatusWillOverwrite: string;
+    syncStatusFull: string;
     syncToAllButton: string;
     syncResultSummary(added: number, updated: number, skipped: number): string;
     syncOverwriteSkippedButton(skipped: number): string;
     deleteButton: string;
     saveButton: string;
+    saveAndSyncButton(count: number): string;
     activeBadge: string;
     autoApproveBadge: string;
     emptyManagerHint: string;
@@ -57,6 +67,7 @@ export interface WorkflowMessages {
     validationDuplicateLabel: string;
     validationBeforeSync: string;
     actionSavedNotice(label: string): string;
+    actionSavedWithSyncNotice(label: string, added: number, updated: number, skipped: number): string;
     actionDeletedNotice(label: string): string;
     actionCancelledNotice: string;
   };
@@ -106,6 +117,15 @@ export const workflowsEn: WorkflowMessages = {
     writeTrustActiveNote: 'Write confirmations skipped',
     resetWriteTrustButton: 'Reset',
     syncReposHint: (count) => `${count} other repo${count === 1 ? '' : 's'}`,
+    syncReposSectionTitle: 'Sync to other repositories',
+    syncSelectAllLabel: 'Select all',
+    syncOnSaveHint: 'Synced on save',
+    syncSelectedCount: (selected, total) => `${selected}/${total}`,
+    syncStatusSynced: 'Synced',
+    syncStatusWillUpdate: 'Will update',
+    syncStatusSameName: 'Same name',
+    syncStatusWillOverwrite: 'Will overwrite',
+    syncStatusFull: 'Full',
     syncToAllButton: 'Sync to All Repos',
     syncResultSummary: (added, updated, skipped) => {
       const parts: string[] = [];
@@ -117,6 +137,7 @@ export const workflowsEn: WorkflowMessages = {
     syncOverwriteSkippedButton: (skipped) => `Overwrite ${skipped}`,
     deleteButton: 'Delete',
     saveButton: 'Save Action',
+    saveAndSyncButton: (count) => `Save & Sync (${count})`,
     activeBadge: 'Active',
     autoApproveBadge: 'No write prompt',
     emptyManagerHint: 'No custom actions yet.',
@@ -127,6 +148,15 @@ export const workflowsEn: WorkflowMessages = {
     validationDuplicateLabel: 'Another button in this repository already uses that label.',
     validationBeforeSync: 'Fill in both the label and prompt before syncing to other repositories.',
     actionSavedNotice: (label) => `Saved custom action "${label}".`,
+    actionSavedWithSyncNotice: (label, added, updated, skipped) => {
+      const parts: string[] = [];
+      if (added > 0) parts.push(`added to ${added}`);
+      if (updated > 0) parts.push(`updated ${updated}`);
+      if (skipped > 0) parts.push(`skipped ${skipped}`);
+      return parts.length
+        ? `Saved "${label}" — synced: ${parts.join(', ')}.`
+        : `Saved custom action "${label}".`;
+    },
     actionDeletedNotice: (label) => `Deleted custom action "${label}".`,
     actionCancelledNotice: 'Cancelled running custom action.',
   },
@@ -176,6 +206,15 @@ export const workflowsZh: WorkflowMessages = {
     writeTrustActiveNote: '已开启写入免确认',
     resetWriteTrustButton: '重置',
     syncReposHint: (count) => `其他 ${count} 个仓库`,
+    syncReposSectionTitle: '同步到其他仓库',
+    syncSelectAllLabel: '全选',
+    syncOnSaveHint: '保存时同步',
+    syncSelectedCount: (selected, total) => `${selected}/${total}`,
+    syncStatusSynced: '已同步',
+    syncStatusWillUpdate: '将更新',
+    syncStatusSameName: '已有同名',
+    syncStatusWillOverwrite: '将覆盖',
+    syncStatusFull: '已达上限',
     syncToAllButton: '同步到所有仓库',
     syncResultSummary: (added, updated, skipped) => {
       const parts: string[] = [];
@@ -187,6 +226,7 @@ export const workflowsZh: WorkflowMessages = {
     syncOverwriteSkippedButton: (skipped) => `覆盖 ${skipped} 个`,
     deleteButton: '删除',
     saveButton: '保存按钮',
+    saveAndSyncButton: (count) => `保存并同步 (${count})`,
     activeBadge: '当前选中',
     autoApproveBadge: '写入免确认',
     emptyManagerHint: '暂无自定义按钮。',
@@ -197,6 +237,15 @@ export const workflowsZh: WorkflowMessages = {
     validationDuplicateLabel: '当前仓库已存在同名按钮，请换一个名称。',
     validationBeforeSync: '请先填好按钮名称和指令再同步到其他仓库。',
     actionSavedNotice: (label) => `已保存自定义按钮「${label}」。`,
+    actionSavedWithSyncNotice: (label, added, updated, skipped) => {
+      const parts: string[] = [];
+      if (added > 0) parts.push(`新增 ${added} 个`);
+      if (updated > 0) parts.push(`更新 ${updated} 个`);
+      if (skipped > 0) parts.push(`跳过 ${skipped} 个`);
+      return parts.length
+        ? `已保存「${label}」，已同步：${parts.join('，')}。`
+        : `已保存自定义按钮「${label}」。`;
+    },
     actionDeletedNotice: (label) => `已删除自定义按钮「${label}」。`,
     actionCancelledNotice: '已取消正在执行的自定义按钮。',
   },

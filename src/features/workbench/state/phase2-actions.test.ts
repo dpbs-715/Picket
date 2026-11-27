@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  CUSTOM_ACTION_LIMITS,
   computeCustomActionPromptHash,
   isCustomActionWriteTrusted,
   sanitizeCustomActionConfig,
@@ -11,6 +12,7 @@ import { fixture } from '../testing/fixtures';
 import { hydrateWorkbench, serializeWorkbenchPersistence } from './repositories';
 import {
   activeCustomActionFor,
+  classifyCustomActionSyncTarget,
   computeSyncCustomActionAcrossRepos,
   customActionsFor,
   primaryAction,
@@ -135,6 +137,87 @@ describe('Phase 2 custom actions persistence, prompt-hash trust invalidation, co
       overwrite: true,
     });
     expect(customActionsFor(state, 'cli')[0].prompt).toBe('git tag v0.9.0 && git push origin v0.9.0');
+  });
+
+  it('supports selective repo sync on saveCustomAction and classifies target repo states accurately', () => {
+    const base = fixture();
+    let state: WorkbenchState = {
+      ...base,
+      repositories: [
+        ...base.repositories,
+        {
+          id: 'web',
+          name: 'picket-web',
+          branches: [{ name: 'main', worktreeId: 'web-tree' }],
+        },
+      ],
+      repositorySettings: {
+        ...base.repositorySettings,
+        web: {
+          editor: 'idea',
+          commitLanguage: 'en',
+          customActions: [{ id: 'act-web-same', label: 'Release Tag', prompt: 'npm version patch' }],
+        },
+      },
+    };
+
+    expect(classifyCustomActionSyncTarget([], { label: 'Release Tag' })).toBe('new');
+    expect(
+      classifyCustomActionSyncTarget(customActionsFor(state, 'web'), { label: 'Release Tag' }),
+    ).toBe('sameLabel');
+    expect(
+      classifyCustomActionSyncTarget(
+        Array.from({ length: CUSTOM_ACTION_LIMITS.maxPerRepo }, (_, i) => ({
+          id: `a-${i}`,
+          label: `Action ${i}`,
+          prompt: `cmd ${i}`,
+        })),
+        { label: 'Unique Action' },
+      ),
+    ).toBe('full');
+
+    const sourceAction: CustomActionConfig = {
+      id: 'act-selective',
+      label: 'Release Tag',
+      prompt: 'git tag v0.2.0 && git push origin v0.2.0',
+    };
+
+    // Saving with only `cli` selected must sync to `cli` and leave `web` untouched:
+    state = workbenchReducer(state, {
+      type: 'saveCustomAction',
+      repositoryId: 'orders',
+      action: sourceAction,
+      selectAsActive: true,
+      syncTargetRepositoryIds: ['cli'],
+    });
+
+    const savedSource = customActionsFor(state, 'orders')[0];
+    expect(savedSource.templateKey).toBe('act-selective');
+    expect(customActionsFor(state, 'cli')).toHaveLength(1);
+    expect(customActionsFor(state, 'cli')[0].templateKey).toBe('act-selective');
+    expect(customActionsFor(state, 'cli')[0].prompt).toBe('git tag v0.2.0 && git push origin v0.2.0');
+    expect(customActionsFor(state, 'web')[0].prompt).toBe('npm version patch');
+
+    expect(
+      classifyCustomActionSyncTarget(customActionsFor(state, 'cli'), savedSource),
+    ).toBe('synced');
+    expect(
+      classifyCustomActionSyncTarget(customActionsFor(state, 'web'), savedSource),
+    ).toBe('sameLabel');
+
+    // Editing & saving with ONLY `web` selected updates `web` in place and preserves `cli`'s copy:
+    state = workbenchReducer(state, {
+      type: 'saveCustomAction',
+      repositoryId: 'orders',
+      action: { ...savedSource, prompt: 'git tag v0.3.0 && git push origin v0.3.0' },
+      selectAsActive: true,
+      syncTargetRepositoryIds: ['web'],
+    });
+    expect(customActionsFor(state, 'orders')[0].prompt).toBe('git tag v0.3.0 && git push origin v0.3.0');
+    expect(customActionsFor(state, 'cli')[0].prompt).toBe('git tag v0.2.0 && git push origin v0.2.0');
+    expect(customActionsFor(state, 'web')[0].id).toBe('act-web-same');
+    expect(customActionsFor(state, 'web')[0].templateKey).toBe('act-selective');
+    expect(customActionsFor(state, 'web')[0].prompt).toBe('git tag v0.3.0 && git push origin v0.3.0');
   });
 
   it('keeps custom actions clickable on clean trees / 0 selected files and persists across settings edits & restore', () => {

@@ -142,9 +142,11 @@ export function useWindowMode({
         placement: 'anchorTopLeft',
         locale: state.locale,
       });
+      const isTransientlyExpanded = Boolean(options.drawerWasOpen)
+        || desiredCompactHeightRef.current > fallbackCompactHeight + 2;
       const compactSize: WindowSize = {
         width: normalizeCompactWidth(applied.previousSize.width),
-        height: options.drawerWasOpen
+        height: isTransientlyExpanded
           ? fallbackCompactHeight
           : clampCompactHeight(applied.previousSize.height),
       };
@@ -213,6 +215,8 @@ export function useWindowMode({
       desiredCompactHeightRef.current = applied.size.height;
       collapsedCompactHeightRef.current = applied.size.height;
       onClearOverlays();
+      pinInFlight.current = false;
+      setPinBusy(false);
       settingsSessionRef.current = null;
       setSettingsSession(null);
       dispatch({
@@ -226,6 +230,8 @@ export function useWindowMode({
       });
     } catch (error) {
       onClearOverlays();
+      pinInFlight.current = false;
+      setPinBusy(false);
       settingsSessionRef.current = null;
       setSettingsSession(null);
       notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);

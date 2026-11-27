@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
 import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { useI18n } from '../../../i18n';
 import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
-import { PresenceNotice } from '../../../ui/motion';
+import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../../ui/motion';
 import {
   compactStatusSummary,
   isActiveSession,
@@ -64,15 +64,18 @@ interface Props {
   onSettings(drawerWasOpen?: boolean): void;
   onPrimary(): void;
   onConfigureModel(): void;
-  onOpenModelSettings(): void;
+  onOpenModelSettings(transientExpanded?: boolean): void;
+  onNoticePauseChange?(paused: boolean): void;
   onDismissNotice(): void;
-  onDesiredHeightChange?(height: number, drawerOpen: boolean): void;
+  onDesiredHeightChange?(height: number, transientExpanded: boolean): void;
 }
 
 export function CompactBar(props: Props) {
   const { locale, t } = useI18n();
+  const instantMotion = useInstantMotion();
   const barRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const lastReportedHeightRef = useRef<{ height: number; transientExpanded: boolean } | null>(null);
   const [drawer, setDrawer] = useState<CompactDrawer>('none');
   const [localKeepOpen, setLocalKeepOpen] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<BranchSection, boolean>>({
@@ -155,17 +158,30 @@ export function CompactBar(props: Props) {
         ? 'sparkles'
         : 'upload';
 
-  useLayoutEffect(() => {
+  const hasNotice = Boolean(props.notice?.text);
+  const transientExpanded = effectiveDrawer !== 'none' || hasNotice;
+  const onDesiredHeightChange = props.onDesiredHeightChange;
+
+  const measureAndReportHeight = useCallback(() => {
     const bar = barRef.current;
-    if (bar && props.onDesiredHeightChange) {
-      const measured = Math.ceil(bar.scrollHeight);
-      const clamped = Math.min(
-        WINDOW_DIMENSIONS.compactMaxHeight,
-        Math.max(WINDOW_DIMENSIONS.compactMinHeight, measured),
-      );
-      props.onDesiredHeightChange(clamped, effectiveDrawer !== 'none');
+    if (!bar || !onDesiredHeightChange) return;
+    const measured = Math.ceil(bar.scrollHeight);
+    const clamped = Math.min(
+      WINDOW_DIMENSIONS.compactMaxHeight,
+      Math.max(WINDOW_DIMENSIONS.compactMinHeight, measured),
+    );
+    const previous = lastReportedHeightRef.current;
+    if (previous && previous.height === clamped && previous.transientExpanded === transientExpanded) {
+      return;
     }
+    lastReportedHeightRef.current = { height: clamped, transientExpanded };
+    onDesiredHeightChange(clamped, transientExpanded);
+  }, [onDesiredHeightChange, transientExpanded]);
+
+  useLayoutEffect(() => {
+    measureAndReportHeight();
   }, [
+    measureAndReportHeight,
     effectiveDrawer,
     expandedSections.local,
     expandedSections.remote,
@@ -176,21 +192,40 @@ export function CompactBar(props: Props) {
     props.customActions.length,
     props.activeAction?.id,
     props.notice?.text,
-    props.onDesiredHeightChange,
+    props.notice?.showModelSettings,
     remoteBranches.length,
     repoWorktrees.length,
+    repository?.id,
     repository?.branches.length,
     selectedKeptFiles.length,
     state.repositories.length,
+    worktree?.worktreeId,
     worktree?.remote.kind,
+    trackedRemote?.localOnly,
+    worktree?.remote.kind !== 'tracked' ? worktree?.remote.reason : undefined,
   ]);
+
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar || !onDesiredHeightChange || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      measureAndReportHeight();
+    });
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [measureAndReportHeight, onDesiredHeightChange]);
 
   const statusIndicator = status.tone === 'running'
     ? <Icon name="loader" className="compact-status-spinner spinning" />
     : <span className="status-dot" />;
 
   return (
-    <div className="compact-bar" ref={barRef} role="region" aria-label={t.compact.barLabel}>
+    <div
+      className={`compact-bar ${hasNotice ? 'has-notice' : ''}`}
+      ref={barRef}
+      role="region"
+      aria-label={t.compact.barLabel}
+    >
       <header className="compact-top" data-tauri-drag-region>
         <div className="compact-context" data-tauri-drag-region>
           <button
@@ -273,37 +308,45 @@ export function CompactBar(props: Props) {
             data-has-update={props.hasUpdate ? 'true' : undefined}
             disabled={props.pinBusy}
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => props.onSettings(effectiveDrawer !== 'none')}
+            onClick={() => props.onSettings(transientExpanded)}
           />
         </div>
       </header>
 
-      <PresenceNotice show={Boolean(props.notice?.text)} motionKey={`compact-notice:${props.notice?.text ?? ''}`}>
-        {props.notice?.text && (() => {
-          const tone = props.notice.tone ?? 'info';
-          const noticeIcon = tone === 'success' ? 'check' : tone === 'info' ? 'help' : 'alert';
-          return (
-            <div
-              className={`operation-notice compact-notice operation-notice-${tone}`}
-              data-notice-tone={tone}
-              role={tone === 'error' || tone === 'warning' ? 'alert' : 'status'}
-            >
-              <span className="operation-notice-body">
-                <Icon name={noticeIcon} className="operation-notice-icon" />
-                <span className="truncate" title={props.notice.text}>{props.notice.text}</span>
-              </span>
-              <div className="operation-notice-actions">
-                {props.notice.showModelSettings && (
-                  <button type="button" className="secondary operation-notice-action" onClick={props.onOpenModelSettings}>
-                    {t.workbench.openModelSettingsAction}
-                  </button>
-                )}
-                <IconButton icon="close" label={t.common.dismissNotice} onClick={props.onDismissNotice} />
-              </div>
+      {props.notice?.text && (() => {
+        const tone = props.notice.tone ?? 'info';
+        const noticeIcon = tone === 'success' ? 'check' : tone === 'info' ? 'help' : 'alert';
+        return (
+          <m.div
+            key={`compact-notice:${props.notice.text}`}
+            className={`operation-notice compact-notice operation-notice-${tone}`}
+            data-notice-tone={tone}
+            role={tone === 'error' || tone === 'warning' ? 'alert' : 'status'}
+            initial={instantMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+            onMouseEnter={() => props.onNoticePauseChange?.(true)}
+            onMouseLeave={() => props.onNoticePauseChange?.(false)}
+          >
+            <span className="operation-notice-body">
+              <Icon name={noticeIcon} className="operation-notice-icon" />
+              <span className="truncate" title={props.notice.text}>{props.notice.text}</span>
+            </span>
+            <div className="operation-notice-actions">
+              {props.notice.showModelSettings && (
+                <button
+                  type="button"
+                  className="secondary operation-notice-action"
+                  onClick={() => props.onOpenModelSettings(transientExpanded)}
+                >
+                  {t.workbench.openModelSettingsAction}
+                </button>
+              )}
+              <IconButton icon="close" label={t.common.dismissNotice} onClick={props.onDismissNotice} />
             </div>
-          );
-        })()}
-      </PresenceNotice>
+          </m.div>
+        );
+      })()}
 
       {effectiveDrawer === 'projects' && (
         <CompactProjectsDrawer

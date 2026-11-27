@@ -184,9 +184,22 @@ export type WorkbenchAction =
   | { type: 'customActionSettled'; reply: CustomActionCommandReply; expandDock?: boolean }
   | { type: 'customActionFailed'; worktreeId: string; runId: string; message?: string }
   | { type: 'selectActiveAction'; repositoryId: string; actionId: string | null }
-  | { type: 'saveCustomAction'; repositoryId: string; action: CustomActionConfig; selectAsActive?: boolean }
+  | {
+      type: 'saveCustomAction';
+      repositoryId: string;
+      action: CustomActionConfig;
+      selectAsActive?: boolean;
+      syncTargetRepositoryIds?: string[];
+      syncOverwrite?: boolean;
+    }
   | { type: 'deleteCustomAction'; repositoryId: string; actionId: string }
-  | { type: 'syncCustomActionToAllRepos'; sourceRepositoryId: string; action: CustomActionConfig; overwrite?: boolean }
+  | {
+      type: 'syncCustomActionToAllRepos';
+      sourceRepositoryId: string;
+      action: CustomActionConfig;
+      overwrite?: boolean;
+      targetRepositoryIds?: string[];
+    }
   | { type: 'trustCustomActionWrites'; repositoryId: string; actionId: string; trustedPromptHash: string }
   | { type: 'resetCustomActionWriteTrust'; repositoryId: string; actionId: string }
   | { type: 'repositoryBranchStarted'; repositoryId: string; requestId: string }
