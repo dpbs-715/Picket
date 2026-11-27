@@ -426,3 +426,96 @@ fn rejects_unsafe_paths_and_invalid_request_ids() {
     assert!(validate_request_id("request-123").is_ok());
     assert!(validate_request_id("../other").is_err());
 }
+#[tokio::test]
+async fn refreshes_added_removed_fallback_and_filters_internal_submit_worktrees() {
+    let fixture = Fixture::new().unwrap();
+    let store = RepositoryStore::default();
+    let initial = store.open(&fixture.root).await.unwrap();
+    assert_eq!(initial.worktrees.len(), 2);
+
+    // 1. Externally added linked worktree is discovered immediately on refresh, while internal submit-worktrees are hidden:
+    let extra_wt = fixture.root.parent().unwrap().join("hot-linked");
+    let internal_wt = fixture
+        .root
+        .parent()
+        .unwrap()
+        .join("submit-worktrees")
+        .join("repo-slug")
+        .join("20260101-temp");
+    fs::create_dir_all(internal_wt.parent().unwrap()).unwrap();
+    git(
+        &fixture.root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/hot-wt",
+            extra_wt.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    git(
+        &fixture.root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/internal-temp",
+            internal_wt.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let after_add = store
+        .refresh(&ReadTarget {
+            repository_id: initial.repository.id.clone(),
+            worktree_id: initial.active_worktree_id.clone(),
+            session_id: "test-session".into(),
+            scope_version: "v1".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(after_add.worktrees.len(), 3);
+    assert!(
+        after_add
+            .worktrees
+            .iter()
+            .any(|wt| wt.branch == "feat/hot-wt")
+    );
+    assert!(
+        !after_add
+            .worktrees
+            .iter()
+            .any(|wt| wt.branch == "feat/internal-temp")
+    );
+    let hot_wt_id = after_add
+        .worktrees
+        .iter()
+        .find(|wt| wt.branch == "feat/hot-wt")
+        .unwrap()
+        .worktree_id
+        .clone();
+
+    // 2. Removing the externally added worktree — even when targeted as the active worktree for refresh — falls back to a live worktree and returns the pruned list cleanly:
+    git(
+        &fixture.root,
+        &["worktree", "remove", extra_wt.to_str().unwrap()],
+    )
+    .unwrap();
+    let after_remove = store
+        .refresh(&ReadTarget {
+            repository_id: initial.repository.id.clone(),
+            worktree_id: hot_wt_id,
+            session_id: "test-session".into(),
+            scope_version: "v1".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(after_remove.worktrees.len(), 2);
+    assert!(
+        !after_remove
+            .worktrees
+            .iter()
+            .any(|wt| wt.branch == "feat/hot-wt")
+    );
+}

@@ -112,11 +112,41 @@ describe('Real repository snapshot merged with local prompt state', () => {
     state = refresh(state, () => {}); expect(active(state).readError).toBeNull(); expect(active(state).prompt.text).toBe('original instruction');
   });
 
-  it('marks removed worktrees with readError instead of wiping prompt or masquerading as clean', () => {
+  it('marks removed worktrees with readError when they carry unsaved prompts, and prunes cleanly removed idle worktrees', () => {
     let state = open(); state = workbenchReducer(state, { type: 'prompt', worktreeId: 'fix-tree', text: 'other worktree prompt' });
     state = refresh(state, (reply) => { reply.snapshot!.worktrees = reply.snapshot!.worktrees.slice(0, 1); });
     const missing = state.worktrees.find((tree) => tree.worktreeId === 'fix-tree')!;
     expect(missing.readError).toContain('no longer in Git'); expect(missing.prompt.text).toBe('other worktree prompt');
+
+    // Clean idle worktree removed externally is pruned immediately on refresh:
+    let cleanState = open();
+    expect(cleanState.worktrees.map((tree) => tree.worktreeId)).toEqual(['pay-tree', 'fix-tree']);
+    cleanState = refresh(cleanState, (reply) => { reply.snapshot!.worktrees = reply.snapshot!.worktrees.slice(0, 1); });
+    expect(cleanState.worktrees.map((tree) => tree.worktreeId)).toEqual(['pay-tree']);
+
+    // Newly added worktree appears immediately on refresh:
+    cleanState = refresh(cleanState, (reply) => {
+      reply.snapshot!.worktrees.push({
+        ...reply.snapshot!.worktrees[0],
+        worktreeId: 'hot-tree',
+        label: 'hot-worktree',
+        branch: 'feat/hot',
+        files: [],
+      });
+    }, 'refresh-add', 3);
+    expect(cleanState.worktrees.map((tree) => tree.worktreeId)).toEqual(['pay-tree', 'fix-tree', 'hot-tree']);
+
+    // If the currently active worktree is deleted, it stays visible with readError until the user switches away:
+    cleanState = workbenchReducer(cleanState, { type: 'switch', worktreeId: 'hot-tree' });
+    cleanState = refresh(cleanState, (reply) => {
+      reply.snapshot!.worktrees = reply.snapshot!.worktrees.slice(0, 1);
+    }, 'refresh-del-active', 4);
+    expect(cleanState.worktrees.find((tree) => tree.worktreeId === 'hot-tree')?.readError).toContain('no longer in Git');
+    cleanState = workbenchReducer(cleanState, { type: 'switch', worktreeId: 'pay-tree' });
+    cleanState = refresh(cleanState, (reply) => {
+      reply.snapshot!.worktrees = reply.snapshot!.worktrees.slice(0, 1);
+    }, 'refresh-prune-after-switch', 5);
+    expect(cleanState.worktrees.map((tree) => tree.worktreeId)).toEqual(['pay-tree']);
   });
 
   it('invalidates scope when HEAD or branch changes without fabricating push completion', () => {

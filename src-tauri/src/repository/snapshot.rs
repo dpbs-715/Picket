@@ -6,7 +6,14 @@ use super::{
     },
 };
 use crate::i18n::{self, LanguageKind};
-use std::{collections::HashMap, fs, path::Path, sync::atomic::Ordering};
+use std::{collections::HashMap, ffi::OsStr, fs, path::Path, sync::atomic::Ordering};
+
+fn is_picket_internal_submit_worktree(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == OsStr::new("submit-worktrees"))
+}
 
 impl RepositoryStore {
     pub async fn open(&self, directory: &Path) -> Result<RepositorySnapshot> {
@@ -68,15 +75,30 @@ impl RepositoryStore {
         target: &ReadTarget,
         locale: LanguageKind,
     ) -> Result<RepositorySnapshot> {
-        let path = self
-            .inner
-            .repositories
-            .lock()
-            .map_err(|_| "Repository registry is unavailable")?
-            .get(&target.repository_id)
-            .and_then(|repository| repository.paths.get(&target.worktree_id))
-            .cloned()
-            .ok_or_else(|| i18n::repository::repo_not_opened_error(locale))?;
+        let path = {
+            let guard = self
+                .inner
+                .repositories
+                .lock()
+                .map_err(|_| "Repository registry is unavailable")?;
+            let registration = guard
+                .get(&target.repository_id)
+                .ok_or_else(|| i18n::repository::repo_not_opened_error(locale))?;
+            let registered_path = registration
+                .paths
+                .get(&target.worktree_id)
+                .cloned()
+                .ok_or_else(|| i18n::repository::repo_not_opened_error(locale))?;
+            if registered_path.exists() {
+                registered_path
+            } else if registration.primary_root.exists() {
+                registration.primary_root.clone()
+            } else if let Some(live_fallback) = registration.paths.values().find(|p| p.exists()) {
+                live_fallback.clone()
+            } else {
+                registered_path
+            }
+        };
         let reader = self.inner.reader.with_locale(locale);
         let common = reader
             .text(
@@ -148,6 +170,9 @@ impl RepositoryStore {
                 entry.path = path;
             }
             let id = identity("wt", &entry.path);
+            if id != active_id && is_picket_internal_submit_worktree(&entry.path) {
+                continue;
+            }
             let tree = match self
                 .read_worktree(&repository_id, &entry, &keep_set, locale)
                 .await

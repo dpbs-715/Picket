@@ -135,7 +135,16 @@ export function mergeSnapshot(state: WorkbenchState, snapshot: GitRepositorySnap
     );
   });
   const missingError = getMessages(state.locale).workbench.missingWorktreeError;
-  const missing = sameRepository.filter((tree) => !worktrees.some((incoming) => incoming.worktreeId === tree.worktreeId))
+  const missing = sameRepository
+    .filter((tree) =>
+      !worktrees.some((incoming) => incoming.worktreeId === tree.worktreeId)
+      && (
+        tree.worktreeId === state.activeWorktreeId
+        || tree.prompt.text.trim().length > 0
+        || tree.sessionStatus !== 'idle'
+        || tree.messages.length > 0
+      ),
+    )
     .map((tree) => ({ ...tree, readError: missingError }));
   const nextRepoPayload = {
     ...snapshot.repository,

@@ -260,8 +260,10 @@ export function useWorkbenchSync({
 
   const worktreeRef = useRef(worktree);
   worktreeRef.current = worktree;
+  const hasActiveWorktree = Boolean(worktree?.worktreeId);
   useEffect(() => {
-    if (!backend.repositoryReadsAvailable || !worktree?.worktreeId) return;
+    if (!backend.repositoryReadsAvailable || !hasActiveWorktree) return;
+    let wasHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
     const refresh = () => {
       const activeTree = worktreeRef.current;
       if (!activeTree || inFlight.current.has('global:openRepository')) return;
@@ -270,9 +272,23 @@ export function useWorkbenchSync({
         true,
       );
     };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        wasHidden = true;
+        return;
+      }
+      if (document.visibilityState === 'visible' && wasHidden) {
+        wasHidden = false;
+        refresh();
+      }
+    };
     window.addEventListener('focus', refresh);
-    return () => window.removeEventListener('focus', refresh);
-  }, [backend, inFlight, latestState, worktree?.worktreeId, worktree?.scopeVersion]);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [backend, hasActiveWorktree, inFlight, latestState]);
 
   const anyRepoRefreshing = pending.some((key) => key.endsWith(':refresh'));
   const traySnapshot = buildTrayStateSnapshot(state, {
