@@ -8,6 +8,7 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
+import { flushSync } from 'react-dom';
 import { WINDOW_DIMENSIONS, type WindowSize } from '../../../../shared/workbench-persistence-protocol';
 import {
   clampCompactHeight,
@@ -48,6 +49,28 @@ interface UseWindowModeParams {
   onClearOverlays: () => void;
 }
 
+export type WindowTransitionKind = 'idle' | 'expanding' | 'collapsing';
+
+interface WindowTransitionState {
+  kind: 'expanding' | 'collapsing';
+  heightPx: number;
+  mountWorkbenchDuringExpand?: boolean;
+}
+
+function measureWorkbenchHeight(fallback: number): number {
+  if (typeof document === 'undefined') return fallback;
+  const measured = Math.round(document.querySelector<HTMLElement>('.workbench')?.getBoundingClientRect().height ?? 0);
+  return measured > WINDOW_DIMENSIONS.compactDefaultHeight ? measured : fallback;
+}
+
+function commitBeforeWindowResize(update: () => void): void {
+  try {
+    flushSync(update);
+  } catch {
+    update();
+  }
+}
+
 export function useWindowMode({
   state,
   latestState,
@@ -64,6 +87,7 @@ export function useWindowMode({
   const [settingsSession, setSettingsSession] = useState<SettingsSession | null>(null);
   const settingsSessionRef = useRef<SettingsSession | null>(null);
   settingsSessionRef.current = settingsSession;
+  const [windowTransition, setWindowTransition] = useState<WindowTransitionState | null>(null);
   const [pinBusy, setPinBusy] = useState(false);
   const pinInFlight = useRef(false);
   const desiredCompactHeightRef = useRef<number>(WINDOW_DIMENSIONS.compactDefaultHeight);
@@ -74,10 +98,13 @@ export function useWindowMode({
   const t = getMessages(state.locale);
   const pinned = state.windowPrefs.pinned;
   const compactMode = state.windowPrefs.compactMode;
-  const presentation = resolveWorkbenchPresentation(compactMode, settingsSession?.returnTo ?? null);
+  const effectiveCompactMode = windowTransition?.mountWorkbenchDuringExpand ? false : compactMode;
+  const presentation = resolveWorkbenchPresentation(effectiveCompactMode, settingsSession?.returnTo ?? null);
   const settingsOpen = presentation.showSettings;
   const activeSurfaceRef = useRef<WorkbenchSurface>(presentation.surface);
   activeSurfaceRef.current = presentation.surface;
+  const transitionKind: WindowTransitionKind = windowTransition?.kind ?? 'idle';
+  const transitionHeightPx = windowTransition?.heightPx ?? null;
 
   function openSettingsFromWorkbench(focusModels = false) {
     const next: SettingsSession = { returnTo: 'workbench', focusModels };
@@ -128,11 +155,14 @@ export function useWindowMode({
     };
 
     pinInFlight.current = true;
-    setPinBusy(true);
-    // Switch surface directly to standalone Settings BEFORE enlarging the window so neither
-    // a stretched CompactBar nor the full workbench content can ever flash during expansion.
+    // Synchronously mount standalone Settings at fullSize.height BEFORE enlarging the native window
+    // so neither a stretched CompactBar nor the full workbench content can ever flash during expansion.
     settingsSessionRef.current = provisionalSession;
-    setSettingsSession(provisionalSession);
+    commitBeforeWindowResize(() => {
+      setPinBusy(true);
+      setWindowTransition({ kind: 'expanding', heightPx: fullSize.height });
+      setSettingsSession(provisionalSession);
+    });
 
     try {
       const applied = await windowController.applyWindowMode({
@@ -176,6 +206,7 @@ export function useWindowMode({
     } finally {
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
     }
   }
 
@@ -196,12 +227,16 @@ export function useWindowMode({
     const targetPosition = snapshot?.position ?? currentPrefs.compactPosition;
     const targetWidth = normalizeCompactWidth(snapshot?.size.width);
     const targetHeight = clampCompactHeight(snapshot?.size.height ?? collapsedCompactHeightRef.current);
+    const freezeHeight = measureWorkbenchHeight(fullSize.height);
 
     pinInFlight.current = true;
-    setPinBusy(true);
+    commitBeforeWindowResize(() => {
+      setPinBusy(true);
+      setWindowTransition({ kind: 'collapsing', heightPx: freezeHeight });
+    });
     try {
       // Shrink and move back to pre-settings compact geometry FIRST while standalone Settings
-      // remains mounted, then swap directly to CompactBar without ever mounting full workbench.
+      // remains mounted and height-locked, then swap directly to CompactBar without ever mounting full workbench.
       const applied = await windowController.applyWindowMode({
         pinned: currentPrefs.pinned,
         compactMode: true,
@@ -217,6 +252,7 @@ export function useWindowMode({
       onClearOverlays();
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
       settingsSessionRef.current = null;
       setSettingsSession(null);
       dispatch({
@@ -232,12 +268,14 @@ export function useWindowMode({
       onClearOverlays();
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
       settingsSessionRef.current = null;
       setSettingsSession(null);
       notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
     } finally {
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
     }
   }
 
@@ -299,9 +337,17 @@ export function useWindowMode({
     const currentPrefs = latestState.current.windowPrefs;
     const nextPrefs = computeNextCompactPreferences(currentPrefs, true);
     const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
+    const freezeHeight = measureWorkbenchHeight(fullSize.height);
 
     pinInFlight.current = true;
-    setPinBusy(true);
+    if (windowController.isDesktopWindow) {
+      commitBeforeWindowResize(() => {
+        setPinBusy(true);
+        setWindowTransition({ kind: 'collapsing', heightPx: freezeHeight });
+      });
+    } else {
+      setPinBusy(true);
+    }
     try {
       const applied = await windowController.applyWindowMode({
         pinned: nextPrefs.pinned,
@@ -319,6 +365,7 @@ export function useWindowMode({
       onClearOverlays();
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
       dispatch({
         type: 'windowPreferencesUpdated',
         preferences: {
@@ -332,6 +379,7 @@ export function useWindowMode({
     } catch (error) {
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
       notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
     }
   }
@@ -342,8 +390,41 @@ export function useWindowMode({
     const nextPrefs = computeNextCompactPreferences(currentPrefs, false);
     const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
 
+    if (!windowController.isDesktopWindow) {
+      pinInFlight.current = true;
+      setPinBusy(true);
+      try {
+        await windowController.applyWindowMode({
+          pinned: nextPrefs.pinned,
+          compactMode: false,
+          fullSize,
+          placement: 'anchorTopLeft',
+          locale: state.locale,
+        });
+      } catch (error) {
+        notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
+      } finally {
+        pinInFlight.current = false;
+        setPinBusy(false);
+      }
+      return;
+    }
+
+    const shouldPreExpandDock = Boolean(target === 'dock' && worktree && !worktree.dockExpanded);
     pinInFlight.current = true;
-    setPinBusy(true);
+    // Synchronously mount full WorkbenchContent locked to fullSize.height BEFORE expanding the native
+    // window so the OS frame reveals the already-painted full layout smoothly without blank flashes or reflow.
+    commitBeforeWindowResize(() => {
+      setPinBusy(true);
+      setWindowTransition({
+        kind: 'expanding',
+        heightPx: fullSize.height,
+        mountWorkbenchDuringExpand: true,
+      });
+      if (shouldPreExpandDock && worktree) {
+        dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded: true });
+      }
+    });
     try {
       const applied = await windowController.applyWindowMode({
         pinned: nextPrefs.pinned,
@@ -355,13 +436,14 @@ export function useWindowMode({
       desiredCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
       collapsedCompactHeightRef.current = WINDOW_DIMENSIONS.compactDefaultHeight;
       captureModeSwitchFocus(target);
-      if (target === 'dock' && worktree) {
+      if (target === 'dock' && worktree && !shouldPreExpandDock) {
         dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded: true });
       } else if (target === 'addModel') {
         openConfigureModel();
       }
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
       dispatch({
         type: 'windowPreferencesUpdated',
         preferences: {
@@ -373,8 +455,12 @@ export function useWindowMode({
         },
       });
     } catch (error) {
+      if (shouldPreExpandDock && worktree) {
+        dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded: false });
+      }
       pinInFlight.current = false;
       setPinBusy(false);
+      setWindowTransition(null);
       notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
     }
   }
@@ -392,6 +478,7 @@ export function useWindowMode({
   }, [hydrated, windowController]);
 
   useLayoutEffect(() => {
+    if (windowTransition) return;
     const pendingFocus = pendingModeFocusRef.current;
     pendingModeFocusRef.current = null;
     if (!pendingFocus || typeof document === 'undefined') return;
@@ -409,7 +496,7 @@ export function useWindowMode({
     if (pendingFocus.kind === 'repo') {
       document.querySelector<HTMLElement>('.repository-open-button, .repository-button')?.focus();
     }
-  }, [presentation.surface]);
+  }, [presentation.surface, windowTransition]);
 
   useEffect(() => {
     if (!hydrated || !windowController.isDesktopWindow) return;
@@ -448,6 +535,8 @@ export function useWindowMode({
     settingsSessionRef,
     pinBusy,
     pinInFlight,
+    transitionKind,
+    transitionHeightPx,
     desiredCompactHeightRef,
     pinned,
     compactMode,

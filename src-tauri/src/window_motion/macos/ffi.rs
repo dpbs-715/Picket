@@ -256,9 +256,11 @@ pub(super) fn apply_pinned_on_main(
     ns_window: *mut c_void,
     pinned: bool,
 ) -> Result<bool, String> {
-    window
-        .set_always_on_top(pinned)
-        .map_err(|e| e.to_string())?;
+    if window.is_always_on_top().map_err(|e| e.to_string())? != pinned {
+        window
+            .set_always_on_top(pinned)
+            .map_err(|e| e.to_string())?;
+    }
     unsafe { set_window_visible_on_all_spaces(ns_window, pinned) };
     window.is_always_on_top().map_err(|e| e.to_string())
 }

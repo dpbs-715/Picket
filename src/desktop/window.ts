@@ -411,6 +411,38 @@ function isUiSmokeSuppressingSystemNotifications(): boolean {
     && Boolean((globalThis as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__);
 }
 
+function waitForDesktopPaintFrame(frames: 1 | 2): Promise<void> {
+  if (
+    prefersReducedMotion()
+    || typeof window === 'undefined'
+    || typeof window.requestAnimationFrame !== 'function'
+    || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+  ) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let raf1 = 0;
+    let raf2 = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(fallbackTimer);
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      resolve();
+    };
+    const fallbackTimer = window.setTimeout(finish, 48);
+    raf1 = window.requestAnimationFrame(() => {
+      if (frames === 1) {
+        finish();
+      } else {
+        raf2 = window.requestAnimationFrame(finish);
+      }
+    });
+  });
+}
+
 export function createDesktopWindowController(): WindowController {
   let programmaticDepth = 0;
   let suppressUntil = 0;
@@ -448,7 +480,14 @@ export function createDesktopWindowController(): WindowController {
       if (!isTauri()) {
         throw new Error(getMessages(options.locale ?? DEFAULT_APP_LOCALE).desktop.browserWindowUnsupported);
       }
-      return runProgrammatic(() => applyWindowModeWith(tauriEnvironment, options));
+      return runProgrammatic(async () => {
+        if (!options.instant) {
+          // Wait for WebKit to commit & paint the newly mounted / height-locked DOM layer
+          // before AppKit begins animating the native NSWindow frame.
+          await waitForDesktopPaintFrame(options.compactMode ? 1 : 2);
+        }
+        return applyWindowModeWith(tauriEnvironment, options);
+      });
     },
     async adjustCompactHeight(height, locale = DEFAULT_APP_LOCALE) {
       if (!isTauri()) {

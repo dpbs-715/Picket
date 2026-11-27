@@ -194,7 +194,7 @@ export function Overlay({
     const initialTarget = autofocusTarget
       ?? panel.querySelector<HTMLElement>('button:not([data-help-tip]):not([data-overlay-back]):not(:disabled), input, select, [tabindex="0"]:not([data-help-tip])')
       ?? panel;
-    initialTarget.focus();
+    initialTarget.focus({ preventScroll: true });
     if (autofocusTarget instanceof HTMLInputElement) {
       const end = autofocusTarget.value.length;
       try { autofocusTarget.setSelectionRange(end, end); } catch { /* ignore unsupported input types */ }
@@ -224,13 +224,11 @@ export function Overlay({
     };
   }, [inert]);
 
-  const initialProps = instant
+  const initialProps = instant || variant === 'standalone'
     ? false
     : variant === 'drill'
       ? { opacity: 0, x: 16 }
-      : variant === 'standalone'
-        ? { opacity: 0 }
-        : { opacity: 0, y: 8 };
+      : { opacity: 0, y: 8 };
   const animateProps = variant === 'drill'
     ? { opacity: 1, x: 0 }
     : variant === 'standalone'

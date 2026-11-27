@@ -1,15 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { AppTheme } from '../../../shared/theme-protocol';
 import { desktopWindowController, type WindowController } from '../../desktop/window';
 import { getMessages, I18nProvider } from '../../i18n';
-import {
-  MOTION_DURATION,
-  MOTION_EASE,
-  MotionRoot,
-  m,
-  useInstantMotion,
-} from '../../ui/motion';
+import { MotionRoot } from '../../ui/motion';
 import { useResolvedTheme } from '../../ui/theme';
 import { disconnectedBackend, type WorkbenchBackend } from './commands';
 import { ActionContextStrip } from './components/ActionContextStrip';
@@ -79,7 +73,6 @@ export function Workbench({
   const prevPromptViewKeyRef = useRef<string | null>(null);
   const prevPromptTextRef = useRef('');
 
-  const instantMotion = useInstantMotion();
   const t = getMessages(state.locale);
   const modelOverlayOpen = modelOverlay.kind !== 'closed';
   const actionOverlayOpen = actionStack.length > 0;
@@ -391,7 +384,7 @@ export function Workbench({
   const canMeasureDock = hasExpandedDock
     && workbenchContentMounted
     && windowMode.presentation.windowSizeMode === 'full'
-    && !windowMode.pinBusy;
+    && windowMode.transitionKind !== 'collapsing';
 
   useEffect(() => {
     if (!canMeasureDock) {
@@ -427,15 +420,16 @@ export function Workbench({
           data-surface={windowMode.presentation.surface}
           data-window-size={windowMode.presentation.windowSizeMode}
           data-window-transition={windowMode.pinBusy ? 'resizing' : 'idle'}
+          data-window-transition-kind={windowMode.transitionKind}
+          style={
+            windowMode.transitionHeightPx !== null
+              ? ({ '--window-transition-height': `${windowMode.transitionHeightPx}px` } as CSSProperties)
+              : undefined
+          }
           aria-label={t.workbench.ariaLabel}
         >
           {windowMode.presentation.surface === 'compact' && (
-            <m.div
-              className="compact-surface"
-              initial={instantMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
-            >
+            <div className="compact-surface">
               <CompactBar
                 state={state}
                 repository={repository}
@@ -478,16 +472,13 @@ export function Workbench({
                 }}
                 onDesiredHeightChange={windowMode.handleDesiredCompactHeight}
               />
-            </m.div>
+            </div>
           )}
           {windowMode.presentation.mountWorkbenchContent && (
-            <m.div
+            <div
               ref={workbenchContentRef}
               className="workbench-content"
               inert={windowMode.settingsOpen || modelOverlayOpen || actionOverlayOpen}
-              initial={instantMotion ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
             >
               <ContextHeader
                 key={`header:${viewKey}`}
@@ -611,7 +602,7 @@ export function Workbench({
                 onManageActions={() => setActionStack([{ kind: 'manage' }])}
                 onPrimary={commands.primary}
               />
-            </m.div>
+            </div>
           )}
           <WorkbenchOverlays
             state={state}

@@ -4739,6 +4739,132 @@ export async function verifyWorkbench(root: Root) {
     }
   }
 
+  // Regression: Window mode switches (Compact <-> Full, Compact <-> Settings) must lock surface height during native resize and never flash opacity:0:
+  {
+    const en = getMessages('en');
+    const rootEl = document.getElementById('root')!;
+    const prevRootHeight = rootEl.style.height;
+    setInstantMotion(false);
+    try {
+      const compactState = fixture('compact');
+      const winMock = createControlledWindow();
+      rootEl.style.height = '86px';
+      await mount(compactState, disconnectedBackend, winMock.controller);
+      await tick();
+
+      // 1) Compact -> Full: WorkbenchContent mounts BEFORE resize completes at opacity:1 and full 700px locked height even while viewport is still 86px:
+      const releaseExpand = winMock.pauseNextApply();
+      await click('Expand Workbench');
+      await tick();
+      const midExpandMain = document.querySelector<HTMLElement>('main')!;
+      const midExpandContent = document.querySelector<HTMLElement>('.workbench-content')!;
+      const midExpandOpacity = Number(getComputedStyle(midExpandContent).opacity);
+      const midExpandHeight = Math.round(midExpandContent.getBoundingClientRect().height);
+      assert(
+        midExpandMain.getAttribute('data-surface') === 'workbench'
+          && midExpandMain.getAttribute('data-window-transition') === 'resizing'
+          && midExpandMain.getAttribute('data-window-transition-kind') === 'expanding'
+          && !document.querySelector('.compact-bar')
+          && midExpandOpacity === 1
+          && Math.abs(midExpandHeight - 700) <= 2,
+        `Compact->Full must pre-mount full-height workbench at opacity:1 before window finishes expanding (opacity=${midExpandOpacity}, height=${midExpandHeight})`,
+      );
+      rootEl.style.height = '700px';
+      await act(async () => { releaseExpand(); });
+      await tick();
+      assert(
+        document.querySelector('main')?.getAttribute('data-window-transition-kind') === 'idle',
+        'Compact->Full did not settle back to idle after resize',
+      );
+
+      // 2) Full -> Compact: WorkbenchContent stays height-locked at 700px while viewport shrinks, then swaps directly to CompactBar at opacity:1 (zero blank flash):
+      const releaseCollapse = winMock.pauseNextApply();
+      await click(en.header.collapseWindow);
+      await tick();
+      assert(
+        document.querySelector('main')?.getAttribute('data-window-transition-kind') === 'collapsing',
+        'Full->Compact did not enter collapsing transition state',
+      );
+      // Simulate mid-shrink viewport height (220px): frozen workbench-content must keep 700px height without reflowing/crushing ActionFooter:
+      rootEl.style.height = '220px';
+      await tick();
+      const midCollapseContent = document.querySelector<HTMLElement>('.workbench-content')!;
+      const midCollapseHeight = Math.round(midCollapseContent.getBoundingClientRect().height);
+      assert(
+        Math.abs(midCollapseHeight - 700) <= 2,
+        `Full->Compact must lock workbench-content height during shrink (expected ~700px, got ${midCollapseHeight}px)`,
+      );
+      rootEl.style.height = '86px';
+      await act(async () => { releaseCollapse(); });
+      await tick();
+      assert(
+        Boolean(document.querySelector('.compact-surface'))
+          && document.querySelector('main')?.getAttribute('data-window-transition-kind') === 'idle',
+        'Full->Compact did not settle into compact surface',
+      );
+      const compactOpacity = Number(getComputedStyle(document.querySelector<HTMLElement>('.compact-surface')!).opacity);
+      assert(
+        compactOpacity === 1,
+        `Compact surface must mount immediately at opacity:1 without blank flash (got ${compactOpacity})`,
+      );
+
+      // 3) Compact -> Settings -> Compact: standalone Settings mounts at opacity:1 and stays height-locked at 700px across both expand and collapse:
+      const releaseOpenSettings = winMock.pauseNextApply();
+      await click('Settings');
+      await tick();
+      assert(
+        document.querySelector('main')?.getAttribute('data-surface') === 'standaloneSettings',
+        'Compact->Settings did not mount standalone settings',
+      );
+      const midOpenOverlay = document.querySelector<HTMLElement>('.overlay')!;
+      const midOpenOverlayOpacity = Number(getComputedStyle(midOpenOverlay).opacity);
+      const midOpenOverlayHeight = Math.round(midOpenOverlay.getBoundingClientRect().height);
+      assert(
+        midOpenOverlayOpacity === 1 && Math.abs(midOpenOverlayHeight - 700) <= 2,
+        `Compact->Settings must mount standalone overlay at opacity:1 and full 700px height (opacity=${midOpenOverlayOpacity}, height=${midOpenOverlayHeight})`,
+      );
+      rootEl.style.height = '700px';
+      await act(async () => { releaseOpenSettings(); });
+      await tick();
+      assert(
+        document.querySelector('main')?.getAttribute('data-window-transition-kind') === 'idle',
+        'Compact->Settings did not settle to idle',
+      );
+
+      const releaseCloseSettings = winMock.pauseNextApply();
+      await click('Close Settings');
+      await tick();
+      assert(
+        document.querySelector('main')?.getAttribute('data-window-transition-kind') === 'collapsing',
+        'Settings->Compact did not enter collapsing transition state',
+      );
+      rootEl.style.height = '240px';
+      await tick();
+      const midCloseOverlayHeight = Math.round(document.querySelector<HTMLElement>('.overlay')!.getBoundingClientRect().height);
+      assert(
+        Math.abs(midCloseOverlayHeight - 700) <= 2,
+        `Settings->Compact must lock standalone overlay height during shrink (expected ~700px, got ${midCloseOverlayHeight}px)`,
+      );
+      rootEl.style.height = '86px';
+      await act(async () => { releaseCloseSettings(); });
+      await tick();
+      assert(
+        Boolean(document.querySelector('.compact-surface'))
+          && document.querySelector('main')?.getAttribute('data-window-transition-kind') === 'idle',
+        'Settings->Compact did not return to compact surface',
+      );
+      const compactOpacityAfterSettings = Number(getComputedStyle(document.querySelector<HTMLElement>('.compact-surface')!).opacity);
+      assert(
+        compactOpacityAfterSettings === 1,
+        `Returning from Settings to Compact must mount compact surface at opacity:1 (got ${compactOpacityAfterSettings})`,
+      );
+      checks.push('Window mode transitions (Compact <-> Full, Compact <-> Settings) lock surface height during native resize with zero opacity:0 flashes');
+    } finally {
+      setInstantMotion(true);
+      rootEl.style.height = prevRootHeight;
+    }
+  }
+
   return {
     environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',
     viewport: { width: innerWidth, height: innerHeight },

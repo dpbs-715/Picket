@@ -284,7 +284,7 @@ export function MessageDock(props: Props) {
           </m.div>
         )}
       </MotionPresence>
-      <MotionPresence>
+      <MotionPresence initial={false}>
         {primary && props.worktree.dockExpanded && (
           <m.div
             key="dock-expanded"

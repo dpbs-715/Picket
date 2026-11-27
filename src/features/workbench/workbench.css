@@ -457,6 +457,18 @@ legend { padding: 0; margin-bottom: 5px; color: var(--text-muted); font-size: 11
 .scroll-area::-webkit-scrollbar-thumb, .branch-menu::-webkit-scrollbar-thumb, .history-menu::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 99px; }
 .workbench, .workbench-content { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; }
 .workbench { background: var(--bg); overflow: hidden; }
+.workbench[data-window-transition-kind='expanding'] .workbench-content,
+.workbench[data-window-transition-kind='collapsing'] .workbench-content {
+  height: var(--window-transition-height, 100%);
+  flex: none;
+  pointer-events: none;
+}
+.workbench[data-window-transition-kind='expanding'] .overlay,
+.workbench[data-window-transition-kind='collapsing'] .overlay {
+  height: var(--window-transition-height, 100%);
+  bottom: auto;
+  pointer-events: none;
+}
 .workbench-hydrating { width: 100%; height: 100%; background: var(--bg); }
 .context-header { z-index: 30; flex-shrink: 0; border-bottom: 1px solid var(--line); background: var(--bg); user-select: none; }
 .context-row { padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -1271,9 +1283,12 @@ legend { padding: 0; margin-bottom: 5px; color: var(--text-muted); font-size: 11
 .compact-status-success .status-dot { color: var(--green); }
 .compact-primary-group { flex-shrink: 0; }
 
-@media (max-height: 640px) { .changes-panel.is-peek { flex-basis: 102px; height: 102px; } .d2-bottom { max-height: 56%; } }
+@media (max-height: 640px) {
+  .workbench[data-window-transition-kind='idle'] .changes-panel.is-peek { flex-basis: 102px; height: 102px; }
+  .workbench[data-window-transition-kind='idle'] .d2-bottom { max-height: 56%; }
+}
 @media (max-height: 540px) {
-  .changes-panel.is-peek { flex-basis: 84px; height: 84px; }
-  .empty-state { gap: 6px; padding: 10px 16px; }
-  .d2-bottom { max-height: 52%; }
+  .workbench[data-window-transition-kind='idle'] .changes-panel.is-peek { flex-basis: 84px; height: 84px; }
+  .workbench[data-window-transition-kind='idle'] .empty-state { gap: 6px; padding: 10px 16px; }
+  .workbench[data-window-transition-kind='idle'] .d2-bottom { max-height: 52%; }
 }
