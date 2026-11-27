@@ -130,6 +130,7 @@ export function WorkbenchOverlays({
             key={presentation.surface === 'standaloneSettings' ? 'settings-standalone' : 'settings-sheet'}
             overlayVariant={presentation.surface === 'standaloneSettings' ? 'standalone' : 'sheet'}
             locale={state.locale}
+            theme={state.theme}
             repositoryName={repository?.name}
             editor={activeEditor}
             commitLanguage={activeCommitLanguage}
@@ -138,6 +139,7 @@ export function WorkbenchOverlays({
             models={state.models}
             activeModelId={state.activeModelId}
             onLocale={(locale) => dispatch({ type: 'locale', locale })}
+            onTheme={(theme) => dispatch({ type: 'theme', theme })}
             onEditor={(nextEditor) => dispatch({ type: 'editor', editor: nextEditor, repositoryId: worktree?.repositoryId ?? null })}
             onCommitLanguage={(commitLanguage) => dispatch({ type: 'commitLanguage', commitLanguage, repositoryId: worktree?.repositoryId ?? null })}
             onSelectModel={(id) => void onSelectModel(id)}

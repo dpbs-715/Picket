@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ResolvedTheme } from '../../../../shared/theme-protocol';
 import '../../splash/splash.css';
 import { WhaleSplashStage } from '../../splash/WhaleSplashStage';
 import { computeParabolicProgress, type SplashLaunchPlan, type SplashPhase } from '../../splash/whaleMath';
@@ -27,7 +28,7 @@ const PRESETS: Preset[] = [
   { id: 'center-first', label: 'First Launch Center', compact: false, winX: 365, winY: 96, winW: 230, winH: 404 },
 ];
 
-function computePreviewPlan(preset: Preset, slowLoad: boolean): {
+function computePreviewPlan(preset: Preset, slowLoad: boolean, theme: ResolvedTheme): {
   plan: SplashLaunchPlan;
   startX: number;
   startY: number;
@@ -56,6 +57,7 @@ function computePreviewPlan(preset: Preset, slowLoad: boolean): {
       leapDurationMs,
       compactMode: preset.compact,
       workbenchAlreadyReady: !slowLoad,
+      theme,
     },
     startX,
     startY,
@@ -66,6 +68,7 @@ function computePreviewPlan(preset: Preset, slowLoad: boolean): {
 
 export function SplashPreview() {
   const [presetId, setPresetId] = useState(PRESETS[0].id);
+  const [whaleTheme, setWhaleTheme] = useState<ResolvedTheme>('dark');
   const [wallpaper, setWallpaper] = useState<'dark' | 'light'>('dark');
   const [slowLoad, setSlowLoad] = useState(false);
   const [runKey, setRunKey] = useState(0);
@@ -73,6 +76,7 @@ export function SplashPreview() {
   const [windowVisible, setWindowVisible] = useState(false);
 
   const whaleHostRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<WhaleSplashStage | null>(null);
   const preset = PRESETS.find((item) => item.id === presetId) ?? PRESETS[0];
 
   useEffect(() => {
@@ -81,7 +85,7 @@ export function SplashPreview() {
     host.innerHTML = '';
     setWindowVisible(false);
 
-    const { plan, startX, startY, endX, endY } = computePreviewPlan(preset, slowLoad);
+    const { plan, startX, startY, endX, endY } = computePreviewPlan(preset, slowLoad, whaleTheme);
     host.style.transform = `translate(${startX}px, ${startY}px)`;
 
     let flightRaf: number | null = null;
@@ -115,6 +119,7 @@ export function SplashPreview() {
         setWindowVisible(true);
       },
     });
+    stageRef.current = stage;
 
     host.append(stage.element);
     stage.start();
@@ -127,10 +132,16 @@ export function SplashPreview() {
       if (flightRaf !== null) cancelAnimationFrame(flightRaf);
       if (loadTimer !== null) window.clearTimeout(loadTimer);
       stage.dispose();
+      stageRef.current = null;
     };
   }, [preset, slowLoad, runKey]);
 
-  const isDark = wallpaper === 'dark';
+  useEffect(() => {
+    stageRef.current?.setTheme(whaleTheme);
+  }, [whaleTheme]);
+
+  const isDarkWallpaper = wallpaper === 'dark';
+  const isLightTheme = whaleTheme === 'light';
 
   return (
     <div
@@ -183,6 +194,21 @@ export function SplashPreview() {
         </button>
         <button
           type="button"
+          onClick={() => setWhaleTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+          style={{
+            padding: '6px 10px',
+            borderRadius: '6px',
+            border: '1px solid rgba(255,255,255,0.14)',
+            background: isLightTheme ? '#f7f8fa' : '#151922',
+            color: isLightTheme ? '#18181b' : '#e4e4e7',
+            fontSize: '12px',
+            cursor: 'pointer',
+          }}
+        >
+          Theme: {isLightTheme ? 'Light' : 'Dark'}
+        </button>
+        <button
+          type="button"
           onClick={() => setWallpaper((w) => (w === 'dark' ? 'light' : 'dark'))}
           style={{
             padding: '6px 10px',
@@ -194,7 +220,7 @@ export function SplashPreview() {
             cursor: 'pointer',
           }}
         >
-          Wallpaper: {isDark ? 'Dark' : 'Light'}
+          Wallpaper: {isDarkWallpaper ? 'Dark' : 'Light'}
         </button>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
           <input
@@ -215,7 +241,7 @@ export function SplashPreview() {
           borderRadius: '14px',
           overflow: 'hidden',
           border: '1px solid rgba(255,255,255,0.12)',
-          background: isDark
+          background: isDarkWallpaper
             ? 'radial-gradient(circle at 25% 20%, #1d2438 0%, #0f131d 55%, #090b10 100%)'
             : 'radial-gradient(circle at 25% 20%, #f8fafc 0%, #e2e8f0 55%, #cbd5e1 100%)',
         }}
@@ -229,16 +255,16 @@ export function SplashPreview() {
             width: `${preset.winW}px`,
             height: `${preset.winH}px`,
             borderRadius: '10px',
-            background: '#0b0d10',
-            border: '1px solid rgba(255,255,255,0.14)',
-            boxShadow: '0 18px 42px rgba(0,0,0,0.48)',
+            background: isLightTheme ? '#f7f8fa' : '#0b0d10',
+            border: isLightTheme ? '1px solid rgba(15,23,42,0.12)' : '1px solid rgba(255,255,255,0.14)',
+            boxShadow: isLightTheme ? '0 18px 42px rgba(15,23,42,0.22)' : '0 18px 42px rgba(0,0,0,0.48)',
             opacity: windowVisible ? 1 : 0,
             transition: 'opacity 240ms cubic-bezier(0.22, 1, 0.36, 1)',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'space-between',
             padding: '10px 12px',
-            color: '#e4e4e7',
+            color: isLightTheme ? '#1f2937' : '#e4e4e7',
             fontSize: '11px',
           }}
         >
@@ -249,7 +275,7 @@ export function SplashPreview() {
             <span style={{ marginLeft: '6px', fontWeight: 500 }}>Picket</span>
           </div>
           {!preset.compact && (
-            <div style={{ color: '#71717a', fontSize: '11px' }}>Hydrated Workbench Ready</div>
+            <div style={{ color: isLightTheme ? '#6b7280' : '#71717a', fontSize: '11px' }}>Hydrated Workbench Ready</div>
           )}
         </div>
 

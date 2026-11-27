@@ -100,6 +100,7 @@ fn main() {
             startup_splash::run_splash_jump,
             startup_splash::complete_splash,
             window_motion::set_window_pinned,
+            window_motion::set_window_theme,
             window_motion::animate_window_frame,
             tray::read_tray_state,
             tray::sync_tray_state,

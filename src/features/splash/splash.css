@@ -1,5 +1,4 @@
-html,
-body,
+html:has(.splash-body),
 .splash-body,
 #splash-root {
   margin: 0;
@@ -14,6 +13,19 @@ body,
 }
 
 .whale-stage {
+  --whale-body-filter:
+    drop-shadow(0 8px 16px rgb(7 9 14 / 42%))
+    drop-shadow(0 1px 3px rgb(7 9 14 / 36%));
+  --whale-silhouette-stroke: rgb(11 13 16 / 20%);
+  --whale-eye-fill: #101319;
+  --whale-ripple-primary-stroke: rgb(250 251 253 / 82%);
+  --whale-ripple-primary-glow: drop-shadow(0 0 4px rgb(129 140 248 / 45%));
+  --whale-ripple-secondary-stroke: rgb(129 140 248 / 78%);
+  --whale-ripple-secondary-glow: drop-shadow(0 0 6px rgb(129 140 248 / 40%));
+  --whale-droplet-fill: #fafbfd;
+  --whale-droplet-stroke: rgb(11 13 16 / 18%);
+  --whale-droplet-glow: drop-shadow(0 1px 4px rgb(129 140 248 / 55%));
+
   position: relative;
   width: 220px;
   height: 220px;
@@ -24,6 +36,22 @@ body,
   overflow: visible;
 }
 
+.whale-stage[data-theme='light'] {
+  /* Deep obsidian slate with a subtle white rim keeps the light-mode whale crisp over both bright and dark wallpapers. */
+  --whale-body-filter:
+    drop-shadow(0 8px 16px rgb(15 23 42 / 26%))
+    drop-shadow(0 1px 3px rgb(15 23 42 / 20%));
+  --whale-silhouette-stroke: rgb(255 255 255 / 44%);
+  --whale-eye-fill: #f7f8fa;
+  --whale-ripple-primary-stroke: rgb(24 24 27 / 48%);
+  --whale-ripple-primary-glow: drop-shadow(0 0 4px rgb(79 70 229 / 36%));
+  --whale-ripple-secondary-stroke: rgb(79 70 229 / 76%);
+  --whale-ripple-secondary-glow: drop-shadow(0 0 6px rgb(79 70 229 / 34%));
+  --whale-droplet-fill: #272b36;
+  --whale-droplet-stroke: rgb(255 255 255 / 48%);
+  --whale-droplet-glow: drop-shadow(0 1px 4px rgb(79 70 229 / 52%));
+}
+
 .whale-svg {
   width: 220px;
   height: 220px;
@@ -31,23 +59,21 @@ body,
   overflow: visible;
 }
 
-/* Dual ambient + crisp shadow keeps the pure white whale legible over both dark and bright wallpapers. */
+/* Dual ambient + crisp shadow keeps the whale silhouette legible over both dark and bright wallpapers. */
 .whale-body-shadow {
-  filter:
-    drop-shadow(0 8px 16px rgb(7 9 14 / 42%))
-    drop-shadow(0 1px 3px rgb(7 9 14 / 36%));
+  filter: var(--whale-body-filter);
 }
 
 .whale-silhouette {
   fill: url(#picket-whale-fill);
-  stroke: rgb(11 13 16 / 20%);
+  stroke: var(--whale-silhouette-stroke);
   stroke-width: 12;
   stroke-linejoin: round;
   paint-order: stroke fill;
 }
 
 .whale-eye {
-  fill: #101319;
+  fill: var(--whale-eye-fill);
 }
 
 .whale-ground-shadow {
@@ -56,21 +82,21 @@ body,
 
 .whale-ripple-primary {
   fill: none;
-  stroke: rgb(250 251 253 / 82%);
+  stroke: var(--whale-ripple-primary-stroke);
   stroke-width: 1.5;
-  filter: drop-shadow(0 0 4px rgb(129 140 248 / 45%));
+  filter: var(--whale-ripple-primary-glow);
 }
 
 .whale-ripple-secondary {
   fill: none;
-  stroke: rgb(129 140 248 / 78%);
+  stroke: var(--whale-ripple-secondary-stroke);
   stroke-width: 1.25;
-  filter: drop-shadow(0 0 6px rgb(129 140 248 / 40%));
+  filter: var(--whale-ripple-secondary-glow);
 }
 
 .whale-droplet {
-  fill: #fafbfd;
-  stroke: rgb(11 13 16 / 18%);
+  fill: var(--whale-droplet-fill);
+  stroke: var(--whale-droplet-stroke);
   stroke-width: 0.75;
-  filter: drop-shadow(0 1px 4px rgb(129 140 248 / 55%));
+  filter: var(--whale-droplet-glow);
 }

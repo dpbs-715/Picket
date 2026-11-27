@@ -198,6 +198,7 @@ export function useWorkbenchSync({
   const persistenceKey = JSON.stringify(persistenceSnapshot);
   const structuralKey = JSON.stringify([
     state.locale,
+    state.theme,
     state.editor,
     state.defaultCommitLanguage,
     state.repositorySettings,

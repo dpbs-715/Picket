@@ -5,6 +5,7 @@ import {
   type CustomActionSyncResult,
 } from '../../../../shared/custom-action-protocol';
 import { DEFAULT_APP_LOCALE, DEFAULT_COMMIT_LANGUAGE, type AppLocale, type CommitLanguage } from '../../../../shared/language-protocol';
+import { DEFAULT_APP_THEME } from '../../../../shared/theme-protocol';
 import {
   WINDOW_DIMENSIONS,
   type PersistedWindowPreferences,
@@ -93,6 +94,7 @@ export function emptyWorkbench(): WorkbenchState {
     models: [],
     activeModelId: null,
     locale: DEFAULT_APP_LOCALE,
+    theme: DEFAULT_APP_THEME,
     editor: 'idea',
     defaultCommitLanguage: DEFAULT_COMMIT_LANGUAGE,
     repositorySettings: {},

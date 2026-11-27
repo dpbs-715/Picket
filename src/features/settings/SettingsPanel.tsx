@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
+import { APP_THEMES, type AppTheme } from '../../../shared/theme-protocol';
 import type { SkillsStateSnapshot } from '../../../shared/skills-protocol';
 import type { UpdateStateSnapshot } from '../../../shared/update-protocol';
 import { LANGUAGE_OPTIONS, useI18n } from '../../i18n';
@@ -14,6 +15,7 @@ export type SettingsTabId = 'general' | 'models' | 'skills';
 
 interface Props {
   locale: AppLocale;
+  theme: AppTheme;
   repositoryName?: string;
   editor: EditorId;
   commitLanguage: CommitLanguage;
@@ -23,6 +25,7 @@ interface Props {
   activeModelId: string | null;
   covered: boolean;
   onLocale(locale: AppLocale): void;
+  onTheme(theme: AppTheme): void;
   onEditor(editor: EditorId): void;
   onCommitLanguage(commitLanguage: CommitLanguage): void;
   onSelectModel(id: string): void;
@@ -277,6 +280,23 @@ export function SettingsPanel(props: Props) {
                   {LANGUAGE_OPTIONS.map((option) => (
                     <button type="button" key={option.id} aria-pressed={option.id === props.locale} onClick={() => props.onLocale(option.id)}>
                       {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settings-row-item">
+                <span className="settings-row-label">{t.settings.appTheme}</span>
+                <div className="segmented-control" data-setting-group="app-theme" role="group" aria-label={t.settings.appTheme}>
+                  {APP_THEMES.map((option) => (
+                    <button
+                      type="button"
+                      key={option}
+                      data-theme-option={option}
+                      aria-pressed={option === props.theme}
+                      onClick={() => props.onTheme(option)}
+                    >
+                      {t.settings.themeOptions[option]}
                     </button>
                   ))}
                 </div>

@@ -18,6 +18,7 @@ import './tray.css';
 const EMPTY_SNAPSHOT: TrayStateSnapshot = {
   protocolVersion: 1,
   locale: 'en',
+  theme: 'system',
   hasUpdate: false,
   refreshing: false,
   repositories: [],

@@ -22,6 +22,8 @@ import type { Root } from 'react-dom/client';
 import type { WindowController } from '../../../desktop/window';
 import { getMessages, LANGUAGE_OPTIONS } from '../../../i18n/messages';
 import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
+import '../../splash/splash.css';
+import { WhaleSplashStage } from '../../splash/WhaleSplashStage';
 import { TrayPopover } from '../../tray/TrayPopover';
 import { Workbench } from '../Workbench';
 import { disconnectedBackend } from '../commands';
@@ -4431,6 +4433,183 @@ export async function verifyWorkbench(root: Root) {
       'Scrolling timeline body must keep pinned progress header fixed in place',
     );
     checks.push('MessageDock pins progress strip beneath header, deduplicates matching description, and auto-scrolls command timeline independently');
+  }
+
+  // Appearance theme selector (System / Dark / Light): live CSS tokens, native window sync, persistence, i18n labels, and TrayPopover sync:
+  {
+    const themeCalls: string[] = [];
+    const savedThemePayloads: WorkbenchSaveRequest[] = [];
+    const themeWinMock = createControlledWindow();
+    const themeController: WindowController = {
+      ...themeWinMock.controller,
+      async setTheme(nextTheme) {
+        themeCalls.push(nextTheme);
+        if (nextTheme === 'system') return 'dark';
+        return nextTheme;
+      },
+    };
+    await mount(
+      fixture('typing'),
+      {
+        ...disconnectedBackend,
+        async saveWorkbenchState(req) {
+          savedThemePayloads.push(req);
+        },
+      },
+      themeController,
+    );
+    await tick();
+
+    await click('Settings');
+    const currentDocTheme = () => document.documentElement.dataset.theme;
+    const themeGroup = () => document.querySelector<HTMLElement>('[data-setting-group="app-theme"]')!;
+    assert(
+      Boolean(themeGroup())
+        && themeGroup().querySelector<HTMLButtonElement>('[data-theme-option="system"]')?.getAttribute('aria-pressed') === 'true'
+        && (themeGroup().textContent ?? '').includes('System')
+        && (themeGroup().textContent ?? '').includes('Dark')
+        && (themeGroup().textContent ?? '').includes('Light'),
+      `Settings General tab must render Theme segmented control defaulting to System (got: ${themeGroup()?.textContent})`,
+    );
+
+    // Switch to Light mode -> light canvas & dark obsidian primary button + persisted theme: 'light':
+    await clickElement(themeGroup().querySelector<HTMLButtonElement>('[data-theme-option="light"]')!);
+    await tick();
+    const workbenchEl = document.querySelector<HTMLElement>('.workbench')!;
+    const primaryBtnEl = document.querySelector<HTMLButtonElement>('.action-footer button.primary')!;
+    await waitUntil(
+      () => getComputedStyle(primaryBtnEl).backgroundColor === 'rgb(24, 24, 27)',
+      () => `light-primary-bg=${getComputedStyle(primaryBtnEl).backgroundColor}`,
+    );
+    assert(
+      currentDocTheme() === 'light'
+        && document.documentElement.style.colorScheme === 'light'
+        && getComputedStyle(workbenchEl).backgroundColor === 'rgb(247, 248, 250)'
+        && getComputedStyle(primaryBtnEl).backgroundColor === 'rgb(24, 24, 27)'
+        && themeCalls.includes('light')
+        && savedThemePayloads.some((req) => req.theme === 'light'),
+      `Light theme must apply light canvas tokens, obsidian primary CTA, native setTheme, and persistence (dataTheme=${currentDocTheme()}, bg=${getComputedStyle(workbenchEl).backgroundColor}, primaryBg=${getComputedStyle(primaryBtnEl).backgroundColor})`,
+    );
+
+    // Switch UI language to Chinese and verify localized theme labels (外观主题 / 跟随系统 / 深色 / 浅色):
+    const zhAppLangBtn = [...document.querySelectorAll<HTMLButtonElement>('[data-setting-group="app-language"] button')]
+      .find((b) => b.textContent?.trim() === zhLanguageLabel)!;
+    await clickElement(zhAppLangBtn);
+    await tick();
+    assert(
+      (themeGroup().textContent ?? '').includes(zh.settings.themeOptions.system)
+        && (themeGroup().textContent ?? '').includes(zh.settings.themeOptions.dark)
+        && (themeGroup().textContent ?? '').includes(zh.settings.themeOptions.light),
+      `Chinese UI must localize theme options (got: ${themeGroup().textContent})`,
+    );
+
+    // Switch to Dark mode -> dark canvas & light primary button:
+    await clickElement(themeGroup().querySelector<HTMLButtonElement>('[data-theme-option="dark"]')!);
+    await tick();
+    await waitUntil(
+      () => getComputedStyle(primaryBtnEl).backgroundColor === 'rgb(244, 244, 245)',
+      () => `dark-primary-bg=${getComputedStyle(primaryBtnEl).backgroundColor}`,
+    );
+    assert(
+      currentDocTheme() === 'dark'
+        && getComputedStyle(workbenchEl).backgroundColor === 'rgb(11, 13, 16)'
+        && getComputedStyle(primaryBtnEl).backgroundColor === 'rgb(244, 244, 245)'
+        && themeCalls.includes('dark'),
+      `Dark theme must apply dark canvas tokens and bright primary CTA (bg=${getComputedStyle(workbenchEl).backgroundColor})`,
+    );
+
+    // Switch back to System -> invokes setTheme('system') and resolves cleanly:
+    await clickElement(themeGroup().querySelector<HTMLButtonElement>('[data-theme-option="system"]')!);
+    await tick();
+    assert(
+      themeGroup().querySelector<HTMLButtonElement>('[data-theme-option="system"]')?.getAttribute('aria-pressed') === 'true'
+        && themeCalls.at(-1) === 'system'
+        && currentDocTheme() === 'dark',
+      'Switching back to System theme must invoke native setTheme("system") and apply resolved appearance',
+    );
+
+    // Verify TrayPopover applies theme snapshot cleanly:
+    await act(async () => {
+      root.render(
+        createElement(TrayPopover, {
+          snapshot: { protocolVersion: 1, locale: 'en', theme: 'light', hasUpdate: false, refreshing: false, repositories: [] },
+          onRefresh: () => {},
+          onOpenSettings: () => {},
+          onOpenMainWindow: () => {},
+          onQuit: () => {},
+          onDismiss: () => {},
+        }),
+      );
+    });
+    assert(currentDocTheme() === 'light', 'TrayPopover must apply light theme when snapshot.theme is light');
+    await act(async () => {
+      root.render(
+        createElement(TrayPopover, {
+          snapshot: { protocolVersion: 1, locale: 'en', theme: 'dark', hasUpdate: false, refreshing: false, repositories: [] },
+          onRefresh: () => {},
+          onOpenSettings: () => {},
+          onOpenMainWindow: () => {},
+          onQuit: () => {},
+          onDismiss: () => {},
+        }),
+      );
+    });
+    assert(currentDocTheme() === 'dark', 'TrayPopover must apply dark theme when snapshot.theme is dark');
+
+    // Verify startup WhaleSplashStage adapts SVG gradient stops and CSS tokens across dark & light themes:
+    const splashHost = document.createElement('div');
+    document.body.append(splashHost);
+    const splashStage = new WhaleSplashStage({
+      dx: 0,
+      dy: 0,
+      distance: 0,
+      arcHeight: 76,
+      leapDurationMs: 440,
+      compactMode: false,
+      workbenchAlreadyReady: true,
+      theme: 'dark',
+    });
+    splashHost.append(splashStage.element);
+    try {
+      const splashDomTheme = () => splashStage.element.dataset.theme;
+      const darkStop0 = splashStage.element.querySelector('#picket-whale-fill stop')?.getAttribute('stop-color');
+      const darkEyeFill = getComputedStyle(splashStage.element.querySelector('.whale-eye')!).fill;
+      const darkDropletFill = getComputedStyle(splashStage.element.querySelector('.whale-droplet')!).fill;
+      assert(
+        splashDomTheme() === 'dark'
+          && splashStage.getTheme() === 'dark'
+          && darkStop0 === '#FFFFFF'
+          && darkEyeFill === 'rgb(16, 19, 25)'
+          && darkDropletFill === 'rgb(250, 251, 253)',
+        `Dark splash whale must use luminous white body & dark eye (stop0=${darkStop0}, eye=${darkEyeFill}, droplet=${darkDropletFill})`,
+      );
+
+      splashStage.updatePlan({
+        dx: 0,
+        dy: 0,
+        distance: 0,
+        arcHeight: 76,
+        leapDurationMs: 440,
+        compactMode: false,
+        workbenchAlreadyReady: true,
+        theme: 'light',
+      });
+      const lightStop0 = splashStage.element.querySelector('#picket-whale-fill stop')?.getAttribute('stop-color');
+      const lightEyeFill = getComputedStyle(splashStage.element.querySelector('.whale-eye')!).fill;
+      const lightDropletFill = getComputedStyle(splashStage.element.querySelector('.whale-droplet')!).fill;
+      assert(
+        splashDomTheme() === 'light'
+          && splashStage.getTheme() === 'light'
+          && lightStop0 === '#2E3340'
+          && lightEyeFill === 'rgb(247, 248, 250)'
+          && lightDropletFill === 'rgb(39, 43, 54)',
+        `Light splash whale must use obsidian slate body & alabaster eye (stop0=${lightStop0}, eye=${lightEyeFill}, droplet=${lightDropletFill})`,
+      );
+    } finally {
+      splashStage.dispose();
+      splashHost.remove();
+    }
+    checks.push('Appearance theme setting (System / Dark / Light): live workbench, tray & startup whale splash tokens, native window sync, persistence, and EN/ZH labels');
   }
 
   return {

@@ -196,6 +196,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   if (action.type === 'locale') {
     return { ...state, locale: action.locale, settingsModified: true };
   }
+  if (action.type === 'theme') {
+    return { ...state, theme: action.theme, settingsModified: true };
+  }
   if (action.type === 'windowPreferencesUpdated') {
     return {
       ...state,

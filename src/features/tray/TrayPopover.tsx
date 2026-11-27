@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { DEFAULT_APP_THEME } from '../../../shared/theme-protocol';
 import type {
   TrayMainWindowAction,
   TrayRepositorySummary,
@@ -6,6 +7,7 @@ import type {
 } from '../../../shared/tray-protocol';
 import { getMessages, I18nProvider } from '../../i18n';
 import { Icon, IconButton, RotatingChevron } from '../../ui/controls';
+import { useResolvedTheme } from '../../ui/theme';
 import {
   isTrayRepoCleanIdle,
   isTrayRepoNeedsDock,
@@ -121,6 +123,7 @@ export function TrayPopover({
 }: TrayPopoverProps) {
   const t = getMessages(snapshot.locale);
   const trayText = t.tray;
+  useResolvedTheme(snapshot.theme ?? DEFAULT_APP_THEME);
   const [cleanExpanded, setCleanExpanded] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const lastReportedHeightRef = useRef(0);

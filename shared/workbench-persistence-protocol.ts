@@ -13,6 +13,8 @@ import { isGitEditorId } from './ide-protocol';
 import type { GitEditorId } from './ide-protocol';
 import { isAppLocale } from './language-protocol';
 import type { AppLocale, CommitLanguage } from './language-protocol';
+import { isAppTheme } from './theme-protocol';
+import type { AppTheme } from './theme-protocol';
 import { decodeSavedModelConfiguration, decodeSavedProviderConnection } from './model-protocol';
 import type { SavedModelConfiguration, SavedProviderConnection } from './model-protocol';
 
@@ -72,6 +74,7 @@ export interface PersistedWorktreeState {
 export interface WorkbenchSaveRequest {
   revision: number;
   locale?: AppLocale;
+  theme?: AppTheme;
   editor: GitEditorId;
   defaultCommitLanguage?: CommitLanguage;
   repositorySettings?: PersistedRepositorySettings[];
@@ -84,6 +87,7 @@ export interface WorkbenchSaveRequest {
 export interface WorkbenchRestoreReply {
   protocolVersion: typeof WORKBENCH_PERSISTENCE_PROTOCOL_VERSION;
   locale?: AppLocale;
+  theme?: AppTheme;
   editor: GitEditorId;
   defaultCommitLanguage?: CommitLanguage;
   repositorySettings?: PersistedRepositorySettings[];
@@ -140,6 +144,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
   };
   if (!record(value) || value.protocolVersion !== WORKBENCH_PERSISTENCE_PROTOCOL_VERSION
     || !(value.locale === undefined || value.locale === null || isAppLocale(value.locale))
+    || !(value.theme === undefined || value.theme === null || isAppTheme(value.theme))
     || !isGitEditorId(value.editor)
     || !(value.defaultCommitLanguage === undefined || value.defaultCommitLanguage === null || isAppLocale(value.defaultCommitLanguage))
     || !(value.activeWorktreeId === null || typeof value.activeWorktreeId === 'string')
@@ -260,6 +265,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
   return {
     protocolVersion: WORKBENCH_PERSISTENCE_PROTOCOL_VERSION,
     ...(isAppLocale(value.locale) ? { locale: value.locale } : {}),
+    ...(isAppTheme(value.theme) ? { theme: value.theme } : {}),
     editor: value.editor,
     ...(isAppLocale(value.defaultCommitLanguage) ? { defaultCommitLanguage: value.defaultCommitLanguage } : {}),
     ...(repositorySettings !== undefined ? { repositorySettings } : {}),

@@ -9,6 +9,7 @@
 use crate::{
     foundation::lifecycle::{DesktopLifecycle, exit_after_cleanup},
     i18n::{self, LanguageKind},
+    repository::types::{ThemeKind, deserialize_theme_or_default},
     window_motion::{self, MonitorWorkArea},
 };
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,8 @@ pub struct TrayStateSnapshot {
     pub protocol_version: u8,
     #[serde(default)]
     pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_theme_or_default")]
+    pub theme: ThemeKind,
     pub has_update: bool,
     pub refreshing: bool,
     pub repositories: Vec<TrayRepositorySummary>,
@@ -96,6 +99,7 @@ impl Default for TrayStateSnapshot {
         Self {
             protocol_version: 1,
             locale: LanguageKind::En,
+            theme: ThemeKind::System,
             has_update: false,
             refreshing: false,
             repositories: Vec::new(),
@@ -351,6 +355,13 @@ fn ensure_tray_popover_window_on_main(
     .build()
     .ok()?;
     let _ = window_motion::prepare_tray_popover_window_on_main(&built, TRAY_POPOVER_WIDTH, height);
+    let initial_theme = app
+        .state::<TrayCoordinator>()
+        .state
+        .lock()
+        .map(|guard| guard.snapshot.theme)
+        .unwrap_or_default();
+    let _ = window_motion::apply_window_theme(&built, initial_theme, false);
     Some(built)
 }
 
@@ -540,6 +551,12 @@ impl TrayCoordinator {
         }
 
         if let Some(popover) = app.get_webview_window(TRAY_POPOVER_LABEL) {
+            let popover_for_theme = popover.clone();
+            let snapshot_theme = snapshot.theme;
+            let _ = popover.run_on_main_thread(move || {
+                let _ =
+                    window_motion::apply_window_theme(&popover_for_theme, snapshot_theme, false);
+            });
             let _ = popover.emit(TRAY_STATE_EVENT, &snapshot);
         }
     }
@@ -789,6 +806,7 @@ mod tests {
         let clean = TrayStateSnapshot {
             protocol_version: 1,
             locale: LanguageKind::Zh,
+            theme: ThemeKind::System,
             has_update: false,
             refreshing: false,
             repositories: vec![sample_repo("alpha", 0, TraySessionStatus::Idle)],
@@ -799,6 +817,7 @@ mod tests {
         let with_changes = TrayStateSnapshot {
             protocol_version: 1,
             locale: LanguageKind::En,
+            theme: ThemeKind::Dark,
             has_update: false,
             refreshing: false,
             repositories: vec![
@@ -815,6 +834,7 @@ mod tests {
         let with_decision = TrayStateSnapshot {
             protocol_version: 1,
             locale: LanguageKind::Zh,
+            theme: ThemeKind::Light,
             has_update: false,
             refreshing: false,
             repositories: vec![sample_repo("alpha", 2, TraySessionStatus::NeedsDecision)],
@@ -825,6 +845,7 @@ mod tests {
         let with_update = TrayStateSnapshot {
             protocol_version: 1,
             locale: LanguageKind::En,
+            theme: ThemeKind::System,
             has_update: true,
             refreshing: false,
             repositories: vec![],

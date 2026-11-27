@@ -1,3 +1,4 @@
+import type { ResolvedTheme } from '../../../shared/theme-protocol';
 import {
   SPLASH_TIMING,
   evaluateAimPose,
@@ -9,6 +10,29 @@ import {
   type SplashPhase,
   type WhaleFramePose,
 } from './whaleMath';
+
+export interface SplashThemePalette {
+  bodyStops: readonly [string, string, string];
+  shadowColor: string;
+  shadowOpacities: readonly [string, string, string];
+}
+
+export const SPLASH_THEME_PALETTES: Record<ResolvedTheme, SplashThemePalette> = {
+  dark: {
+    bodyStops: ['#FFFFFF', '#F4F6FA', '#E3E7F0'],
+    shadowColor: '#090C14',
+    shadowOpacities: ['0.58', '0.26', '0'],
+  },
+  light: {
+    bodyStops: ['#2E3340', '#1B1F29', '#11141C'],
+    shadowColor: '#0F172A',
+    shadowOpacities: ['0.34', '0.15', '0'],
+  },
+};
+
+export function resolveSplashTheme(theme: unknown): ResolvedTheme {
+  return theme === 'light' ? 'light' : 'dark';
+}
 
 /** Exact vector subpaths extracted from `src-tauri/icons/icon.svg` (1024x1024 space). */
 const WHALE_BODY_PATH =
@@ -51,6 +75,8 @@ export interface WhaleSplashHooks {
 
 export class WhaleSplashStage {
   readonly element: HTMLDivElement;
+  private readonly whaleFillStops: [SVGStopElement, SVGStopElement, SVGStopElement];
+  private readonly shadowGradStops: [SVGStopElement, SVGStopElement, SVGStopElement];
   private readonly whaleMotionGroup: SVGGElement;
   private readonly whaleFacingGroup: SVGGElement;
   private readonly leftEyeGroup: SVGGElement;
@@ -62,6 +88,7 @@ export class WhaleSplashStage {
 
   private plan: SplashLaunchPlan;
   private hooks: WhaleSplashHooks;
+  private theme: ResolvedTheme = 'dark';
   private phase: SplashPhase = 'entering';
   private phaseStartMs = 0;
   private bounceCount = 0;
@@ -98,11 +125,11 @@ export class WhaleSplashStage {
       y2: '705',
       gradientUnits: 'userSpaceOnUse',
     });
-    whaleFill.append(
-      svgEl('stop', { offset: '0%', 'stop-color': '#FFFFFF' }),
-      svgEl('stop', { offset: '62%', 'stop-color': '#F4F6FA' }),
-      svgEl('stop', { offset: '100%', 'stop-color': '#E3E7F0' }),
-    );
+    const fillStop0 = svgEl('stop', { offset: '0%' });
+    const fillStop1 = svgEl('stop', { offset: '62%' });
+    const fillStop2 = svgEl('stop', { offset: '100%' });
+    this.whaleFillStops = [fillStop0, fillStop1, fillStop2];
+    whaleFill.append(fillStop0, fillStop1, fillStop2);
 
     const shadowGrad = svgEl('radialGradient', {
       id: 'picket-whale-shadow',
@@ -110,11 +137,11 @@ export class WhaleSplashStage {
       cy: '50%',
       r: '50%',
     });
-    shadowGrad.append(
-      svgEl('stop', { offset: '0%', 'stop-color': '#090C14', 'stop-opacity': '0.58' }),
-      svgEl('stop', { offset: '55%', 'stop-color': '#090C14', 'stop-opacity': '0.26' }),
-      svgEl('stop', { offset: '100%', 'stop-color': '#090C14', 'stop-opacity': '0' }),
-    );
+    const shadowStop0 = svgEl('stop', { offset: '0%' });
+    const shadowStop1 = svgEl('stop', { offset: '55%' });
+    const shadowStop2 = svgEl('stop', { offset: '100%' });
+    this.shadowGradStops = [shadowStop0, shadowStop1, shadowStop2];
+    shadowGrad.append(shadowStop0, shadowStop1, shadowStop2);
 
     defs.append(whaleFill, shadowGrad);
     svg.append(defs);
@@ -184,7 +211,23 @@ export class WhaleSplashStage {
     stage.append(svg);
     this.element = stage;
 
+    this.setTheme(resolveSplashTheme(plan.theme));
     this.applyPose(evaluateEntrancePose(0));
+  }
+
+  getTheme(): ResolvedTheme {
+    return this.theme;
+  }
+
+  setTheme(theme: ResolvedTheme): void {
+    this.theme = theme;
+    this.element.dataset.theme = theme;
+    const palette = SPLASH_THEME_PALETTES[theme];
+    for (let i = 0; i < 3; i += 1) {
+      this.whaleFillStops[i].setAttribute('stop-color', palette.bodyStops[i]);
+      this.shadowGradStops[i].setAttribute('stop-color', palette.shadowColor);
+      this.shadowGradStops[i].setAttribute('stop-opacity', palette.shadowOpacities[i]);
+    }
   }
 
   start(): void {
@@ -205,12 +248,18 @@ export class WhaleSplashStage {
   updatePlan(nextPlan: SplashLaunchPlan): void {
     this.plan = nextPlan;
     this.readyToLand = nextPlan.workbenchAlreadyReady;
+    if (nextPlan.theme === 'dark' || nextPlan.theme === 'light') {
+      this.setTheme(nextPlan.theme);
+    }
   }
 
   /** Allows interactive preview tooling to jump straight to a phase or replay cleanly. */
   restart(nextPlan?: SplashLaunchPlan): void {
     if (nextPlan) {
       this.plan = nextPlan;
+      if (nextPlan.theme === 'dark' || nextPlan.theme === 'light') {
+        this.setTheme(nextPlan.theme);
+      }
     }
     this.readyToLand = this.plan.workbenchAlreadyReady;
     this.stop();

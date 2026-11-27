@@ -31,6 +31,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
             WorkbenchSaveRequest {
                 revision: 2,
                 locale: LanguageKind::Zh,
+                theme: ThemeKind::Light,
                 editor: EditorKind::Cursor,
                 default_commit_language: LanguageKind::Zh,
                 repository_settings: vec![PersistedRepositorySettings {
@@ -87,6 +88,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
             WorkbenchSaveRequest {
                 revision: 1,
                 locale: LanguageKind::En,
+                theme: ThemeKind::Dark,
                 editor: EditorKind::Idea,
                 default_commit_language: LanguageKind::En,
                 repository_settings: vec![],
@@ -121,6 +123,11 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
         .unwrap();
     assert_eq!(restored.protocol_version, 2);
     assert_eq!(restored.locale, LanguageKind::Zh);
+    assert_eq!(restored.theme, ThemeKind::Light);
+    assert_eq!(
+        persistence::read_persisted_theme(storage.path()),
+        ThemeKind::Light
+    );
     assert_eq!(restored.editor, EditorKind::Cursor);
     assert_eq!(restored.default_commit_language, LanguageKind::Zh);
     assert_eq!(
@@ -176,6 +183,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
             WorkbenchSaveRequest {
                 revision: 1,
                 locale: LanguageKind::En,
+                theme: ThemeKind::System,
                 editor: EditorKind::Webstorm,
                 default_commit_language: LanguageKind::Zh,
                 repository_settings: vec![PersistedRepositorySettings {
@@ -236,6 +244,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
             WorkbenchSaveRequest {
                 revision: 1,
                 locale: LanguageKind::Zh,
+                theme: ThemeKind::Dark,
                 editor: EditorKind::Vscode,
                 default_commit_language: LanguageKind::En,
                 repository_settings: vec![],
@@ -281,6 +290,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                 WorkbenchSaveRequest {
                     revision: 2,
                     locale: LanguageKind::En,
+                    theme: ThemeKind::System,
                     editor: EditorKind::Idea,
                     default_commit_language: LanguageKind::En,
                     repository_settings: vec![
@@ -320,6 +330,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                 WorkbenchSaveRequest {
                     revision: 3,
                     locale: LanguageKind::En,
+                    theme: ThemeKind::System,
                     editor: EditorKind::Idea,
                     default_commit_language: LanguageKind::En,
                     repository_settings: vec![],
@@ -663,6 +674,7 @@ async fn persists_custom_actions_cold_restores_and_invalidates_stale_write_trust
             WorkbenchSaveRequest {
                 revision: 1,
                 locale: LanguageKind::En,
+                theme: ThemeKind::Dark,
                 editor: EditorKind::Idea,
                 default_commit_language: LanguageKind::En,
                 repository_settings: vec![PersistedRepositorySettings {

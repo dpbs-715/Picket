@@ -1,12 +1,27 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { ResolvedTheme } from '../../../shared/theme-protocol';
+import { applyDocumentTheme, readSystemPrefersDark } from '../../ui/theme';
 import './splash.css';
 import { WhaleSplashStage } from './WhaleSplashStage';
 import type { SplashLaunchPlan } from './whaleMath';
 
+function readInitialSplashTheme(): ResolvedTheme {
+  if (typeof window !== 'undefined') {
+    const queryTheme = new URLSearchParams(window.location.search).get('theme');
+    if (queryTheme === 'dark' || queryTheme === 'light') {
+      return queryTheme;
+    }
+  }
+  return readSystemPrefersDark() ? 'dark' : 'light';
+}
+
 async function bootSplash(): Promise<void> {
   const root = document.getElementById('splash-root');
   if (!root) return;
+
+  const initialTheme = readInitialSplashTheme();
+  applyDocumentTheme(initialTheme);
 
   const placeholderPlan: SplashLaunchPlan = {
     dx: 0,
@@ -16,6 +31,7 @@ async function bootSplash(): Promise<void> {
     leapDurationMs: 440,
     compactMode: false,
     workbenchAlreadyReady: false,
+    theme: initialTheme,
   };
 
   if (!isTauri()) {
@@ -63,8 +79,13 @@ async function bootSplash(): Promise<void> {
     return;
   }
 
+  const resolvedTheme: ResolvedTheme =
+    plan.theme === 'dark' || plan.theme === 'light' ? plan.theme : initialTheme;
+  applyDocumentTheme(resolvedTheme);
+
   stage.updatePlan({
     ...plan,
+    theme: resolvedTheme,
     workbenchAlreadyReady: plan.workbenchAlreadyReady || readyFromEvent,
   });
   stage.start();

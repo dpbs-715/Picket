@@ -16,6 +16,7 @@ import type {
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitLocalKeepReply, GitReadReply, GitReadTarget, GitRemoteBranch } from '../../../../shared/git-read-protocol';
 import type { AppLocale, CommitLanguage } from '../../../../shared/language-protocol';
+import type { AppTheme } from '../../../../shared/theme-protocol';
 import type { MessageUserCard, MessageUserRequest } from '../../../../shared/message-user-protocol';
 import type {
   PersistedWindowPreferences,
@@ -125,6 +126,7 @@ export interface WorkbenchState {
   models: ModelConfiguration[];
   activeModelId: string | null;
   locale: AppLocale;
+  theme: AppTheme;
   editor: EditorId;
   defaultCommitLanguage: CommitLanguage;
   repositorySettings: Record<string, RepositorySettings>;
@@ -220,6 +222,7 @@ export type WorkbenchAction =
   | { type: 'dismissMessage'; worktreeId: string; messageId: string }
   | { type: 'reply'; worktreeId: string; messageId: string; text: string }
   | { type: 'locale'; locale: AppLocale }
+  | { type: 'theme'; theme: AppTheme }
   | { type: 'editor'; editor: EditorId; repositoryId?: string | null }
   | { type: 'commitLanguage'; commitLanguage: CommitLanguage; repositoryId?: string | null }
   | { type: 'windowPreferencesUpdated'; preferences: PersistedWindowPreferences }

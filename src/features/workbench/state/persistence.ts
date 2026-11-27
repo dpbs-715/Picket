@@ -1,5 +1,6 @@
 import { isValidRepoRelativePath } from '../../../../shared/git-read-protocol';
 import { DEFAULT_APP_LOCALE, DEFAULT_COMMIT_LANGUAGE } from '../../../../shared/language-protocol';
+import { DEFAULT_APP_THEME } from '../../../../shared/theme-protocol';
 import {
   WINDOW_DIMENSIONS,
   type PersistedWindowPreferences,
@@ -22,6 +23,7 @@ export function serializeWorkbenchPersistence(state: WorkbenchState, revision: n
   return {
     revision,
     locale: state.locale,
+    theme: state.theme,
     editor: state.editor,
     defaultCommitLanguage: state.defaultCommitLanguage,
     repositorySettings: Object.entries(state.repositorySettings).map(([repositoryId, cfg]) => ({
@@ -70,8 +72,10 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       ? installedEditors[0]
       : desired;
   const restoredLocale = restored.locale ?? DEFAULT_APP_LOCALE;
+  const restoredTheme = restored.theme ?? DEFAULT_APP_THEME;
   const restoredDefaultCommitLang = restored.defaultCommitLanguage ?? DEFAULT_COMMIT_LANGUAGE;
   const locale = state.settingsModified ? state.locale : restoredLocale;
+  const theme = state.settingsModified ? state.theme : restoredTheme;
   const defaultCommitLanguage = state.settingsModified ? state.defaultCommitLanguage : restoredDefaultCommitLang;
   const desiredEditor = state.settingsModified ? state.editor : restored.editor;
   const effectiveEditor = resolveEditor(desiredEditor);
@@ -134,6 +138,7 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
   let next: WorkbenchState = {
     ...state,
     locale,
+    theme,
     editor: effectiveEditor,
     defaultCommitLanguage,
     repositorySettings,

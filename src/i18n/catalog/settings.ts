@@ -23,6 +23,12 @@ export interface SettingsMessages {
     commitLanguageTipLabel: string;
     commitLanguageTip(hasRepository: boolean): string;
     appLanguage: string;
+    appTheme: string;
+    themeOptions: {
+      system: string;
+      dark: string;
+      light: string;
+    };
     modelsHeading: string;
     addProvider: string;
     addChildModel: string;
@@ -189,6 +195,12 @@ export const settingsEn: SettingsMessages = {
     commitLanguageTip: (hasRepository) =>
       `Commit message language for ${hasRepository ? 'this project' : 'new projects'}.`,
     appLanguage: 'Language',
+    appTheme: 'Theme',
+    themeOptions: {
+      system: 'System',
+      dark: 'Dark',
+      light: 'Light',
+    },
     modelsHeading: 'Models',
     addProvider: 'Provider',
     addChildModel: 'Model',
@@ -362,6 +374,12 @@ export const settingsZh: SettingsMessages = {
     commitLanguageTip: (hasRepository) =>
       `${hasRepository ? '当前项目' : '新项目'}的提交说明语言。`,
     appLanguage: '界面语言',
+    appTheme: '外观主题',
+    themeOptions: {
+      system: '跟随系统',
+      dark: '深色',
+      light: '浅色',
+    },
     modelsHeading: '模型',
     addProvider: '供应商',
     addChildModel: '模型',

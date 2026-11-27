@@ -136,6 +136,8 @@ struct StoredWorkbenchFile {
     version: u8,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_theme_or_default")]
+    theme: ThemeKind,
     editor: EditorKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     default_commit_language: LanguageKind,
@@ -193,6 +195,7 @@ fn empty_restore_reply(warning: Option<String>) -> WorkbenchRestoreReply {
     WorkbenchRestoreReply {
         protocol_version: STORAGE_VERSION,
         locale: LanguageKind::En,
+        theme: ThemeKind::System,
         editor: EditorKind::Idea,
         default_commit_language: LanguageKind::En,
         repository_settings: Vec::new(),
@@ -227,6 +230,7 @@ fn parse_workbench_bytes(bytes: &[u8]) -> Option<StoredWorkbenchFile> {
         return Some(StoredWorkbenchFile {
             version: STORAGE_VERSION,
             locale: v1.locale,
+            theme: ThemeKind::System,
             editor: v1.editor,
             default_commit_language: v1.default_commit_language,
             repository_settings: v1.repository_settings,
@@ -264,6 +268,14 @@ fn read_existing_valid(path: &Path) -> Option<StoredWorkbenchFile> {
 pub fn read_persisted_window_preferences(storage_dir: &Path) -> Option<PersistedWindowPreferences> {
     let stored = read_existing_valid(&storage_dir.join(STORAGE_FILE))?;
     stored.window_preferences
+}
+
+/// Fast, read-only lookup of the persisted UI theme preference for native window appearance
+/// configuration before the main window becomes visible.
+pub fn read_persisted_theme(storage_dir: &Path) -> ThemeKind {
+    read_existing_valid(&storage_dir.join(STORAGE_FILE))
+        .map(|stored| stored.theme)
+        .unwrap_or_default()
 }
 
 fn sanitize_repository_settings(
@@ -422,6 +434,7 @@ impl WorkbenchPersistence {
         Ok(WorkbenchRestoreReply {
             protocol_version: STORAGE_VERSION,
             locale: stored.locale,
+            theme: stored.theme,
             editor: stored.editor,
             default_commit_language: stored.default_commit_language,
             repository_settings,
@@ -568,6 +581,7 @@ impl WorkbenchPersistence {
         let payload = StoredWorkbenchFile {
             version: STORAGE_VERSION,
             locale,
+            theme: request.theme,
             editor: request.editor,
             default_commit_language: request.default_commit_language,
             repository_settings,
@@ -639,6 +653,7 @@ impl WorkbenchPersistence {
             StoredWorkbenchFile {
                 version: STORAGE_VERSION,
                 locale,
+                theme: ThemeKind::System,
                 editor: EditorKind::Idea,
                 default_commit_language: LanguageKind::En,
                 repository_settings: Vec::new(),

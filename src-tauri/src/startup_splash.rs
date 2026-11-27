@@ -6,7 +6,7 @@
 //! restored window position before smoothly revealing the hydrated main window.
 use crate::{
     repository::{
-        persistence::read_persisted_window_preferences,
+        persistence::{read_persisted_theme, read_persisted_window_preferences},
         types::{PersistedWindowPreferences, WindowPosition, WindowSize},
     },
     window_motion::{self, MonitorWorkArea},
@@ -79,6 +79,7 @@ pub struct SplashLaunchPlan {
     pub leap_duration_ms: u32,
     pub compact_mode: bool,
     pub workbench_already_ready: bool,
+    pub theme: String,
 }
 
 #[derive(Default)]
@@ -87,6 +88,7 @@ enum StartupPhase {
     Bypassed,
     Splashing {
         plan: StartupWindowPlan,
+        theme: &'static str,
         splash_ready: bool,
         workbench_ready: bool,
         jump_started: bool,
@@ -272,6 +274,9 @@ impl StartupSplashCoordinator {
             return;
         };
 
+        let startup_theme = data_dir.map(read_persisted_theme).unwrap_or_default();
+        let resolved_theme = window_motion::apply_window_theme(&main_window, startup_theme, true);
+
         let persisted = data_dir.and_then(read_persisted_window_preferences);
         let (monitors, primary, primary_height) =
             window_motion::read_monitors_on_main(&main_window);
@@ -327,6 +332,8 @@ impl StartupSplashCoordinator {
             return;
         };
 
+        let _ = window_motion::apply_window_theme(&splash_window, startup_theme, false);
+
         if window_motion::prepare_splash_window_on_main(
             &splash_window,
             plan.splash_start_x,
@@ -348,6 +355,7 @@ impl StartupSplashCoordinator {
         if let Ok(mut phase) = self.phase.lock() {
             *phase = StartupPhase::Splashing {
                 plan,
+                theme: resolved_theme,
                 splash_ready: false,
                 workbench_ready: false,
                 jump_started: false,
@@ -421,6 +429,7 @@ pub async fn splash_ready(
         match &mut *phase {
             StartupPhase::Splashing {
                 plan,
+                theme,
                 splash_ready,
                 workbench_ready,
                 ..
@@ -434,6 +443,7 @@ pub async fn splash_ready(
                     leap_duration_ms: plan.leap_duration_ms,
                     compact_mode: plan.compact_mode,
                     workbench_already_ready: *workbench_ready,
+                    theme: (*theme).to_string(),
                 }
             }
             _ => {
@@ -707,5 +717,23 @@ mod tests {
         // Peak window top + 36px whale top padding stays at or below menu bar top (mon.y = 25):
         assert!(mid.y + 36.0 >= mon.y - 1.0);
         assert!(plan.arc_height >= 36.0);
+    }
+
+    #[test]
+    fn splash_launch_plan_serializes_resolved_theme_in_camel_case() {
+        let plan = SplashLaunchPlan {
+            dx: 120.0,
+            dy: -40.0,
+            distance: 126.49,
+            arc_height: 103.0,
+            leap_duration_ms: 460,
+            compact_mode: true,
+            workbench_already_ready: false,
+            theme: "light".to_string(),
+        };
+        let value = serde_json::to_value(&plan).expect("serialize splash launch plan");
+        assert_eq!(value["theme"], "light");
+        assert_eq!(value["compactMode"], true);
+        assert_eq!(value["workbenchAlreadyReady"], false);
     }
 }

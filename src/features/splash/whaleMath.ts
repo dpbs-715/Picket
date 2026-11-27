@@ -5,6 +5,8 @@
  * luminous water-ripple transitions.
  */
 
+import type { ResolvedTheme } from '../../../shared/theme-protocol';
+
 export type SplashPhase = 'entering' | 'bouncing' | 'aiming' | 'leaping' | 'landing' | 'done';
 
 export interface SplashLaunchPlan {
@@ -15,6 +17,7 @@ export interface SplashLaunchPlan {
   leapDurationMs: number;
   compactMode: boolean;
   workbenchAlreadyReady: boolean;
+  theme?: ResolvedTheme;
 }
 
 export interface RipplePose {

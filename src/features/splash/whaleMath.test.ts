@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SPLASH_THEME_PALETTES, resolveSplashTheme } from './WhaleSplashStage';
 import {
   computeEyeLookTarget,
   computeParabolicProgress,
@@ -110,5 +111,16 @@ describe('whaleMath', () => {
     expect(landMid.droplets.some((drop) => drop.opacity > 0.2)).toBe(true);
     expect(landEnd.opacity).toBe(0);
     expect(landEnd.primaryRipple.opacity).toBeCloseTo(0, 4);
+  });
+
+  it('resolves splash theme palettes distinctly for dark and light themes', () => {
+    expect(resolveSplashTheme('light')).toBe('light');
+    expect(resolveSplashTheme('dark')).toBe('dark');
+    expect(resolveSplashTheme(undefined)).toBe('dark');
+    expect(resolveSplashTheme('unknown')).toBe('dark');
+
+    expect(SPLASH_THEME_PALETTES.dark.bodyStops).toEqual(['#FFFFFF', '#F4F6FA', '#E3E7F0']);
+    expect(SPLASH_THEME_PALETTES.light.bodyStops).toEqual(['#2E3340', '#1B1F29', '#11141C']);
+    expect(SPLASH_THEME_PALETTES.light.bodyStops[0]).not.toBe(SPLASH_THEME_PALETTES.dark.bodyStops[0]);
   });
 });

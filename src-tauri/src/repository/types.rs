@@ -1,5 +1,21 @@
 use crate::i18n::{LanguageKind, deserialize_language_or_default};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeKind {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+pub fn deserialize_theme_or_default<'de, D>(deserializer: D) -> Result<ThemeKind, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<ThemeKind>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -227,6 +243,8 @@ pub struct WorkbenchSaveRequest {
     pub revision: u64,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_theme_or_default")]
+    pub theme: ThemeKind,
     pub editor: EditorKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub default_commit_language: LanguageKind,
@@ -243,6 +261,7 @@ pub struct WorkbenchSaveRequest {
 pub struct WorkbenchRestoreReply {
     pub protocol_version: u8,
     pub locale: LanguageKind,
+    pub theme: ThemeKind,
     pub editor: EditorKind,
     pub default_commit_language: LanguageKind,
     pub repository_settings: Vec<PersistedRepositorySettings>,

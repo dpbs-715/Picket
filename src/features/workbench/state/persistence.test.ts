@@ -360,4 +360,60 @@ describe('Workbench cross-restart v2 persistence projection and hydration', () =
     expect(payTree.selectedIds).toEqual(['order', 'pay', 'retry', 'release', 'fresh-feature']);
     expect(payTree.unselectedIds).toEqual(['lock']);
   });
+
+  it('persists and cold-restores theme preference (system, dark, light) and defaults missing theme to system', () => {
+    let state = emptyWorkbench();
+    expect(state.theme).toBe('system');
+
+    state = workbenchReducer(state, { type: 'theme', theme: 'light' });
+    expect(state.theme).toBe('light');
+    expect(state.settingsModified).toBe(true);
+
+    const saved = serializeWorkbenchPersistence(state, 3);
+    expect(saved.theme).toBe('light');
+
+    const decodedLight = decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: saved.locale,
+      theme: saved.theme,
+      editor: saved.editor,
+      defaultCommitLanguage: saved.defaultCommitLanguage,
+      repositorySettings: saved.repositorySettings,
+      windowPreferences: saved.windowPreferences,
+      activeWorktreeId: saved.activeWorktreeId,
+      emptyPrompt: saved.emptyPrompt,
+      worktrees: saved.worktrees,
+      snapshots: [],
+      warning: null,
+    });
+    expect(decodedLight.theme).toBe('light');
+    expect(workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored: decodedLight }).theme).toBe('light');
+
+    // Legacy v2 files without a theme field decode cleanly and hydrate to 'system':
+    const decodedLegacy = decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: 'en',
+      editor: 'idea',
+      activeWorktreeId: null,
+      emptyPrompt: '',
+      worktrees: [],
+      snapshots: [],
+      warning: null,
+    });
+    expect(decodedLegacy.theme).toBeUndefined();
+    expect(workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored: decodedLegacy }).theme).toBe('system');
+
+    // Invalid theme values are rejected by protocol decoder:
+    expect(() => decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: 'en',
+      theme: 'solarized',
+      editor: 'idea',
+      activeWorktreeId: null,
+      emptyPrompt: '',
+      worktrees: [],
+      snapshots: [],
+      warning: null,
+    })).toThrow(/protocol mismatch/i);
+  });
 });

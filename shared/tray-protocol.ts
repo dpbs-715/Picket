@@ -1,4 +1,5 @@
 import type { AppLocale } from './language-protocol';
+import type { AppTheme } from './theme-protocol';
 
 export type TraySessionStatus =
   | 'idle'
@@ -30,6 +31,7 @@ export interface TrayRepositorySummary {
 export interface TrayStateSnapshot {
   protocolVersion: 1;
   locale: AppLocale;
+  theme?: AppTheme;
   hasUpdate: boolean;
   refreshing: boolean;
   repositories: TrayRepositorySummary[];

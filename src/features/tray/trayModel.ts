@@ -119,6 +119,7 @@ export function buildTrayStateSnapshot(
   return {
     protocolVersion: 1,
     locale: state.locale,
+    theme: state.theme,
     hasUpdate: options.hasUpdate,
     refreshing: options.refreshing,
     repositories,

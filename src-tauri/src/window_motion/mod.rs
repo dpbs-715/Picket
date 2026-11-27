@@ -24,7 +24,60 @@ pub use platform::{
     reveal_main_window_smoothly, show_splash_window, show_tray_popover_on_main,
 };
 
-use tauri::Manager;
+use crate::repository::types::ThemeKind;
+use tauri::{Manager, window::Color};
+use tokio::sync::oneshot;
+
+/// Apply native window appearance (`NSAppearance` on macOS) and optional opaque canvas background
+/// so light/dark mode transitions and frame resize animations never expose mismatched edges.
+pub fn apply_window_theme(
+    window: &tauri::WebviewWindow,
+    theme: ThemeKind,
+    update_background: bool,
+) -> &'static str {
+    let target_theme = match theme {
+        ThemeKind::System => None,
+        ThemeKind::Dark => Some(tauri::Theme::Dark),
+        ThemeKind::Light => Some(tauri::Theme::Light),
+    };
+    let _ = window.set_theme(target_theme);
+    let resolved_dark = match theme {
+        ThemeKind::Dark => true,
+        ThemeKind::Light => false,
+        ThemeKind::System => !matches!(window.theme(), Ok(tauri::Theme::Light)),
+    };
+    if update_background {
+        let bg = if resolved_dark {
+            Color(11, 13, 16, 255)
+        } else {
+            Color(247, 248, 250, 255)
+        };
+        let _ = window.set_background_color(Some(bg));
+    }
+    if resolved_dark { "dark" } else { "light" }
+}
+
+#[tauri::command]
+pub async fn set_window_theme(app: tauri::AppHandle, theme: ThemeKind) -> Result<String, String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window is unavailable".to_string())?;
+    let tray = app.get_webview_window(crate::tray::TRAY_POPOVER_LABEL);
+    let (tx, rx) = oneshot::channel::<&'static str>();
+    let main_for_thread = main.clone();
+    main.run_on_main_thread(move || {
+        let resolved = apply_window_theme(&main_for_thread, theme, true);
+        if let Some(popover) = tray {
+            let _ = apply_window_theme(&popover, theme, false);
+        }
+        let _ = tx.send(resolved);
+    })
+    .map_err(|e| e.to_string())?;
+    let resolved = rx
+        .await
+        .map_err(|_| "Window theme task did not run on main thread".to_string())?;
+    Ok(resolved.to_string())
+}
 
 #[tauri::command]
 pub async fn set_window_pinned(app: tauri::AppHandle, pinned: bool) -> Result<bool, String> {

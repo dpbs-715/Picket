@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type { AppTheme } from '../../../shared/theme-protocol';
 import { desktopWindowController, type WindowController } from '../../desktop/window';
 import { getMessages, I18nProvider } from '../../i18n';
 import {
@@ -9,6 +10,7 @@ import {
   m,
   useInstantMotion,
 } from '../../ui/motion';
+import { useResolvedTheme } from '../../ui/theme';
 import { disconnectedBackend, type WorkbenchBackend } from './commands';
 import { ActionContextStrip } from './components/ActionContextStrip';
 import { ActionFooter } from './components/ActionFooter';
@@ -390,6 +392,12 @@ export function Workbench({
     setActionStack([next]);
     void windowMode.expandFromCompact();
   }
+
+  const syncNativeWindowTheme = useCallback(
+    (nextTheme: AppTheme) => windowController.setTheme?.(nextTheme) ?? Promise.resolve(),
+    [windowController],
+  );
+  useResolvedTheme(state.theme, syncNativeWindowTheme);
 
   useLayoutEffect(() => {
     if (typeof document !== 'undefined') {

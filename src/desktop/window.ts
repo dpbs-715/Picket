@@ -3,6 +3,7 @@ import { LogicalPosition, LogicalSize, PhysicalPosition } from '@tauri-apps/api/
 import { availableMonitors, getCurrentWindow, primaryMonitor, type Monitor } from '@tauri-apps/api/window';
 import { isPermissionGranted, onAction, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/language-protocol';
+import type { AppTheme, ResolvedTheme } from '../../shared/theme-protocol';
 import {
   WINDOW_DIMENSIONS,
   type WindowPosition,
@@ -104,6 +105,7 @@ export interface WindowController {
   readonly isDesktopWindow: boolean;
   readSnapshot(): Promise<WindowGeometrySnapshot | null>;
   setPinned(pinned: boolean, locale?: AppLocale): Promise<boolean>;
+  setTheme?(theme: AppTheme): Promise<ResolvedTheme | void>;
   applyWindowMode(options: ApplyWindowModeOptions): Promise<AppliedWindowGeometry>;
   adjustCompactHeight(height: number, locale?: AppLocale): Promise<void>;
   notifyWorkbenchReady?(): Promise<void>;
@@ -436,6 +438,11 @@ export function createDesktopWindowController(): WindowController {
         throw new Error(getMessages(locale).desktop.browserPinUnsupported);
       }
       return runProgrammatic(() => setWindowPinned(pinned, locale));
+    },
+    async setTheme(theme) {
+      if (!isTauri()) return;
+      const resolved = await invoke<string>('set_window_theme', { theme }).catch(() => undefined);
+      if (resolved === 'dark' || resolved === 'light') return resolved;
     },
     async applyWindowMode(options) {
       if (!isTauri()) {
