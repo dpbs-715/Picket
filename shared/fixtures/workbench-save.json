@@ -1,0 +1,43 @@
+{
+  "revision": 7,
+  "locale": "zh",
+  "theme": "system",
+  "editor": "rustrover",
+  "defaultCommitLanguage": "en",
+  "repositorySettings": [
+    {
+      "repositoryId": "repo-orders",
+      "editor": "idea",
+      "commitLanguage": "zh",
+      "localKeepPaths": ["config/local.dev.yaml"],
+      "customActions": [
+        {
+          "id": "act-dcr",
+          "templateKey": "dcr",
+          "label": "Code Review",
+          "prompt": "Run dcr on selected changes."
+        }
+      ],
+      "activeActionId": "act-dcr"
+    }
+  ],
+  "windowPreferences": {
+    "pinned": true,
+    "compactMode": false,
+    "pinnedExpanded": true,
+    "fullSize": { "width": 400, "height": 700 },
+    "fullPosition": { "x": 120, "y": 80 }
+  },
+  "activeWorktreeId": "wt-orders-main",
+  "emptyPrompt": "",
+  "worktrees": [
+    {
+      "repositoryId": "repo-orders",
+      "worktreeId": "wt-orders-main",
+      "promptText": "split docs separately",
+      "selectedIds": ["file-order"],
+      "unselectedIds": ["file-notes"],
+      "scopeVersion": "sv-101"
+    }
+  ]
+}

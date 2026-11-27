@@ -223,13 +223,9 @@ impl GitReader {
         if mode == ExecutionMode::Read {
             command.args(["-c", "core.hooksPath=/dev/null"]);
         }
-        // Preserve the user's local Git configuration, but never inherit an
-        // injected repository/index or a caller's Git configuration overrides.
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("GIT_") {
-                command.env_remove(key);
-            }
-        }
+        // Preserve the user's local Git configuration (and `GIT_SSH*` on remote operations),
+        // but never inherit an injected repository/index or caller Git config overrides.
+        crate::git_env::strip_git_overrides(&mut command, mode == ExecutionMode::Remote);
         if mode != ExecutionMode::Hook {
             command.env("GIT_CONFIG_COUNT", self.filter_settings.len().to_string());
             for (i, (key, value)) in self.filter_settings.iter().enumerate() {

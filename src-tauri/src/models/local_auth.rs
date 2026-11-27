@@ -316,11 +316,13 @@ impl LocalAuthenticator for MacOsLocalAuthenticator {
     }
 }
 
+#[cfg(any(test, feature = "smoke-harness"))]
 pub struct StaticLocalAuthenticator {
     outcome: Mutex<LocalAuthOutcome>,
     calls: Mutex<Vec<(String, LanguageKind)>>,
 }
 
+#[cfg(any(test, feature = "smoke-harness"))]
 impl StaticLocalAuthenticator {
     pub fn new(outcome: LocalAuthOutcome) -> Self {
         Self {
@@ -342,6 +344,7 @@ impl StaticLocalAuthenticator {
     }
 }
 
+#[cfg(any(test, feature = "smoke-harness"))]
 impl LocalAuthenticator for StaticLocalAuthenticator {
     fn authenticate<'a>(
         &'a self,

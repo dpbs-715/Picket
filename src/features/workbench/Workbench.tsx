@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties } from 'react';
 import type { AppTheme } from '../../../shared/theme-protocol';
 import { desktopWindowController, type WindowController } from '../../desktop/window';
 import { getMessages, I18nProvider } from '../../i18n';
@@ -11,16 +11,10 @@ import { ActionFooter } from './components/ActionFooter';
 import { ChangesPanel } from './components/ChangesPanel';
 import { CompactBar } from './components/CompactBar';
 import { ContextHeader } from './components/ContextHeader';
-import {
-  computeDraggedDockPreference,
-  readSavedDockSize,
-  resolveDockSplit,
-  writeSavedDockSize,
-  type DockSizePreference,
-} from './components/dockResize';
 import { MessageDock } from './components/MessageDock';
 import { OperationNoticeBar } from './components/OperationNoticeBar';
 import { WorkbenchOverlays } from './components/WorkbenchOverlays';
+import { useDockResize } from './hooks/useDockResize';
 import { useNoticeFeedback } from './hooks/useNoticeFeedback';
 import { useSettingsServices } from './hooks/useSettingsServices';
 import { useWindowMode } from './hooks/useWindowMode';
@@ -58,15 +52,11 @@ export function Workbench({
 
   const [modelOverlay, setModelOverlay] = useState<ModelOverlayState>({ kind: 'closed' });
   const [actionStack, setActionStack] = useState<ActionOverlayItem[]>([]);
-  const [dockSizePref, setDockSizePref] = useState<DockSizePreference>(() => readSavedDockSize());
-  const [dockAvailableHeight, setDockAvailableHeight] = useState(0);
-  const [resizingDock, setResizingDock] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [hydrated, setHydrated] = useState(() => !!initialState || !backend.loadWorkbenchState);
 
   const workbenchContentRef = useRef<HTMLDivElement>(null);
   const lowerWorkspaceRef = useRef<HTMLElement>(null);
-  const cleanupDockResizeRef = useRef<(() => void) | null>(null);
   const contextStripRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const promptFocusRequestedRef = useRef(false);
@@ -84,26 +74,6 @@ export function Workbench({
   const showPromptBox = promptOpen || promptText.length > 0;
   const hasExpandedDock = Boolean(worktree && worktree.dockExpanded && worktree.messages.length > 0);
   const hasCollapsedDockBar = Boolean(worktree && !worktree.dockExpanded && worktree.messages.length > 0);
-  const dockSplit = hasExpandedDock
-    ? resolveDockSplit(dockSizePref, dockAvailableHeight)
-    : { fullHeight: false, changesHeightPx: null, dockHeightPx: null };
-  const changesLayoutMode: 'idle' | 'peek' | 'hidden' = !hasExpandedDock
-    ? 'idle'
-    : dockSplit.fullHeight
-      ? 'hidden'
-      : 'peek';
-
-  function measureDockArea(): { available: number; dock: number } {
-    const contentEl = workbenchContentRef.current;
-    const changesEl = contentEl?.querySelector<HTMLElement>('.changes-panel');
-    const lowerEl = lowerWorkspaceRef.current;
-    const changesH = changesEl?.getBoundingClientRect().height ?? 0;
-    const lowerH = lowerEl?.getBoundingClientRect().height ?? 0;
-    return {
-      available: Math.round(changesH + lowerH),
-      dock: Math.round(lowerH),
-    };
-  }
 
   useLayoutEffect(() => {
     if (!promptFocusRequestedRef.current) return;
@@ -141,98 +111,6 @@ export function Workbench({
       promptFocusRequestedRef.current = true;
       setPromptOpen(true);
       textareaRef.current?.focus();
-    }
-  }
-
-  useEffect(() => () => {
-    cleanupDockResizeRef.current?.();
-  }, []);
-
-  function handleDockResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || !hasExpandedDock) return;
-    event.preventDefault();
-    event.stopPropagation();
-    cleanupDockResizeRef.current?.();
-    const initial = measureDockArea();
-    const measuredAvailable = initial.available || dockAvailableHeight;
-    const startDockHeight = initial.dock > 0 ? initial.dock : (dockSplit.dockHeightPx ?? Math.round(measuredAvailable * 0.75));
-    const pointerId = event.pointerId;
-    const startY = event.clientY;
-    let latestPref: DockSizePreference = dockSizePref;
-    let didDrag = false;
-
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    setResizingDock(true);
-
-    const teardown = () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', finishResize);
-      window.removeEventListener('pointercancel', finishResize);
-      window.removeEventListener('blur', handleBlur);
-      cleanupDockResizeRef.current = null;
-      setResizingDock(false);
-    };
-
-    const handleMove = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId !== pointerId) return;
-      const deltaY = startY - moveEvent.clientY;
-      if (!didDrag && Math.abs(deltaY) < 3) return;
-      didDrag = true;
-      const currentAvailable = measureDockArea().available || measuredAvailable;
-      if (currentAvailable > 0) setDockAvailableHeight(currentAvailable);
-      const nextPref = computeDraggedDockPreference(startDockHeight + deltaY, currentAvailable);
-      latestPref = nextPref;
-      setDockSizePref(nextPref);
-    };
-
-    const finishResize = (endEvent: PointerEvent) => {
-      if (endEvent.pointerId !== pointerId) return;
-      teardown();
-      if (didDrag) writeSavedDockSize(latestPref);
-    };
-
-    const handleBlur = () => {
-      teardown();
-      if (didDrag) writeSavedDockSize(latestPref);
-    };
-
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', finishResize);
-    window.addEventListener('pointercancel', finishResize);
-    window.addEventListener('blur', handleBlur);
-    cleanupDockResizeRef.current = teardown;
-  }
-
-  function handleDockResizeDoubleClick() {
-    if (!hasExpandedDock) return;
-    const next: DockSizePreference = dockSizePref === null ? 'full' : null;
-    setDockSizePref(next);
-    writeSavedDockSize(next);
-  }
-
-  function handleDockResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (!hasExpandedDock) return;
-    const measured = measureDockArea();
-    const available = measured.available || dockAvailableHeight;
-    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-      event.preventDefault();
-      const base = dockSizePref === 'full'
-        ? available
-        : measured.dock || dockSplit.dockHeightPx || Math.round(available * 0.75);
-      const delta = event.key === 'ArrowUp' ? 32 : (dockSizePref === 'full' ? -56 : -32);
-      const next = computeDraggedDockPreference(base + delta, available);
-      if (available > 0) setDockAvailableHeight(available);
-      setDockSizePref(next);
-      writeSavedDockSize(next);
-    } else if (event.key === 'Home' || event.key === '0') {
-      event.preventDefault();
-      setDockSizePref(null);
-      writeSavedDockSize(null);
     }
   }
 
@@ -323,9 +201,7 @@ export function Workbench({
     windowController,
     dispatch,
     setFeedback,
-    pending: commands.pending,
     inFlight: commands.inFlight,
-    hasUpdate: services.hasUpdate,
     pinInFlight: windowMode.pinInFlight,
     desiredCompactHeightRef: windowMode.desiredCompactHeightRef,
     activeSurfaceRef: windowMode.activeSurfaceRef,
@@ -354,8 +230,11 @@ export function Workbench({
     || customActionBusy
     || localKeepBusy
     || commands.pending.some((key) => key.startsWith(`${viewKey}:`));
-  const dockBusy = worktree?.customAction?.pendingCallId
-    ? commands.pending.includes(`${worktree.worktreeId}:respondCustomAction`)
+  const hasLivePendingQuestion = Boolean(
+    worktree?.customAction?.pendingCallId || worktree?.cPush?.pendingCallId,
+  );
+  const dockBusy = hasLivePendingQuestion
+    ? commands.pending.includes(`${worktree!.worktreeId}:respondCustomAction`)
     : busy;
 
   function openActionOverlayFromCompact(next: ActionOverlayItem) {
@@ -385,28 +264,19 @@ export function Workbench({
     && workbenchContentMounted
     && windowMode.presentation.windowSizeMode === 'full'
     && windowMode.transitionKind !== 'collapsing';
-
-  useEffect(() => {
-    if (!canMeasureDock) {
-      cleanupDockResizeRef.current?.();
-    }
-  }, [canMeasureDock]);
-
-  useLayoutEffect(() => {
-    if (!canMeasureDock) return;
-    const syncAvailable = () => {
-      const { available } = measureDockArea();
-      if (available > 0) {
-        setDockAvailableHeight((prev) => (prev === available ? prev : available));
-      }
-    };
-    syncAvailable();
-    const contentEl = workbenchContentRef.current;
-    if (!contentEl || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => syncAvailable());
-    observer.observe(contentEl);
-    return () => observer.disconnect();
-  }, [canMeasureDock]);
+  const {
+    dockSplit,
+    changesLayoutMode,
+    resizingDock,
+    handleDockResizeStart,
+    handleDockResizeDoubleClick,
+    handleDockResizeKeyDown,
+  } = useDockResize({
+    hasExpandedDock,
+    canMeasureDock,
+    workbenchContentRef,
+    lowerWorkspaceRef,
+  });
 
   if (!hydrated && windowController.isDesktopWindow && !initialState) {
     return <div className="workbench-hydrating" aria-busy="true" />;
@@ -558,26 +428,16 @@ export function Workbench({
                     onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })}
                     onDismiss={(message) => {
                       const dismissTarget = worktree.cPush?.frozenTarget ?? targetOf(worktree);
-                      const dismissCPushRunId = worktree.cPush?.runId;
-                      const dismissActionRunId = worktree.customAction?.runId;
-                      const isCustomActionMessage = Boolean(
-                        worktree.customAction
-                        || message.id.startsWith('done-action-')
-                        || message.id.startsWith('interrupted-action-'),
-                      );
+                      const dismissRunId = worktree.customAction?.runId ?? worktree.cPush?.runId;
                       dispatch({ type: 'dismissMessage', worktreeId: worktree.worktreeId, messageId: message.id });
-                      if (isCustomActionMessage) {
-                        void backend.dismissCustomActionDone?.(targetOf(worktree), dismissActionRunId, message.id, state.locale).catch(() => {});
-                      } else if (message.kind === 'done') {
-                        void backend.dismissCPushDone?.(dismissTarget, dismissCPushRunId, message.id, state.locale).catch(() => {});
-                      }
+                      void backend.dismissSessionDone?.(dismissTarget, dismissRunId, message.id, state.locale).catch(() => {});
                     }}
                     onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })}
-                    onRespond={(message, answer) => void commands.respond(message, answer)}
+                    onRespond={(message, answer) => commands.respond(message, answer)}
                     onOpenFile={commands.openFile}
                     onOpenRepoPath={commands.openRepoPath}
                     onCancelCustomAction={commands.cancelActiveCustomAction}
-                    onFollowUpCustomAction={commands.followUpCustomAction}
+                    onFollowUpCustomAction={(message, text) => commands.followUpCustomAction(message, text)}
                   />
                 )}
               </section>

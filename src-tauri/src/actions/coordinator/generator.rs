@@ -11,11 +11,11 @@ use crate::{
         policy::{CommandDecision, classify_git_command},
         types::*,
     },
-    foundation::pi::{
-        PiCommand, PiPaths, PiSupervisor, PiTaskOutcome, PiToolExecutionResult, RequestContext,
-    },
     i18n,
     models::store::ModelStore,
+    pi_runtime::{
+        PiCommand, PiPaths, PiSupervisor, PiTaskOutcome, PiToolExecutionResult, RequestContext,
+    },
     repository::{self, RepositoryStore},
     skills::RuntimeSkillSnapshot,
 };
@@ -231,6 +231,15 @@ impl CustomActionCoordinator {
                                 let card = req.card_if_present(
                                     i18n::actions::action_create_needs_input_label(locale),
                                 );
+                                let waiter = match coordinator.register_pending_question(
+                                    &run_id,
+                                    &call_id,
+                                    &req,
+                                    grants,
+                                ) {
+                                    Ok(w) => w,
+                                    Err(err) => return PiToolExecutionResult::error(err),
+                                };
                                 cb(GenerateCustomActionProgressEvent {
                                     protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,
                                     run_id: run_id.clone(),
@@ -243,10 +252,7 @@ impl CustomActionCoordinator {
                                     card,
                                     questionnaire: Some(req.clone()),
                                 });
-                                match coordinator
-                                    .suspend_for_question(&run_id, &call_id, &req, grants)
-                                    .await
-                                {
+                                match waiter.wait().await {
                                     Ok(resp) => {
                                         cb(GenerateCustomActionProgressEvent {
                                             protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,

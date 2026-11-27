@@ -37,12 +37,18 @@ export interface TrayStateSnapshot {
   repositories: TrayRepositorySummary[];
 }
 
+export interface TrayUiContextUpdate {
+  locale?: AppLocale;
+  theme?: AppTheme;
+  activeWorktreeId?: string | null;
+}
+
 export type TrayMainWindowAction =
   | { kind: 'show' }
   | { kind: 'openSettings' }
   | { kind: 'focusWorktree'; repositoryId: string; worktreeId: string; openDock: boolean };
 
 export const TRAY_STATE_EVENT = 'picket:tray-state';
-export const TRAY_REFRESH_REQUESTED_EVENT = 'picket:tray-refresh-requested';
+export const TRAY_SNAPSHOTS_SYNCED_EVENT = 'picket:tray-snapshots-synced';
 export const TRAY_MAIN_ACTION_EVENT = 'picket:tray-main-action';
 export const TRAY_POPOVER_SHOWN_EVENT = 'picket:tray-popover-shown';

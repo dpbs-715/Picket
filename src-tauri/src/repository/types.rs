@@ -186,7 +186,7 @@ pub struct WindowPosition {
     pub y: i32,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedWindowPreferences {
     pub pinned: bool,
     pub compact_mode: bool,
@@ -199,7 +199,7 @@ pub struct PersistedWindowPreferences {
     pub compact_position: Option<WindowPosition>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedCustomAction {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,7 +212,7 @@ pub struct PersistedCustomAction {
     pub trusted_prompt_hash: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedRepositorySettings {
     pub repository_id: String,
     pub editor: EditorKind,
@@ -225,7 +225,7 @@ pub struct PersistedRepositorySettings {
     pub active_action_id: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedWorktreeState {
     pub repository_id: String,
     pub worktree_id: String,
@@ -280,7 +280,7 @@ pub struct WorkbenchRestoreReply {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_model_id: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub c_push_sessions: Option<Vec<crate::cpush::types::CPushSessionSnapshot>>,
+    pub c_push_sessions: Option<Vec<crate::actions::types::CPushSessionSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action_sessions: Option<Vec<crate::actions::session_store::ActionSessionSnapshot>>,
     pub warning: Option<String>,

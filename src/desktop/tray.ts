@@ -1,21 +1,29 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { GitRepositorySnapshot } from '../../shared/git-read-protocol';
 import {
   TRAY_MAIN_ACTION_EVENT,
   TRAY_POPOVER_SHOWN_EVENT,
-  TRAY_REFRESH_REQUESTED_EVENT,
+  TRAY_SNAPSHOTS_SYNCED_EVENT,
   TRAY_STATE_EVENT,
   type TrayMainWindowAction,
   type TrayStateSnapshot,
+  type TrayUiContextUpdate,
 } from '../../shared/tray-protocol';
 
 export async function readTrayState(): Promise<TrayStateSnapshot> {
   return invoke<TrayStateSnapshot>('read_tray_state');
 }
 
-export async function syncTrayState(snapshot: TrayStateSnapshot): Promise<void> {
+export async function syncTrayContext(context: TrayUiContextUpdate): Promise<void> {
   if (!isTauri()) return;
-  await invoke('sync_tray_state', { snapshot });
+  await invoke('sync_tray_context', {
+    context: {
+      ...(context.locale ? { locale: context.locale } : {}),
+      ...(context.theme ? { theme: context.theme } : {}),
+      ...(context.activeWorktreeId ? { activeWorktreeId: context.activeWorktreeId } : {}),
+    },
+  });
 }
 
 export async function requestTrayRefresh(): Promise<void> {
@@ -69,8 +77,10 @@ export function subscribeTrayPopoverShown(listener: () => void): () => void {
   return subscribeTauriEvent<void>(TRAY_POPOVER_SHOWN_EVENT, () => listener());
 }
 
-export function subscribeTrayRefreshRequested(listener: () => void): () => void {
-  return subscribeTauriEvent<void>(TRAY_REFRESH_REQUESTED_EVENT, () => listener());
+export function subscribeTraySnapshotsSynced(
+  listener: (snapshots: GitRepositorySnapshot[]) => void,
+): () => void {
+  return subscribeTauriEvent<GitRepositorySnapshot[]>(TRAY_SNAPSHOTS_SYNCED_EVENT, listener);
 }
 
 export function subscribeTrayMainAction(

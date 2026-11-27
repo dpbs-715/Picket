@@ -14,12 +14,11 @@ use super::{
         remove_verified_submit_worktree,
     },
     types::{
-        CustomActionLink, CustomActionTimelineItem, DismissCustomActionDoneRequest,
-        RemoteRepoIdentity,
+        CPushLandedCommit, CustomActionLink, CustomActionTimelineItem,
+        DismissCustomActionDoneRequest, RemoteRepoIdentity,
     },
 };
 use crate::{
-    cpush::types::CPushLandedCommit,
     i18n::LanguageKind,
     repository::{RepositoryStore, types::ReadTarget},
 };
@@ -927,6 +926,56 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
         find_latest_resumable_session(&storage, "repo-demo", "wt-main", Some("act-submit"))
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn phase1_action_sessions_handle_concurrent_upserts_and_unknown_disk_fields() {
+    use crate::actions::session_store::{load_all_sessions, upsert_session_async};
+    use std::collections::BTreeMap;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = tmp.path().to_path_buf();
+
+    // 1. Concurrent async upserts across multiple repos/runs must never clobber one another:
+    let mut handles = Vec::new();
+    for idx in 0..12 {
+        let dir = storage.clone();
+        handles.push(tokio::spawn(async move {
+            let record = PersistedActionSession {
+                run_id: format!("concurrent-run-{idx}"),
+                repository_id: format!("repo-{idx}"),
+                worktree_id: format!("wt-{idx}"),
+                action_id: "act-1".into(),
+                action_label: "Action".into(),
+                action_prompt_hash: "h1".into(),
+                status: "done".into(),
+                updated_at_ms: 1_000 + idx as u64,
+                summary: format!("Completed {idx}"),
+                card: None,
+                dismissed_message_id: None,
+                timeline: vec![],
+                commits: vec![],
+                links: vec![],
+                edited_file_hashes: BTreeMap::new(),
+                submit_ledger: SubmitSessionLedger::default(),
+            };
+            upsert_session_async(&dir, record).await.unwrap();
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    let all = load_all_sessions(&storage);
+    assert_eq!(all.len(), 12);
+
+    // 2. Forward-compatible unknown disk fields must load cleanly without wiping sessions:
+    let file_path = storage.join("action-sessions.json");
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&fs::read(&file_path).unwrap()).unwrap();
+    raw["futureFileMeta"] = serde_json::json!("vNext");
+    raw["sessions"][0]["futureSessionField"] = serde_json::json!({ "nested": true });
+    fs::write(&file_path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+    assert_eq!(load_all_sessions(&storage).len(), 12);
 }
 
 #[test]

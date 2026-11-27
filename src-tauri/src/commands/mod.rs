@@ -5,10 +5,11 @@ pub mod cpush;
 pub mod models;
 pub mod repository;
 pub mod skills;
+#[cfg(feature = "smoke-harness")]
 pub mod smoke;
 pub mod updater;
 
-use crate::foundation::pi::PiPaths;
+use crate::pi_runtime::PiPaths;
 use tauri::Manager;
 
 #[derive(Default)]

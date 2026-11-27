@@ -34,53 +34,53 @@ pub fn cpush_sensitive_question(
     String,
     String,
     String,
-    Vec<crate::foundation::pi::PiCPushQuestionOption>,
+    Vec<crate::actions::types::CPushMessageOption>,
 ) {
     let joined = join_list(locale, names);
     let options = match (locale, has_other_files) {
         (LanguageKind::En, true) => vec![
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "skip".into(),
                 label: "Exclude these files and commit the rest".into(),
                 recommended: Some(true),
             },
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "include".into(),
                 label: "Confirmed safe, commit and push together".into(),
                 recommended: None,
             },
         ],
         (LanguageKind::En, false) => vec![
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "skip".into(),
                 label: "Skip for now and keep locally".into(),
                 recommended: Some(true),
             },
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "include".into(),
                 label: "Confirmed safe, commit and push".into(),
                 recommended: None,
             },
         ],
         (LanguageKind::Zh, true) => vec![
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "skip".into(),
                 label: "排除这些文件，仅提交其余改动".into(),
                 recommended: Some(true),
             },
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "include".into(),
                 label: "确认安全，一并提交并推送".into(),
                 recommended: None,
             },
         ],
         (LanguageKind::Zh, false) => vec![
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "skip".into(),
                 label: "暂不提交，保留在本地".into(),
                 recommended: Some(true),
             },
-            crate::foundation::pi::PiCPushQuestionOption {
+            crate::actions::types::CPushMessageOption {
                 id: "include".into(),
                 label: "确认安全，继续提交并推送".into(),
                 recommended: None,
@@ -190,26 +190,6 @@ pub const fn cpush_unsupported_reply_state_error(locale: LanguageKind) -> &'stat
     )
 }
 
-pub const fn cpush_invalid_option_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Selected option does not belong to the current prompt",
-        "所选回复项不在当前问题选项中",
-    )
-}
-
-pub const fn cpush_empty_reply_text_error(locale: LanguageKind) -> &'static str {
-    tr(locale, "Enter a non-empty reply", "请输入具体的回复内容")
-}
-
-pub const fn cpush_choose_option_or_text_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Choose an option or enter instructions",
-        "请选择一个处理选项或输入具体要求",
-    )
-}
-
 pub fn cpush_timeline_confirmed_decision(
     locale: LanguageKind,
     question: &str,
@@ -252,14 +232,6 @@ pub const fn cpush_progress_replanning_steps(locale: LanguageKind) -> &'static s
     )
 }
 
-pub const fn cpush_plan_cancelled_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "C-Push planning cancelled; draft and selection were preserved.",
-        "已取消 C-Push 规划；草稿与选择已保留。",
-    )
-}
-
 pub fn cpush_timeline_frozen_count(locale: LanguageKind, count: usize) -> String {
     match locale {
         LanguageKind::En => {
@@ -297,58 +269,10 @@ pub const fn cpush_all_skipped_desc(locale: LanguageKind) -> &'static str {
     )
 }
 
-pub const fn cpush_plan_incomplete_question_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Model returned an incomplete C-Push question",
-        "模型返回的 C-Push 提问内容不完整",
-    )
-}
-
-pub const fn cpush_plan_unconfirmed_skip_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Model cannot skip selected files without user confirmation",
-        "未经确认，模型不能跳过已勾选的变更文件",
-    )
-}
-
-pub const fn cpush_plan_unauthorized_skip_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "C-Push plan contains unauthorized skipped files",
-        "C-Push 规划包含未经授权的跳过文件",
-    )
-}
-
-pub const fn cpush_plan_duplicate_file_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "C-Push plan assigned a file more than once",
-        "同一文件被重复分配到多个提交分组",
-    )
-}
-
 pub const fn cpush_plan_empty_group_error(locale: LanguageKind) -> &'static str {
     tr(
         locale,
         "C-Push plan contains an empty file group or empty commit message",
         "C-Push 规划存在空文件组或空提交说明",
-    )
-}
-
-pub const fn cpush_plan_unselected_file_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "C-Push plan attempted to commit an unselected file and was blocked by the desktop layer",
-        "C-Push 规划尝试提交未勾选文件，已被桌面层拦截",
-    )
-}
-
-pub const fn cpush_plan_incomplete_coverage_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "C-Push plan did not cover all selected files",
-        "C-Push 规划未完整覆盖全部已勾选文件",
     )
 }

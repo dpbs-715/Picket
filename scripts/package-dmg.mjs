@@ -174,39 +174,60 @@ function inspectMachOBinary(binaryPath, maxMinOs) {
   return { minOs, linkedCount: linkedLibs.length };
 }
 
-function smokeTestStagedApp(stagedAppPath, scratchRoot) {
+function verifyStagedReleaseApp(stagedAppPath, scratchRoot) {
   const mainBinary = existsSync(join(stagedAppPath, 'Contents/MacOS/Picket'))
     ? join(stagedAppPath, 'Contents/MacOS/Picket')
     : join(stagedAppPath, 'Contents/MacOS/picket');
-  const emptyHome = join(scratchRoot, 'smoke-home');
-  mkdirSync(emptyHome, { recursive: true });
+  const nodeBinary = join(stagedAppPath, 'Contents/MacOS/picket-node');
+  const sidecarScript = join(stagedAppPath, 'Contents/Resources/sidecar/pi-sidecar.mjs');
 
-  const result = runCommand(mainBinary, ['--foundation-smoke'], {
+  const binaryBytes = readFileSync(mainBinary);
+  const forbiddenSmokeMarkers = [
+    '--foundation-smoke',
+    '--foundation-ui-smoke',
+    '--foundation-restart-smoke',
+    'set_smoke_local_auth',
+    'verify_model_m3_smoke',
+    'picket:foundation-smoke',
+    '__PICKET_UI_SMOKE__',
+  ];
+  for (const marker of forbiddenSmokeMarkers) {
+    if (binaryBytes.includes(Buffer.from(marker, 'utf8'))) {
+      throw new Error(`Release binary ${mainBinary} contains forbidden smoke-harness marker: ${marker}`);
+    }
+  }
+
+  const emptyHome = join(scratchRoot, 'sidecar-home');
+  mkdirSync(emptyHome, { recursive: true });
+  const result = runCommand(nodeBinary, [sidecarScript], {
     cwd: scratchRoot,
     env: {
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
       HOME: emptyHome,
       TMPDIR: scratchRoot,
     },
-    timeout: 45_000,
+    input: `${JSON.stringify({ type: 'shutdown' })}\n`,
+    timeout: 15_000,
   });
 
-  const report = JSON.parse(result.stdout);
-  for (const [phase, expected] of [
-    ['complete', 'completed'],
-    ['cancelled', 'cancelled'],
-    ['shutdown', 'cancelled'],
-  ]) {
-    if (report[phase]?.status !== expected || report[phase]?.childExitCode !== 0) {
-      throw new Error(`Signed bundle smoke test failed for phase "${phase}": ${result.stdout}`);
-    }
+  const firstLine = result.stdout.trim().split('\n')[0] ?? '';
+  let handshake;
+  try {
+    handshake = JSON.parse(firstLine);
+  } catch {
+    throw new Error(`Signed bundled sidecar did not emit valid ready JSON: ${result.stdout}`);
   }
-  if (!report.git?.temporaryRepositoryRemoved || report.git?.commits?.length !== 2) {
-    throw new Error(`Signed bundle Git scope smoke test failed: ${result.stdout}`);
+  if (
+    handshake?.type !== 'ready'
+    || handshake.protocolVersion !== 1
+    || !handshake.nodeVersion
+    || !handshake.piCoreVersion
+  ) {
+    throw new Error(`Unexpected signed bundled sidecar handshake: ${firstLine}`);
   }
   return {
-    nodeVersion: report.complete.nodeVersion,
-    piCoreVersion: report.complete.piCoreVersion,
+    nodeVersion: handshake.nodeVersion,
+    piCoreVersion: handshake.piCoreVersion,
   };
 }
 
@@ -267,8 +288,9 @@ function main() {
     runCommand('/usr/bin/codesign', ['--force', '--sign', '-', stagedApp]);
     runCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', stagedApp]);
 
-    // Execute smoke test directly against the freshly signed staged bundle.
-    const smoke = smokeTestStagedApp(stagedApp, scratchRoot);
+    // Verify the freshly signed release bundle contains zero smoke backdoors and
+    // can launch its bundled Node + Pi Core sidecar cleanly.
+    const smoke = verifyStagedReleaseApp(stagedApp, scratchRoot);
 
     mkdirSync(options.outDir, { recursive: true });
 

@@ -24,3 +24,7 @@ export {
   createRunRepoCommandTool,
   createWriteRepoFileTool,
 } from './workspace';
+export {
+  createReadConflictFileTool,
+  createWriteConflictResolutionTool,
+} from './conflict';

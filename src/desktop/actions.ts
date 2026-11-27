@@ -6,7 +6,7 @@ import {
   decodeGenerateCustomActionReply,
   type CustomActionCommandReply,
   type CustomActionProgressEvent,
-  type DismissCustomActionDoneRequest,
+  type DismissSessionDoneRequest,
   type GenerateCustomActionProgressEvent,
   type GenerateCustomActionReply,
   type GenerateCustomActionRequest,
@@ -67,9 +67,9 @@ export async function cancelDesktopCustomAction(requestId: string): Promise<void
   await invoke('cancel_custom_action', { requestId });
 }
 
-export async function dismissDesktopCustomActionDone(
-  request: DismissCustomActionDoneRequest,
+export async function dismissDesktopSessionDone(
+  request: DismissSessionDoneRequest,
 ): Promise<boolean> {
-  const result = await invoke('dismiss_custom_action_done', { request });
+  const result = await invoke('dismiss_session_done', { request });
   return Boolean(result);
 }

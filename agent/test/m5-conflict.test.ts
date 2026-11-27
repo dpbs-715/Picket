@@ -1,12 +1,12 @@
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import type { ResolveConflictCommand } from '../../shared/pi-protocol';
-import { getSidecarMessages } from '../src/i18n';
-import { sanitizeProviderError } from '../src/providers';
-import { buildResolveConflictPrompts, hasConflictMarkers, parseConflictResolution } from '../src/tasks';
+import type { ProbeEvent, RunCustomActionCommand } from '../../shared/pi-protocol';
+import { buildResolveConflictModePrompts, createTaskRunner } from '../src/tasks';
 
-function sampleConflictCommand(overrides: Partial<ResolveConflictCommand> = {}): ResolveConflictCommand {
+function sampleConflictCommand(overrides: Partial<RunCustomActionCommand> = {}): RunCustomActionCommand {
   return {
-    type: 'resolveConflict',
+    type: 'runCustomAction',
+    mode: 'resolveConflict',
     requestId: 'req-conflict-1',
     context: {
       repositoryId: 'repo-1',
@@ -16,141 +16,184 @@ function sampleConflictCommand(overrides: Partial<ResolveConflictCommand> = {}):
     },
     model: {
       provider: 'openai',
+      apiFormat: 'openai-completions',
       modelId: 'gpt-4.1',
       baseUrl: '',
       apiKey: 'sk-test-only',
     },
     branch: 'feat/pay',
+    detached: false,
+    remoteBranches: ['origin/feat/pay'],
+    actionLabel: 'Resolve Conflict',
+    actionPrompt: '',
+    extraPrompt: 'Preserve local idempotency lock and keep upstream traceId logging',
+    selectedFiles: [],
+    unselectedPaths: [],
+    localKeepPaths: [],
     upstream: 'origin/feat/pay',
-    userInstruction: 'Preserve local idempotency lock and keep upstream traceId logging',
     commits: ['a3f91c2 feat(order): add callback idempotency lock'],
-    files: [
+    conflictFiles: [
       {
         fileId: 'f-order',
         path: 'src/service/Order.ts',
-        baseContent: 'export function handlePay() {\n  return ok();\n}\n',
-        upstreamContent: 'export function handlePay(traceId: string) {\n  log(traceId);\n  return ok();\n}\n',
-        localContent: 'export function handlePay() {\n  acquireLock();\n  return ok();\n}\n',
-        conflictedContent: [
-          '<<<<<<< HEAD',
-          'export function handlePay(traceId: string) {',
-          '  log(traceId);',
-          '=======',
-          'export function handlePay() {',
-          '  acquireLock();',
-          '>>>>>>> a3f91c2',
-          '  return ok();',
-          '}',
-          '',
-        ].join('\n'),
+        lineCount: 10,
+        hasBase: true,
       },
     ],
     ...overrides,
   };
 }
 
-describe('M5 Pi Core conflict resolution parser and safety guards', () => {
-  it('parses fenced / <think>-prefixed JSON conflict resolution and localizes default merge summaries', () => {
-    const cmd = sampleConflictCommand();
-    const raw = [
-      '<think>Combine traceId parameter and acquireLock call.</think>',
-      '```json',
-      JSON.stringify({
-        summary: 'Preserved local idempotency lock and merged upstream traceId parameter',
-        resolvedFiles: [
-          {
-            fileId: 'f-order',
+function writeToolSse(res: ServerResponse, id: string, toolName: string, args: Record<string, unknown>) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+  res.write(`data: ${JSON.stringify({
+    id,
+    object: 'chat.completion.chunk',
+    created: 1700000000,
+    model: 'gpt-4.1',
+    choices: [{
+      index: 0,
+      delta: {
+        role: 'assistant',
+        tool_calls: [{
+          index: 0,
+          id: `${id}-tc`,
+          type: 'function',
+          function: { name: toolName, arguments: JSON.stringify(args) },
+        }],
+      },
+      finish_reason: null,
+    }],
+  })}\n\n`);
+  res.write(`data: ${JSON.stringify({
+    id,
+    object: 'chat.completion.chunk',
+    created: 1700000000,
+    model: 'gpt-4.1',
+    choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+  })}\n\n`);
+  res.write('data: [DONE]\n\n');
+  res.end();
+}
+
+describe('M5 Tool-driven conflict resolution mode', () => {
+  it('sends compact metadata-only prompts and switches summary language directive between English and Chinese', () => {
+    const enPrompts = buildResolveConflictModePrompts(sampleConflictCommand());
+    expect(enPrompts.systemPrompt).toContain('read_conflict_file');
+    expect(enPrompts.systemPrompt).toContain('write_conflict_resolution');
+    expect(enPrompts.systemPrompt).toContain('Write `summary` in concise English.');
+    expect(enPrompts.userPrompt).toContain('`src/service/Order.ts` (fileId=f-order, 10 lines, base available)');
+    expect(enPrompts.userPrompt).toContain('Preserve local idempotency lock and keep upstream traceId logging');
+    expect(enPrompts.userPrompt).not.toContain('<<<<<<<');
+
+    const zhPrompts = buildResolveConflictModePrompts(sampleConflictCommand({ locale: 'zh' }));
+    expect(zhPrompts.systemPrompt).toContain('Write `summary` in concise Chinese.');
+  });
+
+  it('reads conflicted files on demand, self-repairs rejected conflict markers, and stops immediately on stopAgent=true', async () => {
+    let callCount = 0;
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      req.resume();
+      req.on('end', () => {
+        callCount += 1;
+        if (callCount === 1) {
+          writeToolSse(res, 'conf-1', 'read_conflict_file', {
+            path: 'src/service/Order.ts',
+            section: 'conflicted',
+          });
+        } else if (callCount === 2) {
+          // Simulate a bad attempt with leftover markers rejected by host:
+          writeToolSse(res, 'conf-2', 'write_conflict_resolution', {
+            path: 'src/service/Order.ts',
+            content: '<<<<<<< HEAD\nbad\n=======\nstill bad\n>>>>>>> a3f91c2\n',
+            summary: 'Attempt 1',
+          });
+        } else {
+          // Clean self-repaired resolution:
+          writeToolSse(res, 'conf-3', 'write_conflict_resolution', {
             path: 'src/service/Order.ts',
             content: 'export function handlePay(traceId: string) {\n  log(traceId);\n  acquireLock();\n  return ok();\n}\n',
-          },
-        ],
-      }),
-      '```',
-    ].join('\n');
-
-    const res = parseConflictResolution(raw, cmd);
-    expect(res.summary).toContain('idempotency lock');
-    expect(res.resolvedFiles).toEqual([
-      {
-        fileId: 'f-order',
-        path: 'src/service/Order.ts',
-        content: 'export function handlePay(traceId: string) {\n  log(traceId);\n  acquireLock();\n  return ok();\n}\n',
-      },
-    ]);
-
-    const rawWithoutSummary = JSON.stringify({
-      summary: '',
-      resolvedFiles: [
-        {
-          fileId: 'f-order',
-          path: 'src/service/Order.ts',
-          content: 'export function handlePay(traceId: string) {\n  log(traceId);\n  acquireLock();\n  return ok();\n}\n',
-        },
-      ],
+            summary: 'Preserved local idempotency lock and merged upstream traceId logging',
+          });
+        }
+      });
     });
-    expect(parseConflictResolution(rawWithoutSummary, cmd).summary).toBe('Merged 1 conflicted file(s)');
-    expect(parseConflictResolution(rawWithoutSummary, sampleConflictCommand({ locale: 'zh' })).summary).toBe(
-      getSidecarMessages('zh').defaultConflictMergeSummary(1),
-    );
-  });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('Invalid address');
 
-  it('rejects unauthorized file modifications, missing files, empty output, and leftover conflict markers in en and zh', () => {
-    const cmdEn = sampleConflictCommand();
-    const cmdZh = sampleConflictCommand({ locale: 'zh' });
-    expect(hasConflictMarkers('normal code\n=======\nother\n')).toBe(true);
-    expect(hasConflictMarkers('const sep = "======";\n')).toBe(false);
-
-    // 1. Unauthorized file outside conflict list (and verify sanitizeProviderError does not misclassify "unauthorized" as 401):
-    const unauthorizedJson = JSON.stringify({
-      summary: 'bad',
-      resolvedFiles: [
-        { fileId: 'f-other', path: 'src/api/pay.ts', content: 'export const x = 1;\n' },
-      ],
-    });
-    let caughtEn: unknown;
     try {
-      parseConflictResolution(unauthorizedJson, cmdEn);
-    } catch (err) {
-      caughtEn = err;
-    }
-    expect(caughtEn).toBeInstanceOf(Error);
-    expect((caughtEn as Error).message).toContain('Blocked unauthorized modification attempt');
-    expect(sanitizeProviderError(caughtEn, cmdEn.model, 'en')).not.toContain('401/403');
-    expect(() => parseConflictResolution(unauthorizedJson, cmdZh)).toThrow(
-      getSidecarMessages('zh').unauthorizedConflictFile('src/api/pay.ts'),
-    );
-
-    // 2. Leftover conflict markers:
-    const leftoverMarkersJson = JSON.stringify({
-      summary: 'bad',
-      resolvedFiles: [
-        {
-          fileId: 'f-order',
-          path: 'src/service/Order.ts',
-          content: '<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> commit\n',
+      const events: ProbeEvent[] = [];
+      const seenTools: string[] = [];
+      let writeAttempts = 0;
+      let runner!: ReturnType<typeof createTaskRunner>;
+      runner = createTaskRunner(
+        sampleConflictCommand({
+          model: {
+            provider: 'openai',
+            apiFormat: 'openai-completions',
+            modelId: 'gpt-4.1',
+            baseUrl: `http://127.0.0.1:${addr.port}/v1`,
+            apiKey: 'sk-test-only',
+          },
+        }),
+        (event) => {
+          events.push(event);
+          if (event.type === 'toolCall') {
+            seenTools.push(event.toolName);
+            queueMicrotask(() => {
+              if (event.toolName === 'read_conflict_file') {
+                runner.deliverToolResult?.({
+                  type: 'toolResult',
+                  requestId: event.requestId,
+                  callId: event.callId,
+                  ok: true,
+                  content: '<<<<<<< HEAD\nexport function handlePay(traceId: string) {\n=======\nexport function handlePay() {\n>>>>>>> a3f91c2\n',
+                });
+              } else if (event.toolName === 'write_conflict_resolution') {
+                writeAttempts += 1;
+                if (writeAttempts === 1) {
+                  runner.deliverToolResult?.({
+                    type: 'toolResult',
+                    requestId: event.requestId,
+                    callId: event.callId,
+                    ok: false,
+                    isError: true,
+                    content: 'Merged result for conflicted file src/service/Order.ts still contains leftover conflict markers; write rejected.',
+                  });
+                } else {
+                  runner.deliverToolResult?.({
+                    type: 'toolResult',
+                    requestId: event.requestId,
+                    callId: event.callId,
+                    ok: true,
+                    content: 'Applied all conflict resolutions and continued rebase.',
+                    details: {
+                      stopAgent: true,
+                      summary: 'Preserved local idempotency lock and merged upstream traceId logging',
+                      links: [],
+                    },
+                  });
+                }
+              }
+            });
+          }
         },
-      ],
-    });
-    expect(() => parseConflictResolution(leftoverMarkersJson, cmdEn)).toThrow(/conflict markers/);
-    expect(() => parseConflictResolution(leftoverMarkersJson, cmdZh)).toThrow(/\u51b2\u7a81\u6807\u8bb0/);
-
-    // 3. Empty content wiping non-empty file:
-    const emptyMergedJson = JSON.stringify({
-      summary: 'bad',
-      resolvedFiles: [
-        { fileId: 'f-order', path: 'src/service/Order.ts', content: '   \n' },
-      ],
-    });
-    expect(() => parseConflictResolution(emptyMergedJson, cmdEn)).toThrow(/is empty; merge aborted/);
-    expect(() => parseConflictResolution(emptyMergedJson, cmdZh)).toThrow(/\u7a7a\u5185\u5bb9/);
-  });
-
-  it('switches conflict summary language directive between English and Chinese in prompts', () => {
-    expect(buildResolveConflictPrompts(sampleConflictCommand()).systemPrompt).toContain(
-      'Write `summary` in concise English.',
-    );
-    expect(buildResolveConflictPrompts(sampleConflictCommand({ locale: 'zh' })).systemPrompt).toContain(
-      'Write `summary` in concise Chinese.',
-    );
+      );
+      await runner.run();
+      expect(callCount).toBe(3);
+      expect(seenTools).toEqual([
+        'read_conflict_file',
+        'write_conflict_resolution',
+        'write_conflict_resolution',
+      ]);
+      const completed = events.find((e) => e.type === 'customActionCompleted');
+      expect(completed).toMatchObject({
+        type: 'customActionCompleted',
+        summary: 'Preserved local idempotency lock and merged upstream traceId logging',
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
   });
 });

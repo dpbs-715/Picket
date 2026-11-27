@@ -1,9 +1,8 @@
 use super::{
-    ExtractedConflictBatch, ExtractedConflictFile, RebaseContinueOutcome,
+    ExtractedConflictBatch, ExtractedConflictFile, RebaseContinueOutcome, ResolvedConflictFile,
     helpers::{format_git_error, line_has_conflict_markers},
 };
 use crate::{
-    foundation::pi::PiResolvedConflictFile,
     i18n::{self, LanguageKind},
     repository::{RepositoryStore, Result, parse, types::ReadTarget},
 };
@@ -144,14 +143,16 @@ impl RepositoryStore {
         &self,
         target: &ReadTarget,
         expected: &[ExtractedConflictFile],
-        resolved: &[PiResolvedConflictFile],
+        resolved: &[ResolvedConflictFile],
         locale: LanguageKind,
     ) -> Result<RebaseContinueOutcome> {
+        self.inner.write_coordinator.ensure_not_draining(locale)?;
         let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
+        let _write_guard = self.track_write();
         let reader = self.inner.reader.with_locale(locale);
 
         if !self.rebase_in_progress(&root).await? {

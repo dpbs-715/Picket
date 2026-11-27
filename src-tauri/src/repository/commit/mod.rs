@@ -92,6 +92,7 @@ impl RepositoryStore {
     ) -> Result<(RepositorySnapshot, CommitResult)> {
         let locale = request.locale;
         validate_commit_request(request, locale)?;
+        self.inner.write_coordinator.ensure_not_draining(locale)?;
 
         let _guard = self
             .repository_gate(&request.target.repository_id)?

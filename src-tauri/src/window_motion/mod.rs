@@ -15,7 +15,10 @@ use fallback as platform;
 #[cfg(target_os = "macos")]
 use macos as platform;
 
-pub use geometry::{AnimateWindowFrameReply, AnimateWindowFrameRequest, MonitorWorkArea};
+pub use geometry::{
+    AnimateWindowFrameReply, AnimateWindowFrameRequest, MonitorWorkArea,
+    resolve_visible_window_position,
+};
 pub use platform::{
     activate_and_focus_main_on_main, configure_main_window_startup_on_main,
     ensure_main_window_opaque, mouse_location_logical_on_main, move_splash_window_origin,
@@ -76,6 +79,8 @@ pub async fn set_window_theme(app: tauri::AppHandle, theme: ThemeKind) -> Result
     let resolved = rx
         .await
         .map_err(|_| "Window theme task did not run on main thread".to_string())?;
+    app.state::<crate::tray::TrayCoordinator>()
+        .set_ui_context(&app, None, Some(theme), None);
     Ok(resolved.to_string())
 }
 
@@ -87,6 +92,7 @@ pub async fn set_window_pinned(app: tauri::AppHandle, pinned: bool) -> Result<bo
     platform::set_main_window_pinned(window, pinned).await
 }
 
+#[cfg(feature = "smoke-harness")]
 pub async fn read_main_window_visible_on_all_spaces(
     app: &tauri::AppHandle,
 ) -> Result<bool, String> {

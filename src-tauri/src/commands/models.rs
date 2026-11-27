@@ -2,7 +2,6 @@
 
 use super::{picket_data_dir, runtime_paths};
 use crate::{
-    foundation::pi::PiSupervisor,
     models::{
         store::ModelStore,
         types::{
@@ -12,6 +11,7 @@ use crate::{
             TestConnectionInput, UpdateProviderConnectionInput,
         },
     },
+    pi_runtime::PiSupervisor,
 };
 use tauri::State;
 

@@ -8,7 +8,9 @@
 # Dependencies and build output
 node_modules/
 /dist/
+/dist-smoke/
 /src-tauri/target/
+/src-tauri/target-smoke/
 /target/
 /src-tauri/binaries/
 /src-tauri/resources/generated/

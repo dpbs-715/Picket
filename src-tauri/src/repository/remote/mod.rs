@@ -10,6 +10,7 @@ mod rebase;
 mod status;
 
 use super::types::RepositorySnapshot;
+pub(crate) use helpers::line_has_conflict_markers;
 
 #[derive(Clone, Debug)]
 pub struct UpstreamSpec {
@@ -88,6 +89,13 @@ pub struct ExtractedConflictFile {
 pub struct ExtractedConflictBatch {
     pub upstream: String,
     pub files: Vec<ExtractedConflictFile>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedConflictFile {
+    pub file_id: String,
+    pub path: String,
+    pub content: String,
 }
 
 #[derive(Clone, Debug)]

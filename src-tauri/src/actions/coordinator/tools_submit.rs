@@ -11,10 +11,9 @@ use crate::{
             commit_in_isolated_worktree, create_isolated_submit_worktree, parse_worktree_list,
             remove_verified_submit_worktree,
         },
-        types::CustomActionLink,
+        types::{CPushLandedCommit, CustomActionLink},
     },
-    cpush::types::CPushLandedCommit,
-    foundation::pi::PiToolExecutionResult,
+    pi_runtime::PiToolExecutionResult,
 };
 use serde_json::{Value, json};
 use std::{
@@ -203,7 +202,7 @@ async fn handle_worktree_create(
                 }
                 push_timeline_step(&mut st.timeline, "done", status_label);
             }
-            (ctx.persist)("running", String::new());
+            ctx.persist("running", String::new()).await;
             let body = serde_json::to_string_pretty(&created).unwrap_or_else(|_| "{}".into());
             PiToolExecutionResult::success(body)
         }
@@ -291,7 +290,7 @@ async fn handle_worktree_commit(ctx: &ActionToolContext, args: &Value) -> PiTool
                     format!("{} {}", res.short_oid, res.title),
                 );
             }
-            (ctx.persist)("running", String::new());
+            ctx.persist("running", String::new()).await;
             let body = serde_json::to_string_pretty(&res).unwrap_or_else(|_| "{}".into());
             PiToolExecutionResult::success(body)
         }
@@ -380,7 +379,7 @@ async fn handle_worktree_remove(
                 }
                 push_timeline_step(&mut st.timeline, "done", status_label);
             }
-            (ctx.persist)("running", String::new());
+            ctx.persist("running", String::new()).await;
             if let Ok(snap) = ctx.store.refresh_with_locale(&ctx.target, ctx.locale).await {
                 (ctx.emit)("running", None, None, Some(snap));
             }
@@ -445,7 +444,7 @@ pub(super) async fn handle_cleanup_submit_duplicates(
                 st.submit_ledger.cleanup = Some(outcome.to_record());
                 push_timeline_step(&mut st.timeline, "done", status_label);
             }
-            (ctx.persist)("running", String::new());
+            ctx.persist("running", String::new()).await;
             if let Ok(snap) = ctx.store.refresh_with_locale(&ctx.target, ctx.locale).await {
                 (ctx.emit)("running", None, None, Some(snap));
             }
@@ -456,7 +455,7 @@ pub(super) async fn handle_cleanup_submit_duplicates(
     }
 }
 
-pub(super) fn handle_record_action_checkpoint(
+pub(super) async fn handle_record_action_checkpoint(
     ctx: &ActionToolContext,
     args: &Value,
     status_label: String,
@@ -653,7 +652,7 @@ pub(super) fn handle_record_action_checkpoint(
         append_unique_links(&mut st.links, added_links);
         push_timeline_step(&mut st.timeline, "done", status_label);
     }
-    (ctx.persist)("running", String::new());
+    ctx.persist("running", String::new()).await;
     let summary_json = ctx
         .run_state
         .lock()

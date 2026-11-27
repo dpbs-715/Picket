@@ -8,14 +8,70 @@ pub use super::message_user::{
     MessageUserCard, MessageUserRequest, MessageUserResponse,
 };
 use crate::{
-    cpush::types::CPushLandedCommit,
     i18n::{LanguageKind, deserialize_language_or_default},
-    repository::types::{CommitSelection, PersistedCustomAction, ReadTarget, RepositorySnapshot},
+    repository::{
+        ai_context::FrozenCPushFile,
+        types::{CommitSelection, PersistedCustomAction, ReadTarget, RepositorySnapshot},
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const CUSTOM_ACTION_PROTOCOL_VERSION: u8 = 1;
+pub const CPUSH_PROTOCOL_VERSION: u8 = 1;
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CPushSessionStatus {
+    Idle,
+    Running,
+    NeedsDecision,
+    Conflict,
+    WaitingManual,
+    PushFailed,
+    Done,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushCommitGroup {
+    pub id: String,
+    pub message: String,
+    pub file_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushQaItem {
+    pub question_id: String,
+    pub question: String,
+    pub answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushLandedCommit {
+    pub oid: String,
+    pub short_oid: String,
+    pub title: String,
+    pub branch: String,
+    pub file_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushMessageOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<bool>,
+}
 
 pub fn compute_prompt_hash(prompt: &str) -> String {
     let normalized = prompt.replace("\r\n", "\n");
@@ -217,9 +273,224 @@ pub struct GenerateCustomActionReply {
     pub draft: Option<CustomActionDraft>,
 }
 
+pub type CPushTimelineItem = CustomActionTimelineItem;
+pub type CPushMessageFileChip = CustomActionMessageFileChip;
+pub type CPushMessageCommitSummary = CustomActionMessageCommitSummary;
+pub type CPushMessageProgress = CustomActionMessageProgress;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushUiMessage {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<CPushMessageFileChip>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits: Option<Vec<CPushMessageCommitSummary>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<CPushMessageOption>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<CustomActionLink>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<MessageUserCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questionnaire: Option<MessageUserRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<CPushMessageProgress>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushSessionSnapshot {
+    pub run_id: String,
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub session_id: String,
+    pub frozen_scope_version: String,
+    pub model_id: String,
+    pub frozen_file_ids: Vec<String>,
+    pub committed_file_ids: Vec<String>,
+    pub skipped_file_ids: Vec<String>,
+    pub session_status: CPushSessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_call_id: Option<String>,
+    pub message: Option<CPushUiMessage>,
+    pub timeline: Vec<CPushTimelineItem>,
+    pub qa_log: Vec<CPushQaItem>,
+    pub commits: Vec<CPushLandedCommit>,
+    pub can_retry_remaining: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_collapse: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StoredCPushSession {
+    pub run_id: String,
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub session_id: String,
+    pub frozen_scope_version: String,
+    pub model_id: String,
+    pub branch: String,
+    pub initial_head: Option<String>,
+    #[serde(default, alias = "draft")]
+    pub prompt: String,
+    #[serde(default)]
+    pub recent_commits: Vec<String>,
+    #[serde(default)]
+    pub unselected_paths: Vec<String>,
+    #[serde(default)]
+    pub frozen_files: Vec<FrozenCPushFile>,
+    #[serde(default)]
+    pub planned_groups: Vec<CPushCommitGroup>,
+    #[serde(default)]
+    pub skipped_file_ids: Vec<String>,
+    #[serde(default)]
+    pub next_step_index: usize,
+    #[serde(default)]
+    pub committed_file_ids: Vec<String>,
+    #[serde(default)]
+    pub commits: Vec<CPushLandedCommit>,
+    #[serde(default)]
+    pub qa_log: Vec<CPushQaItem>,
+    #[serde(default)]
+    pub timeline: Vec<CPushTimelineItem>,
+    pub session_status: CPushSessionStatus,
+    #[serde(default, skip_serializing)]
+    pub pending_call_id: Option<String>,
+    pub message: Option<CPushUiMessage>,
+    #[serde(default)]
+    pub can_retry_remaining: bool,
+    #[serde(default = "default_true")]
+    pub push_authorized: bool,
+    #[serde(default)]
+    pub auto_collapse: bool,
+    #[serde(default)]
+    pub notice_dismissed: bool,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub commit_language: LanguageKind,
+}
+
+impl StoredCPushSession {
+    pub fn to_public(&self) -> CPushSessionSnapshot {
+        CPushSessionSnapshot {
+            run_id: self.run_id.clone(),
+            repository_id: self.repository_id.clone(),
+            worktree_id: self.worktree_id.clone(),
+            session_id: self.session_id.clone(),
+            frozen_scope_version: self.frozen_scope_version.clone(),
+            model_id: self.model_id.clone(),
+            frozen_file_ids: self
+                .frozen_files
+                .iter()
+                .map(|f| f.file_id.clone())
+                .collect(),
+            committed_file_ids: self.committed_file_ids.clone(),
+            skipped_file_ids: self.skipped_file_ids.clone(),
+            session_status: self.session_status,
+            pending_call_id: self.pending_call_id.clone(),
+            message: self.message.clone(),
+            timeline: self.timeline.clone(),
+            qa_log: self
+                .qa_log
+                .iter()
+                .map(|qa| CPushQaItem {
+                    question_id: qa.question_id.clone(),
+                    question: qa.question.clone(),
+                    answer: qa.answer.clone(),
+                    option_id: None,
+                })
+                .collect(),
+            commits: self.commits.clone(),
+            can_retry_remaining: self.can_retry_remaining,
+            auto_collapse: self.auto_collapse.then_some(true),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DismissCustomActionDoneRequest {
+pub struct StartCPushRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    pub model_id: String,
+    pub selections: Vec<CommitSelection>,
+    pub prompt: String,
+    #[serde(default)]
+    pub push: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub locale: LanguageKind,
+    #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    pub commit_language: LanguageKind,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PullRebaseRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReconcileCPushRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RespondCPushRequest {
+    pub request_id: String,
+    pub target: ReadTarget,
+    pub run_id: String,
+    pub message_id: String,
+    #[serde(default)]
+    pub option_id: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub locale: Option<LanguageKind>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushProgressEvent {
+    pub protocol_version: u8,
+    pub session: CPushSessionSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_snapshot: Option<RepositorySnapshot>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CPushCommandReply {
+    pub protocol_version: u8,
+    pub kind: &'static str,
+    pub request_id: String,
+    pub session: CPushSessionSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_snapshot: Option<RepositorySnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DismissSessionDoneRequest {
     pub request_id: String,
     pub target: ReadTarget,
     #[serde(default)]
@@ -228,6 +499,9 @@ pub struct DismissCustomActionDoneRequest {
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
 }
+
+#[cfg(test)]
+pub type DismissCustomActionDoneRequest = DismissSessionDoneRequest;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

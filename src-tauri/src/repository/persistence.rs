@@ -3,10 +3,12 @@
 //! tabs, and UI scope versions).
 //! Never stores API keys or Git write tokens; repository paths come only from Rust.
 use super::*;
-use crate::i18n::{self, LanguageKind, deserialize_language_or_default};
+use crate::{
+    i18n::{self, LanguageKind, deserialize_language_or_default},
+    storage,
+};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::Write, os::unix::fs::PermissionsExt};
-use tempfile::NamedTempFile;
+use std::collections::BTreeMap;
 
 const STORAGE_VERSION: u8 = 2;
 const LEGACY_V1_STORAGE_VERSION: u8 = 1;
@@ -117,21 +119,21 @@ pub struct WorkbenchPersistence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct StoredRepository {
     repository_id: String,
     root_path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct StoredLocalKeep {
     common_dir: String,
     paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct StoredWorkbenchFile {
     version: u8,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
@@ -154,7 +156,7 @@ struct StoredWorkbenchFile {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct LegacyV1WorktreeState {
     repository_id: String,
     worktree_id: String,
@@ -170,7 +172,7 @@ struct LegacyV1WorktreeState {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct LegacyV1WorkbenchFile {
     version: u8,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
@@ -258,9 +260,28 @@ fn parse_workbench_bytes(bytes: &[u8]) -> Option<StoredWorkbenchFile> {
     None
 }
 
-fn read_existing_valid(path: &Path) -> Option<StoredWorkbenchFile> {
+fn read_existing_valid_unlocked(path: &Path) -> Option<StoredWorkbenchFile> {
     let bytes = fs::read(path).ok()?;
-    parse_workbench_bytes(&bytes)
+    let parsed = parse_workbench_bytes(&bytes);
+    if parsed.is_none() {
+        storage::backup_corrupt_copy(path, &bytes);
+    }
+    parsed
+}
+
+fn read_existing_valid(path: &Path) -> Option<StoredWorkbenchFile> {
+    storage::with_file_lock(path, || Ok(read_existing_valid_unlocked(path)))
+        .ok()
+        .flatten()
+}
+
+async fn read_existing_valid_async(path: PathBuf) -> Option<StoredWorkbenchFile> {
+    storage::run_blocking_locked(path.clone(), move || {
+        Ok(read_existing_valid_unlocked(&path))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Fast, read-only lookup of persisted window geometry & mode preferences for native startup
@@ -350,26 +371,24 @@ fn merge_stored_local_keep(
         .collect())
 }
 
-fn write_workbench_file(
+async fn write_workbench_file_async(
     storage_dir: &Path,
     file_path: &Path,
-    payload: &StoredWorkbenchFile,
+    payload: StoredWorkbenchFile,
 ) -> Result<()> {
-    fs::create_dir_all(storage_dir)
-        .map_err(|_| "Cannot create local application data directory".to_string())?;
-    let _ = fs::set_permissions(storage_dir, fs::Permissions::from_mode(0o700));
-    let bytes = serde_json::to_vec_pretty(payload).map_err(|error| error.to_string())?;
-    let mut temp = NamedTempFile::new_in(storage_dir)
-        .map_err(|_| "Cannot create temporary workbench state file".to_string())?;
-    let _ = fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600));
-    temp.write_all(&bytes)
-        .map_err(|_| "Cannot write workbench state file".to_string())?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|_| "Cannot sync workbench state file to disk".to_string())?;
-    temp.persist(file_path)
-        .map_err(|_| "Cannot atomically persist workbench state file".to_string())?;
-    Ok(())
+    let dir = storage_dir.to_path_buf();
+    let target = file_path.to_path_buf();
+    storage::run_blocking_locked(target.clone(), move || {
+        storage::write_json_atomic(&dir, &target, &payload, false)
+    })
+    .await
+}
+
+enum WorkbenchDiskRead {
+    Missing,
+    Unreadable,
+    Incompatible,
+    Loaded(StoredWorkbenchFile),
 }
 
 impl WorkbenchPersistence {
@@ -380,21 +399,37 @@ impl WorkbenchPersistence {
     ) -> Result<WorkbenchRestoreReply> {
         let _guard = self.last_revision.lock().await;
         let file_path = storage_dir.join(STORAGE_FILE);
-        let bytes = match fs::read(&file_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(empty_restore_reply(None));
+        let read_path = file_path.clone();
+        let disk = storage::run_blocking_locked(file_path, move || {
+            let bytes = match fs::read(&read_path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(WorkbenchDiskRead::Missing);
+                }
+                Err(_) => return Ok(WorkbenchDiskRead::Unreadable),
+            };
+            match parse_workbench_bytes(&bytes) {
+                Some(stored) => Ok(WorkbenchDiskRead::Loaded(stored)),
+                None => {
+                    storage::backup_corrupt_copy(&read_path, &bytes);
+                    Ok(WorkbenchDiskRead::Incompatible)
+                }
             }
-            Err(_) => {
+        })
+        .await?;
+        let stored = match disk {
+            WorkbenchDiskRead::Missing => return Ok(empty_restore_reply(None)),
+            WorkbenchDiskRead::Unreadable => {
                 return Ok(empty_restore_reply(Some(
                     i18n::repository::persistence_unreadable_warning(LanguageKind::En).into(),
                 )));
             }
-        };
-        let Some(stored) = parse_workbench_bytes(&bytes) else {
-            return Ok(empty_restore_reply(Some(
-                i18n::repository::persistence_incompatible_warning(LanguageKind::En).into(),
-            )));
+            WorkbenchDiskRead::Incompatible => {
+                return Ok(empty_restore_reply(Some(
+                    i18n::repository::persistence_incompatible_warning(LanguageKind::En).into(),
+                )));
+            }
+            WorkbenchDiskRead::Loaded(stored) => stored,
         };
 
         let raw_local_keep: Vec<(String, Vec<String>)> = stored
@@ -520,7 +555,7 @@ impl WorkbenchPersistence {
         }
 
         let file_path = storage_dir.join(STORAGE_FILE);
-        let previous = read_existing_valid(&file_path);
+        let previous = read_existing_valid_async(file_path.clone()).await;
         if let Some(previous_state) = &previous {
             for existing_repo in &previous_state.repositories {
                 if repositories.len() >= MAX_STORED_REPOSITORIES {
@@ -592,7 +627,7 @@ impl WorkbenchPersistence {
             repositories,
             worktrees,
         };
-        write_workbench_file(storage_dir, &file_path, &payload)?;
+        write_workbench_file_async(storage_dir, &file_path, payload).await?;
         *last_revision = request.revision;
         Ok(())
     }
@@ -607,7 +642,7 @@ impl WorkbenchPersistence {
     ) -> Result<()> {
         let _guard = self.last_revision.lock().await;
         let file_path = storage_dir.join(STORAGE_FILE);
-        let previous = read_existing_valid(&file_path);
+        let previous = read_existing_valid_async(file_path.clone()).await;
 
         let live_roots = store.registered_roots()?;
         let mut opened_repo_ids = HashSet::with_capacity(live_roots.len());
@@ -665,6 +700,6 @@ impl WorkbenchPersistence {
                 worktrees: Vec::new(),
             }
         };
-        write_workbench_file(storage_dir, &file_path, &payload)
+        write_workbench_file_async(storage_dir, &file_path, payload).await
     }
 }

@@ -67,8 +67,7 @@ export interface WorkbenchBackend {
   ): Promise<GenerateCustomActionReply>;
   cancelCustomAction?(requestId: string): Promise<void>;
   reconcileSession?(target: Target, locale?: AppLocale): Promise<void>;
-  dismissCPushDone?(target: Target, runId: string | undefined, messageId: string, locale?: AppLocale): Promise<void>;
-  dismissCustomActionDone?(target: Target, runId: string | undefined, messageId: string, locale?: AppLocale): Promise<void>;
+  dismissSessionDone?(target: Target, runId: string | undefined, messageId: string, locale?: AppLocale): Promise<void>;
   cancelRequest?(requestId: string): Promise<void>;
   loadWorkbenchState?(): Promise<WorkbenchRestoreReply>;
   saveWorkbenchState?(request: WorkbenchSaveRequest): Promise<void>;

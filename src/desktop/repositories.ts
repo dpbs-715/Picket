@@ -9,13 +9,12 @@ import type { WorkbenchEvent } from '../features/workbench/state/workbench';
 import { getMessages } from '../i18n/messages';
 import {
   cancelDesktopCustomAction,
-  dismissDesktopCustomActionDone,
+  dismissDesktopSessionDone,
   generateDesktopCustomAction,
   respondDesktopCustomAction,
   startDesktopCustomAction,
 } from './actions';
 import {
-  dismissDesktopCPushDone,
   pullRebaseDesktop,
   reconcileDesktopCPush,
   respondDesktopCPush,
@@ -90,17 +89,8 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
       emitWorkbenchEvent({ type: 'cPushProgress', progress });
     }
   },
-  async dismissCPushDone(target, runId, messageId, locale) {
-    await dismissDesktopCPushDone({
-      requestId: crypto.randomUUID(),
-      target,
-      ...(runId ? { runId } : {}),
-      messageId,
-      ...(locale ? { locale } : {}),
-    });
-  },
-  async dismissCustomActionDone(target, runId, messageId, locale) {
-    await dismissDesktopCustomActionDone({
+  async dismissSessionDone(target, runId, messageId, locale) {
+    await dismissDesktopSessionDone({
       requestId: crypto.randomUUID(),
       target,
       ...(runId ? { runId } : {}),

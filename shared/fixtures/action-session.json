@@ -1,0 +1,39 @@
+{
+  "runId": "run-contract-action-1",
+  "repositoryId": "repo-orders",
+  "worktreeId": "wt-orders-main",
+  "actionId": "act-submit",
+  "actionLabel": "Submit -> main",
+  "status": "done",
+  "summary": "Created Issue #42 and opened PR #101",
+  "message": {
+    "id": "done-action-run-contract-action-1",
+    "kind": "done",
+    "title": "Submit -> main",
+    "description": "Created Issue #42 and opened PR #101",
+    "commits": [
+      { "hash": "a1b2c3d", "title": "feat(order): validate retry window" }
+    ],
+    "links": [
+      { "label": "Issue #42", "url": "https://github.com/acme/orders/issues/42" },
+      { "label": "PR #101", "url": "https://github.com/acme/orders/pull/101" }
+    ]
+  },
+  "timeline": [
+    { "state": "done", "label": "Checked GitHub CLI login" },
+    { "state": "done", "label": "Created PR #101" }
+  ],
+  "commits": [
+    {
+      "oid": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+      "shortOid": "a1b2c3d",
+      "title": "feat(order): validate retry window",
+      "branch": "fix/issue-42",
+      "fileIds": ["file-order"]
+    }
+  ],
+  "links": [
+    { "label": "Issue #42", "url": "https://github.com/acme/orders/issues/42" },
+    { "label": "PR #101", "url": "https://github.com/acme/orders/pull/101" }
+  ]
+}

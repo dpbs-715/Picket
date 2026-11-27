@@ -16,6 +16,7 @@ fn is_picket_internal_submit_worktree(path: &Path) -> bool {
 }
 
 impl RepositoryStore {
+    #[cfg(any(test, feature = "smoke-harness"))]
     pub async fn open(&self, directory: &Path) -> Result<RepositorySnapshot> {
         self.open_with_locale(directory, LanguageKind::En).await
     }
@@ -313,6 +314,7 @@ impl RepositoryStore {
                     paths,
                     branch_tokens,
                     commit_states,
+                    last_snapshot: snapshot.clone(),
                 },
             );
             drop(registered);
@@ -326,5 +328,63 @@ impl RepositoryStore {
             }
         }
         Ok(snapshot)
+    }
+
+    /// Returns the latest cached `RepositorySnapshot` for every opened repository in open order.
+    pub fn cached_snapshots_in_order(&self) -> Vec<RepositorySnapshot> {
+        let order = self
+            .inner
+            .opened_order
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let Ok(registered) = self.inner.repositories.lock() else {
+            return Vec::new();
+        };
+        order
+            .iter()
+            .filter_map(|repo_id| registered.get(repo_id).map(|r| r.last_snapshot.clone()))
+            .collect()
+    }
+
+    /// Concurrently refreshes all opened repositories directly in Rust (used by the menu bar tray
+    /// so opening or clicking Refresh never requires waking a hidden main WebView).
+    pub async fn refresh_all_opened(&self, locale: LanguageKind) -> Vec<RepositorySnapshot> {
+        let targets: Vec<ReadTarget> = {
+            let order = self
+                .inner
+                .opened_order
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            let Ok(registered) = self.inner.repositories.lock() else {
+                return Vec::new();
+            };
+            order
+                .iter()
+                .filter_map(|repo_id| {
+                    let reg = registered.get(repo_id)?;
+                    Some(ReadTarget {
+                        repository_id: repo_id.clone(),
+                        worktree_id: reg.last_snapshot.active_worktree_id.clone(),
+                        session_id: "tray-refresh".into(),
+                        scope_version: String::new(),
+                    })
+                })
+                .collect()
+        };
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for target in targets {
+            let store = self.clone();
+            join_set.spawn(async move { store.refresh_with_locale(&target, locale).await.ok() });
+        }
+        let mut refreshed = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            if let Ok(Some(snap)) = joined {
+                refreshed.push(snap);
+            }
+        }
+        refreshed
     }
 }

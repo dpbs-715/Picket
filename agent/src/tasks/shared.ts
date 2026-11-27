@@ -33,7 +33,7 @@ export function formatMasterChecklistBlock(files: PiPlanFileEntry[]): string {
     return `- @${index + 1} | ${file.fileId} | ${statusTag} | ${file.path}`;
   });
   return [
-    `Master Checklist of ALL ${files.length} Authorized Selected Files (when returning kind="ready", 100% of @1..@${files.length} — including every D deleted file and patch-omitted file — MUST appear once in groups[].fileIds${files.length > 1 ? ' across your groups' : ''}; you may use either "@index" aliases like "@1" or exact fileIds in fileIds):`,
+    `Master Checklist of ALL ${files.length} Authorized Selected Files (100% of @1..@${files.length} — including every D deleted file and patch-omitted file — MUST appear once in commit_exact_scope groups[].fileIds${files.length > 1 ? ' across your groups' : ''} or confirmed skippedFileIds; prefer short "@index" aliases like "@1"):`,
     ...lines,
   ].join('\n');
 }
@@ -130,15 +130,5 @@ export function extractJsonObject(raw: string): unknown {
       return parseJsonCandidate(candidate.slice(firstBrace, lastBrace + 1));
     }
     throw new Error('Invalid JSON payload');
-  }
-}
-
-export class RecoverablePlanValidationError extends LocalizedSidecarError {
-  readonly repairPrompt: string;
-
-  constructor(message: string, repairPrompt: string) {
-    super(message);
-    this.name = 'RecoverablePlanValidationError';
-    this.repairPrompt = repairPrompt;
   }
 }

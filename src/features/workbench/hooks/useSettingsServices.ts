@@ -58,7 +58,8 @@ export function useSettingsServices({
   }, [backend, latestState, settingsOpen]);
 
   useEffect(() => {
-    const isSmoke = Boolean((globalThis as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__);
+    const isSmoke = import.meta.env.VITE_PICKET_SMOKE === '1'
+      && Boolean((globalThis as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__);
     if (!hydrated || initialState || !backend.repositoryReadsAvailable || !backend.checkForUpdate || isSmoke) {
       return;
     }

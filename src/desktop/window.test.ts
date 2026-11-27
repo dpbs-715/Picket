@@ -9,11 +9,9 @@ import {
   clampCompactHeight,
   desktopWindowController,
   normalizeCompactWidth,
-  resolveVisibleWindowPosition,
   setWindowPinned,
   setWindowPinnedWith,
   type AnimateWindowFrameRequest,
-  type MonitorWorkArea,
   type NativeWindowEnvironment,
 } from './window';
 
@@ -26,8 +24,6 @@ function createMockWindowEnv(initial?: {
   scaleFactor?: number;
   outerPos?: { x: number; y: number };
   innerSize?: { width: number; height: number };
-  monitors?: MonitorWorkArea[];
-  primary?: MonitorWorkArea;
 }) {
   let pinned = initial?.pinned ?? false;
   let visibleOnAllWorkspaces = initial?.pinned ?? false;
@@ -81,10 +77,6 @@ function createMockWindowEnv(initial?: {
           outerPos = { x: pos.x * scaleFactor, y: pos.y * scaleFactor };
         }
       },
-    }),
-    monitors: async () => ({
-      available: initial?.monitors ?? [{ x: 0, y: 25, width: 1512, height: 945 }],
-      primary: initial?.primary ?? { x: 0, y: 25, width: 1512, height: 945 },
     }),
   };
 
@@ -203,32 +195,15 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
     expect(mock.getInnerSize()).toEqual({ width: 920, height: 420 });
   });
 
-  it('falls back to primary monitor work area when saved position belongs to a disconnected display', () => {
-    const laptop: MonitorWorkArea = { x: 0, y: 25, width: 1512, height: 945 };
-    const externalRight: MonitorWorkArea = { x: 1512, y: 0, width: 2560, height: 1440 };
-
-    // Visible on connected secondary display -> preserved as-is:
-    expect(
-      resolveVisibleWindowPosition({ x: 2200, y: 120 }, { width: 400, height: 140 }, [laptop, externalRight], laptop),
-    ).toEqual({ x: 2200, y: 120 });
-
-    // External display unplugged -> clamped cleanly onto primary display workArea:
-    expect(
-      resolveVisibleWindowPosition({ x: 2200, y: -200 }, { width: 400, height: 700 }, [laptop], laptop),
-    ).toEqual({ x: 1112, y: 25 });
-
-    // Compact height is clamped safely within bounds (82..280):
+  it('clamps compact height safely within bounds (82..280)', () => {
     expect(clampCompactHeight(40)).toBe(82);
     expect(clampCompactHeight(300)).toBe(280);
   });
 
-  it('delegates smooth frame transitions to native animateFrame and respects instant & reduced-motion flags', async () => {
+  it('delegates smooth frame transitions and monitor clamping to native animateFrame while respecting instant & reduced-motion flags', async () => {
     const requests: AnimateWindowFrameRequest[] = [];
     let reduced = false;
-    const baseMock = createMockWindowEnv({
-      monitors: [{ x: 0, y: 25, width: 1512, height: 945 }],
-      primary: { x: 0, y: 25, width: 1512, height: 945 },
-    });
+    const baseMock = createMockWindowEnv();
     const animatedEnv: NativeWindowEnvironment = {
       ...baseMock.env,
       prefersReducedMotion: () => reduced,
@@ -264,7 +239,7 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
       pinned: true,
     });
 
-    // Startup hydration with `instant: true` uses durationMs: 0 and clamps off-screen coordinates:
+    // Startup hydration with `instant: true` uses durationMs: 0 and forwards raw target coords for Rust clamping:
     await applyWindowModeWith(animatedEnv, {
       pinned: false,
       compactMode: false,
@@ -279,8 +254,8 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
       minWidth: 400,
       minHeight: 480,
       placement: 'restorePosition',
-      targetX: 1112,
-      targetY: 25,
+      targetX: 2400,
+      targetY: -100,
       durationMs: 0,
       pinned: false,
     });

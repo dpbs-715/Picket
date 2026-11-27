@@ -108,6 +108,7 @@ export function CustomActionModal(props: Props) {
   const [generating, setGenerating] = useState(false);
   const [statusLabel, setStatusLabel] = useState('');
   const activeRunIdRef = useRef<string | null>(null);
+  const submittingAnswerRef = useRef(false);
   const latestCancelRef = useRef(props.onCancelGenerate);
   latestCancelRef.current = props.onCancelGenerate;
   useEffect(() => () => {
@@ -245,7 +246,8 @@ export function CustomActionModal(props: Props) {
     overrideCustoms?: Record<number, string>,
     cancelled = false,
   ) {
-    if (!pendingQuestion || !props.onRespondGenerateQuestion) return;
+    if (submittingAnswerRef.current || !pendingQuestion || !props.onRespondGenerateQuestion) return;
+    submittingAnswerRef.current = true;
     const { runId, callId, request } = pendingQuestion;
     const reqQuestions = request.questions ?? [];
     const selMap = overrideSelections ?? selectedByQ;
@@ -286,6 +288,8 @@ export function CustomActionModal(props: Props) {
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : t.actions.createFailedFallback);
+    } finally {
+      submittingAnswerRef.current = false;
     }
   }
 

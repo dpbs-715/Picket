@@ -4,9 +4,9 @@ pub mod types;
 
 use crate::{
     actions::CustomActionCoordinator,
-    cpush::CPushCoordinator,
-    foundation::lifecycle::cleanup_for_restart,
     i18n::{self, LanguageKind},
+    lifecycle::cleanup_for_restart,
+    repo_lock::RepoWriteCoordinator,
     repository::RepositoryStore,
 };
 use std::{
@@ -15,9 +15,9 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Error as UpdaterError, Update, UpdaterExt};
 use tokio::sync::watch;
 use types::*;
@@ -40,34 +40,7 @@ struct UpdateManagerInner {
     in_flight: bool,
 }
 
-fn unix_secs_to_iso8601(secs: u64) -> String {
-    // Howard Hinnant's civil-from-days algorithm (UTC, zero external date crate needed).
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let hour = rem / 3_600;
-    let minute = (rem % 3_600) / 60;
-    let second = rem % 60;
-
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = (yoe as i64) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = y + if month <= 2 { 1 } else { 0 };
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-fn now_iso8601() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    unix_secs_to_iso8601(secs)
-}
+use crate::time::{now_utc_iso as now_iso8601, unix_secs_to_iso8601};
 
 fn configured_pubkey(app: &AppHandle) -> String {
     app.config()
@@ -230,6 +203,21 @@ impl UpdateManager {
 
     fn emit_snapshot(app: &AppHandle, snapshot: &UpdateStateSnapshot) {
         let _ = app.emit(UPDATE_STATE_EVENT, snapshot);
+        app.state::<crate::tray::TrayCoordinator>()
+            .refresh_from_app(app);
+    }
+
+    pub fn has_update(&self) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.snapshot.as_ref().map(|s| s.phase))
+            .is_some_and(|phase| {
+                matches!(
+                    phase,
+                    UpdatePhase::Available | UpdatePhase::Downloading | UpdatePhase::Installing
+                )
+            })
     }
 
     pub fn get_status(&self, app: &AppHandle) -> Result<UpdateStateSnapshot, String> {
@@ -380,13 +368,14 @@ impl UpdateManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn install(
         &self,
         app: &AppHandle,
         version: &str,
         locale: LanguageKind,
+        repo_writes: &RepoWriteCoordinator,
         repositories: &RepositoryStore,
-        cpush: &CPushCoordinator,
         actions: &CustomActionCoordinator,
     ) -> Result<UpdateStateSnapshot, String> {
         let (update, mut cancel_rx, base_snapshot) = {
@@ -399,8 +388,8 @@ impl UpdateManager {
             }
             let current = Self::ensure_snapshot(&mut guard, app);
             let pending_version = guard.pending_update.as_ref().map(|u| u.version.as_str());
-            let git_busy = repositories.has_active_write()
-                || cpush.has_active_operation()
+            let git_busy = repo_writes.has_active_leases()
+                || repositories.has_active_write()
                 || actions.has_active_operation();
             validate_install_preconditions(
                 current.install_blocker,
@@ -538,29 +527,31 @@ impl UpdateManager {
             }
         };
 
-        // Re-check Git activity right before touching Picket.app on disk:
-        if repositories.has_active_write()
-            || cpush.has_active_operation()
-            || actions.has_active_operation()
-        {
-            let message = i18n::updater::updater_git_busy_error(locale).to_owned();
-            let mut guard = self
-                .inner
-                .lock()
-                .map_err(|_| "Updater state lock is unavailable".to_string())?;
-            guard.in_flight = false;
-            guard.cancel_tx = None;
-            let mut restored = Self::ensure_snapshot(&mut guard, app);
-            restored.phase = UpdatePhase::Available;
-            restored.downloaded_bytes = None;
-            restored.total_bytes = None;
-            restored.error = Some(message.clone());
-            restored.can_install = restored.install_blocker == UpdateInstallBlocker::None
-                && guard.pending_update.is_some();
-            guard.snapshot = Some(restored.clone());
-            Self::emit_snapshot(app, &restored);
-            return Err(message);
-        }
+        // Atomically enter the update-install drain gate right before touching Picket.app on disk
+        // so no new Git write, C-Push, Pull & Rebase, branch switch, or Custom Action can start
+        // while the bundle is replaced and the process restarts.
+        let external_busy = repositories.has_active_write() || actions.has_active_operation();
+        let _drain_guard = match repo_writes.try_begin_update_drain(external_busy, locale) {
+            Ok(guard) => guard,
+            Err(message) => {
+                let mut guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "Updater state lock is unavailable".to_string())?;
+                guard.in_flight = false;
+                guard.cancel_tx = None;
+                let mut restored = Self::ensure_snapshot(&mut guard, app);
+                restored.phase = UpdatePhase::Available;
+                restored.downloaded_bytes = None;
+                restored.total_bytes = None;
+                restored.error = Some(message.clone());
+                restored.can_install = restored.install_blocker == UpdateInstallBlocker::None
+                    && guard.pending_update.is_some();
+                guard.snapshot = Some(restored.clone());
+                Self::emit_snapshot(app, &restored);
+                return Err(message);
+            }
+        };
 
         {
             let mut guard = self

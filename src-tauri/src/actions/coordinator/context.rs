@@ -3,9 +3,8 @@
 use super::{CustomActionCoordinator, SessionAuthGrants};
 use crate::{
     actions::{session_store::SubmitSessionLedger, types::*},
-    cpush::types::CPushLandedCommit,
-    foundation::pi::PiToolExecutionResult,
     i18n::{self, LanguageKind},
+    pi_runtime::PiToolExecutionResult,
     repository::{
         RepositoryStore,
         types::{Change, CommitSelection, ReadTarget, RepositorySnapshot},
@@ -24,7 +23,6 @@ pub(super) type ProgressEmitFn = Arc<
         + Send
         + Sync,
 >;
-pub(super) type PersistStateFn = Arc<dyn Fn(&str, String) + Send + Sync>;
 
 #[derive(Clone, Copy)]
 pub(super) enum Tier2ConfirmKind {
@@ -52,7 +50,6 @@ pub(super) struct ActionToolContext {
     pub(super) coordinator: CustomActionCoordinator,
     pub(super) store: RepositoryStore,
     pub(super) emit: ProgressEmitFn,
-    pub(super) persist: PersistStateFn,
     pub(super) run_state: Arc<Mutex<ActionRunState>>,
     pub(super) grants: Arc<Mutex<SessionAuthGrants>>,
     pub(super) skills: Arc<RuntimeSkillSnapshot>,
@@ -71,7 +68,64 @@ pub(super) struct ActionToolContext {
     pub(super) locale: LanguageKind,
 }
 
+pub(super) struct SessionPersistMeta<'a> {
+    pub(super) run_id: &'a str,
+    pub(super) repository_id: &'a str,
+    pub(super) worktree_id: &'a str,
+    pub(super) action_id: &'a str,
+    pub(super) action_label: &'a str,
+    pub(super) action_prompt_hash: &'a str,
+}
+
+pub(super) fn snapshot_persisted_session(
+    run_state: &Mutex<ActionRunState>,
+    meta: &SessionPersistMeta<'_>,
+    status: &str,
+    summary: String,
+) -> Option<crate::actions::session_store::PersistedActionSession> {
+    let st = run_state.lock().ok()?;
+    Some(crate::actions::session_store::PersistedActionSession {
+        run_id: meta.run_id.to_owned(),
+        repository_id: meta.repository_id.to_owned(),
+        worktree_id: meta.worktree_id.to_owned(),
+        action_id: meta.action_id.to_owned(),
+        action_label: meta.action_label.to_owned(),
+        action_prompt_hash: meta.action_prompt_hash.to_owned(),
+        status: status.to_owned(),
+        updated_at_ms: crate::actions::session_store::now_millis(),
+        summary,
+        card: st.published_card.clone(),
+        dismissed_message_id: None,
+        timeline: st.timeline.clone(),
+        commits: st.commits.clone(),
+        links: st.links.clone(),
+        edited_file_hashes: st
+            .action_edited_hashes
+            .iter()
+            .filter(|(path, _)| !st.committed_edited_paths.contains(*path))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        submit_ledger: st.submit_ledger.clone(),
+    })
+}
+
 impl ActionToolContext {
+    pub(super) async fn persist(&self, status: &str, summary: String) {
+        let meta = SessionPersistMeta {
+            run_id: &self.run_id,
+            repository_id: &self.target.repository_id,
+            worktree_id: &self.target.worktree_id,
+            action_id: &self.action_id,
+            action_label: &self.action_label,
+            action_prompt_hash: &self.expected_hash,
+        };
+        let Some(record) = snapshot_persisted_session(&self.run_state, &meta, status, summary)
+        else {
+            return;
+        };
+        let _ =
+            crate::actions::session_store::upsert_session_async(&self.storage_dir, record).await;
+    }
     pub(super) async fn confirm_tier2_write(
         &self,
         call_id: &str,
@@ -158,6 +212,10 @@ impl ActionToolContext {
         );
         let first_q = &q.questions_slice()[0];
         let card = q.to_card(&first_q.header);
+        let waiter = self
+            .coordinator
+            .register_pending_question(&self.run_id, &confirm_call_id, &q, Arc::clone(&self.grants))
+            .map_err(PiToolExecutionResult::error)?;
         (self.emit)(
             "needsDecision",
             Some(confirm_call_id.clone()),
@@ -176,11 +234,7 @@ impl ActionToolContext {
             }),
             None,
         );
-        match self
-            .coordinator
-            .suspend_for_question(&self.run_id, &confirm_call_id, &q, Arc::clone(&self.grants))
-            .await
-        {
+        match waiter.wait().await {
             Ok(resp) => {
                 let approved = !resp.cancelled
                     && resp.answers.iter().any(|ans| {

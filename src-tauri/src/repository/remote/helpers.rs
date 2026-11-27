@@ -24,7 +24,7 @@ pub(super) fn format_git_error(output: &GitOutput) -> String {
     }
 }
 
-pub(super) fn line_has_conflict_markers(text: &str) -> bool {
+pub(crate) fn line_has_conflict_markers(text: &str) -> bool {
     text.lines().any(|line| {
         let stripped = line.strip_suffix('\r').unwrap_or(line);
         stripped.starts_with("<<<<<<< ")

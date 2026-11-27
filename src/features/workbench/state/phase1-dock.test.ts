@@ -150,6 +150,51 @@ describe('Direction 2 MessageDock dismiss, rich message_user blocks, and interac
     expect(askHtml).toContain('此按钮不再提示');
     expect(askHtml).toContain('提交选择');
     expect(askHtml).toContain('取消');
+
+    // Single-select quick confirmation renders refined primary option shell + Recommended badge:
+    const confirmState = fixture('question');
+    confirmState.worktrees[0].dockExpanded = true;
+    confirmState.worktrees[0].messages = [
+      {
+        id: 'confirm-write-1',
+        kind: 'question',
+        title: 'Confirm Write',
+        description: 'Run write command?',
+        questionnaire: {
+          questions: [
+            {
+              id: 'confirm-write',
+              header: 'Confirm Write',
+              question: 'Run write command?',
+              options: [
+                { id: 'approve-write', label: 'Run command', description: 'Execute previewed command', recommended: true, preview: 'git push origin :feat/tmp' },
+                { id: 'cancel-write', label: 'Cancel', description: 'Decline operation' },
+              ],
+            },
+          ],
+        },
+      },
+    ];
+    const confirmHtml = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: 'en',
+        children: createElement(MessageDock, {
+          worktree: confirmState.worktrees[0],
+          busy: false,
+          editorShort: 'IDEA',
+          fullHeight: false,
+          onExpanded: () => {},
+          onDismiss: () => {},
+          onReply: () => {},
+          onRespond: () => {},
+          onOpenFile: () => {},
+          onOpenRepoPath: () => {},
+        }),
+      }),
+    );
+    expect(confirmHtml).toContain('d2-opt-shell is-primary');
+    expect(confirmHtml).toContain('option-recommended-badge');
+    expect(confirmHtml).toContain('Recommended');
   });
 
   it('omits header dismiss button on error cards with options and shows header dismiss on standalone errors', () => {

@@ -3,17 +3,15 @@
 
 use super::{picket_data_dir, runtime_paths};
 use crate::{
-    cpush::CPushCoordinator,
-    foundation::{
-        self,
-        lifecycle::{DesktopLifecycle, exit_after_cleanup},
-        pi::{PiEvent, PiSupervisor, ProbeReport},
-    },
+    actions::CustomActionCoordinator,
+    foundation,
+    lifecycle::{DesktopLifecycle, exit_after_cleanup},
     models::{
         local_auth::{LocalAuthOutcome, StaticLocalAuthenticator},
         smoke::ModelSmokeState,
         store::ModelStore,
     },
+    pi_runtime::{PiEvent, PiSupervisor, ProbeReport},
     repository::{self, RepositoryStore, persistence::WorkbenchPersistence, types::EditorKind},
     window_motion,
 };
@@ -160,7 +158,7 @@ pub async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Res
             req.path.ends_with("/chat/completions")
                 && req.authorization.as_deref() == Some(expected_bearer.as_str())
                 && req.x_api_key.is_none()
-                && req.body.contains("Picket's C-Push planner")
+                && req.body.contains("Picket's C-Push Agent")
                 && req.body.contains("User extra instructions")
                 && req.body.contains("+first=2")
                 && !req.body.contains("+second=3")
@@ -201,25 +199,25 @@ pub async fn verify_cpush_m4_smoke(
     app.state::<repository::smoke::SmokeState>()
         .verify_cpush()?;
     let data_dir = picket_data_dir()?;
-    let cpush_raw = std::fs::read_to_string(data_dir.join("cpush-sessions.json"))
-        .map_err(|e| format!("Missing cpush-sessions.json in UI smoke: {e}"))?;
-    if cpush_raw.contains(&secret)
-        || cpush_raw.contains("apiKey")
-        || cpush_raw.contains("commitToken")
+    let sessions_raw = std::fs::read_to_string(data_dir.join("action-sessions.json"))
+        .map_err(|e| format!("Missing action-sessions.json in UI smoke: {e}"))?;
+    if sessions_raw.contains(&secret)
+        || sessions_raw.contains("apiKey")
+        || sessions_raw.contains("commitToken")
     {
-        return Err("cpush-sessions.json leaked secret or commitToken".into());
+        return Err("action-sessions.json leaked secret or commitToken".into());
     }
     let root = app.state::<repository::smoke::SmokeState>().path()?;
     let live_snap = store.open(&root).await?;
-    let cold_cpush = CPushCoordinator::default();
-    let (sessions, warn) = cold_cpush.restore(&data_dir, &[live_snap]).await?;
+    let cold_actions = CustomActionCoordinator::default();
+    let (sessions, warn) = cold_actions.restore_cpush(&data_dir, &[live_snap]).await?;
     if warn.is_some()
         || !sessions
             .iter()
             .any(|s| s.commits.len() == 2 && s.qa_log.len() == 1)
     {
         return Err(
-            "Cold restore of cpush-sessions.json did not recover 2 split commits and Q&A log"
+            "Cold restore of action-sessions.json did not recover 2 split commits and Q&A log"
                 .into(),
         );
     }

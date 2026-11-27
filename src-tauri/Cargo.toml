@@ -6,6 +6,10 @@ edition = "2024"
 rust-version = "1.100"
 license = "MIT"
 
+[features]
+default = []
+smoke-harness = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

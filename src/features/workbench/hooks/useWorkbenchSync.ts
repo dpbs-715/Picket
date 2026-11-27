@@ -1,13 +1,12 @@
-import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { TrayMainWindowAction } from '../../../../shared/tray-protocol';
 import {
   subscribeTrayMainAction,
-  subscribeTrayRefreshRequested,
-  syncTrayState,
+  subscribeTraySnapshotsSynced,
+  syncTrayContext,
 } from '../../../desktop/tray';
 import { normalizeFullWindowSize, type WindowController } from '../../../desktop/window';
 import { getMessages } from '../../../i18n';
-import { buildTrayStateSnapshot } from '../../tray/trayModel';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
 import { serializeWorkbenchPersistence } from '../state/repositories';
 import {
@@ -31,9 +30,7 @@ interface UseWorkbenchSyncParams {
   windowController: WindowController;
   dispatch: WorkbenchDispatch;
   setFeedback: Dispatch<SetStateAction<Record<string, NoticeItem>>>;
-  pending: string[];
   inFlight: MutableRefObject<Set<string>>;
-  hasUpdate: boolean;
   pinInFlight: MutableRefObject<boolean>;
   desiredCompactHeightRef: MutableRefObject<number>;
   activeSurfaceRef: MutableRefObject<WorkbenchSurface>;
@@ -57,9 +54,7 @@ export function useWorkbenchSync({
   windowController,
   dispatch,
   setFeedback,
-  pending,
   inFlight,
-  hasUpdate,
   pinInFlight,
   desiredCompactHeightRef,
   activeSurfaceRef,
@@ -75,18 +70,16 @@ export function useWorkbenchSync({
   const saveRevision = useRef(0);
   const lastPersistedKey = useRef<string | null>(null);
   const lastStructuralKey = useRef<string | null>(null);
-  const lastTraySnapshotKey = useRef<string | null>(null);
   const executeRef = useRef(execute);
   executeRef.current = execute;
   const trayActionHandlerRef = useRef<(action: TrayMainWindowAction) => void>(() => {});
-  const trayRefreshHandlerRef = useRef<() => void>(() => {});
 
   const isEditingRef = useRef(isEditingCommitInput);
   isEditingRef.current = isEditingCommitInput;
 
   useEffect(
     () => backend.subscribe?.((event) => {
-      const suppressExpand = event.type === 'customActionProgress'
+      const suppressExpand = (event.type === 'customActionProgress' || event.type === 'cPushProgress')
         && (isEditingRef.current() || latestState.current.windowPrefs.compactMode);
       dispatch({ type: 'event', event, ...(suppressExpand ? { suppressExpand: true } : {}) });
     }),
@@ -194,20 +187,47 @@ export function useWorkbenchSync({
     }
   }, [hydrated, state.locale, state.worktrees, windowController]);
 
-  const persistenceSnapshot = serializeWorkbenchPersistence(state, 0);
-  const persistenceKey = JSON.stringify(persistenceSnapshot);
-  const structuralKey = JSON.stringify([
-    state.locale,
-    state.theme,
-    state.editor,
-    state.defaultCommitLanguage,
-    state.repositorySettings,
-    state.windowPrefs.pinned,
-    state.windowPrefs.compactMode,
-    state.windowPrefs.pinnedExpanded,
-    state.activeWorktreeId,
-    state.worktrees.map((tree) => [tree.worktreeId, tree.selectedIds, tree.scopeVersion]),
-  ]);
+  const persistenceKey = useMemo(
+    () => JSON.stringify(serializeWorkbenchPersistence(state, 0)),
+    [
+      state.locale,
+      state.theme,
+      state.editor,
+      state.defaultCommitLanguage,
+      state.repositorySettings,
+      state.windowPrefs,
+      state.activeWorktreeId,
+      state.emptyPrompt,
+      state.repositories,
+      state.worktrees,
+    ],
+  );
+  const structuralKey = useMemo(
+    () => JSON.stringify([
+      state.locale,
+      state.theme,
+      state.editor,
+      state.defaultCommitLanguage,
+      state.repositorySettings,
+      state.windowPrefs.pinned,
+      state.windowPrefs.compactMode,
+      state.windowPrefs.pinnedExpanded,
+      state.activeWorktreeId,
+      state.worktrees.map((tree) => [tree.worktreeId, tree.selectedIds, tree.scopeVersion]),
+    ]),
+    [
+      state.locale,
+      state.theme,
+      state.editor,
+      state.defaultCommitLanguage,
+      state.repositorySettings,
+      state.windowPrefs.pinned,
+      state.windowPrefs.compactMode,
+      state.windowPrefs.pinnedExpanded,
+      state.activeWorktreeId,
+      state.worktrees,
+    ],
+  );
 
   useEffect(() => {
     if (!hydrated || !backend.saveWorkbenchState) return;
@@ -291,40 +311,15 @@ export function useWorkbenchSync({
     };
   }, [backend, hasActiveWorktree, inFlight, latestState]);
 
-  const anyRepoRefreshing = pending.some((key) => key.endsWith(':refresh'));
-  const traySnapshot = buildTrayStateSnapshot(state, {
-    hasUpdate,
-    refreshing: anyRepoRefreshing,
-  });
-  const traySnapshotKey = JSON.stringify(traySnapshot);
-
+  // Rust is the authoritative source of Tray state; only push lightweight UI context changes.
   useEffect(() => {
     if (!hydrated || initialState || !windowController.isDesktopWindow) return;
-    if (traySnapshotKey === lastTraySnapshotKey.current) return;
-    lastTraySnapshotKey.current = traySnapshotKey;
-    void syncTrayState(traySnapshot).catch(() => {});
-  }, [hydrated, initialState, traySnapshot, traySnapshotKey, windowController.isDesktopWindow]);
-
-  trayRefreshHandlerRef.current = () => {
-    if (!backend.repositoryReadsAvailable || inFlight.current.has('global:openRepository')) return;
-    const current = latestState.current;
-    const seenRepos = new Set<string>();
-    const activeTree = current.worktrees.find((tree) => tree.worktreeId === current.activeWorktreeId);
-    const orderedTrees = activeTree
-      ? [activeTree, ...current.worktrees.filter((tree) => tree.worktreeId !== activeTree.worktreeId)]
-      : current.worktrees;
-    for (const tree of orderedTrees) {
-      if (seenRepos.has(tree.repositoryId)) continue;
-      seenRepos.add(tree.repositoryId);
-      if (inFlight.current.has(`${tree.repositoryId}:refresh`) || inFlight.current.has(`${tree.repositoryId}:write`)) {
-        continue;
-      }
-      void execute(
-        { kind: 'refresh', target: targetOf(tree), requestId: crypto.randomUUID(), locale: current.locale },
-        true,
-      );
-    }
-  };
+    void syncTrayContext({
+      locale: state.locale,
+      theme: state.theme,
+      activeWorktreeId: state.activeWorktreeId,
+    }).catch(() => {});
+  }, [hydrated, initialState, state.activeWorktreeId, state.locale, state.theme, windowController.isDesktopWindow]);
 
   trayActionHandlerRef.current = (action) => {
     if (action.kind === 'openSettings') {
@@ -355,15 +350,17 @@ export function useWorkbenchSync({
 
   useEffect(() => {
     if (!windowController.isDesktopWindow || initialState) return;
-    const unsubRefresh = subscribeTrayRefreshRequested(() => {
-      trayRefreshHandlerRef.current();
+    const unsubSnapshots = subscribeTraySnapshotsSynced((snapshots) => {
+      if (snapshots.length > 0) {
+        dispatch({ type: 'traySnapshotsSynced', snapshots });
+      }
     });
     const unsubAction = subscribeTrayMainAction((action) => {
       trayActionHandlerRef.current(action);
     });
     return () => {
-      unsubRefresh();
+      unsubSnapshots();
       unsubAction();
     };
-  }, [initialState, windowController.isDesktopWindow]);
+  }, [dispatch, initialState, windowController.isDesktopWindow]);
 }

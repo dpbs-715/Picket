@@ -10,8 +10,8 @@ import {
 export const PI_PROTOCOL_VERSION = 1;
 export const PI_CORE_VERSION = '1.6.0';
 export const FOUNDATION_SCOPE_VERSION = 'foundation-v1';
-export const MAX_PROTOCOL_LINE_BYTES = 256 * 1024;
-export const MAX_COMMAND_LINE_BYTES = 512 * 1024;
+export const MAX_PROTOCOL_LINE_BYTES = 2 * 1024 * 1024;
+export const MAX_COMMAND_LINE_BYTES = 2 * 1024 * 1024;
 
 export interface RequestContext {
   repositoryId: string;
@@ -44,61 +44,14 @@ export interface PiPlanFileEntry {
   skipReason?: string;
 }
 
-export interface PiCPushQaTurn {
-  questionId: string;
-  question: string;
-  answer: string;
-  optionId?: string;
-}
+export type CustomActionRunMode = 'customAction' | 'cpush' | 'resolveConflict';
 
-export interface PiConflictFile {
+export interface PiConflictFileSummary {
   fileId: string;
   path: string;
-  baseContent?: string;
-  upstreamContent: string;
-  localContent: string;
-  conflictedContent: string;
+  lineCount: number;
+  hasBase?: boolean;
 }
-
-export interface PiResolvedConflictFile {
-  fileId: string;
-  path: string;
-  content: string;
-}
-
-export interface PiConflictResolution {
-  summary: string;
-  resolvedFiles: PiResolvedConflictFile[];
-}
-
-export interface PiCPushCommitGroup {
-  id: string;
-  message: string;
-  fileIds: string[];
-}
-
-export interface PiCPushQuestionOption {
-  id: string;
-  label: string;
-  recommended?: boolean;
-}
-
-export type PiCPushPlan =
-  | {
-      kind: 'ready';
-      summary: string;
-      groups: PiCPushCommitGroup[];
-      skippedFileIds: string[];
-      skipPush?: boolean;
-    }
-  | {
-      kind: 'question';
-      title: string;
-      scope: string;
-      description: string;
-      affectedFileIds: string[];
-      options: PiCPushQuestionOption[];
-    };
 
 export interface ProbeRequest {
   type: 'probe';
@@ -132,40 +85,12 @@ export interface RuntimeSkillOverrideCatalog {
   sourceRepo?: string;
   sourceCommit?: string;
   skills: RuntimeSkillOverrideEntry[];
-}
-
-export interface PlanCPushCommand {
-  type: 'planCPush';
-  requestId: string;
-  context: RequestContext;
-  model: PiProviderSpec;
-  branch: string;
-  recentCommits: string[];
-  prompt: string;
-  files: PiPlanFileEntry[];
-  unselectedPaths: string[];
-  qaHistory: PiCPushQaTurn[];
-  locale?: AppLocale;
-  commitLanguage?: CommitLanguage;
-  enableTools?: boolean;
-  skillOverrides?: RuntimeSkillOverrideCatalog;
-}
-
-export interface ResolveConflictCommand {
-  type: 'resolveConflict';
-  requestId: string;
-  context: RequestContext;
-  model: PiProviderSpec;
-  branch: string;
-  upstream: string;
-  userInstruction: string;
-  commits: string[];
-  files: PiConflictFile[];
-  locale?: AppLocale;
+  disabledSkills?: string[];
 }
 
 export interface RunCustomActionCommand {
   type: 'runCustomAction';
+  mode?: CustomActionRunMode;
   requestId: string;
   context: RequestContext;
   model: PiProviderSpec;
@@ -179,6 +104,11 @@ export interface RunCustomActionCommand {
   selectedFiles: PiPlanFileEntry[];
   unselectedPaths: string[];
   localKeepPaths: string[];
+  recentCommits?: string[];
+  pushAuthorized?: boolean;
+  upstream?: string;
+  commits?: string[];
+  conflictFiles?: PiConflictFileSummary[];
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
   skillOverrides?: RuntimeSkillOverrideCatalog;
@@ -201,8 +131,6 @@ export type PiTaskRequest =
   | ProbeRequest
   | TestConnectionRequest
   | ListModelsRequest
-  | PlanCPushCommand
-  | ResolveConflictCommand
   | RunCustomActionCommand
   | GenerateCustomActionCommand;
 
@@ -243,8 +171,6 @@ export type ProbeEvent = {
   | { type: 'toolProgress'; callId: string; toolName: string; status: string }
   | { type: 'completed'; text: string }
   | { type: 'modelsListed'; models: RemoteModelOption[] }
-  | { type: 'cPushPlanCompleted'; plan: PiCPushPlan }
-  | { type: 'conflictResolved'; resolution: PiConflictResolution }
   | { type: 'customActionCompleted'; summary: string; links: PiActionLink[] }
   | { type: 'customActionDrafted'; draft: PiCustomActionDraft }
   | { type: 'cancelled' }
@@ -334,46 +260,31 @@ function decodePlanFiles(value: unknown, allowEmpty = false): PiPlanFileEntry[] 
   });
 }
 
-function decodeQaHistory(value: unknown): PiCPushQaTurn[] {
-  if (!Array.isArray(value)) throw new Error('Invalid qaHistory');
-  return value.map((item) => {
-    if (!isRecord(item)
-      || typeof item.questionId !== 'string'
-      || typeof item.question !== 'string'
-      || typeof item.answer !== 'string'
-      || !(item.optionId === undefined || item.optionId === null || typeof item.optionId === 'string')) {
-      throw new Error('Invalid qaHistory entry');
-    }
-    return {
-      questionId: item.questionId,
-      question: item.question,
-      answer: item.answer,
-      ...(typeof item.optionId === 'string' && item.optionId ? { optionId: item.optionId } : {}),
-    };
-  });
-}
-
-function decodeConflictFiles(value: unknown): PiConflictFile[] {
-  if (!Array.isArray(value) || value.length === 0) throw new Error('Expected non-empty conflict files array');
+function decodeConflictFileSummaries(value: unknown): PiConflictFileSummary[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Expected non-empty conflictFiles array');
+  }
   return value.map((item) => {
     if (!isRecord(item)
       || typeof item.fileId !== 'string' || !item.fileId
       || typeof item.path !== 'string' || !item.path
-      || !(item.baseContent === undefined || item.baseContent === null || typeof item.baseContent === 'string')
-      || typeof item.upstreamContent !== 'string'
-      || typeof item.localContent !== 'string'
-      || typeof item.conflictedContent !== 'string') {
-      throw new Error('Invalid conflict file entry');
+      || typeof item.lineCount !== 'number' || !Number.isSafeInteger(item.lineCount) || item.lineCount < 0
+      || !(item.hasBase === undefined || item.hasBase === null || typeof item.hasBase === 'boolean')) {
+      throw new Error('Invalid conflictFiles entry');
     }
     return {
       fileId: item.fileId,
       path: item.path,
-      ...(typeof item.baseContent === 'string' ? { baseContent: item.baseContent } : {}),
-      upstreamContent: item.upstreamContent,
-      localContent: item.localContent,
-      conflictedContent: item.conflictedContent,
+      lineCount: item.lineCount,
+      ...(typeof item.hasBase === 'boolean' ? { hasBase: item.hasBase } : {}),
     };
   });
+}
+
+function decodeRunMode(value: unknown): CustomActionRunMode {
+  if (value === undefined || value === null || value === 'customAction') return 'customAction';
+  if (value === 'cpush' || value === 'resolveConflict') return value;
+  throw new Error('Invalid runCustomAction mode');
 }
 
 function decodeSkillOverrides(value: unknown): RuntimeSkillOverrideCatalog | undefined {
@@ -394,10 +305,14 @@ function decodeSkillOverrides(value: unknown): RuntimeSkillOverrideCatalog | und
       files: entry.files as string[],
     };
   });
+  const disabledSkills = value.disabledSkills === undefined || value.disabledSkills === null
+    ? undefined
+    : decodeStringList(value.disabledSkills, 'disabledSkills');
   return {
     ...(typeof value.sourceRepo === 'string' && value.sourceRepo ? { sourceRepo: value.sourceRepo } : {}),
     ...(typeof value.sourceCommit === 'string' && value.sourceCommit ? { sourceCommit: value.sourceCommit } : {}),
     skills,
+    ...(disabledSkills && disabledSkills.length > 0 ? { disabledSkills } : {}),
   };
 }
 
@@ -469,67 +384,37 @@ export function decodeCommand(line: string): PiCommand {
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }
-  if (command.type === 'planCPush') {
-    if (typeof command.branch !== 'string'
-      || typeof command.prompt !== 'string'
-      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
-      || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))
-      || !(command.enableTools === undefined || command.enableTools === null || typeof command.enableTools === 'boolean')) {
-      throw new Error('Invalid planCPush fields');
-    }
-    const skillOverrides = decodeSkillOverrides(command.skillOverrides);
-    return {
-      type: 'planCPush',
-      requestId: command.requestId,
-      context: decodeRequestContext(command.context),
-      model: decodeProviderSpec(command.model),
-      branch: command.branch,
-      recentCommits: decodeStringList(command.recentCommits, 'recentCommits'),
-      prompt: command.prompt,
-      files: decodePlanFiles(command.files),
-      unselectedPaths: decodeStringList(command.unselectedPaths, 'unselectedPaths'),
-      qaHistory: decodeQaHistory(command.qaHistory),
-      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
-      ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
-      ...(typeof command.enableTools === 'boolean' ? { enableTools: command.enableTools } : {}),
-      ...(skillOverrides ? { skillOverrides } : {}),
-    };
-  }
-  if (command.type === 'resolveConflict') {
-    if (typeof command.branch !== 'string'
-      || typeof command.upstream !== 'string'
-      || typeof command.userInstruction !== 'string'
-      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
-      throw new Error('Invalid resolveConflict fields');
-    }
-    return {
-      type: 'resolveConflict',
-      requestId: command.requestId,
-      context: decodeRequestContext(command.context),
-      model: decodeProviderSpec(command.model),
-      branch: command.branch,
-      upstream: command.upstream,
-      userInstruction: command.userInstruction,
-      commits: decodeStringList(command.commits, 'commits'),
-      files: decodeConflictFiles(command.files),
-      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
-    };
-  }
   if (command.type === 'runCustomAction') {
+    const mode = decodeRunMode(command.mode);
+    const requiresActionPrompt = mode === 'customAction';
     if (typeof command.branch !== 'string'
       || typeof command.detached !== 'boolean'
       || typeof command.actionLabel !== 'string' || !command.actionLabel.trim()
-      || typeof command.actionPrompt !== 'string' || !command.actionPrompt.trim()
+      || typeof command.actionPrompt !== 'string' || (requiresActionPrompt && !command.actionPrompt.trim())
       || typeof command.extraPrompt !== 'string'
       || !(command.followUpPrompt === undefined || command.followUpPrompt === null || typeof command.followUpPrompt === 'string')
+      || !(command.pushAuthorized === undefined || command.pushAuthorized === null || typeof command.pushAuthorized === 'boolean')
+      || !(command.upstream === undefined || command.upstream === null || typeof command.upstream === 'string')
       || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
       || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))
       || !(command.previousCheckpoint === undefined || command.previousCheckpoint === null || typeof command.previousCheckpoint === 'string')) {
       throw new Error('Invalid runCustomAction fields');
     }
     const skillOverrides = decodeSkillOverrides(command.skillOverrides);
+    const recentCommits = command.recentCommits === undefined || command.recentCommits === null
+      ? undefined
+      : decodeStringList(command.recentCommits, 'recentCommits');
+    const commits = command.commits === undefined || command.commits === null
+      ? undefined
+      : decodeStringList(command.commits, 'commits');
+    const conflictFiles = mode === 'resolveConflict'
+      ? decodeConflictFileSummaries(command.conflictFiles)
+      : command.conflictFiles === undefined || command.conflictFiles === null
+        ? undefined
+        : decodeConflictFileSummaries(command.conflictFiles);
     return {
       type: 'runCustomAction',
+      ...(mode !== 'customAction' ? { mode } : {}),
       requestId: command.requestId,
       context: decodeRequestContext(command.context),
       model: decodeProviderSpec(command.model),
@@ -542,9 +427,14 @@ export function decodeCommand(line: string): PiCommand {
       ...(typeof command.followUpPrompt === 'string' && command.followUpPrompt.trim()
         ? { followUpPrompt: command.followUpPrompt.trim() }
         : {}),
-      selectedFiles: decodePlanFiles(command.selectedFiles, true),
+      selectedFiles: decodePlanFiles(command.selectedFiles, mode !== 'cpush'),
       unselectedPaths: decodeStringList(command.unselectedPaths, 'unselectedPaths'),
       localKeepPaths: decodeStringList(command.localKeepPaths, 'localKeepPaths'),
+      ...(recentCommits ? { recentCommits } : {}),
+      ...(typeof command.pushAuthorized === 'boolean' ? { pushAuthorized: command.pushAuthorized } : {}),
+      ...(typeof command.upstream === 'string' && command.upstream.trim() ? { upstream: command.upstream.trim() } : {}),
+      ...(commits ? { commits } : {}),
+      ...(conflictFiles ? { conflictFiles } : {}),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
       ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
       ...(skillOverrides ? { skillOverrides } : {}),

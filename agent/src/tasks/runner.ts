@@ -4,12 +4,9 @@ import { MODEL_GLOBAL_DEFAULTS } from '../../../shared/model-defaults';
 import type {
   GenerateCustomActionCommand,
   ListModelsRequest,
-  PiCPushPlan,
   PiTaskRequest,
   PiToolResultCommand,
-  PlanCPushCommand,
   ProbeEvent,
-  ResolveConflictCommand,
   RunCustomActionCommand,
   TestConnectionRequest,
 } from '../../../shared/pi-protocol';
@@ -26,6 +23,7 @@ import {
   createInstallPlatformCliTool,
   createManageSubmitWorktreeTool,
   createMessageUserTool,
+  createReadConflictFileTool,
   createReadRepoFileTool,
   createReadScopeDiffTool,
   createReadSkillDocTool,
@@ -35,17 +33,17 @@ import {
   createRunRepoCommandTool,
   createSearchRepoTool,
   createSyncAndPushTool,
+  createWriteConflictResolutionTool,
   createWriteRepoFileTool,
 } from '../tools';
-import { buildResolveConflictPrompts, parseConflictResolution } from './conflict';
-import { buildCPushPlanPrompts, parseCPushPlan } from './cpush';
 import {
+  buildCPushModePrompts,
   buildCustomActionPrompts,
   buildGenerateCustomActionPrompts,
+  buildResolveConflictModePrompts,
   parseCustomActionDraft,
   parseCustomActionResult,
 } from './custom-actions';
-import { RecoverablePlanValidationError } from './shared';
 import {
   CUSTOM_ACTION_GUARD_DEFAULTS,
   createToolLoopGuard,
@@ -55,13 +53,10 @@ import {
 const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
 const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
-const MAX_CPUSH_PLAN_TOOL_CALLS = 8;
 const MAX_GENERATE_ACTION_TOOL_CALLS = 16;
 
 type AgentTaskCommand =
   | TestConnectionRequest
-  | PlanCPushCommand
-  | ResolveConflictCommand
   | RunCustomActionCommand
   | GenerateCustomActionCommand;
 
@@ -87,29 +82,43 @@ async function prepareAgentTaskConfig(
       guardPolicy: { kind: 'none' },
     };
   }
-  if (command.type === 'planCPush') {
-    const [cpushDoc, commitDoc] = await Promise.all([
-      registry.readDoc('cpush', 'SKILL.md'),
-      registry.readDoc('commit', 'SKILL.md'),
-    ]);
-    const prompts = buildCPushPlanPrompts(command, {
-      cpush: cpushDoc.content,
-      commit: commitDoc.content,
-    });
-    if (!command.enableTools) {
-      return { prompts, tools: [], guardPolicy: { kind: 'none' } };
-    }
-    return {
-      prompts,
-      tools: [
-        createReadScopeDiffTool(bridge),
-        createReadRepoFileTool(bridge),
-        createSearchRepoTool(bridge),
-      ],
-      guardPolicy: { kind: 'fixed', maxCalls: MAX_CPUSH_PLAN_TOOL_CALLS },
-    };
-  }
   if (command.type === 'runCustomAction') {
+    const mode = command.mode ?? 'customAction';
+    if (mode === 'cpush') {
+      return {
+        prompts: await buildCPushModePrompts(command, registry),
+        tools: [
+          createCommitExactScopeTool(bridge, { cpushMode: true }),
+          createMessageUserTool(bridge),
+          createReadScopeDiffTool(bridge),
+          createReadRepoFileTool(bridge),
+          createSearchRepoTool(bridge),
+        ],
+        guardPolicy: {
+          kind: 'adaptive',
+          maxIdenticalConsecutive: 3,
+          maxConsecutiveErrors: 6,
+          runawayCeiling: 32,
+        },
+      };
+    }
+    if (mode === 'resolveConflict') {
+      return {
+        prompts: buildResolveConflictModePrompts(command),
+        tools: [
+          createReadConflictFileTool(bridge),
+          createWriteConflictResolutionTool(bridge),
+          createReadRepoFileTool(bridge),
+          createSearchRepoTool(bridge),
+        ],
+        guardPolicy: {
+          kind: 'adaptive',
+          maxIdenticalConsecutive: 3,
+          maxConsecutiveErrors: 6,
+          runawayCeiling: 64,
+        },
+      };
+    }
     return {
       prompts: buildCustomActionPrompts(command, registry),
       tools: [
@@ -136,24 +145,17 @@ async function prepareAgentTaskConfig(
       },
     };
   }
-  if (command.type === 'generateCustomAction') {
-    return {
-      prompts: buildGenerateCustomActionPrompts(command, registry),
-      tools: [
-        createReadSkillDocTool(registry),
-        createCheckCliEnvTool(bridge),
-        createRunGitTool(bridge, true),
-        createReadRepoFileTool(bridge),
-        createSearchRepoTool(bridge),
-        createMessageUserTool(bridge),
-      ],
-      guardPolicy: { kind: 'fixed', maxCalls: MAX_GENERATE_ACTION_TOOL_CALLS },
-    };
-  }
   return {
-    prompts: buildResolveConflictPrompts(command),
-    tools: [],
-    guardPolicy: { kind: 'none' },
+    prompts: buildGenerateCustomActionPrompts(command, registry),
+    tools: [
+      createReadSkillDocTool(registry),
+      createCheckCliEnvTool(bridge),
+      createRunGitTool(bridge, true),
+      createReadRepoFileTool(bridge),
+      createSearchRepoTool(bridge),
+      createMessageUserTool(bridge),
+    ],
+    guardPolicy: { kind: 'fixed', maxCalls: MAX_GENERATE_ACTION_TOOL_CALLS },
   };
 }
 
@@ -197,8 +199,7 @@ function runAgentTask(
         const { models, model } = createIsolatedModelRuntime(command.model, locale);
         const isTest = command.type === 'testConnection';
 
-        const overrideCatalog = command.type === 'planCPush'
-          || command.type === 'runCustomAction'
+        const overrideCatalog = command.type === 'runCustomAction'
           || command.type === 'generateCustomAction'
           ? command.skillOverrides
           : undefined;
@@ -225,6 +226,7 @@ function runAgentTask(
           },
           beforeToolCall: toolGuard ? (ctx) => toolGuard.beforeToolCall(ctx) : undefined,
           afterToolCall: toolGuard ? (ctx) => toolGuard.afterToolCall(ctx) : undefined,
+          finishTurn: async () => (bridge.getSettledOutcome() ? { action: 'end' as const } : undefined),
           streamFn: (targetModel, context, options) => models.streamSimple(targetModel, context, {
             ...options,
             maxTokens: isTest
@@ -270,6 +272,10 @@ function runAgentTask(
           await agent.prompt(promptText);
           await agent.waitForIdle();
           if (cancelled) return { status: 'cancelled' as const };
+          const settled = bridge.getSettledOutcome();
+          if (settled) {
+            return { status: 'settled' as const, settled };
+          }
           const last = agent.state.messages.findLast((message) => message.role === 'assistant');
           if (!last || last.role !== 'assistant') {
             throw new LocalizedSidecarError(msg.noResponseMessage);
@@ -304,43 +310,26 @@ function runAgentTask(
           emit({ ...envelope, type: 'cancelled' });
           return;
         }
+        if (firstTurn.status === 'settled') {
+          emit({
+            ...envelope,
+            type: 'customActionCompleted',
+            summary: firstTurn.settled.summary || msg.defaultCustomActionSummary,
+            links: firstTurn.settled.links,
+          });
+          return;
+        }
 
         if (command.type === 'testConnection') {
           emit({ ...envelope, type: 'completed', text: firstTurn.rawText.trim() || 'OK' });
-        } else if (command.type === 'planCPush') {
-          let plan: PiCPushPlan;
-          try {
-            plan = wrapLengthTruncation(firstTurn.stopReason, () =>
-              parseCPushPlan(firstTurn.rawText, command, locale),
-            );
-          } catch (err) {
-            if (!(err instanceof RecoverablePlanValidationError) || firstTurn.stopReason === 'length') {
-              throw err;
-            }
-            emitActivity(true);
-            const repairTurn = await runPromptTurn(err.repairPrompt);
-            if (repairTurn.status === 'cancelled') {
-              emit({ ...envelope, type: 'cancelled' });
-              return;
-            }
-            plan = wrapLengthTruncation(repairTurn.stopReason, () =>
-              parseCPushPlan(repairTurn.rawText, command, locale),
-            );
-          }
-          emit({ ...envelope, type: 'cPushPlanCompleted', plan });
         } else if (command.type === 'runCustomAction') {
           const result = parseCustomActionResult(firstTurn.rawText, locale);
           emit({ ...envelope, type: 'customActionCompleted', summary: result.summary, links: result.links });
-        } else if (command.type === 'generateCustomAction') {
+        } else {
           const draft = wrapLengthTruncation(firstTurn.stopReason, () =>
             parseCustomActionDraft(firstTurn.rawText, locale),
           );
           emit({ ...envelope, type: 'customActionDrafted', draft });
-        } else {
-          const resolution = wrapLengthTruncation(firstTurn.stopReason, () =>
-            parseConflictResolution(firstTurn.rawText, command, locale),
-          );
-          emit({ ...envelope, type: 'conflictResolved', resolution });
         }
       } catch (error) {
         if (cancelled) {

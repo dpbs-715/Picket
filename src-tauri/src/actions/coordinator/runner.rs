@@ -3,24 +3,19 @@
 use super::{
     CUSTOM_ACTION_IDLE_TIMEOUT, CustomActionCoordinator, SessionAuthGrants,
     context::{
-        ActionRunState, ActionToolContext, PersistStateFn, ProgressEmitFn, append_unique_links,
-        format_tool_status_label, push_timeline_step,
+        ActionRunState, ActionToolContext, ProgressEmitFn, SessionPersistMeta, append_unique_links,
+        format_tool_status_label, push_timeline_step, snapshot_persisted_session,
     },
     tools_cli, tools_command, tools_git_ops, tools_submit, tools_workspace,
 };
 use crate::{
-    actions::{
-        cli_env::detect_repo_remotes,
-        session_store::{self, PersistedActionSession},
-        types::*,
-    },
-    cpush::CPushCoordinator,
-    foundation::pi::{
+    actions::{cli_env::detect_repo_remotes, session_store, types::*},
+    i18n,
+    models::store::ModelStore,
+    pi_runtime::{
         PiCommand, PiPaths, PiPlanFileEntry, PiSupervisor, PiTaskOutcome, PiToolExecutionResult,
         RequestContext,
     },
-    i18n,
-    models::store::ModelStore,
     repository::{self, RepositoryStore},
     skills::RuntimeSkillSnapshot,
 };
@@ -98,7 +93,7 @@ async fn dispatch_action_tool(
             tools_submit::handle_cleanup_submit_duplicates(&ctx, &args, status_label).await
         }
         "record_action_checkpoint" => {
-            tools_submit::handle_record_action_checkpoint(&ctx, &args, status_label)
+            tools_submit::handle_record_action_checkpoint(&ctx, &args, status_label).await
         }
         other => PiToolExecutionResult::error(format!(
             "Unsupported tool `{other}` for custom action execution."
@@ -130,7 +125,6 @@ impl CustomActionCoordinator {
         supervisor: &PiSupervisor,
         models: &ModelStore,
         store: &RepositoryStore,
-        cpush: &CPushCoordinator,
         request: &StartCustomActionRequest,
         on_progress: F,
     ) -> Result<CustomActionCommandReply, String>
@@ -148,9 +142,6 @@ impl CustomActionCoordinator {
             .to_owned();
         if action_label.is_empty() || action_prompt.is_empty() {
             return Err(i18n::actions::action_empty_fields_error(locale).into());
-        }
-        if cpush.has_active_operation_for_repo(&request.target.repository_id) {
-            return Err(i18n::actions::action_cpush_active_error(locale).into());
         }
         let _repo_guard = self.acquire_repo_write(&request.target.repository_id, locale)?;
 
@@ -304,46 +295,20 @@ impl CustomActionCoordinator {
         let remotes = detect_repo_remotes(&worktree_root).await;
         let action_id = request.action.id.clone();
 
-        let persist_state: PersistStateFn = Arc::new({
-            let run_state = Arc::clone(&run_state);
-            let storage_dir = storage_dir.to_path_buf();
-            let run_id = run_id.clone();
-            let repo_id = request.target.repository_id.clone();
-            let wt_id = request.target.worktree_id.clone();
-            let action_id = action_id.clone();
-            let action_label = action_label.clone();
-            let prompt_hash = expected_hash.clone();
-            move |status: &str, summary: String| {
-                if let Ok(st) = run_state.lock() {
-                    let record = PersistedActionSession {
-                        run_id: run_id.clone(),
-                        repository_id: repo_id.clone(),
-                        worktree_id: wt_id.clone(),
-                        action_id: action_id.clone(),
-                        action_label: action_label.clone(),
-                        action_prompt_hash: prompt_hash.clone(),
-                        status: status.to_owned(),
-                        updated_at_ms: session_store::now_millis(),
-                        summary,
-                        card: st.published_card.clone(),
-                        dismissed_message_id: None,
-                        timeline: st.timeline.clone(),
-                        commits: st.commits.clone(),
-                        links: st.links.clone(),
-                        edited_file_hashes: st
-                            .action_edited_hashes
-                            .iter()
-                            .filter(|(path, _)| !st.committed_edited_paths.contains(*path))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                        submit_ledger: st.submit_ledger.clone(),
-                    };
-                    let _ = session_store::upsert_session(&storage_dir, record);
-                }
-            }
-        });
+        let persist_snapshot = |status: &str, summary: String| {
+            let meta = SessionPersistMeta {
+                run_id: &run_id,
+                repository_id: &request.target.repository_id,
+                worktree_id: &request.target.worktree_id,
+                action_id: &action_id,
+                action_label: &action_label,
+                action_prompt_hash: &expected_hash,
+            };
+            snapshot_persisted_session(&run_state, &meta, status, summary)
+        };
 
         let emit_progress: ProgressEmitFn = Arc::new({
+            let coordinator = self.clone();
             let run_state = Arc::clone(&run_state);
             let progress_cb = Arc::clone(&progress_cb);
             let run_id = run_id.clone();
@@ -353,6 +318,17 @@ impl CustomActionCoordinator {
             let action_id = action_id.clone();
             let action_label = action_label.clone();
             move |status, pending_call_id, message, repository_snapshot| {
+                let tray_status = match status {
+                    "running" => crate::tray::TraySessionStatus::Running,
+                    "needsDecision" => crate::tray::TraySessionStatus::NeedsDecision,
+                    "done" => crate::tray::TraySessionStatus::Done,
+                    _ => crate::tray::TraySessionStatus::Idle,
+                };
+                coordinator.set_action_tray_status(
+                    &wt_id,
+                    tray_status,
+                    message.as_ref().map(|m| m.title.clone()),
+                );
                 let (timeline, commits, links, trusted) = run_state
                     .lock()
                     .map(|st| {
@@ -406,7 +382,9 @@ impl CustomActionCoordinator {
             }),
             None,
         );
-        persist_state("running", String::new());
+        if let Some(record) = persist_snapshot("running", String::new()) {
+            let _ = session_store::upsert_session_async(storage_dir, record).await;
+        }
 
         let context = RequestContext {
             repository_id: request.target.repository_id.clone(),
@@ -415,9 +393,10 @@ impl CustomActionCoordinator {
             scope_version: request.target.scope_version.clone(),
         };
         let command = PiCommand::RunCustomAction {
+            mode: None,
             request_id: run_id.clone(),
-            context: context.clone(),
-            model: spec.to_pi_spec(),
+            context: Box::new(context.clone()),
+            model: Box::new(spec.to_pi_spec()),
             branch: active_tree.branch.clone(),
             detached: active_tree.detached,
             remote_branches: live_snapshot
@@ -433,6 +412,11 @@ impl CustomActionCoordinator {
             selected_files,
             unselected_paths,
             local_keep_paths: live_snapshot.repository.local_keep_paths.clone(),
+            recent_commits: None,
+            push_authorized: None,
+            upstream: None,
+            commits: None,
+            conflict_files: None,
             locale,
             commit_language: request.commit_language,
             skill_overrides: skill_snapshot.catalog_option(),
@@ -443,7 +427,6 @@ impl CustomActionCoordinator {
             coordinator: self.clone(),
             store: store.clone(),
             emit: Arc::clone(&emit_progress),
-            persist: Arc::clone(&persist_state),
             run_state: Arc::clone(&run_state),
             grants,
             skills: skill_snapshot,
@@ -458,7 +441,7 @@ impl CustomActionCoordinator {
             run_id: run_id.clone(),
             action_id: action_id.clone(),
             action_label: action_label.clone(),
-            expected_hash,
+            expected_hash: expected_hash.clone(),
             locale,
         });
 
@@ -485,7 +468,9 @@ impl CustomActionCoordinator {
         match outcome {
             Ok(PiTaskOutcome::CustomActionCompleted { summary, links }) => {
                 let (timeline, commits, merged_links, trusted, published_card) = {
-                    let mut st = run_state.lock().unwrap();
+                    let mut st = run_state
+                        .lock()
+                        .map_err(|_| "Action run state lock is unavailable".to_string())?;
                     append_unique_links(
                         &mut st.links,
                         links
@@ -540,7 +525,14 @@ impl CustomActionCoordinator {
                     questionnaire: None,
                     progress: None,
                 };
-                persist_state("done", summary.clone());
+                if let Some(record) = persist_snapshot("done", summary.clone()) {
+                    let _ = session_store::upsert_session_async(storage_dir, record).await;
+                }
+                self.set_action_tray_status(
+                    &request.target.worktree_id,
+                    crate::tray::TraySessionStatus::Done,
+                    Some(done_msg.title.clone()),
+                );
                 Ok(CustomActionCommandReply {
                     protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,
                     kind: "customAction",
@@ -574,7 +566,14 @@ impl CustomActionCoordinator {
                     })
                     .unwrap_or_default();
                 let cancel_summary: String = i18n::actions::action_cancelled_summary(locale).into();
-                persist_state("cancelled", cancel_summary.clone());
+                if let Some(record) = persist_snapshot("cancelled", cancel_summary.clone()) {
+                    let _ = session_store::upsert_session_async(storage_dir, record).await;
+                }
+                self.set_action_tray_status(
+                    &request.target.worktree_id,
+                    crate::tray::TraySessionStatus::Idle,
+                    None,
+                );
                 Ok(CustomActionCommandReply {
                     protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,
                     kind: "customAction",
@@ -596,12 +595,26 @@ impl CustomActionCoordinator {
                 })
             }
             Ok(other) => {
+                self.set_action_tray_status(
+                    &request.target.worktree_id,
+                    crate::tray::TraySessionStatus::Idle,
+                    None,
+                );
                 let msg = format!("Unexpected Pi outcome for custom action: {other:?}");
-                persist_state("failed", msg.clone());
+                if let Some(record) = persist_snapshot("failed", msg.clone()) {
+                    let _ = session_store::upsert_session_async(storage_dir, record).await;
+                }
                 Err(msg)
             }
             Err(err) => {
-                persist_state("failed", err.clone());
+                self.set_action_tray_status(
+                    &request.target.worktree_id,
+                    crate::tray::TraySessionStatus::Idle,
+                    None,
+                );
+                if let Some(record) = persist_snapshot("failed", err.clone()) {
+                    let _ = session_store::upsert_session_async(storage_dir, record).await;
+                }
                 Err(err)
             }
         }

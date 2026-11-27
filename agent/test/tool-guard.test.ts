@@ -86,7 +86,7 @@ describe('Pi Agent tool loop guard', () => {
     expect(await guard.beforeToolCall(makeCall('run_git', { args: ['status'] }))).toBeUndefined();
   });
 
-  it('preserves fixed budgets for bounded tasks like planCPush and generateCustomAction', async () => {
+  it('preserves fixed budgets for bounded tasks like generateCustomAction', async () => {
     const fixed = createToolLoopGuard({ kind: 'fixed', maxCalls: 2 })!;
     expect(await fixed.beforeToolCall(makeCall('read_repo_file', { path: 'a.ts' }))).toBeUndefined();
     expect(await fixed.beforeToolCall(makeCall('read_repo_file', { path: 'b.ts' }))).toBeUndefined();

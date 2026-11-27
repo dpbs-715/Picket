@@ -1,10 +1,11 @@
 pub mod git;
-pub mod lifecycle;
-pub mod pi;
 
-use pi::{PiEvent, PiPaths, PiSupervisor, ProbeReport};
+#[cfg(feature = "smoke-harness")]
+use crate::pi_runtime::{PiEvent, PiPaths, PiSupervisor, ProbeReport};
+#[cfg(feature = "smoke-harness")]
 use serde::Serialize;
 
+#[cfg(feature = "smoke-harness")]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FoundationReport {
@@ -14,6 +15,7 @@ pub struct FoundationReport {
     pub git: git::GitProbeReport,
 }
 
+#[cfg(feature = "smoke-harness")]
 pub async fn smoke(paths: &PiPaths) -> Result<FoundationReport, String> {
     let supervisor = PiSupervisor::default();
     let complete = supervisor

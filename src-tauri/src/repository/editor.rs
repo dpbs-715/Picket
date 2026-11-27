@@ -156,6 +156,7 @@ impl EditorLauncher {
         }
     }
 
+    #[cfg(feature = "smoke-harness")]
     pub fn set_search_dirs(&self, dirs: Option<Vec<PathBuf>>) -> Result<()> {
         *self
             .inner

@@ -15,11 +15,13 @@ impl RepositoryStore {
         set_upstream_remote: Option<&str>,
         locale: LanguageKind,
     ) -> Result<PushOutcome> {
+        self.inner.write_coordinator.ensure_not_draining(locale)?;
         let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?
             .lock_owned()
             .await;
+        let _write_guard = self.track_write();
         let reader = self.inner.reader.with_locale(locale);
 
         if self.rebase_in_progress(&root).await? {

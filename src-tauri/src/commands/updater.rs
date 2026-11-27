@@ -2,7 +2,7 @@
 
 use crate::{
     actions::CustomActionCoordinator,
-    cpush::CPushCoordinator,
+    repo_lock::RepoWriteCoordinator,
     repository::RepositoryStore,
     updater::{
         UpdateManager,
@@ -32,11 +32,12 @@ pub async fn check_for_update(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn install_update(
     app: tauri::AppHandle,
     updater: State<'_, UpdateManager>,
+    repo_writes: State<'_, RepoWriteCoordinator>,
     repositories: State<'_, RepositoryStore>,
-    cpush: State<'_, CPushCoordinator>,
     actions: State<'_, CustomActionCoordinator>,
     request: InstallUpdateRequest,
 ) -> Result<UpdateStateSnapshot, String> {
@@ -45,8 +46,8 @@ pub async fn install_update(
             &app,
             &request.version,
             request.locale,
+            &repo_writes,
             &repositories,
-            &cpush,
             &actions,
         )
         .await

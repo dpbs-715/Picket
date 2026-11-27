@@ -1,15 +1,13 @@
 use super::{
     ModelStore,
     persistence::{
-        ResolvedRuntimeSpec, TEST_CONNECTION_IDLE_TIMEOUT, read_models_file, short_token,
+        ResolvedRuntimeSpec, TEST_CONNECTION_IDLE_TIMEOUT, read_models_file_async, short_token,
     },
 };
 use crate::{
-    foundation::pi::{
-        PiCommand, PiPaths, PiProviderSpec, PiSupervisor, PiTaskOutcome, RequestContext,
-    },
     i18n,
     models::types::*,
+    pi_runtime::{PiCommand, PiPaths, PiProviderSpec, PiSupervisor, PiTaskOutcome, RequestContext},
 };
 use std::{path::Path, sync::atomic::Ordering, time::Instant};
 
@@ -72,14 +70,15 @@ impl ModelStore {
                 let conn_id = validate_record_id(connection_id, *locale)?;
                 let (conn, api_key) = {
                     let _guard = self.gate.lock().await;
-                    let (stored, _) = read_models_file(storage_dir, *locale)?;
+                    let (stored, _) = read_models_file_async(storage_dir, *locale).await?;
                     let conn = stored
                         .connection(&conn_id)
                         .cloned()
                         .ok_or_else(|| i18n::models::provider_not_found_error(*locale))?;
                     let key = if conn.provider.needs_key() {
                         self.credentials
-                            .get(storage_dir, &conn.id)?
+                            .get_async(storage_dir, &conn.id)
+                            .await?
                             .ok_or_else(|| i18n::models::model_missing_stored_key_error(*locale))?
                     } else {
                         String::new()
@@ -119,7 +118,7 @@ impl ModelStore {
                 let conn_id = validate_record_id(connection_id, *locale)?;
                 let (conn, chosen_model, effective_key) = {
                     let _guard = self.gate.lock().await;
-                    let (stored, _) = read_models_file(storage_dir, *locale)?;
+                    let (stored, _) = read_models_file_async(storage_dir, *locale).await?;
                     let conn = stored
                         .connection(&conn_id)
                         .cloned()
@@ -132,7 +131,8 @@ impl ModelStore {
                         candidate_key
                     } else {
                         self.credentials
-                            .get(storage_dir, &conn.id)?
+                            .get_async(storage_dir, &conn.id)
+                            .await?
                             .ok_or_else(|| i18n::models::model_missing_stored_key_error(*locale))?
                     };
                     let child = if let Some(requested_id) =
@@ -249,8 +249,6 @@ impl ModelStore {
                 Err(i18n::models::model_test_cancelled_error(locale).into())
             }
             PiTaskOutcome::ModelsListed { .. }
-            | PiTaskOutcome::CPushPlanCompleted { .. }
-            | PiTaskOutcome::ConflictResolved { .. }
             | PiTaskOutcome::CustomActionCompleted { .. }
             | PiTaskOutcome::CustomActionDrafted { .. } => {
                 Err("Connection test returned an unexpected event type".into())
@@ -298,14 +296,15 @@ impl ModelStore {
                 let conn_id = validate_record_id(connection_id, *locale)?;
                 let (conn, effective_key) = {
                     let _guard = self.gate.lock().await;
-                    let (stored, _) = read_models_file(storage_dir, *locale)?;
+                    let (stored, _) = read_models_file_async(storage_dir, *locale).await?;
                     let conn = stored
                         .connection(&conn_id)
                         .cloned()
                         .ok_or_else(|| i18n::models::provider_not_found_error(*locale))?;
                     let key = if conn.provider.needs_key() {
                         self.credentials
-                            .get(storage_dir, &conn.id)?
+                            .get_async(storage_dir, &conn.id)
+                            .await?
                             .ok_or_else(|| i18n::models::model_missing_stored_key_error(*locale))?
                     } else {
                         String::new()
@@ -377,8 +376,6 @@ impl ModelStore {
                 Err(i18n::models::model_test_cancelled_error(locale).into())
             }
             PiTaskOutcome::Completed { .. }
-            | PiTaskOutcome::CPushPlanCompleted { .. }
-            | PiTaskOutcome::ConflictResolved { .. }
             | PiTaskOutcome::CustomActionCompleted { .. }
             | PiTaskOutcome::CustomActionDrafted { .. } => {
                 Err("Model list request returned an unexpected event type".into())

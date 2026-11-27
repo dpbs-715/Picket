@@ -22,6 +22,7 @@ export interface RuntimeSkillOverrideCatalog {
   sourceRepo?: string;
   sourceCommit?: string;
   skills: RuntimeSkillOverrideEntry[];
+  disabledSkills?: string[];
 }
 
 export type OverrideSkillDocReader = (skill: string, relativePath: string) => Promise<string | null>;
@@ -114,7 +115,13 @@ export class SkillRegistry {
     overrideReader?: OverrideSkillDocReader,
   ) {
     this.overrideReader = overrideReader;
+    const disabled = new Set(
+      (overrideCatalog?.disabledSkills ?? [])
+        .map((name) => name.trim())
+        .filter(Boolean),
+    );
     for (const bundled of BUNDLED_SKILLS_MANIFEST.skills) {
+      if (disabled.has(bundled.name)) continue;
       this.descriptors.set(bundled.name, {
         name: bundled.name,
         description: bundled.description,
@@ -126,13 +133,14 @@ export class SkillRegistry {
     }
     if (overrideCatalog) {
       for (const override of overrideCatalog.skills) {
-        if (!override.name.trim()) continue;
-        this.descriptors.set(override.name, {
-          name: override.name,
+        const cleanName = override.name.trim();
+        if (!cleanName || disabled.has(cleanName)) continue;
+        this.descriptors.set(cleanName, {
+          name: cleanName,
           description: override.description,
           source: 'override',
           files: override.files.map((file) => (
-            file.startsWith(`${override.name}/`) ? file.slice(override.name.length + 1) : file
+            file.startsWith(`${cleanName}/`) ? file.slice(cleanName.length + 1) : file
           )),
         });
       }

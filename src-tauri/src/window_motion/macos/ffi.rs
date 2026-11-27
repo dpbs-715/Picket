@@ -1,9 +1,8 @@
 //! Low-level Apple AppKit / QuartzCore / Objective-C runtime FFI helpers (zero third-party dylibs).
 
-use crate::window_motion::geometry::{
-    NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES, NSPoint, NSRect, NSSize,
-    next_collection_behavior,
-};
+#[cfg(feature = "smoke-harness")]
+use crate::window_motion::geometry::NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES;
+use crate::window_motion::geometry::{NSPoint, NSRect, NSSize, next_collection_behavior};
 use std::{
     ffi::{c_char, c_void},
     mem, ptr,
@@ -245,6 +244,7 @@ pub(super) unsafe fn set_window_visible_on_all_spaces(ns_window: *mut c_void, vi
     }
 }
 
+#[cfg(feature = "smoke-harness")]
 pub(super) unsafe fn is_window_visible_on_all_spaces(ns_window: *mut c_void) -> bool {
     (unsafe { window_collection_behavior(ns_window) }
         & NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES)

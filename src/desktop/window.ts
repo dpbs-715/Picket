@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
-import { availableMonitors, getCurrentWindow, primaryMonitor, type Monitor } from '@tauri-apps/api/window';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isPermissionGranted, onAction, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/language-protocol';
 import type { AppTheme, ResolvedTheme } from '../../shared/theme-protocol';
@@ -95,7 +95,6 @@ export interface NativeWindowHandle {
 
 export interface NativeWindowEnvironment {
   window(): NativeWindowHandle;
-  monitors(): Promise<{ available: MonitorWorkArea[]; primary?: MonitorWorkArea }>;
   setPinned?(pinned: boolean): Promise<boolean>;
   animateFrame?(request: AnimateWindowFrameRequest): Promise<AnimateWindowFrameReply>;
   prefersReducedMotion?(): boolean;
@@ -113,9 +112,6 @@ export interface WindowController {
   notifyBackgroundAttention(params: { title: string; body: string }): Promise<boolean>;
   subscribeNotificationTap?(onTap: () => void): () => void;
 }
-
-const TITLEBAR_VISIBLE_HEIGHT = 38;
-const MIN_VISIBLE_HORIZONTAL_OVERLAP = 80;
 
 export function normalizeCompactWidth(width?: number): number {
   if (!width || !Number.isFinite(width)) return WINDOW_DIMENSIONS.compactWidth;
@@ -146,62 +142,8 @@ export function normalizeFullWindowSize(size?: WindowSize): WindowSize {
   };
 }
 
-export function resolveVisibleWindowPosition(
-  desired: WindowPosition | undefined,
-  size: WindowSize,
-  monitors: readonly MonitorWorkArea[],
-  primary?: MonitorWorkArea,
-): WindowPosition | undefined {
-  if (!desired || !Number.isFinite(desired.x) || !Number.isFinite(desired.y)) {
-    return undefined;
-  }
-  const pool = monitors.length > 0 ? monitors : primary ? [primary] : [];
-  if (pool.length === 0) {
-    return { x: Math.round(desired.x), y: Math.round(desired.y) };
-  }
-  const requiredOverlap = Math.min(MIN_VISIBLE_HORIZONTAL_OVERLAP, Math.max(40, size.width));
-  const visibleOnSomeMonitor = pool.some((monitor) => {
-    const overlapLeft = Math.max(desired.x, monitor.x);
-    const overlapRight = Math.min(desired.x + size.width, monitor.x + monitor.width);
-    const horizontalOk = overlapRight - overlapLeft >= requiredOverlap;
-    const verticalOk = desired.y >= monitor.y && desired.y + TITLEBAR_VISIBLE_HEIGHT <= monitor.y + monitor.height;
-    return horizontalOk && verticalOk;
-  });
-  if (visibleOnSomeMonitor) {
-    return { x: Math.round(desired.x), y: Math.round(desired.y) };
-  }
-  const fallback = primary ?? pool[0];
-  const maxX = Math.max(fallback.x, fallback.x + fallback.width - size.width);
-  const maxY = Math.max(fallback.y, fallback.y + fallback.height - size.height);
-  return {
-    x: Math.min(Math.max(Math.round(desired.x), fallback.x), maxX),
-    y: Math.min(Math.max(Math.round(desired.y), fallback.y), maxY),
-  };
-}
-
-function monitorToLogicalWorkArea(monitor: Monitor): MonitorWorkArea {
-  const factor = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
-  const area = monitor.workArea ?? { position: monitor.position, size: monitor.size };
-  return {
-    x: Math.round(area.position.x / factor),
-    y: Math.round(area.position.y / factor),
-    width: Math.round(area.size.width / factor),
-    height: Math.round(area.size.height / factor),
-  };
-}
-
 const tauriEnvironment: NativeWindowEnvironment = {
   window: () => getCurrentWindow(),
-  async monitors() {
-    const [all, primary] = await Promise.all([
-      availableMonitors().catch(() => [] as Monitor[]),
-      primaryMonitor().catch(() => null),
-    ]);
-    return {
-      available: all.map(monitorToLogicalWorkArea),
-      primary: primary ? monitorToLogicalWorkArea(primary) : undefined,
-    };
-  },
   setPinned: (pinned) => invoke<boolean>('set_window_pinned', { pinned }),
   animateFrame: (request) => invoke<AnimateWindowFrameReply>('animate_window_frame', { request }),
   prefersReducedMotion,
@@ -265,15 +207,14 @@ export async function applyWindowModeWith(
     let targetX: number | undefined;
     let targetY: number | undefined;
     if (options.placement === 'restorePosition') {
-      if (options.targetPosition) {
-        const { available, primary } = await env.monitors();
-        const visible = resolveVisibleWindowPosition(options.targetPosition, targetSize, available, primary);
-        if (visible) {
-          targetX = visible.x;
-          targetY = visible.y;
-        } else {
-          placement = 'anchorTopLeft';
-        }
+      if (
+        options.targetPosition
+        && Number.isFinite(options.targetPosition.x)
+        && Number.isFinite(options.targetPosition.y)
+      ) {
+        // Multi-monitor clamping is enforced authoritatively in Rust `animate_window_frame`.
+        targetX = Math.round(options.targetPosition.x);
+        targetY = Math.round(options.targetPosition.y);
       } else {
         placement = 'anchorTopLeft';
       }
@@ -331,12 +272,14 @@ export async function applyWindowModeWith(
     await win.setSize(new LogicalSize(targetSize.width, targetSize.height));
     if (options.placement === 'anchorTopLeft') {
       await win.setPosition(new PhysicalPosition(beforeOuterPos.x, beforeOuterPos.y));
-    } else if (options.targetPosition) {
-      const { available, primary } = await env.monitors();
-      const visible = resolveVisibleWindowPosition(options.targetPosition, targetSize, available, primary);
-      if (visible) {
-        await win.setPosition(new LogicalPosition(visible.x, visible.y));
-      }
+    } else if (
+      options.targetPosition
+      && Number.isFinite(options.targetPosition.x)
+      && Number.isFinite(options.targetPosition.y)
+    ) {
+      await win.setPosition(
+        new LogicalPosition(Math.round(options.targetPosition.x), Math.round(options.targetPosition.y)),
+      );
     }
   } else {
     const fullSize = normalizeFullWindowSize(options.fullSize);
@@ -344,12 +287,14 @@ export async function applyWindowModeWith(
     await win.setMinSize(new LogicalSize(WINDOW_DIMENSIONS.minFullWidth, WINDOW_DIMENSIONS.minFullHeight));
     if (options.placement === 'anchorTopLeft') {
       await win.setPosition(new PhysicalPosition(beforeOuterPos.x, beforeOuterPos.y));
-    } else if (options.targetPosition) {
-      const { available, primary } = await env.monitors();
-      const visible = resolveVisibleWindowPosition(options.targetPosition, fullSize, available, primary);
-      if (visible) {
-        await win.setPosition(new LogicalPosition(visible.x, visible.y));
-      }
+    } else if (
+      options.targetPosition
+      && Number.isFinite(options.targetPosition.x)
+      && Number.isFinite(options.targetPosition.y)
+    ) {
+      await win.setPosition(
+        new LogicalPosition(Math.round(options.targetPosition.x), Math.round(options.targetPosition.y)),
+      );
     }
   }
 
@@ -407,7 +352,8 @@ export async function adjustCompactHeightWith(
 }
 
 function isUiSmokeSuppressingSystemNotifications(): boolean {
-  return typeof globalThis !== 'undefined'
+  return import.meta.env.VITE_PICKET_SMOKE === '1'
+    && typeof globalThis !== 'undefined'
     && Boolean((globalThis as { __PICKET_UI_SMOKE__?: boolean }).__PICKET_UI_SMOKE__);
 }
 

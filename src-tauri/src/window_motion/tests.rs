@@ -184,3 +184,42 @@ fn collection_behavior_toggles_all_spaces_without_losing_unrelated_flags() {
     assert_eq!(unpinned, baseline);
     assert_eq!(next_collection_behavior(unpinned, false), baseline);
 }
+
+#[test]
+fn visible_window_position_preserves_connected_secondary_and_clamps_disconnected_display() {
+    use crate::repository::types::WindowPosition;
+    let laptop = MonitorWorkArea {
+        x: 0.0,
+        y: 25.0,
+        width: 1512.0,
+        height: 945.0,
+    };
+    let external_right = MonitorWorkArea {
+        x: 1512.0,
+        y: 0.0,
+        width: 2560.0,
+        height: 1440.0,
+    };
+
+    // Visible on connected secondary display -> preserved as-is:
+    let (x1, y1, mon1) = resolve_visible_window_position(
+        Some(WindowPosition { x: 2200, y: 120 }),
+        400.0,
+        140.0,
+        &[laptop, external_right],
+        Some(laptop),
+    );
+    assert_eq!((x1, y1), (2200.0, 120.0));
+    assert_eq!(mon1, external_right);
+
+    // External display unplugged -> clamped cleanly onto primary display workArea:
+    let (x2, y2, mon2) = resolve_visible_window_position(
+        Some(WindowPosition { x: 2200, y: -200 }),
+        400.0,
+        700.0,
+        &[laptop],
+        Some(laptop),
+    );
+    assert_eq!((x2, y2), (1112.0, 25.0));
+    assert_eq!(mon2, laptop);
+}

@@ -725,3 +725,83 @@ async fn persists_custom_actions_cold_restores_and_invalidates_stale_write_trust
     assert_eq!(repo_cfg.custom_actions[1].skip_write_confirm, None);
     assert_eq!(repo_cfg.custom_actions[1].trusted_prompt_hash, None);
 }
+
+#[tokio::test]
+async fn tolerates_future_unknown_disk_fields_and_backs_up_corrupted_workbench_file() {
+    let storage = tempfile::tempdir().unwrap();
+    let saved_path = storage.path().join("workbench-state.json");
+
+    // Unknown fields written by a newer Picket version must be ignored cleanly rather than wiping data:
+    fs::write(
+        &saved_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 2,
+            "futureTopLevelFlag": true,
+            "locale": "zh",
+            "theme": "dark",
+            "editor": "cursor",
+            "defaultCommitLanguage": "zh",
+            "repositorySettings": [{
+                "repositoryId": "repo-future",
+                "editor": "rustrover",
+                "commitLanguage": "en",
+                "futureRepoField": 42
+            }],
+            "windowPreferences": {
+                "pinned": false,
+                "compactMode": false,
+                "pinnedExpanded": true,
+                "futureWindowHint": "left"
+            },
+            "activeWorktreeId": null,
+            "emptyPrompt": "keep me",
+            "repositories": [],
+            "worktrees": [{
+                "repositoryId": "repo-future",
+                "worktreeId": "wt-future",
+                "promptText": "survives downgrade",
+                "selectedIds": [],
+                "unselectedIds": [],
+                "scopeVersion": "s1",
+                "futureWorktreeField": ["a", "b"]
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let restored = WorkbenchPersistence::default()
+        .restore(storage.path(), &RepositoryStore::default())
+        .await
+        .unwrap();
+    assert!(restored.warning.is_none());
+    assert_eq!(restored.locale, LanguageKind::Zh);
+    assert_eq!(restored.empty_prompt, "keep me");
+    assert_eq!(restored.repository_settings.len(), 1);
+    assert_eq!(restored.worktrees.len(), 1);
+    assert_eq!(restored.worktrees[0].prompt_text, "survives downgrade");
+
+    // Corrupted JSON creates a 0600 `.corrupt.*.bak` backup copy without clobbering the original on restore:
+    fs::write(&saved_path, b"{truncated-json").unwrap();
+    let corrupt_restore = WorkbenchPersistence::default()
+        .restore(storage.path(), &RepositoryStore::default())
+        .await
+        .unwrap();
+    assert!(corrupt_restore.warning.is_some());
+    assert_eq!(fs::read(&saved_path).unwrap(), b"{truncated-json");
+    let backups: Vec<_> = fs::read_dir(storage.path())
+        .unwrap()
+        .filter_map(|e| e.ok().map(|v| v.path()))
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.starts_with("workbench-state.json.corrupt.") && n.ends_with(".bak")
+            })
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(fs::read(&backups[0]).unwrap(), b"{truncated-json");
+    assert_eq!(
+        fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}

@@ -1,10 +1,10 @@
 //! Repository, branch, editor, local-keep, and workbench persistence IPC commands.
 
 use super::{RepositoryPicker, picket_data_dir};
+#[cfg(feature = "smoke-harness")]
+use crate::lifecycle::DesktopLifecycle;
 use crate::{
     actions::CustomActionCoordinator,
-    cpush::CPushCoordinator,
-    foundation::lifecycle::DesktopLifecycle,
     i18n,
     models::store::ModelStore,
     repository::{
@@ -33,6 +33,7 @@ pub async fn open_repository(
         .0
         .try_lock()
         .map_err(|_| i18n::desktop::picker_busy(request.locale))?;
+    #[cfg(feature = "smoke-harness")]
     let path = if app.state::<DesktopLifecycle>().ui_smoke {
         let (root, editor_bin) = app
             .state::<repository::smoke::SmokeState>()
@@ -41,32 +42,18 @@ pub async fn open_repository(
             .set_search_dirs(Some(vec![editor_bin]))?;
         Some(root)
     } else {
-        let (send, receive) = tokio::sync::oneshot::channel();
-        let window = app
-            .get_webview_window("main")
-            .ok_or_else(|| i18n::desktop::main_window_unavailable(request.locale))?;
-        app.dialog()
-            .file()
-            .set_parent(&window)
-            .set_title(i18n::desktop::select_git_working_directory_title(
-                request.locale,
-            ))
-            .pick_folder(move |path| {
-                let _ = send.send(path);
-            });
-        receive
-            .await
-            .map_err(|_| i18n::desktop::picker_incomplete(request.locale))?
-            .map(|path| {
-                path.into_path()
-                    .map_err(|_| i18n::desktop::picker_must_be_local_dir(request.locale))
-            })
-            .transpose()?
+        pick_repository_folder(&app, request.locale).await?
     };
+    #[cfg(not(feature = "smoke-harness"))]
+    let path = pick_repository_folder(&app, request.locale).await?;
     let snapshot = match path {
         Some(path) => Some(store.open_with_locale(&path, request.locale).await?),
         None => None,
     };
+    if snapshot.is_some() {
+        app.state::<crate::tray::TrayCoordinator>()
+            .refresh_from_app(&app);
+    }
     Ok(ReadReply {
         protocol_version: 1,
         request_id: request.request_id,
@@ -75,8 +62,35 @@ pub async fn open_repository(
     })
 }
 
+async fn pick_repository_folder(
+    app: &tauri::AppHandle,
+    locale: i18n::LanguageKind,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| i18n::desktop::main_window_unavailable(locale))?;
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .set_title(i18n::desktop::select_git_working_directory_title(locale))
+        .pick_folder(move |path| {
+            let _ = send.send(path);
+        });
+    let path = receive
+        .await
+        .map_err(|_| i18n::desktop::picker_incomplete(locale))?
+        .map(|path| {
+            path.into_path()
+                .map_err(|_| i18n::desktop::picker_must_be_local_dir(locale).to_string())
+        })
+        .transpose()?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub async fn refresh_repository(
+    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     request: RefreshRequest,
 ) -> Result<ReadReply, String> {
@@ -84,6 +98,8 @@ pub async fn refresh_repository(
     let snapshot = store
         .refresh_with_locale(&request.target, request.locale)
         .await?;
+    app.state::<crate::tray::TrayCoordinator>()
+        .refresh_from_app(&app);
     Ok(ReadReply {
         protocol_version: 1,
         request_id: request.request_id,
@@ -94,6 +110,7 @@ pub async fn refresh_repository(
 
 #[tauri::command]
 pub async fn set_repository_local_keep(
+    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     persistence: State<'_, WorkbenchPersistence>,
     request: LocalKeepRequest,
@@ -122,6 +139,8 @@ pub async fn set_repository_local_keep(
             request.locale,
         )
         .await?;
+    app.state::<crate::tray::TrayCoordinator>()
+        .refresh_from_app(&app);
     Ok(LocalKeepReply {
         protocol_version: 1,
         kind: "localKeep",
@@ -133,11 +152,14 @@ pub async fn set_repository_local_keep(
 
 #[tauri::command]
 pub async fn change_repository_branch(
+    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     request: BranchRequest,
 ) -> Result<BranchReply, String> {
     repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
     let snapshot = store.change_branch(&request).await?;
+    app.state::<crate::tray::TrayCoordinator>()
+        .refresh_from_app(&app);
     Ok(BranchReply {
         protocol_version: 1,
         kind: "branch",
@@ -171,29 +193,35 @@ pub async fn open_in_editor(
 
 #[tauri::command]
 pub async fn load_workbench_state(
-    app: tauri::AppHandle,
+    #[cfg_attr(not(feature = "smoke-harness"), allow(unused_variables))] app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     launcher: State<'_, EditorLauncher>,
     persistence: State<'_, WorkbenchPersistence>,
     models: State<'_, ModelStore>,
-    cpush: State<'_, CPushCoordinator>,
     actions: State<'_, CustomActionCoordinator>,
 ) -> Result<WorkbenchRestoreReply, String> {
     let data_dir = picket_data_dir()?;
-    let lifecycle = app.state::<DesktopLifecycle>();
-    if lifecycle.ui_smoke && !lifecycle.restart_smoke {
-        let (_, editor_bin) = app
-            .state::<repository::smoke::SmokeState>()
-            .path_and_editor_bin()?;
-        launcher.set_search_dirs(Some(vec![editor_bin]))?;
+    #[cfg(feature = "smoke-harness")]
+    {
+        let lifecycle = app.state::<DesktopLifecycle>();
+        if lifecycle.ui_smoke && !lifecycle.restart_smoke {
+            let (_, editor_bin) = app
+                .state::<repository::smoke::SmokeState>()
+                .path_and_editor_bin()?;
+            launcher.set_search_dirs(Some(vec![editor_bin]))?;
+        }
     }
     let mut restored = persistence.restore(&data_dir, &store).await?;
-    if lifecycle.restart_smoke
-        && let Some(first_snap) = restored.snapshots.first()
-        && let Some(first_wt) = first_snap.worktrees.first()
-        && let Some(parent) = std::path::Path::new(&first_wt.path).parent()
+    #[cfg(feature = "smoke-harness")]
     {
-        launcher.set_search_dirs(Some(vec![parent.join("editor-bin")]))?;
+        let lifecycle = app.state::<DesktopLifecycle>();
+        if lifecycle.restart_smoke
+            && let Some(first_snap) = restored.snapshots.first()
+            && let Some(first_wt) = first_snap.worktrees.first()
+            && let Some(parent) = std::path::Path::new(&first_wt.path).parent()
+        {
+            launcher.set_search_dirs(Some(vec![parent.join("editor-bin")]))?;
+        }
     }
     let installed = launcher.detect_installed_editors();
     if !installed.is_empty() {
@@ -220,26 +248,43 @@ pub async fn load_workbench_state(
             None => m_warn,
         });
     }
-    let (cpush_sessions, cpush_warning) = cpush
-        .restore_with_locale(&data_dir, &restored.snapshots, restored.locale)
+    let (action_sessions, cpush_sessions, session_warning) = actions
+        .restore_all_sessions_async(&data_dir, &restored.snapshots, restored.locale)
         .await?;
     restored.c_push_sessions = Some(cpush_sessions);
-    if let Some(c_warn) = cpush_warning {
+    restored.action_sessions = Some(action_sessions);
+    if let Some(s_warn) = session_warning {
         restored.warning = Some(match restored.warning {
-            Some(existing) => format!("{existing} {c_warn}"),
-            None => c_warn,
+            Some(existing) => format!("{existing} {s_warn}"),
+            None => s_warn,
         });
     }
-    restored.action_sessions = Some(actions.restore_sessions(&data_dir, restored.locale));
+    app.state::<crate::tray::TrayCoordinator>().set_ui_context(
+        &app,
+        Some(restored.locale),
+        Some(restored.theme),
+        Some(restored.active_worktree_id.clone()),
+    );
     Ok(restored)
 }
 
 #[tauri::command]
 pub async fn save_workbench_state(
+    app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     persistence: State<'_, WorkbenchPersistence>,
     request: WorkbenchSaveRequest,
 ) -> Result<(), String> {
+    let locale = request.locale;
+    let theme = request.theme;
+    let active_wt = request.active_worktree_id.clone();
     let data_dir = picket_data_dir()?;
-    persistence.save(&data_dir, &store, request).await
+    persistence.save(&data_dir, &store, request).await?;
+    app.state::<crate::tray::TrayCoordinator>().set_ui_context(
+        &app,
+        Some(locale),
+        Some(theme),
+        Some(active_wt),
+    );
+    Ok(())
 }

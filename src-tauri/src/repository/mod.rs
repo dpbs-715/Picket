@@ -18,6 +18,7 @@ mod persistence_tests;
 pub mod read_tools;
 pub mod remote;
 mod runner;
+#[cfg(any(test, feature = "smoke-harness"))]
 pub mod smoke;
 mod snapshot;
 #[cfg(test)]
@@ -25,7 +26,11 @@ mod tests;
 pub mod types;
 mod worktree_read;
 
-use crate::i18n::{self, LanguageKind};
+use crate::{
+    bounded_cache::BoundedSet,
+    i18n::{self, LanguageKind},
+    repo_lock::RepoWriteCoordinator,
+};
 #[allow(unused_imports)]
 use parse::{StatusEntry, WorktreeEntry};
 use runner::GitReader;
@@ -56,19 +61,46 @@ pub struct RepositoryStore {
     inner: Arc<StoreInner>,
 }
 
-#[derive(Default)]
+const MAX_DEDUP_REQUEST_IDS: usize = 256;
+
 struct StoreInner {
     reader: GitReader,
+    write_coordinator: RepoWriteCoordinator,
     sequence: AtomicU64,
     active_writes: AtomicUsize,
     repositories: Mutex<HashMap<String, Registration>>,
     opened_order: Mutex<Vec<String>>,
     gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    branch_requests: Mutex<HashSet<String>>,
-    commit_requests: Mutex<HashSet<String>>,
+    branch_requests: Mutex<BoundedSet<String>>,
+    commit_requests: Mutex<BoundedSet<String>>,
     verified_remotes: Mutex<HashSet<(String, String)>>,
     local_keep: Mutex<HashMap<PathBuf, BTreeSet<String>>>,
     offline_local_keep: Mutex<HashMap<String, Vec<String>>>,
+}
+
+impl Default for StoreInner {
+    fn default() -> Self {
+        Self::with_write_coordinator(RepoWriteCoordinator::default())
+    }
+}
+
+impl StoreInner {
+    fn with_write_coordinator(write_coordinator: RepoWriteCoordinator) -> Self {
+        Self {
+            reader: GitReader::default(),
+            write_coordinator,
+            sequence: AtomicU64::default(),
+            active_writes: AtomicUsize::default(),
+            repositories: Mutex::default(),
+            opened_order: Mutex::default(),
+            gates: Mutex::default(),
+            branch_requests: Mutex::new(BoundedSet::with_capacity(MAX_DEDUP_REQUEST_IDS)),
+            commit_requests: Mutex::new(BoundedSet::with_capacity(MAX_DEDUP_REQUEST_IDS)),
+            verified_remotes: Mutex::default(),
+            local_keep: Mutex::default(),
+            offline_local_keep: Mutex::default(),
+        }
+    }
 }
 
 pub(crate) struct ActiveWriteGuard {
@@ -89,6 +121,7 @@ struct Registration {
     paths: HashMap<String, PathBuf>,
     branch_tokens: HashMap<String, String>,
     commit_states: HashMap<String, commit::CommitRegistration>,
+    last_snapshot: RepositorySnapshot,
 }
 
 fn hash(bytes: impl AsRef<[u8]>) -> String {
@@ -169,6 +202,12 @@ pub fn validate_request_id_with_locale(request_id: &str, locale: LanguageKind) -
 }
 
 impl RepositoryStore {
+    pub fn with_write_coordinator(write_coordinator: RepoWriteCoordinator) -> Self {
+        Self {
+            inner: Arc::new(StoreInner::with_write_coordinator(write_coordinator)),
+        }
+    }
+
     pub fn has_active_write(&self) -> bool {
         self.inner.active_writes.load(Ordering::SeqCst) > 0
     }

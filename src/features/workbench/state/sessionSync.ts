@@ -14,6 +14,7 @@ export function applyCPushSnapshot(
   session: CPushSessionSnapshot,
   repositorySnapshot?: GitRepositorySnapshot,
   expandDockOnSettle?: boolean,
+  suppressExpand = false,
 ): WorkbenchState {
   const previousTree = state.worktrees.find(
     (tree) => tree.repositoryId === session.repositoryId && tree.worktreeId === session.worktreeId,
@@ -61,11 +62,17 @@ export function applyCPushSnapshot(
       const nextPrompt = isCPushCompleted && !repositorySnapshot && tree.prompt.revision === promptRevAtStart
         ? { text: '', revision: tree.prompt.revision + 1 }
         : tree.prompt;
+      const shouldAutoExpandLiveQuestion = session.sessionStatus === 'needsDecision'
+        && Boolean(session.pendingCallId)
+        && tree.worktreeId === nextState.activeWorktreeId
+        && !suppressExpand;
       const nextDockExpanded = session.autoCollapse || session.sessionStatus === 'idle'
         ? false
-        : expandDockOnSettle
+        : shouldAutoExpandLiveQuestion
           ? true
-          : tree.dockExpanded;
+          : expandDockOnSettle
+            ? true
+            : tree.dockExpanded;
       return {
         ...tree,
         sessionStatus: session.sessionStatus,
@@ -86,6 +93,7 @@ export function applyCPushSnapshot(
               frozenFileIds: session.frozenFileIds,
               promptRevisionAtStart: tree.cPush?.promptRevisionAtStart ?? promptRevAtStart,
               modelId: session.modelId,
+              ...(session.pendingCallId ? { pendingCallId: session.pendingCallId } : {}),
               timeline: session.timeline,
               qaLog: session.qaLog,
               commits: session.commits,
@@ -105,8 +113,12 @@ export function finishCPushCommand(
   return applyCPushSnapshot(state, reply.session, reply.repositorySnapshot, expandDockOnSettle);
 }
 
-export function receiveCPushProgress(state: WorkbenchState, progress: CPushProgressEvent): WorkbenchState {
-  return applyCPushSnapshot(state, progress.session, progress.repositorySnapshot);
+export function receiveCPushProgress(
+  state: WorkbenchState,
+  progress: CPushProgressEvent,
+  suppressExpand = false,
+): WorkbenchState {
+  return applyCPushSnapshot(state, progress.session, progress.repositorySnapshot, undefined, suppressExpand);
 }
 
 function applyTrustedUpdate(state: WorkbenchState, update?: TrustedActionUpdate): WorkbenchState {

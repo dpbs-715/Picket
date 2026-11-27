@@ -74,6 +74,24 @@ describe('Dual-layer Git skill registry & upstream normalization', () => {
 
     expect(normalizeUpstreamSkillMarkdown('See {{REPO_ROOT}}/skills/dcr/SKILL.md')).toBe('See skill://dcr/SKILL.md');
   });
+
+  it('removes disabled built-in skills from registry without falling back to bundled copies', async () => {
+    const registry = new SkillRegistry({
+      sourceRepo: 'https://github.com/dpbs-715/skills',
+      sourceCommit: 'deadbeef',
+      skills: [
+        { name: 'commit', description: 'Synced commit', files: ['SKILL.md'] },
+      ],
+      disabledSkills: ['dcr', 'submit'],
+    });
+
+    expect(registry.hasSkill('dcr')).toBe(false);
+    expect(registry.hasSkill('submit')).toBe(false);
+    expect(registry.hasSkill('commit')).toBe(true);
+    expect(registry.listSkills().map((s) => s.name)).not.toContain('dcr');
+    expect(registry.formatIndex()).not.toContain('`dcr`');
+    await expect(registry.readDoc('dcr', 'SKILL.md')).rejects.toThrow(/Unknown skill/);
+  });
 });
 
 describe('message_user validation, rich blocks, formatting, and tool wrapper', () => {

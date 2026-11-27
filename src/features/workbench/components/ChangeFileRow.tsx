@@ -5,6 +5,16 @@ import { Icon } from '../../../ui/controls';
 import { splitPath, type Change, type Worktree } from '../state/workbench';
 import { splitFileNameExt, treeGuideOffsets, treeIndentPx } from './changesPanelTree';
 
+export function FileName({ name }: { name: string }) {
+  const { stem, ext } = splitFileNameExt(name);
+  return (
+    <span className="mono file-name">
+      <span className="file-stem">{stem}</span>
+      {ext && <span className="file-ext">{ext}</span>}
+    </span>
+  );
+}
+
 export function TriStateCheckbox(props: {
   checked: boolean;
   indeterminate: boolean;
@@ -67,7 +77,6 @@ export function ChangeFileRow({
 }: ChangeFileRowProps) {
   const { t } = useI18n();
   const { name, directory } = splitPath(file.path);
-  const { stem, ext } = splitFileNameExt(name);
   const hasDirectory = !grouped && Boolean(directory);
   const effectiveDepth = grouped ? (treeDepth ?? 1) : 0;
   const guideOffsets = grouped ? treeGuideOffsets(effectiveDepth) : [];
@@ -113,16 +122,7 @@ export function ChangeFileRow({
         </span>
         <span className="file-label">
           <span className="file-primary-line">
-            <span className="mono file-name">
-              {ext ? (
-                <>
-                  <span>{stem}</span>
-                  <span className="file-ext">{ext}</span>
-                </>
-              ) : (
-                name
-              )}
-            </span>
+            <FileName name={name} />
             {file.status === 'U'
               ? <span className="file-badge danger">{t.changes.conflictBadge}</span>
               : file.range.kind === 'partial' && <span className="file-badge warning">{t.changes.partialStagedBadge}</span>}

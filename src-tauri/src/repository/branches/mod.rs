@@ -165,6 +165,11 @@ impl RepositoryStore {
     pub async fn change_branch(&self, request: &BranchRequest) -> Result<RepositorySnapshot> {
         let locale = request.locale;
         validate_request_id_with_locale(&request.request_id, locale)?;
+        let _repo_lease = self.inner.write_coordinator.try_acquire(
+            &request.target.repository_id,
+            crate::repo_lock::RepoWriteKind::BranchSwitch,
+            locale,
+        )?;
         if !self
             .inner
             .branch_requests

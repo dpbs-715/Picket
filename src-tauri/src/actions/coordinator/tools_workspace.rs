@@ -4,8 +4,8 @@
 use super::context::{ActionToolContext, push_timeline_step};
 use crate::{
     actions::executor::exec_controlled_git,
-    foundation::pi::PiToolExecutionResult,
     i18n,
+    pi_runtime::PiToolExecutionResult,
     repository::{ai_context::is_sensitive_local_file, read_tools::validate_safe_repo_path},
 };
 use serde_json::{Value, json};
@@ -335,7 +335,7 @@ pub(super) async fn handle_edit_repo_file(
         .await
         .ok();
     (ctx.emit)("running", None, None, refreshed_snapshot);
-    (ctx.persist)("running", String::new());
+    ctx.persist("running", String::new()).await;
 
     PiToolExecutionResult::success(
         json!({
@@ -540,7 +540,7 @@ pub(super) async fn handle_write_repo_file(
         .await
         .ok();
     (ctx.emit)("running", None, None, refreshed_snapshot);
-    (ctx.persist)("running", String::new());
+    ctx.persist("running", String::new()).await;
 
     PiToolExecutionResult::success(
         json!({

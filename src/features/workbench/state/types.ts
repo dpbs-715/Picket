@@ -14,7 +14,7 @@ import type {
   CustomActionTimelineItem,
 } from '../../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
-import type { GitLocalKeepReply, GitReadReply, GitReadTarget, GitRemoteBranch } from '../../../../shared/git-read-protocol';
+import type { GitLocalKeepReply, GitReadReply, GitReadTarget, GitRemoteBranch, GitRepositorySnapshot } from '../../../../shared/git-read-protocol';
 import type { AppLocale, CommitLanguage } from '../../../../shared/language-protocol';
 import type { AppTheme } from '../../../../shared/theme-protocol';
 import type { MessageUserCard, MessageUserRequest } from '../../../../shared/message-user-protocol';
@@ -62,6 +62,7 @@ export interface ActiveCPushState {
   frozenFileIds: string[];
   promptRevisionAtStart: number;
   modelId: string;
+  pendingCallId?: string;
   timeline: CPushTimelineItem[];
   qaLog: CPushQaItem[];
   commits: CPushLandedCommit[];
@@ -209,6 +210,7 @@ export type WorkbenchAction =
   | { type: 'repositoryBranchFailed'; repositoryId: string; requestId: string }
   | { type: 'repositoryReadStarted'; key: string; requestId: string }
   | { type: 'repositoryReadFinished'; key: string; reply: GitReadReply }
+  | { type: 'traySnapshotsSynced'; snapshots: GitRepositorySnapshot[] }
   | { type: 'repositoryReadFailed'; key: string; requestId: string; worktreeId?: string; error?: string }
   | { type: 'localKeepUpdated'; repositoryId: string; paths: string[]; keep: boolean }
   | { type: 'repositoryLocalKeepFinished'; repositoryId: string; reply: GitLocalKeepReply }

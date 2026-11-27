@@ -2,8 +2,8 @@ use super::{
     ModelStore,
     persistence::{
         MAX_STORED_CONNECTIONS, MAX_STORED_MODELS, ResolvedRuntimeSpec, RestoredCatalog,
-        StoredConnectionRecord, StoredModelRecord, read_models_file, short_token,
-        write_models_file_atomic,
+        StoredConnectionRecord, StoredModelRecord, read_models_file_async, short_token,
+        write_models_file_atomic_async,
     },
 };
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
 use std::{path::Path, sync::atomic::Ordering};
 
 impl ModelStore {
+    #[cfg(any(test, feature = "smoke-harness"))]
     pub async fn restore(&self, storage_dir: &Path) -> Result<RestoredCatalog, String> {
         self.restore_with_locale(storage_dir, LanguageKind::En)
             .await
@@ -24,7 +25,7 @@ impl ModelStore {
         locale: LanguageKind,
     ) -> Result<RestoredCatalog, String> {
         let _guard = self.gate.lock().await;
-        let (stored, warning) = read_models_file(storage_dir, locale)?;
+        let (stored, warning) = read_models_file_async(storage_dir, locale).await?;
         Ok(RestoredCatalog {
             connections: stored.public_connections(),
             models: stored.public_models(),
@@ -41,7 +42,7 @@ impl ModelStore {
         let locale = input.locale;
         let normalized = validate_new_connection(input)?;
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         if stored.connections.len() >= MAX_STORED_CONNECTIONS {
             return Err(i18n::models::provider_limit_reached_error(locale).into());
         }
@@ -54,7 +55,8 @@ impl ModelStore {
         let model_id = short_token("model", seq, &normalized.model_id);
         let key_hint = if normalized.provider.needs_key() {
             self.credentials
-                .put(storage_dir, &conn_id, &normalized.api_key)?;
+                .put_async(storage_dir, &conn_id, &normalized.api_key)
+                .await?;
             Some(compute_key_hint(&normalized.api_key))
         } else {
             None
@@ -85,9 +87,9 @@ impl ModelStore {
             stored.active_model_id = Some(model_id.clone());
         }
 
-        if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
+        if let Err(error) = write_models_file_atomic_async(storage_dir, stored.clone()).await {
             if normalized.provider.needs_key() {
-                let _ = self.credentials.delete(storage_dir, &conn_id);
+                let _ = self.credentials.delete_async(storage_dir, &conn_id).await;
             }
             return Err(i18n::models::model_save_aborted_error(
                 locale, &error, false,
@@ -113,7 +115,7 @@ impl ModelStore {
         let locale = input.locale;
         let conn_id = validate_record_id(&input.connection_id, locale)?;
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         let Some(index) = stored.connections.iter().position(|c| c.id == conn_id) else {
             return Err(i18n::models::provider_not_found_error(locale).into());
         };
@@ -124,8 +126,10 @@ impl ModelStore {
 
         let mut previous_secret_for_rollback: Option<Option<String>> = None;
         let next_hint = if existing.provider.needs_key() && !next_key.is_empty() {
-            let prev = self.credentials.get(storage_dir, &conn_id)?;
-            self.credentials.put(storage_dir, &conn_id, &next_key)?;
+            let prev = self.credentials.get_async(storage_dir, &conn_id).await?;
+            self.credentials
+                .put_async(storage_dir, &conn_id, &next_key)
+                .await?;
             previous_secret_for_rollback = Some(prev);
             Some(compute_key_hint(&next_key))
         } else {
@@ -142,14 +146,17 @@ impl ModelStore {
         let public_conn = updated.to_public();
         stored.connections[index] = updated;
 
-        if let Err(error) = write_models_file_atomic(storage_dir, &stored) {
+        if let Err(error) = write_models_file_atomic_async(storage_dir, stored.clone()).await {
             if let Some(prev_opt) = previous_secret_for_rollback {
                 match prev_opt {
                     Some(prev_secret) => {
-                        let _ = self.credentials.put(storage_dir, &conn_id, &prev_secret);
+                        let _ = self
+                            .credentials
+                            .put_async(storage_dir, &conn_id, &prev_secret)
+                            .await;
                     }
                     None => {
-                        let _ = self.credentials.delete(storage_dir, &conn_id);
+                        let _ = self.credentials.delete_async(storage_dir, &conn_id).await;
                     }
                 }
             }
@@ -173,7 +180,7 @@ impl ModelStore {
     ) -> Result<ModelMutateReply, String> {
         let conn_id = validate_record_id(connection_id, locale)?;
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         let Some(index) = stored.connections.iter().position(|c| c.id == conn_id) else {
             return Err(i18n::models::provider_not_found_error(locale).into());
         };
@@ -186,9 +193,9 @@ impl ModelStore {
         {
             stored.active_model_id = stored.models.first().map(|m| m.id.clone());
         }
-        write_models_file_atomic(storage_dir, &stored)?;
+        write_models_file_atomic_async(storage_dir, stored.clone()).await?;
         if removed_conn.provider.needs_key() {
-            let _ = self.credentials.delete(storage_dir, &conn_id);
+            let _ = self.credentials.delete_async(storage_dir, &conn_id).await;
         }
         Ok(ModelMutateReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
@@ -206,7 +213,7 @@ impl ModelStore {
         let locale = input.locale;
         let conn_id = validate_record_id(&input.connection_id, locale)?;
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         let Some(conn) = stored.connection(&conn_id).cloned() else {
             return Err(i18n::models::provider_not_found_error(locale).into());
         };
@@ -242,7 +249,8 @@ impl ModelStore {
             if stored.active_model_id.is_none() {
                 stored.active_model_id = Some(target_id.clone());
             }
-            write_models_file_atomic(storage_dir, &stored)
+            write_models_file_atomic_async(storage_dir, stored.clone())
+                .await
                 .map_err(|error| i18n::models::model_save_aborted_error(locale, &error, true))?;
             let active_id = stored.active_model_id.clone().unwrap_or(target_id);
             return Ok(ModelSaveReply {
@@ -274,7 +282,8 @@ impl ModelStore {
         if stored.active_model_id.is_none() {
             stored.active_model_id = Some(id.clone());
         }
-        write_models_file_atomic(storage_dir, &stored)
+        write_models_file_atomic_async(storage_dir, stored.clone())
+            .await
             .map_err(|error| i18n::models::model_save_aborted_error(locale, &error, false))?;
         let active_id = stored.active_model_id.clone().unwrap_or(id);
         Ok(ModelSaveReply {
@@ -295,7 +304,7 @@ impl ModelStore {
         let conn_id = validate_record_id(connection_id, locale)?;
         let conn_name = {
             let _guard = self.gate.lock().await;
-            let (stored, _) = read_models_file(storage_dir, locale)?;
+            let (stored, _) = read_models_file_async(storage_dir, locale).await?;
             let conn = stored
                 .connection(&conn_id)
                 .ok_or_else(|| i18n::models::provider_not_found_error(locale))?;
@@ -328,7 +337,7 @@ impl ModelStore {
         }
 
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         let Some(index) = stored.connections.iter().position(|c| c.id == conn_id) else {
             return Err(i18n::models::provider_not_found_error(locale).into());
         };
@@ -337,12 +346,13 @@ impl ModelStore {
         }
         let secret = self
             .credentials
-            .get(storage_dir, &conn_id)?
+            .get_async(storage_dir, &conn_id)
+            .await?
             .ok_or_else(|| i18n::models::model_missing_stored_key_error(locale))?;
         let hint = compute_key_hint(&secret);
         if stored.connections[index].key_hint.as_deref() != Some(hint.as_str()) {
             stored.connections[index].key_hint = Some(hint.clone());
-            let _ = write_models_file_atomic(storage_dir, &stored);
+            let _ = write_models_file_atomic_async(storage_dir, stored).await;
         }
         Ok(ProviderRevealKeyReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
@@ -375,12 +385,12 @@ impl ModelStore {
             return Err(i18n::models::model_select_missing_id_error(locale).into());
         }
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         if !stored.models.iter().any(|model| model.id == trimmed) {
             return Err(i18n::models::model_selected_not_found_error(locale).into());
         }
         stored.active_model_id = Some(trimmed.to_owned());
-        write_models_file_atomic(storage_dir, &stored)?;
+        write_models_file_atomic_async(storage_dir, stored.clone()).await?;
         Ok(ModelMutateReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
             connections: stored.public_connections(),
@@ -410,7 +420,7 @@ impl ModelStore {
             return Err(i18n::models::model_delete_missing_id_error(locale).into());
         }
         let _guard = self.gate.lock().await;
-        let (mut stored, _) = read_models_file(storage_dir, locale)?;
+        let (mut stored, _) = read_models_file_async(storage_dir, locale).await?;
         let Some(index) = stored.models.iter().position(|model| model.id == trimmed) else {
             return Err(i18n::models::model_delete_not_found_error(locale).into());
         };
@@ -419,7 +429,7 @@ impl ModelStore {
         if stored.active_model_id.as_deref() == Some(trimmed) {
             stored.active_model_id = stored.models.first().map(|model| model.id.clone());
         }
-        write_models_file_atomic(storage_dir, &stored)?;
+        write_models_file_atomic_async(storage_dir, stored.clone()).await?;
         Ok(ModelMutateReply {
             protocol_version: MODEL_PROTOCOL_VERSION,
             connections: stored.public_connections(),
@@ -428,6 +438,7 @@ impl ModelStore {
         })
     }
 
+    #[cfg(any(test, feature = "smoke-harness"))]
     pub async fn resolve_runtime_spec(
         &self,
         storage_dir: &Path,
@@ -444,7 +455,7 @@ impl ModelStore {
         locale: LanguageKind,
     ) -> Result<ResolvedRuntimeSpec, String> {
         let _guard = self.gate.lock().await;
-        let (stored, _) = read_models_file(storage_dir, locale)?;
+        let (stored, _) = read_models_file_async(storage_dir, locale).await?;
         let record = stored
             .models
             .iter()
@@ -455,7 +466,8 @@ impl ModelStore {
             .ok_or_else(|| i18n::models::provider_not_found_error(locale))?;
         let api_key = if conn.provider.needs_key() {
             self.credentials
-                .get(storage_dir, &conn.id)?
+                .get_async(storage_dir, &conn.id)
+                .await?
                 .ok_or_else(|| i18n::models::model_missing_stored_key_error(locale))?
         } else {
             String::new()

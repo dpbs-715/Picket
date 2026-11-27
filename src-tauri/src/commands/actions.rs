@@ -1,21 +1,20 @@
-//! Custom Actions execution, generation, approval, and cancellation IPC commands.
+//! Custom Actions execution, generation, approval, cancellation, and unified session dismissal IPC commands.
 
 use super::{picket_data_dir, runtime_paths};
 use crate::{
     actions::{
         CustomActionCoordinator,
         types::{
-            CustomActionCommandReply, CustomActionProgressEvent, DismissCustomActionDoneRequest,
+            CustomActionCommandReply, CustomActionProgressEvent, DismissSessionDoneRequest,
             GenerateCustomActionProgressEvent, GenerateCustomActionReply,
             GenerateCustomActionRequest, RespondCustomActionRequest, StartCustomActionRequest,
         },
     },
-    cpush::CPushCoordinator,
-    foundation::pi::PiSupervisor,
     models::store::ModelStore,
+    pi_runtime::PiSupervisor,
     repository::RepositoryStore,
 };
-use tauri::{State, ipc::Channel};
+use tauri::{Manager, State, ipc::Channel};
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -24,27 +23,32 @@ pub async fn start_custom_action(
     store: State<'_, RepositoryStore>,
     models: State<'_, ModelStore>,
     supervisor: State<'_, PiSupervisor>,
-    cpush: State<'_, CPushCoordinator>,
     actions: State<'_, CustomActionCoordinator>,
     request: StartCustomActionRequest,
     on_event: Channel<CustomActionProgressEvent>,
 ) -> Result<CustomActionCommandReply, String> {
     let data_dir = picket_data_dir()?;
     let paths = runtime_paths(&app)?;
-    actions
+    let app_cb = app.clone();
+    let result = actions
         .start_custom_action(
             &data_dir,
             &paths,
             &supervisor,
             &models,
             &store,
-            &cpush,
             &request,
             move |event| {
                 let _ = on_event.send(event);
+                app_cb
+                    .state::<crate::tray::TrayCoordinator>()
+                    .refresh_from_app(&app_cb);
             },
         )
-        .await
+        .await;
+    app.state::<crate::tray::TrayCoordinator>()
+        .refresh_from_app(&app);
+    result
 }
 
 #[tauri::command]
@@ -92,10 +96,14 @@ pub fn cancel_custom_action(
 }
 
 #[tauri::command]
-pub fn dismiss_custom_action_done(
+pub async fn dismiss_session_done(
+    app: tauri::AppHandle,
     actions: State<'_, CustomActionCoordinator>,
-    request: DismissCustomActionDoneRequest,
+    request: DismissSessionDoneRequest,
 ) -> Result<bool, String> {
     let data_dir = picket_data_dir()?;
-    actions.dismiss_done_notice(&data_dir, &request)
+    let result = actions.dismiss_done_notice_async(&data_dir, &request).await;
+    app.state::<crate::tray::TrayCoordinator>()
+        .refresh_from_app(&app);
+    result
 }

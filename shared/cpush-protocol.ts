@@ -1,7 +1,13 @@
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
 import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
 import type { AppLocale, CommitLanguage } from './language-protocol';
+import {
+  decodeMessageUserCard,
+  type MessageUserCard,
+  type MessageUserRequest,
+} from './message-user-protocol';
 import type { ModelFileSelection } from './model-protocol';
+import type { CustomActionLink } from './custom-action-protocol';
 
 export const CPUSH_PROTOCOL_VERSION = 1;
 
@@ -51,7 +57,10 @@ export interface CPushUiMessage {
   scope?: string;
   files?: { id: string; label: string; badge?: string }[];
   commits?: { hash: string; title: string }[];
+  links?: CustomActionLink[];
   options?: { id: string; label: string; recommended?: boolean }[];
+  card?: MessageUserCard;
+  questionnaire?: MessageUserRequest;
   progress?: { completed: number; total: number; label: string };
 }
 
@@ -66,6 +75,7 @@ export interface CPushSessionSnapshot {
   committedFileIds: string[];
   skippedFileIds: string[];
   sessionStatus: CPushSessionStatus;
+  pendingCallId?: string;
   message: CPushUiMessage | null;
   timeline: CPushTimelineItem[];
   qaLog: CPushQaItem[];
@@ -95,14 +105,6 @@ export interface PullRebaseRequest {
 export interface ReconcileCPushRequest {
   requestId: string;
   target: GitReadTarget;
-  locale?: AppLocale;
-}
-
-export interface DismissCPushDoneRequest {
-  requestId: string;
-  target: GitReadTarget;
-  runId?: string;
-  messageId: string;
   locale?: AppLocale;
 }
 
@@ -222,6 +224,23 @@ function decodeUiMessage(value: unknown): CPushUiMessage {
       label: value.progress.label,
     };
   })();
+  const links = value.links === undefined || value.links === null ? undefined : (() => {
+    if (!Array.isArray(value.links)) return undefined;
+    const out: CustomActionLink[] = [];
+    for (const item of value.links) {
+      if (!isRecord(item) || typeof item.label !== 'string' || typeof item.url !== 'string') continue;
+      const label = item.label.trim();
+      const url = item.url.trim();
+      if (label && /^https?:\/\//i.test(url)) {
+        out.push({ label, url });
+      }
+    }
+    return out.length > 0 ? out : undefined;
+  })();
+  const card = decodeMessageUserCard(value.card);
+  const questionnaire = value.questionnaire !== undefined && value.questionnaire !== null
+    ? (value.questionnaire as MessageUserRequest)
+    : undefined;
   return {
     id: value.id,
     kind: value.kind as CPushMessageKind,
@@ -230,7 +249,10 @@ function decodeUiMessage(value: unknown): CPushUiMessage {
     ...(typeof value.scope === 'string' && value.scope ? { scope: value.scope } : {}),
     ...(files ? { files } : {}),
     ...(commits ? { commits } : {}),
+    ...(links ? { links } : {}),
     ...(options ? { options } : {}),
+    ...(card ? { card } : {}),
+    ...(questionnaire ? { questionnaire } : {}),
     ...(progress ? { progress } : {}),
   };
 }
@@ -248,6 +270,7 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
     || !isStringArray(value.committedFileIds)
     || !isStringArray(value.skippedFileIds)
     || !VALID_SESSION_STATUSES.includes(value.sessionStatus as CPushSessionStatus)
+    || !(value.pendingCallId === undefined || value.pendingCallId === null || typeof value.pendingCallId === 'string')
     || typeof value.canRetryRemaining !== 'boolean'
     || !(value.autoCollapse === undefined || value.autoCollapse === null || typeof value.autoCollapse === 'boolean')
     || !Array.isArray(value.timeline)
@@ -301,6 +324,7 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
     committedFileIds: value.committedFileIds,
     skippedFileIds: value.skippedFileIds,
     sessionStatus: value.sessionStatus as CPushSessionStatus,
+    ...(typeof value.pendingCallId === 'string' && value.pendingCallId ? { pendingCallId: value.pendingCallId } : {}),
     message,
     timeline,
     qaLog,

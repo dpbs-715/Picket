@@ -1,11 +1,16 @@
-//! Phase 2 Custom Action & `Create with Pi` coordinator:
+//! Unified Agent Action & C-Push coordinator:
 //! manages same-repo write exclusion, real-time bidirectional `message_user` cards & oneshot
-//! Q&A round-trips, Rust-verified `install_platform_cli` grants, 3-tier controlled CLI policy
-//! enforcement with Tier-2 preview confirmation + "don't ask again" prompt-hash binding, and
-//! direct reuse of `RepositoryStore::commit` / `push_branch` / `sync_rebase_onto_upstream`.
+//! Q&A round-trips, unified C-Push / Pull-Rebase / tool-driven conflict resolution,
+//! Rust-verified `install_platform_cli` grants, 3-tier controlled CLI policy enforcement,
+//! and direct reuse of `RepositoryStore::commit` / `push_branch` / `sync_rebase_onto_upstream`.
 
+mod conflict_flow;
 mod context;
+mod cpush_flow;
+pub(super) mod cpush_helpers;
 mod generator;
+mod git_sync;
+mod reconcile;
 mod runner;
 mod tools_cli;
 mod tools_command;
@@ -20,8 +25,13 @@ use super::{
     types::*,
 };
 use crate::{
+    bounded_cache::BoundedMap,
     i18n::{self, LanguageKind},
-    repository,
+    repo_lock::{RepoWriteCoordinator, RepoWriteKind, RepoWriteLease},
+    repository::{
+        self,
+        types::{ReadTarget, RepositorySnapshot},
+    },
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -35,6 +45,8 @@ use std::{
 use tokio::sync::oneshot;
 
 pub(super) const CUSTOM_ACTION_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const CPUSH_AI_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_PROCESSED_CPUSH_REQUESTS: usize = 128;
 
 #[derive(Default)]
 pub(super) struct SessionAuthGrants {
@@ -47,13 +59,40 @@ struct PendingQuestion {
     install_options: HashMap<String, String>,
 }
 
-#[derive(Default)]
 pub(super) struct CoordinatorInner {
+    pub(super) write_coordinator: RepoWriteCoordinator,
     active_operations: AtomicUsize,
-    active_write_repos: Mutex<HashSet<String>>,
     pending_questions: Mutex<HashMap<(String, String), PendingQuestion>>,
     override_cli_dirs: Mutex<Option<Vec<PathBuf>>>,
     pub(super) seq: AtomicU64,
+    worktree_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(super) cpush_sessions: Mutex<HashMap<String, StoredCPushSession>>,
+    pub(super) active_action_tray: Mutex<HashMap<String, crate::tray::TrayWorktreeSessionInfo>>,
+    processed_cpush_requests: Mutex<BoundedMap<String, CPushCommandReply>>,
+}
+
+impl Default for CoordinatorInner {
+    fn default() -> Self {
+        Self::with_write_coordinator(RepoWriteCoordinator::default())
+    }
+}
+
+impl CoordinatorInner {
+    fn with_write_coordinator(write_coordinator: RepoWriteCoordinator) -> Self {
+        Self {
+            write_coordinator,
+            active_operations: AtomicUsize::default(),
+            pending_questions: Mutex::default(),
+            override_cli_dirs: Mutex::default(),
+            seq: AtomicU64::default(),
+            worktree_gates: Mutex::default(),
+            cpush_sessions: Mutex::default(),
+            active_action_tray: Mutex::default(),
+            processed_cpush_requests: Mutex::new(BoundedMap::with_capacity(
+                MAX_PROCESSED_CPUSH_REQUESTS,
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -61,17 +100,37 @@ pub struct CustomActionCoordinator {
     pub(super) inner: Arc<CoordinatorInner>,
 }
 
+pub(crate) struct ActiveOperationGuard {
+    inner: Arc<CoordinatorInner>,
+}
+
+impl Drop for ActiveOperationGuard {
+    fn drop(&mut self) {
+        self.inner.active_operations.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub(super) struct ActiveWriteRepoGuard {
     inner: Arc<CoordinatorInner>,
-    repository_id: String,
+    _repo_lease: RepoWriteLease,
 }
 
 impl Drop for ActiveWriteRepoGuard {
     fn drop(&mut self) {
         self.inner.active_operations.fetch_sub(1, Ordering::SeqCst);
-        if let Ok(mut repos) = self.inner.active_write_repos.lock() {
-            repos.remove(&self.repository_id);
-        }
+    }
+}
+
+pub(super) struct PendingQuestionWaiter {
+    rx: oneshot::Receiver<MessageUserResponse>,
+    _cleanup: PendingQuestionGuard,
+}
+
+impl PendingQuestionWaiter {
+    pub(super) async fn wait(self) -> Result<MessageUserResponse, String> {
+        let Self { rx, _cleanup } = self;
+        rx.await
+            .map_err(|_| "Interactive question channel closed before a response arrived.".into())
     }
 }
 
@@ -117,16 +176,121 @@ fn detect_install_option_tool(option: &MessageQuestionOption) -> Option<&'static
 }
 
 impl CustomActionCoordinator {
+    pub fn with_write_coordinator(write_coordinator: RepoWriteCoordinator) -> Self {
+        Self {
+            inner: Arc::new(CoordinatorInner::with_write_coordinator(write_coordinator)),
+        }
+    }
+
     pub fn has_active_operation(&self) -> bool {
         self.inner.active_operations.load(Ordering::SeqCst) > 0
     }
 
-    pub fn has_active_operation_for_repo(&self, repository_id: &str) -> bool {
-        self.inner
-            .active_write_repos
+    pub(crate) fn track_operation(&self) -> ActiveOperationGuard {
+        self.inner.active_operations.fetch_add(1, Ordering::SeqCst);
+        ActiveOperationGuard {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    pub(super) fn worktree_gate(
+        &self,
+        worktree_id: &str,
+    ) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+        Ok(self
+            .inner
+            .worktree_gates
             .lock()
-            .map(|set| set.contains(repository_id))
-            .unwrap_or(false)
+            .map_err(|_| "Session coordinator lock is unavailable")?
+            .entry(worktree_id.to_owned())
+            .or_default()
+            .clone())
+    }
+
+    pub(super) fn save_cpush_in_memory(&self, session: &StoredCPushSession) -> Result<(), String> {
+        self.inner
+            .cpush_sessions
+            .lock()
+            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .insert(session.worktree_id.clone(), session.clone());
+        Ok(())
+    }
+
+    pub(super) fn remove_cpush_in_memory(&self, worktree_id: &str) -> Result<(), String> {
+        self.inner
+            .cpush_sessions
+            .lock()
+            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .remove(worktree_id);
+        Ok(())
+    }
+
+    pub(super) async fn persist_cpush_sessions(&self, storage_dir: &Path) -> Result<(), String> {
+        let all: Vec<StoredCPushSession> = self
+            .inner
+            .cpush_sessions
+            .lock()
+            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .values()
+            .cloned()
+            .collect();
+        session_store::save_cpush_sessions_async(storage_dir, all).await
+    }
+
+    pub(super) fn lookup_processed_cpush_request(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<CPushCommandReply>, String> {
+        Ok(self
+            .inner
+            .processed_cpush_requests
+            .lock()
+            .map_err(|_| "C-Push request registry lock is unavailable")?
+            .get(request_id)
+            .cloned())
+    }
+
+    pub(super) fn record_processed_cpush_request(
+        &self,
+        request_id: &str,
+        reply: &CPushCommandReply,
+    ) -> Result<(), String> {
+        self.inner
+            .processed_cpush_requests
+            .lock()
+            .map_err(|_| "C-Push request registry lock is unavailable")?
+            .insert(request_id.to_owned(), reply.clone());
+        Ok(())
+    }
+
+    pub(super) fn ensure_no_busy_cpush_session(
+        &self,
+        worktree_id: &str,
+        locale: LanguageKind,
+        for_cpush: bool,
+    ) -> Result<(), String> {
+        let existing_active = self
+            .inner
+            .cpush_sessions
+            .lock()
+            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .get(worktree_id)
+            .cloned();
+        if let Some(active) = existing_active
+            && cpush_helpers::is_active_status(active.session_status)
+        {
+            return Err(i18n::cpush::cpush_active_session_busy_error(locale, for_cpush).into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn session_read_target(&self, session: &StoredCPushSession) -> ReadTarget {
+        ReadTarget {
+            repository_id: session.repository_id.clone(),
+            worktree_id: session.worktree_id.clone(),
+            session_id: session.session_id.clone(),
+            scope_version: session.frozen_scope_version.clone(),
+        }
     }
 
     pub(super) fn override_cli_dirs(&self) -> Option<Vec<PathBuf>> {
@@ -144,6 +308,7 @@ impl CustomActionCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub fn restore_sessions(
         &self,
         storage_dir: &Path,
@@ -152,19 +317,187 @@ impl CustomActionCoordinator {
         session_store::reconcile_sessions_on_startup(storage_dir, locale)
     }
 
+    #[cfg(any(test, feature = "smoke-harness"))]
+    pub async fn restore_cpush(
+        &self,
+        storage_dir: &Path,
+        snapshots: &[RepositorySnapshot],
+    ) -> Result<(Vec<CPushSessionSnapshot>, Option<String>), String> {
+        let (_, cpush, warn) = self
+            .restore_all_sessions_async(storage_dir, snapshots, LanguageKind::En)
+            .await?;
+        Ok((cpush, warn))
+    }
+
+    pub async fn restore_all_sessions_async(
+        &self,
+        storage_dir: &Path,
+        snapshots: &[RepositorySnapshot],
+        locale: LanguageKind,
+    ) -> Result<
+        (
+            Vec<ActionSessionSnapshot>,
+            Vec<CPushSessionSnapshot>,
+            Option<String>,
+        ),
+        String,
+    > {
+        let reconciled = session_store::reconcile_all_sessions_on_startup_async(
+            storage_dir,
+            snapshots.to_vec(),
+            locale,
+        )
+        .await;
+        {
+            let mut memory = self
+                .inner
+                .cpush_sessions
+                .lock()
+                .map_err(|_| "C-Push session cache lock is unavailable")?;
+            memory.clear();
+            for session in reconciled.cpush_stored {
+                memory.insert(session.worktree_id.clone(), session);
+            }
+        }
+        Ok((
+            reconciled.action_sessions,
+            reconciled.cpush_public,
+            reconciled.warning,
+        ))
+    }
+
+    #[cfg(test)]
     pub fn dismiss_done_notice(
         &self,
         storage_dir: &Path,
-        request: &DismissCustomActionDoneRequest,
+        request: &DismissSessionDoneRequest,
     ) -> Result<bool, String> {
         repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
+        self.mark_cpush_dismissed_in_memory(request)?;
         session_store::dismiss_session_message(
             storage_dir,
             &request.target.repository_id,
             &request.target.worktree_id,
             request.run_id.as_deref(),
             &request.message_id,
-        )?;
+        )
+    }
+
+    pub(super) fn set_action_tray_status(
+        &self,
+        worktree_id: &str,
+        status: crate::tray::TraySessionStatus,
+        detail: Option<String>,
+    ) {
+        if let Ok(mut map) = self.inner.active_action_tray.lock() {
+            if matches!(status, crate::tray::TraySessionStatus::Idle) {
+                map.remove(worktree_id);
+            } else {
+                map.insert(
+                    worktree_id.to_owned(),
+                    crate::tray::TrayWorktreeSessionInfo { status, detail },
+                );
+            }
+        }
+    }
+
+    /// Aggregates live C-Push and Custom Action worktree session states directly in Rust for
+    /// the menu bar tray without depending on the main WebView.
+    pub fn tray_session_statuses(&self) -> HashMap<String, crate::tray::TrayWorktreeSessionInfo> {
+        use crate::tray::{TraySessionStatus, TrayWorktreeSessionInfo};
+        let mut out: HashMap<String, TrayWorktreeSessionInfo> = HashMap::new();
+        if let Ok(cpush) = self.inner.cpush_sessions.lock() {
+            for (wt_id, session) in cpush.iter() {
+                let status = match session.session_status {
+                    CPushSessionStatus::Idle => TraySessionStatus::Idle,
+                    CPushSessionStatus::Running => TraySessionStatus::Running,
+                    CPushSessionStatus::NeedsDecision => TraySessionStatus::NeedsDecision,
+                    CPushSessionStatus::Conflict => TraySessionStatus::Conflict,
+                    CPushSessionStatus::WaitingManual => TraySessionStatus::WaitingManual,
+                    CPushSessionStatus::PushFailed => TraySessionStatus::PushFailed,
+                    CPushSessionStatus::Done => TraySessionStatus::Done,
+                };
+                if status != TraySessionStatus::Idle {
+                    let detail = session
+                        .message
+                        .as_ref()
+                        .map(|m| m.title.clone())
+                        .filter(|s| !s.trim().is_empty());
+                    out.insert(wt_id.clone(), TrayWorktreeSessionInfo { status, detail });
+                }
+            }
+        }
+        if let Ok(actions) = self.inner.active_action_tray.lock() {
+            for (wt_id, info) in actions.iter() {
+                let replace = out
+                    .get(wt_id)
+                    .is_none_or(|prev| info.status.urgency_rank() < prev.status.urgency_rank());
+                if replace {
+                    out.insert(wt_id.clone(), info.clone());
+                }
+            }
+        }
+        out
+    }
+
+    pub async fn dismiss_done_notice_async(
+        &self,
+        storage_dir: &Path,
+        request: &DismissSessionDoneRequest,
+    ) -> Result<bool, String> {
+        repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
+        let mem_updated = self.mark_cpush_dismissed_in_memory(request)?;
+        if let Ok(mut map) = self.inner.active_action_tray.lock() {
+            map.remove(&request.target.worktree_id);
+        }
+        let disk_updated = session_store::dismiss_session_message_async(
+            storage_dir,
+            request.target.repository_id.clone(),
+            request.target.worktree_id.clone(),
+            request.run_id.clone(),
+            request.message_id.clone(),
+        )
+        .await?;
+        Ok(mem_updated || disk_updated)
+    }
+
+    fn mark_cpush_dismissed_in_memory(
+        &self,
+        request: &DismissSessionDoneRequest,
+    ) -> Result<bool, String> {
+        let mut memory = self
+            .inner
+            .cpush_sessions
+            .lock()
+            .map_err(|_| "C-Push session cache lock is unavailable")?;
+        let Some(session) = memory.get_mut(&request.target.worktree_id) else {
+            return Ok(false);
+        };
+        if session.repository_id != request.target.repository_id
+            || session.session_status != CPushSessionStatus::Done
+        {
+            return Ok(false);
+        }
+        if let Some(run_id) = request
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            && session.run_id != run_id
+        {
+            return Ok(false);
+        }
+        if let Some(msg) = &session.message
+            && !request.message_id.trim().is_empty()
+            && msg.id != request.message_id.trim()
+        {
+            return Ok(false);
+        }
+        if session.notice_dismissed && session.message.is_none() {
+            return Ok(false);
+        }
+        session.notice_dismissed = true;
+        session.message = None;
         Ok(true)
     }
 
@@ -173,19 +506,15 @@ impl CustomActionCoordinator {
         repository_id: &str,
         locale: LanguageKind,
     ) -> Result<ActiveWriteRepoGuard, String> {
-        let mut repos = self
-            .inner
-            .active_write_repos
-            .lock()
-            .map_err(|_| "Custom action registry is unavailable")?;
-        if repos.contains(repository_id) {
-            return Err(i18n::actions::action_already_running_error(locale).into());
-        }
-        repos.insert(repository_id.to_owned());
+        let lease = self.inner.write_coordinator.try_acquire(
+            repository_id,
+            RepoWriteKind::CustomAction,
+            locale,
+        )?;
         self.inner.active_operations.fetch_add(1, Ordering::SeqCst);
         Ok(ActiveWriteRepoGuard {
             inner: Arc::clone(&self.inner),
-            repository_id: repository_id.to_owned(),
+            _repo_lease: lease,
         })
     }
 
@@ -224,13 +553,16 @@ impl CustomActionCoordinator {
         Ok(true)
     }
 
-    pub(super) async fn suspend_for_question(
+    /// Registers a pending question synchronously BEFORE emitting the UI progress event,
+    /// eliminating any race where a fast user/test reply calls `respond_question` before the
+    /// coordinator has inserted the oneshot sender.
+    pub(super) fn register_pending_question(
         &self,
         run_id: &str,
         call_id: &str,
         request: &MessageUserRequest,
         grants: Arc<Mutex<SessionAuthGrants>>,
-    ) -> Result<MessageUserResponse, String> {
+    ) -> Result<PendingQuestionWaiter, String> {
         let mut install_options = HashMap::new();
         for question in request.questions_slice() {
             for option in &question.options {
@@ -256,12 +588,26 @@ impl CustomActionCoordinator {
                 },
             );
         }
-        let _cleanup = PendingQuestionGuard {
-            inner: Arc::clone(&self.inner),
-            key,
-        };
-        rx.await
-            .map_err(|_| "Interactive question channel closed before a response arrived.".into())
+        Ok(PendingQuestionWaiter {
+            rx,
+            _cleanup: PendingQuestionGuard {
+                inner: Arc::clone(&self.inner),
+                key,
+            },
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn suspend_for_question(
+        &self,
+        run_id: &str,
+        call_id: &str,
+        request: &MessageUserRequest,
+        grants: Arc<Mutex<SessionAuthGrants>>,
+    ) -> Result<MessageUserResponse, String> {
+        self.register_pending_question(run_id, call_id, request, grants)?
+            .wait()
+            .await
     }
 }
 

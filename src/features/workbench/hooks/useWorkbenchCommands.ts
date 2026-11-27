@@ -200,18 +200,18 @@ export function useWorkbenchCommands({
     });
   }
 
-  function followUpCustomAction(message: Message, text: string) {
+  function followUpCustomAction(message: Message, text: string): boolean {
     const trimmed = text.trim();
-    if (!worktree || !trimmed || !worktree.customAction) return;
+    if (!worktree || !trimmed || !worktree.customAction) return false;
     if (!model) {
       if (compactMode) {
         openConfigureModelFromCompact();
       } else {
         openConfigureModel();
       }
-      return;
+      return false;
     }
-    if (worktree.readError) return;
+    if (worktree.readError) return false;
     const savedAction = state.repositorySettings[worktree.repositoryId]?.customActions?.find(
       (item) => item.id === worktree.customAction?.actionId,
     );
@@ -226,6 +226,7 @@ export function useWorkbenchCommands({
       resumeFromRunId: worktree.customAction.runId,
       forceExpandDock: !compactMode,
     });
+    return true;
   }
 
   function primary() {
@@ -289,35 +290,42 @@ export function useWorkbenchCommands({
   async function respond(
     message: Message,
     answer: { optionId?: string; text?: string; questionnaireResponse?: MessageUserResponse },
-  ) {
-    if (!worktree) return;
+  ): Promise<boolean> {
+    if (!worktree) return false;
     const id = worktree.worktreeId;
-    if (worktree.customAction?.pendingCallId && answer.questionnaireResponse && backend.respondCustomAction) {
+    const livePendingRunId = worktree.customAction?.pendingCallId
+      ? worktree.customAction.runId
+      : worktree.cPush?.pendingCallId
+        ? worktree.cPush.runId
+        : undefined;
+    const livePendingCallId = worktree.customAction?.pendingCallId ?? worktree.cPush?.pendingCallId;
+    if (livePendingRunId && livePendingCallId && answer.questionnaireResponse && backend.respondCustomAction) {
       const respKey = `${id}:respondCustomAction`;
-      if (inFlight.current.has(respKey)) return;
+      if (inFlight.current.has(respKey)) return false;
       inFlight.current.add(respKey);
       setPending([...inFlight.current]);
       try {
-        await backend.respondCustomAction({
+        const accepted = await backend.respondCustomAction({
           requestId: crypto.randomUUID(),
-          runId: worktree.customAction.runId,
-          callId: worktree.customAction.pendingCallId,
+          runId: livePendingRunId,
+          callId: livePendingCallId,
           response: answer.questionnaireResponse,
           locale: state.locale,
         });
+        return Boolean(accepted);
       } catch (error) {
         const errText = error instanceof Error ? error.message : t.workbench.genericOperationFailed;
         notify(errText, id);
+        return false;
       } finally {
         inFlight.current.delete(respKey);
         setPending([...inFlight.current]);
       }
-      return;
     }
     const target = worktree.cPush?.frozenTarget ?? targetOf(worktree);
     const runId = worktree.cPush?.runId;
     const { questionnaireResponse, ...wireAnswer } = answer;
-    if (await execute({
+    const accepted = await execute({
       kind: 'respond',
       target,
       requestId: crypto.randomUUID(),
@@ -327,13 +335,15 @@ export function useWorkbenchCommands({
       messageId: message.id,
       locale: state.locale,
       ...wireAnswer,
-    })) {
+    });
+    if (accepted) {
       dispatch({ type: 'reply', worktreeId: id, messageId: message.id, text: '' });
     }
+    return accepted;
   }
 
   function cancelActiveCustomAction() {
-    const runId = worktree?.customAction?.runId;
+    const runId = worktree?.customAction?.runId ?? worktree?.cPush?.runId;
     if (!runId) return;
     void backend.cancelCustomAction?.(runId).catch(() => {});
   }

@@ -127,11 +127,7 @@ pub async fn exec_controlled_git(
     if read_only {
         cmd.args(["-c", "core.hooksPath=/dev/null"]);
     }
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            cmd.env_remove(key);
-        }
-    }
+    crate::git_env::strip_git_overrides(&mut cmd, allow_remote_protocol);
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_EDITOR", ":")

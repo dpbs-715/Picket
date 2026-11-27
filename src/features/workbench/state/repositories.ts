@@ -3,6 +3,7 @@ export {
   finishRepositoryBranch,
   finishRepositoryLocalKeep,
   finishRepositoryRead,
+  mergeSnapshot,
   readScopeVersion,
 } from './snapshotMerge';
 export {

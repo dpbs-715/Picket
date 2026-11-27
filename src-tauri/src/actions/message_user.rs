@@ -80,7 +80,7 @@ pub enum MessageChecklistStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageFactItem {
     pub label: String,
     pub value: String,
@@ -91,7 +91,7 @@ pub struct MessageFactItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageFindingItem {
     pub severity: MessageFindingSeverity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,14 +105,14 @@ pub struct MessageFindingItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageSkippedFileItem {
     pub path: String,
     pub reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageChecklistItem {
     pub status: MessageChecklistStatus,
     pub label: String,
@@ -121,7 +121,7 @@ pub struct MessageChecklistItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageFileChipItem {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,8 +134,7 @@ pub struct MessageFileChipItem {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum MessageBlock {
     Markdown {
@@ -184,7 +183,7 @@ pub enum MessageBlock {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageUserCard {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

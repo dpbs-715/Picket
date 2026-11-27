@@ -7,7 +7,7 @@
 use crate::{
     repository::{
         persistence::{read_persisted_theme, read_persisted_window_preferences},
-        types::{PersistedWindowPreferences, WindowPosition, WindowSize},
+        types::{PersistedWindowPreferences, WindowSize},
     },
     window_motion::{self, MonitorWorkArea},
 };
@@ -34,8 +34,6 @@ const COMPACT_WIDTH: f64 = 400.0;
 const COMPACT_DEFAULT_HEIGHT: f64 = 86.0;
 const COMPACT_MIN_HEIGHT: f64 = 82.0;
 const MAX_STORED_DIMENSION: f64 = 16_384.0;
-const TITLEBAR_VISIBLE_HEIGHT: f64 = 38.0;
-const MIN_VISIBLE_HORIZONTAL_OVERLAP: f64 = 80.0;
 const MAIN_REVEAL_DURATION_MS: u32 = 240;
 const MAIN_REVEAL_TRIGGER_PROGRESS: f64 = 0.90;
 const SPLASH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(12);
@@ -112,62 +110,6 @@ fn normalize_full_size(size: Option<WindowSize>) -> (f64, f64) {
     }
 }
 
-/// Mirrors `resolveVisibleWindowPosition` in `src/desktop/window.ts` so native startup placement
-/// matches frontend monitor-clamping rules identically.
-pub fn resolve_visible_window_position(
-    desired: Option<WindowPosition>,
-    width: f64,
-    height: f64,
-    monitors: &[MonitorWorkArea],
-    primary: Option<MonitorWorkArea>,
-) -> (f64, f64, MonitorWorkArea) {
-    let fallback_monitor =
-        primary
-            .or_else(|| monitors.first().copied())
-            .unwrap_or(MonitorWorkArea {
-                x: 0.0,
-                y: 25.0,
-                width: 1440.0,
-                height: 875.0,
-            });
-    let pool: Vec<MonitorWorkArea> = if !monitors.is_empty() {
-        monitors.to_vec()
-    } else {
-        vec![fallback_monitor]
-    };
-
-    let Some(pos) = desired else {
-        let centered_x = (fallback_monitor.x + (fallback_monitor.width - width) * 0.5).round();
-        let centered_y = (fallback_monitor.y + (fallback_monitor.height - height) * 0.5).round();
-        return (centered_x, centered_y, fallback_monitor);
-    };
-
-    let desired_x = f64::from(pos.x);
-    let desired_y = f64::from(pos.y);
-    let required_overlap = MIN_VISIBLE_HORIZONTAL_OVERLAP.min(width.max(40.0));
-
-    if let Some(matched) = pool.iter().copied().find(|monitor| {
-        let overlap_left = desired_x.max(monitor.x);
-        let overlap_right = (desired_x + width).min(monitor.x + monitor.width);
-        let horizontal_ok = overlap_right - overlap_left >= required_overlap;
-        let vertical_ok = desired_y >= monitor.y
-            && desired_y + TITLEBAR_VISIBLE_HEIGHT <= monitor.y + monitor.height;
-        horizontal_ok && vertical_ok
-    }) {
-        return (desired_x.round(), desired_y.round(), matched);
-    }
-
-    let max_x = fallback_monitor
-        .x
-        .max(fallback_monitor.x + fallback_monitor.width - width);
-    let max_y = fallback_monitor
-        .y
-        .max(fallback_monitor.y + fallback_monitor.height - height);
-    let clamped_x = desired_x.round().clamp(fallback_monitor.x, max_x);
-    let clamped_y = desired_y.round().clamp(fallback_monitor.y, max_y);
-    (clamped_x, clamped_y, fallback_monitor)
-}
-
 pub fn compute_startup_window_plan(
     prefs: Option<&PersistedWindowPreferences>,
     monitors: &[MonitorWorkArea],
@@ -194,8 +136,13 @@ pub fn compute_startup_window_plan(
             p.full_position
         }
     });
-    let (target_x, target_y, target_monitor) =
-        resolve_visible_window_position(desired_pos, width, height, monitors, primary);
+    let (target_x, target_y, target_monitor) = window_motion::resolve_visible_window_position(
+        desired_pos,
+        width,
+        height,
+        monitors,
+        primary,
+    );
 
     // Center the floating whale splash on the monitor where the target window lives so the leap
     // always stays on the user's active display without jumping awkwardly across display bezels.
@@ -581,6 +528,7 @@ pub async fn complete_splash(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repository::types::WindowPosition;
 
     fn primary_monitor() -> MonitorWorkArea {
         MonitorWorkArea {

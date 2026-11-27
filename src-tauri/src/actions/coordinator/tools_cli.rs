@@ -10,8 +10,8 @@ use crate::{
         session_store::{self, SubmitSessionLedger},
         types::{CustomActionMessageProgress, CustomActionUiMessage, MessageUserRequest},
     },
-    foundation::pi::PiToolExecutionResult,
     i18n,
+    pi_runtime::PiToolExecutionResult,
 };
 use serde_json::Value;
 use std::{
@@ -226,7 +226,7 @@ pub(super) async fn handle_message_user(
             }),
             None,
         );
-        (ctx.persist)("running", card.title);
+        ctx.persist("running", card.title).await;
         return PiToolExecutionResult {
             ok: true,
             content: "{\"displayed\":true}".into(),
@@ -248,6 +248,15 @@ pub(super) async fn handle_message_user(
         .or_else(|| first_q.map(|q| q.question.clone()))
         .unwrap_or_default();
     let card = req.card_if_present(&title);
+    let waiter = match ctx.coordinator.register_pending_question(
+        &ctx.run_id,
+        call_id,
+        &req,
+        Arc::clone(&ctx.grants),
+    ) {
+        Ok(w) => w,
+        Err(err) => return PiToolExecutionResult::error(err),
+    };
     (ctx.emit)(
         "needsDecision",
         Some(call_id.to_owned()),
@@ -266,14 +275,10 @@ pub(super) async fn handle_message_user(
         }),
         None,
     );
-    (ctx.persist)("needsDecision", desc);
-    match ctx
-        .coordinator
-        .suspend_for_question(&ctx.run_id, call_id, &req, Arc::clone(&ctx.grants))
-        .await
-    {
+    ctx.persist("needsDecision", desc).await;
+    match waiter.wait().await {
         Ok(response) => {
-            (ctx.persist)("running", String::new());
+            ctx.persist("running", String::new()).await;
             let resuming_label = i18n::actions::action_resuming_label(ctx.locale).to_owned();
             let preserved_card = ctx
                 .run_state
@@ -399,7 +404,7 @@ pub(super) async fn handle_run_git(
                 );
             }
             if should_persist {
-                (ctx.persist)("running", String::new());
+                ctx.persist("running", String::new()).await;
             }
             let body = format!(
                 "exitCode: {:?}\nstdout:\n{}\nstderr:\n{}",
@@ -483,7 +488,7 @@ pub(super) async fn handle_run_platform_cli(
                 );
             }
             if out.success && has_links {
-                (ctx.persist)("running", String::new());
+                ctx.persist("running", String::new()).await;
             }
             let body = format!(
                 "exitCode: {:?}\nstdout:\n{}\nstderr:\n{}",

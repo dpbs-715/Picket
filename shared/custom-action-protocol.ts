@@ -80,7 +80,7 @@ export interface RespondCustomActionRequest {
   locale?: AppLocale;
 }
 
-export interface DismissCustomActionDoneRequest {
+export interface DismissSessionDoneRequest {
   requestId: string;
   target: GitReadTarget;
   runId?: string;

@@ -10,6 +10,7 @@ import {
   finishRepositoryLocalKeep,
   finishRepositoryRead,
   hydrateWorkbench,
+  mergeSnapshot,
   receiveCPushProgress,
 } from './repositories';
 import {
@@ -85,8 +86,11 @@ function reduceWorktreeLocal(worktree: Worktree, action: WorkbenchAction): Workt
 
 export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction): WorkbenchState {
   if (action.type === 'workbenchHydrated') return hydrateWorkbench(state, action.restored);
+  if (action.type === 'traySnapshotsSynced') {
+    return action.snapshots.reduce((acc, snap) => mergeSnapshot(acc, snap, false), state);
+  }
   if (action.type === 'event' && action.event.type === 'cPushProgress') {
-    return receiveCPushProgress(state, action.event.progress);
+    return receiveCPushProgress(state, action.event.progress, Boolean(action.suppressExpand));
   }
   if (action.type === 'event' && action.event.type === 'customActionProgress') {
     return applyCustomActionProgress(state, action.event.progress, Boolean(action.suppressExpand));

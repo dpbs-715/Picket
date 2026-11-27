@@ -213,6 +213,57 @@ async fn phase4_syncs_shallow_validates_preserves_enabled_and_restores_bundled()
             .contains("# release-tag")
     );
 
+    // 3b. Disabling a built-in skill (e.g. `dcr`) records it in `disabled_skills` so Pi Core
+    // removes it completely instead of falling back to the bundled copy:
+    let enabled_without_dcr: Vec<String> = DEFAULT_GIT_SKILLS
+        .iter()
+        .filter(|name| **name != "dcr")
+        .map(|s| (*s).to_owned())
+        .chain(std::iter::once("release-tag".to_owned()))
+        .collect();
+    manager
+        .set_enabled_skills(
+            &data_dir,
+            &UpdateEnabledSkillsRequest {
+                enabled_skills: enabled_without_dcr,
+                locale: LanguageKind::En,
+            },
+        )
+        .await
+        .expect("disabling built-in dcr should succeed");
+    let disabled_snapshot = RuntimeSkillSnapshot::load_from_data_dir(&data_dir);
+    assert!(
+        !disabled_snapshot
+            .catalog
+            .skills
+            .iter()
+            .any(|s| s.name == "dcr")
+    );
+    assert!(
+        disabled_snapshot
+            .catalog
+            .disabled_skills
+            .contains(&"dcr".to_owned())
+    );
+    assert!(disabled_snapshot.catalog_option().is_some());
+
+    // Re-enable `dcr` + `release-tag` before step 4:
+    let restored_enabled: Vec<String> = DEFAULT_GIT_SKILLS
+        .iter()
+        .map(|s| (*s).to_owned())
+        .chain(std::iter::once("release-tag".to_owned()))
+        .collect();
+    manager
+        .set_enabled_skills(
+            &data_dir,
+            &UpdateEnabledSkillsRequest {
+                enabled_skills: restored_enabled,
+                locale: LanguageKind::En,
+            },
+        )
+        .await
+        .expect("re-enabling dcr should succeed");
+
     // 4. Push commit v2 upstream and re-sync: content updates AND user's `release-tag` choice is preserved!
     fs::write(
         upstream_repo.join("skills/dcr/references/checklist.md"),

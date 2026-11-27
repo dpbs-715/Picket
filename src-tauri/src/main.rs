@@ -1,30 +1,41 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod actions;
+mod bounded_cache;
 mod commands;
-mod cpush;
+#[cfg(any(test, feature = "smoke-harness"))]
 mod foundation;
+mod git_env;
 mod i18n;
+mod lifecycle;
 mod models;
+mod pi_runtime;
+#[cfg(test)]
+mod protocol_contract_tests;
+mod repo_lock;
 mod repository;
 mod skills;
 mod startup_splash;
+mod storage;
+mod time;
 mod tray;
 mod updater;
 mod window_motion;
 
 use actions::CustomActionCoordinator;
 use commands::{RepositoryPicker, picket_data_dir};
-use cpush::CPushCoordinator;
-use foundation::{
-    lifecycle::{DesktopLifecycle, exit_after_cleanup},
-    pi::{PiPaths, PiSupervisor},
-};
-use models::{smoke::ModelSmokeState, store::ModelStore};
+use lifecycle::{DesktopLifecycle, exit_after_cleanup};
+#[cfg(feature = "smoke-harness")]
+use models::smoke::ModelSmokeState;
+use models::store::ModelStore;
+#[cfg(feature = "smoke-harness")]
+use pi_runtime::PiPaths;
+use pi_runtime::PiSupervisor;
 use repository::{RepositoryStore, editor::EditorLauncher, persistence::WorkbenchPersistence};
 use skills::SkillManager;
 use tauri::Manager;
 use updater::UpdateManager;
 
+#[cfg(feature = "smoke-harness")]
 fn run_foundation_smoke() {
     let paths = if cfg!(debug_assertions) {
         Ok(PiPaths::development())
@@ -51,43 +62,55 @@ fn run_foundation_smoke() {
 }
 
 fn main() {
+    #[cfg(feature = "smoke-harness")]
     if std::env::args().any(|arg| arg == "--foundation-smoke") {
         run_foundation_smoke();
         return;
     }
 
-    let app = tauri::Builder::default()
+    let repo_writes = repo_lock::RepoWriteCoordinator::default();
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(RepositoryStore::default())
+        .manage(repo_writes.clone())
+        .manage(RepositoryStore::with_write_coordinator(repo_writes.clone()))
         .manage(EditorLauncher::default())
         .manage(WorkbenchPersistence::default())
         .manage(ModelStore::default())
-        .manage(ModelSmokeState::default())
         .manage(RepositoryPicker::default())
-        .manage(repository::smoke::SmokeState::default())
         .manage(PiSupervisor::default())
-        .manage(CPushCoordinator::default())
-        .manage(CustomActionCoordinator::default())
+        .manage(CustomActionCoordinator::with_write_coordinator(repo_writes))
         .manage(SkillManager::default())
         .manage(UpdateManager::default())
         .manage(startup_splash::StartupSplashCoordinator::default())
-        .manage(tray::TrayCoordinator::default())
+        .manage(tray::TrayCoordinator::default());
+
+    #[cfg(feature = "smoke-harness")]
+    let builder = builder
+        .manage(ModelSmokeState::default())
+        .manage(repository::smoke::SmokeState::default())
         .manage(DesktopLifecycle::with_flags(
             std::env::args().any(|arg| arg == "--foundation-ui-smoke"),
             std::env::args().any(|arg| arg == "--foundation-restart-smoke"),
             std::env::args().any(|arg| arg == "--keep-smoke-repo-once"),
-        ))
-        .setup(|app| {
-            let ui_smoke = app.state::<DesktopLifecycle>().ui_smoke;
-            let data_dir = picket_data_dir().ok();
-            app.state::<startup_splash::StartupSplashCoordinator>()
-                .setup_startup(app.handle(), ui_smoke, data_dir.as_deref());
-            app.state::<tray::TrayCoordinator>()
-                .setup_tray(app.handle(), ui_smoke);
-            Ok(())
-        })
+        ));
+
+    #[cfg(not(feature = "smoke-harness"))]
+    let builder = builder.manage(DesktopLifecycle::default());
+
+    let builder = builder.setup(|app| {
+        let ui_smoke = app.state::<DesktopLifecycle>().is_ui_smoke();
+        let data_dir = picket_data_dir().ok();
+        app.state::<startup_splash::StartupSplashCoordinator>()
+            .setup_startup(app.handle(), ui_smoke, data_dir.as_deref());
+        app.state::<tray::TrayCoordinator>()
+            .setup_tray(app.handle(), ui_smoke);
+        Ok(())
+    });
+
+    #[cfg(feature = "smoke-harness")]
+    let builder = builder
         .invoke_handler(tauri::generate_handler![
             commands::smoke::run_pi_probe,
             commands::smoke::cancel_pi_probe,
@@ -103,7 +126,7 @@ fn main() {
             window_motion::set_window_theme,
             window_motion::animate_window_frame,
             tray::read_tray_state,
-            tray::sync_tray_state,
+            tray::sync_tray_context,
             tray::request_tray_refresh,
             tray::resize_tray_popover,
             tray::hide_tray_popover,
@@ -136,12 +159,11 @@ fn main() {
             commands::cpush::respond_cpush,
             commands::cpush::pull_rebase_repository,
             commands::cpush::reconcile_cpush_session,
-            commands::cpush::dismiss_cpush_done,
             commands::actions::start_custom_action,
             commands::actions::respond_custom_action,
             commands::actions::generate_custom_action,
             commands::actions::cancel_custom_action,
-            commands::actions::dismiss_custom_action_done,
+            commands::actions::dismiss_session_done,
             commands::skills::get_skills_state,
             commands::skills::sync_skills,
             commands::skills::set_enabled_skills,
@@ -178,11 +200,66 @@ fn main() {
                     exit_after_cleanup(window.app_handle());
                 }
             }
-        })
+        });
+
+    #[cfg(not(feature = "smoke-harness"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        startup_splash::splash_ready,
+        startup_splash::notify_workbench_ready,
+        startup_splash::run_splash_jump,
+        startup_splash::complete_splash,
+        window_motion::set_window_pinned,
+        window_motion::set_window_theme,
+        window_motion::animate_window_frame,
+        tray::read_tray_state,
+        tray::sync_tray_context,
+        tray::request_tray_refresh,
+        tray::resize_tray_popover,
+        tray::hide_tray_popover,
+        tray::tray_open_main_window,
+        tray::tray_quit_app,
+        commands::updater::get_update_status,
+        commands::updater::check_for_update,
+        commands::updater::install_update,
+        commands::updater::cancel_update,
+        commands::updater::open_release_page,
+        commands::repository::open_repository,
+        commands::repository::refresh_repository,
+        commands::repository::set_repository_local_keep,
+        commands::repository::change_repository_branch,
+        commands::repository::open_in_editor,
+        commands::repository::load_workbench_state,
+        commands::repository::save_workbench_state,
+        commands::models::test_model_connection,
+        commands::models::list_provider_models,
+        commands::models::create_provider_connection,
+        commands::models::update_provider_connection,
+        commands::models::delete_provider_connection,
+        commands::models::save_model,
+        commands::models::select_model,
+        commands::models::delete_model,
+        commands::models::reveal_provider_api_key,
+        commands::models::cancel_model_request,
+        commands::cpush::start_cpush,
+        commands::cpush::respond_cpush,
+        commands::cpush::pull_rebase_repository,
+        commands::cpush::reconcile_cpush_session,
+        commands::actions::start_custom_action,
+        commands::actions::respond_custom_action,
+        commands::actions::generate_custom_action,
+        commands::actions::cancel_custom_action,
+        commands::actions::dismiss_session_done,
+        commands::skills::get_skills_state,
+        commands::skills::sync_skills,
+        commands::skills::set_enabled_skills,
+        commands::skills::reset_skills_to_bundled
+    ]);
+
+    let app = builder
         .on_window_event(|window, event| match (window.label(), event) {
             ("main", tauri::WindowEvent::CloseRequested { api, .. }) => {
                 api.prevent_close();
-                if window.state::<DesktopLifecycle>().ui_smoke {
+                if window.state::<DesktopLifecycle>().is_ui_smoke() {
                     exit_after_cleanup(window.app_handle());
                 } else {
                     window

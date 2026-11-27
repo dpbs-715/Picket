@@ -1,19 +1,24 @@
 //! Explicit native UI harness only: real Git, always a disposable directory.
+#[cfg(feature = "smoke-harness")]
+use std::sync::Mutex;
 use std::{
     fs,
     path::PathBuf,
     process::{Command, Stdio},
-    sync::Mutex,
 };
 use tempfile::TempDir;
 
 pub struct Fixture {
     _directory: TempDir,
     pub root: PathBuf,
+    #[cfg_attr(not(feature = "smoke-harness"), allow(dead_code))]
     pub bare_remote: PathBuf,
+    #[cfg_attr(not(feature = "smoke-harness"), allow(dead_code))]
     pub editor_bin: PathBuf,
     index: Vec<u8>,
+    #[cfg_attr(not(feature = "smoke-harness"), allow(dead_code))]
     staged_entries: Vec<u8>,
+    #[cfg_attr(not(feature = "smoke-harness"), allow(dead_code))]
     head: Vec<u8>,
     contents: Vec<u8>,
 }
@@ -142,6 +147,7 @@ impl Fixture {
             contents,
         })
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn verify_branch_operations(&self) -> Result<(), String> {
         let linked = self
             .root
@@ -179,6 +185,7 @@ impl Fixture {
         }
         Ok(())
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn verify_commit_operations(&self) -> Result<(), String> {
         let linked = self
             .root
@@ -220,6 +227,7 @@ impl Fixture {
         }
         Ok(())
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn verify_ide_staged_diff(&self) -> Result<(), String> {
         let log_dir = self.root.parent().ok_or("Missing fixture parent")?;
         let cwd =
@@ -256,6 +264,7 @@ impl Fixture {
         }
         Ok(())
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn prepare_cpush_m4(&self) -> Result<(), String> {
         git(&self.root, &["add", "--", "pnpm-lock.yaml"])?;
         fs::write(
@@ -264,6 +273,7 @@ impl Fixture {
         )
         .map_err(|e| e.to_string())
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn verify_cpush_m4(&self) -> Result<(), String> {
         let count = String::from_utf8(git(&self.root, &["rev-list", "--count", "HEAD"])?)
             .map_err(|e| e.to_string())?;
@@ -300,6 +310,7 @@ impl Fixture {
         }
         Ok(())
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn prepare_m5_conflict(&self) -> Result<(), String> {
         let parent = self.root.parent().ok_or("Missing fixture parent")?;
         let peer = parent.join("peer-clone");
@@ -334,6 +345,7 @@ impl Fixture {
         )
         .map_err(|e| e.to_string())
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn verify_m5_conflict(&self) -> Result<(), String> {
         let local_head = git(&self.root, &["rev-parse", "HEAD"])?;
         let remote_head = git(
@@ -377,8 +389,10 @@ impl Fixture {
         Ok(())
     }
 }
+#[cfg(feature = "smoke-harness")]
 #[derive(Default)]
 pub struct SmokeState(pub Mutex<Option<Fixture>>);
+#[cfg(feature = "smoke-harness")]
 impl SmokeState {
     pub fn path_and_editor_bin(&self) -> Result<(PathBuf, PathBuf), String> {
         let mut fixture = self.0.lock().map_err(|_| "Read proof is unavailable")?;
@@ -464,6 +478,7 @@ impl SmokeState {
             .ok_or("C-Push smoke fixture not opened")?
             .verify_cpush_m4()
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn prepare_m5_conflict(&self) -> Result<(), String> {
         self.0
             .lock()
@@ -472,6 +487,7 @@ impl SmokeState {
             .ok_or("M5 conflict smoke fixture not opened")?
             .prepare_m5_conflict()
     }
+    #[cfg(feature = "smoke-harness")]
     pub fn verify_m5_conflict(&self) -> Result<(), String> {
         self.0
             .lock()

@@ -10,7 +10,7 @@ use crate::{
         executor::{exec_controlled_git, exec_controlled_repo_command},
         policy::{CommandDecision, classify_repo_command},
     },
-    foundation::pi::PiToolExecutionResult,
+    pi_runtime::PiToolExecutionResult,
     repository::{ai_context::is_sensitive_local_file, read_tools::validate_safe_repo_path},
 };
 use serde_json::Value;
@@ -227,9 +227,9 @@ pub(super) async fn handle_run_repo_command(
                     .await
                     .ok();
                 (ctx.emit)("running", None, None, refreshed_snapshot);
-                (ctx.persist)("running", String::new());
+                ctx.persist("running", String::new()).await;
             } else if out.success && has_links {
-                (ctx.persist)("running", String::new());
+                ctx.persist("running", String::new()).await;
             }
 
             let mut body = format!(

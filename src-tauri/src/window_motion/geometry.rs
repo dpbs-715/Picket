@@ -1,5 +1,6 @@
 //! Platform-independent window geometry types, validation, and coordinate transforms.
 
+use crate::repository::types::WindowPosition;
 use serde::{Deserialize, Serialize};
 
 pub(super) const MIN_WINDOW_WIDTH: f64 = 400.0;
@@ -8,6 +9,8 @@ pub(super) const MAX_WINDOW_DIMENSION: f64 = 16_384.0;
 pub(super) const MAX_COORDINATE_ABS: f64 = 65_536.0;
 pub(super) const MAX_DURATION_MS: u32 = 600;
 pub(super) const FRAME_EPSILON: f64 = 0.5;
+const TITLEBAR_VISIBLE_HEIGHT: f64 = 38.0;
+const MIN_VISIBLE_HORIZONTAL_OVERLAP: f64 = 80.0;
 pub(super) const NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES: usize = 1 << 0;
 pub(super) const NS_WINDOW_COLLECTION_BEHAVIOR_MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
 pub(super) const NS_WINDOW_COLLECTION_BEHAVIOR_TRANSIENT: usize = 1 << 3;
@@ -240,4 +243,60 @@ pub(super) fn frames_within_epsilon(a: NSRect, b: NSRect) -> bool {
         && (a.origin.y - b.origin.y).abs() <= FRAME_EPSILON
         && (a.size.width - b.size.width).abs() <= FRAME_EPSILON
         && (a.size.height - b.size.height).abs() <= FRAME_EPSILON
+}
+
+/// Single authoritative multi-monitor window clamping helper shared by cold startup
+/// placement (`startup_splash.rs`) and runtime `animate_window_frame` (`RestorePosition`).
+pub fn resolve_visible_window_position(
+    desired: Option<WindowPosition>,
+    width: f64,
+    height: f64,
+    monitors: &[MonitorWorkArea],
+    primary: Option<MonitorWorkArea>,
+) -> (f64, f64, MonitorWorkArea) {
+    let fallback_monitor =
+        primary
+            .or_else(|| monitors.first().copied())
+            .unwrap_or(MonitorWorkArea {
+                x: 0.0,
+                y: 25.0,
+                width: 1440.0,
+                height: 875.0,
+            });
+    let pool: Vec<MonitorWorkArea> = if !monitors.is_empty() {
+        monitors.to_vec()
+    } else {
+        vec![fallback_monitor]
+    };
+
+    let Some(pos) = desired else {
+        let centered_x = (fallback_monitor.x + (fallback_monitor.width - width) * 0.5).round();
+        let centered_y = (fallback_monitor.y + (fallback_monitor.height - height) * 0.5).round();
+        return (centered_x, centered_y, fallback_monitor);
+    };
+
+    let desired_x = f64::from(pos.x);
+    let desired_y = f64::from(pos.y);
+    let required_overlap = MIN_VISIBLE_HORIZONTAL_OVERLAP.min(width.max(40.0));
+
+    if let Some(matched) = pool.iter().copied().find(|monitor| {
+        let overlap_left = desired_x.max(monitor.x);
+        let overlap_right = (desired_x + width).min(monitor.x + monitor.width);
+        let horizontal_ok = overlap_right - overlap_left >= required_overlap;
+        let vertical_ok = desired_y >= monitor.y
+            && desired_y + TITLEBAR_VISIBLE_HEIGHT <= monitor.y + monitor.height;
+        horizontal_ok && vertical_ok
+    }) {
+        return (desired_x.round(), desired_y.round(), matched);
+    }
+
+    let max_x = fallback_monitor
+        .x
+        .max(fallback_monitor.x + fallback_monitor.width - width);
+    let max_y = fallback_monitor
+        .y
+        .max(fallback_monitor.y + fallback_monitor.height - height);
+    let clamped_x = desired_x.round().clamp(fallback_monitor.x, max_x);
+    let clamped_y = desired_y.round().clamp(fallback_monitor.y, max_y);
+    (clamped_x, clamped_y, fallback_monitor)
 }

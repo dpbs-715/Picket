@@ -40,6 +40,7 @@ export default defineConfig({
   server: { port: 1420, strictPort: true, host: '127.0.0.1' },
   clearScreen: false,
   build: {
+    outDir: process.env.PICKET_DIST_DIR || 'dist',
     rollupOptions: {
       input: {
         main: resolve(rootDir, 'index.html'),
@@ -49,7 +50,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.test.ts', 'agent/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'agent/**/*.test.ts', 'shared/**/*.test.ts'],
     testTimeout: 15_000,
   },
 });

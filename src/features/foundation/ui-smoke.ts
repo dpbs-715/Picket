@@ -684,7 +684,12 @@ export function registerUiSmoke() {
       }
 
       findButton('Expand Workbench')!.click();
-      await waitForUi(() => !document.querySelector('.compact-bar') && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/branch-proof') === true, 'restart-repo-hydrated');
+      await waitForUi(
+        () => !document.querySelector('.compact-bar')
+          && !!document.querySelector('button[aria-label="Collapse to Compact Mode"]:not(:disabled)')
+          && document.querySelector('.branch-anchor > button')?.textContent?.includes('feat/branch-proof') === true,
+        'restart-repo-hydrated',
+      );
       const expandedSize = await win.outerSize();
       if (expandedSize.height / coldScale < 680) {
         throw new Error(`Expanding after cold restart did not restore full window height (got ${expandedSize.height / coldScale})`);

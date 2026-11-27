@@ -1,0 +1,61 @@
+{
+  "protocolVersion": 1,
+  "requestId": "req-contract-read-1",
+  "target": {
+    "repositoryId": "repo-orders",
+    "worktreeId": "wt-orders-main",
+    "sessionId": "sess-orders-1",
+    "scopeVersion": "sv-101"
+  },
+  "snapshot": {
+    "repository": {
+      "id": "repo-orders",
+      "name": "orders",
+      "branches": [
+        { "name": "feat/pay", "worktreeId": "wt-orders-main" },
+        { "name": "main" }
+      ],
+      "remoteBranches": [
+        { "name": "origin/main", "remote": "origin", "localName": "main" }
+      ],
+      "localKeepPaths": ["config/local.dev.yaml"]
+    },
+    "worktrees": [
+      {
+        "repositoryId": "repo-orders",
+        "worktreeId": "wt-orders-main",
+        "label": "orders",
+        "path": "/tmp/orders",
+        "branch": "feat/pay",
+        "detached": false,
+        "head": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        "statusVersion": "sv-101",
+        "branchToken": "bt-contract-1",
+        "readError": null,
+        "remote": {
+          "kind": "tracked",
+          "branch": "origin/feat/pay",
+          "ahead": 1,
+          "behind": 0,
+          "localOnly": false
+        },
+        "files": [
+          {
+            "id": "file-order",
+            "path": "src/order.ts",
+            "status": "M",
+            "gitStatus": "MM",
+            "range": { "kind": "partial", "added": 12, "removed": 3 },
+            "ignoredForReview": false,
+            "localKeep": false,
+            "binary": false,
+            "contentVersion": "cv-1",
+            "commitToken": "ct-contract-1"
+          }
+        ]
+      }
+    ],
+    "activeWorktreeId": "wt-orders-main",
+    "readSequence": 4
+  }
+}

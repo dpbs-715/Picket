@@ -11,6 +11,7 @@ import {
   type WorkbenchState,
   type Worktree,
 } from '../state/workbench';
+import { FileName } from './ChangeFileRow';
 
 export type CompactDrawer = 'none' | 'projects' | 'branches' | 'remote' | 'files' | 'actions';
 
@@ -195,7 +196,7 @@ export function CompactFilesDrawer({
               onChange={() => onSelect(file.id)}
             />
             <span className={`git-status git-${file.status}`} aria-hidden="true">{file.status}</span>
-            <span className="file-name mono truncate">{name}</span>
+            <FileName name={name} />
             {directory && <span className="file-directory mono truncate">{directory}</span>}
             {file.range.kind === 'partial' && (
               <span className="accent file-badge">{t.changes.partialStagedBadge}</span>
@@ -230,7 +231,7 @@ export function CompactFilesDrawer({
                   onChange={() => onSelect(file.id)}
                 />
                 <span className={`git-status git-${file.status}`} aria-hidden="true">{file.status}</span>
-                <span className="file-name mono truncate">{name}</span>
+                <FileName name={name} />
                 {directory && <span className="file-directory mono truncate">{directory}</span>}
               </label>
             );

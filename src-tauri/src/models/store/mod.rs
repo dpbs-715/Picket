@@ -55,6 +55,7 @@ impl ModelStore {
         &self.credentials
     }
 
+    #[cfg(feature = "smoke-harness")]
     pub fn set_authenticator(
         &self,
         authenticator: Arc<dyn LocalAuthenticator>,

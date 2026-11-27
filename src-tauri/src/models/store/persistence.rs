@@ -1,22 +1,20 @@
 use crate::{
-    foundation::pi::PiProviderSpec,
     i18n::{self, LanguageKind},
     models::{
         defaults::resolve_default_token_limits,
         types::{ApiFormatKind, ProviderKind, SavedModelConfiguration, SavedProviderConnection},
     },
+    pi_runtime::PiProviderSpec,
+    storage,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::Write,
-    os::unix::fs::PermissionsExt,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tempfile::NamedTempFile;
 
 pub(super) const STORAGE_VERSION: u8 = 3;
 const MODELS_FILE: &str = "models.json";
@@ -25,7 +23,7 @@ pub(super) const MAX_STORED_MODELS: usize = 64;
 pub(super) const TEST_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(50);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StoredConnectionRecord {
     pub(super) id: String,
     pub(super) name: String,
@@ -53,7 +51,7 @@ impl StoredConnectionRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StoredModelRecord {
     pub(super) id: String,
     pub(super) connection_id: String,
@@ -100,7 +98,7 @@ impl StoredModelRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StoredModelsFile {
     pub(super) version: u8,
     pub(super) active_model_id: Option<String>,
@@ -192,7 +190,7 @@ pub(super) fn short_token(prefix: &str, counter: u64, hint: &str) -> String {
     format!("{prefix}-{}", &hex[..16])
 }
 
-pub(super) fn read_models_file(
+fn read_models_file_unlocked(
     storage_dir: &Path,
     locale: LanguageKind,
 ) -> Result<(StoredModelsFile, Option<String>), String> {
@@ -225,33 +223,33 @@ pub(super) fn read_models_file(
             }
             Ok((parsed, None))
         }
-        _ => Ok((
-            StoredModelsFile::empty(),
-            Some(i18n::models::models_file_corrupted_warning(locale).into()),
-        )),
+        _ => {
+            storage::backup_corrupt_copy(&path, &bytes);
+            Ok((
+                StoredModelsFile::empty(),
+                Some(i18n::models::models_file_corrupted_warning(locale).into()),
+            ))
+        }
     }
 }
 
-pub(super) fn write_models_file_atomic(
+pub(super) async fn read_models_file_async(
     storage_dir: &Path,
-    payload: &StoredModelsFile,
+    locale: LanguageKind,
+) -> Result<(StoredModelsFile, Option<String>), String> {
+    let dir = storage_dir.to_path_buf();
+    let path = dir.join(MODELS_FILE);
+    storage::run_blocking_locked(path, move || read_models_file_unlocked(&dir, locale)).await
+}
+
+pub(super) async fn write_models_file_atomic_async(
+    storage_dir: &Path,
+    payload: StoredModelsFile,
 ) -> Result<(), String> {
-    fs::create_dir_all(storage_dir)
-        .map_err(|_| "Cannot create local configuration directory".to_string())?;
-    fs::set_permissions(storage_dir, fs::Permissions::from_mode(0o700))
-        .map_err(|_| "Cannot set local configuration directory permissions".to_string())?;
-    let serialized = serde_json::to_vec_pretty(payload)
-        .map_err(|_| "Cannot serialize model configuration".to_string())?;
-    let mut temp = NamedTempFile::new_in(storage_dir)
-        .map_err(|_| "Cannot create temporary model configuration file".to_string())?;
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600))
-        .map_err(|_| "Cannot set model configuration file permissions".to_string())?;
-    temp.write_all(&serialized)
-        .map_err(|_| "Cannot write model configuration file".to_string())?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|_| "Cannot sync model configuration file".to_string())?;
-    temp.persist(storage_dir.join(MODELS_FILE))
-        .map_err(|_| "Cannot atomically persist model configuration file".to_string())?;
-    Ok(())
+    let dir = storage_dir.to_path_buf();
+    let target = dir.join(MODELS_FILE);
+    storage::run_blocking_locked(target.clone(), move || {
+        storage::write_json_atomic(&dir, &target, &payload, false)
+    })
+    .await
 }

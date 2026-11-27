@@ -11,7 +11,7 @@ pub use sync::SkillManager;
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -35,6 +35,8 @@ pub struct RuntimeSkillOverrideCatalog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_commit: Option<String>,
     pub skills: Vec<RuntimeSkillOverrideEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_skills: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -56,7 +58,7 @@ struct StoredSkillManifest {
 
 impl RuntimeSkillSnapshot {
     pub fn is_empty(&self) -> bool {
-        self.catalog.skills.is_empty()
+        self.catalog.skills.is_empty() && self.catalog.disabled_skills.is_empty()
     }
 
     pub fn catalog_option(&self) -> Option<RuntimeSkillOverrideCatalog> {
@@ -118,6 +120,15 @@ impl RuntimeSkillSnapshot {
             .collect();
         dirs.sort();
 
+        let mut disabled_set: BTreeSet<String> = BTreeSet::new();
+        if let Some(ref allowed) = enabled_filter {
+            for bundled_name in sync::bundled_skill_names() {
+                if !allowed.contains(&bundled_name) {
+                    disabled_set.insert(bundled_name);
+                }
+            }
+        }
+
         let mut snapshot = Self {
             catalog: RuntimeSkillOverrideCatalog {
                 source_repo: manifest_meta
@@ -127,6 +138,7 @@ impl RuntimeSkillSnapshot {
                     .as_ref()
                     .and_then(|meta| meta.source_commit.clone()),
                 skills: Vec::new(),
+                disabled_skills: Vec::new(),
             },
             docs: BTreeMap::new(),
         };
@@ -148,6 +160,7 @@ impl RuntimeSkillSnapshot {
             if let Some(ref allowed) = enabled_filter
                 && !allowed.contains(&name)
             {
+                disabled_set.insert(name);
                 continue;
             }
             let mut files = Vec::new();
@@ -169,6 +182,7 @@ impl RuntimeSkillSnapshot {
             });
         }
 
+        snapshot.catalog.disabled_skills = disabled_set.into_iter().collect();
         snapshot
     }
 }

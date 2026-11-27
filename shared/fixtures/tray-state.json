@@ -1,0 +1,25 @@
+{
+  "protocolVersion": 1,
+  "locale": "en",
+  "theme": "dark",
+  "hasUpdate": true,
+  "refreshing": false,
+  "repositories": [
+    {
+      "repositoryId": "repo-orders",
+      "worktreeId": "wt-orders-main",
+      "name": "orders",
+      "branch": "feat/pay",
+      "detached": false,
+      "ahead": 1,
+      "behind": 0,
+      "hasUpstream": true,
+      "changeCount": 1,
+      "localKeepCount": 2,
+      "worktreeCount": 1,
+      "active": true,
+      "sessionStatus": "needsDecision",
+      "statusDetail": "Include release notes in this commit?"
+    }
+  ]
+}

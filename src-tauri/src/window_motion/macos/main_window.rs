@@ -1,16 +1,21 @@
 //! Native macOS main window animation, pinning, startup frame positioning, reveal, and activation.
 
+#[cfg(feature = "smoke-harness")]
+use super::ffi::is_window_visible_on_all_spaces;
 use super::ffi::{
     _NSConcreteStackBlock, AutoreleasePoolGuard, BLOCK_HAS_COPY_DISPOSE, ObjcBool,
-    activate_app_macos, apply_pinned_on_main, is_window_visible_on_all_spaces,
-    make_window_key_and_order_front, objc_getClass, objc_msgSend, objc_release, objc_retain,
-    prefers_reduced_motion_macos, primary_screen_height, sel_registerName, set_window_alpha,
-    set_window_content_min_size, set_window_frame_instant, window_content_rect, window_frame,
+    activate_app_macos, apply_pinned_on_main, make_window_key_and_order_front, objc_getClass,
+    objc_msgSend, objc_release, objc_retain, prefers_reduced_motion_macos, primary_screen_height,
+    sel_registerName, set_window_alpha, set_window_content_min_size, set_window_frame_instant,
+    window_content_rect, window_frame,
 };
-use crate::window_motion::geometry::{
-    AnimateWindowFrameReply, LogicalExtent, LogicalPoint, NSRect, NSSize, ValidatedRequest,
-    WindowFramePlacement, appkit_frame_to_top_left, compute_target_frame, content_size_to_extent,
-    frames_within_epsilon,
+use crate::{
+    repository::types::WindowPosition,
+    window_motion::geometry::{
+        AnimateWindowFrameReply, LogicalExtent, LogicalPoint, NSRect, NSSize, ValidatedRequest,
+        WindowFramePlacement, appkit_frame_to_top_left, compute_target_frame,
+        content_size_to_extent, frames_within_epsilon, resolve_visible_window_position,
+    },
 };
 use std::{
     ffi::c_void,
@@ -156,10 +161,37 @@ pub(crate) async fn animate_main_window(
                 let primary_height = unsafe { primary_screen_height(ns_window) };
                 let previous_position = appkit_frame_to_top_left(before_frame, primary_height);
                 let previous_size = content_size_to_extent(before_content.size);
-
-                let target_frame =
-                    compute_target_frame(before_frame, before_content.size, primary_height, req);
                 let target_content_w = req.width.unwrap_or(before_content.size.width);
+                let clamped_req = if req.placement == WindowFramePlacement::RestorePosition
+                    && let (Some(tx), Some(ty)) = (req.target_x, req.target_y)
+                {
+                    let (monitors, primary, _) =
+                        super::displays::read_monitors_on_main(&win_for_main);
+                    let (cx, cy, _) = resolve_visible_window_position(
+                        Some(WindowPosition {
+                            x: tx.round() as i32,
+                            y: ty.round() as i32,
+                        }),
+                        target_content_w,
+                        req.height,
+                        &monitors,
+                        primary,
+                    );
+                    ValidatedRequest {
+                        target_x: Some(cx),
+                        target_y: Some(cy),
+                        ..req
+                    }
+                } else {
+                    req
+                };
+
+                let target_frame = compute_target_frame(
+                    before_frame,
+                    before_content.size,
+                    primary_height,
+                    clamped_req,
+                );
                 let final_min_size = NSSize {
                     width: req.min_width.min(target_content_w),
                     height: req.min_height.min(req.height),
@@ -428,6 +460,7 @@ pub(crate) async fn set_main_window_pinned(
         .map_err(|_| "Window pin task did not run on main thread".to_string())?
 }
 
+#[cfg(feature = "smoke-harness")]
 pub(crate) async fn read_main_window_visible_on_all_spaces(
     window: tauri::WebviewWindow,
 ) -> Result<bool, String> {

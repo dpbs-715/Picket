@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // macOS /var is a symlink to /private/var. Tauri intentionally rejects a
 // symlinked starting-binary path, so resolve it rather than disabling that guard.
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'picket-package-')));
+const releaseDestination = join(temporary, '\u72ec\u7acb \u53d1\u5e03', 'Picket.app');
 const destination = join(temporary, '\u72ec\u7acb \u8def\u5f84', 'Picket.app');
 const home = join(temporary, 'empty-home');
 mkdirSync(home);
@@ -57,34 +58,80 @@ function verifyBundleNoDemoOrSecretLeaks(bundleDir, distDir) {
   }
 }
 
+function verifyReleaseBundleNoSmokeBackdoors(bundleDir, distDir) {
+  const forbiddenSmokeMarkers = [
+    '--foundation-smoke',
+    '--foundation-ui-smoke',
+    '--foundation-restart-smoke',
+    'set_smoke_local_auth',
+    'verify_model_m3_smoke',
+    'verify_cpush_m4_smoke',
+    'verify_m5_conflict_smoke',
+    'verify_tray_smoke',
+    'picket:foundation-smoke',
+    '__PICKET_UI_SMOKE__',
+  ];
+  const binary = existsSync(join(bundleDir, 'Contents/MacOS/Picket'))
+    ? join(bundleDir, 'Contents/MacOS/Picket')
+    : join(bundleDir, 'Contents/MacOS/picket');
+  const binaryBytes = readFileSync(binary);
+  for (const marker of forbiddenSmokeMarkers) {
+    if (binaryBytes.includes(Buffer.from(marker, 'utf8'))) {
+      throw new Error(`Production release binary ${binary} leaked smoke-harness marker: ${marker}`);
+    }
+  }
+  for (const file of collectFiles(distDir)) {
+    if (file.endsWith('.icns') || file.endsWith('.png')) continue;
+    const content = readFileSync(file, 'utf8');
+    for (const marker of forbiddenSmokeMarkers) {
+      if (content.includes(marker)) {
+        throw new Error(`Production frontend bundle ${file} leaked smoke-harness marker: ${marker}`);
+      }
+    }
+  }
+  const nodeBinary = join(bundleDir, 'Contents/MacOS/picket-node');
+  const sidecarScript = join(bundleDir, 'Contents/Resources/sidecar/pi-sidecar.mjs');
+  const sidecarHome = join(temporary, 'release-sidecar-home');
+  mkdirSync(sidecarHome, { recursive: true });
+  const handshakeRun = spawnSync(nodeBinary, [sidecarScript], {
+    cwd: temporary,
+    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: sidecarHome, TMPDIR: temporary },
+    input: `${JSON.stringify({ type: 'shutdown' })}\n`,
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  if (handshakeRun.error) throw handshakeRun.error;
+  if (handshakeRun.status !== 0) {
+    throw new Error(`Production bundled sidecar failed: ${handshakeRun.stderr || handshakeRun.stdout}`);
+  }
+  const firstLine = handshakeRun.stdout.trim().split('\n')[0] ?? '';
+  const handshake = JSON.parse(firstLine);
+  if (handshake?.type !== 'ready' || handshake.protocolVersion !== 1 || handshake.piCoreVersion !== '1.6.0') {
+    throw new Error(`Unexpected production sidecar handshake: ${firstLine}`);
+  }
+}
+
 function verifyAppDataSecurity(appDataDir) {
   if (!existsSync(appDataDir)) throw new Error(`Expected Picket data directory missing after UI smoke: ${appDataDir}`);
   const dirMode = statSync(appDataDir).mode & 0o777;
   if (dirMode !== 0o700) throw new Error(`Picket data directory does not have strict 0700 mode (got ${dirMode.toString(8)})`);
 
-  for (const filename of ['workbench-state.json', 'models.json', 'cpush-sessions.json']) {
+  for (const filename of ['workbench-state.json', 'models.json', 'action-sessions.json']) {
     const full = join(appDataDir, filename);
     if (!existsSync(full)) throw new Error(`Expected persisted file missing after UI smoke: ${filename}`);
     const mode = statSync(full).mode & 0o777;
     if (mode !== 0o600) throw new Error(`Persisted file ${filename} does not have strict 0600 mode (got ${mode.toString(8)})`);
     const raw = readFileSync(full, 'utf8');
-    for (const forbidden of ['apiKey', 'smoke-token-', 'commitToken', 'branchToken']) {
+    for (const forbidden of ['apiKey', 'smoke-token-', 'commitToken', 'branchToken', 'ghp_', 'glpat-']) {
       if (raw.includes(forbidden)) {
         throw new Error(`Persisted file ${filename} leaked sensitive token/secret marker: ${forbidden}`);
       }
     }
   }
 
-  const actionSessionsFile = join(appDataDir, 'action-sessions.json');
-  if (existsSync(actionSessionsFile)) {
-    const mode = statSync(actionSessionsFile).mode & 0o777;
-    if (mode !== 0o600) throw new Error(`Persisted file action-sessions.json does not have strict 0600 mode (got ${mode.toString(8)})`);
-    const raw = readFileSync(actionSessionsFile, 'utf8');
-    for (const forbidden of ['apiKey', 'smoke-token-', 'commitToken', 'branchToken', 'ghp_', 'glpat-']) {
-      if (raw.includes(forbidden)) {
-        throw new Error(`Persisted file action-sessions.json leaked sensitive token/secret marker: ${forbidden}`);
-      }
-    }
+  const legacyCPushSessionsFile = join(appDataDir, 'cpush-sessions.json');
+  if (existsSync(legacyCPushSessionsFile)) {
+    throw new Error('Legacy cpush-sessions.json should not be created on fresh runs (unified into action-sessions.json)');
   }
 
   const skillsManifestFile = join(appDataDir, 'skills', 'skills-manifest.json');
@@ -112,9 +159,31 @@ function verifyAppDataSecurity(appDataDir) {
 }
 
 try {
-  const copied = spawnSync('/usr/bin/ditto', [join(root, 'src-tauri/target/release/bundle/macos/Picket.app'), destination], { encoding: 'utf8' });
-  if (copied.status !== 0) throw new Error(copied.stderr || 'Build the application with pnpm desktop build first');
-  verifyBundleNoDemoOrSecretLeaks(destination, join(root, 'dist'));
+  // 1. Verify the production release bundle has zero demo/secret leaks and zero smoke backdoors.
+  const releaseBundle = join(root, 'src-tauri/target/release/bundle/macos/Picket.app');
+  const copiedRelease = spawnSync('/usr/bin/ditto', [releaseBundle, releaseDestination], { encoding: 'utf8' });
+  if (copiedRelease.status !== 0) {
+    throw new Error(copiedRelease.stderr || 'Build the release application with pnpm desktop build first');
+  }
+  verifyBundleNoDemoOrSecretLeaks(releaseDestination, join(root, 'dist'));
+  verifyReleaseBundleNoSmokeBackdoors(releaseDestination, join(root, 'dist'));
+
+  // 2. Build (unless --skip-smoke-build) and verify the isolated smoke-harness bundle.
+  if (!process.argv.includes('--skip-smoke-build')) {
+    const smokeBuild = spawnSync(process.execPath, [join(root, 'scripts/desktop.mjs'), 'build:smoke'], {
+      cwd: root,
+      stdio: 'inherit',
+    });
+    if (smokeBuild.error) throw smokeBuild.error;
+    if (smokeBuild.status !== 0) {
+      throw new Error(`Isolated smoke-harness build failed with status ${smokeBuild.status}`);
+    }
+  }
+  const smokeBundle = join(root, 'src-tauri/target-smoke/release/bundle/macos/Picket.app');
+  const copied = spawnSync('/usr/bin/ditto', [smokeBundle, destination], { encoding: 'utf8' });
+  if (copied.status !== 0) {
+    throw new Error(copied.stderr || 'Build the isolated smoke bundle with pnpm desktop build:smoke first');
+  }
 
   const binary = join(destination, 'Contents/MacOS/Picket');
   const executable = existsSync(binary) ? binary : join(destination, 'Contents/MacOS/picket');
@@ -218,6 +287,7 @@ try {
   console.log(JSON.stringify({
     packageIsolatedFromProject: true,
     bundleFreeOfDemoAndSecrets: true,
+    releaseBundleFreeOfSmokeHarness: true,
     globalNodeNotRequired: true,
     allPiProcessesReaped: true,
     report,

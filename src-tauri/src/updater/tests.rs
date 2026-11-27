@@ -2,7 +2,7 @@ use super::{
     app_bundle_root_from_exe, blocker_message, classify_updater_error, detect_install_blocker,
     sanitize_release_notes, types::*, unix_secs_to_iso8601, validate_install_preconditions,
 };
-use crate::{cpush::CPushCoordinator, i18n::LanguageKind, repository::RepositoryStore};
+use crate::{actions::CustomActionCoordinator, i18n::LanguageKind, repository::RepositoryStore};
 use std::path::Path;
 use tauri_plugin_updater::Error as UpdaterError;
 
@@ -68,9 +68,9 @@ fn detects_install_blockers_accurately_for_macos_bundles_and_dev_builds() {
 #[test]
 fn enforces_git_busy_guard_blockers_and_version_matching_before_install() {
     let repo_store = RepositoryStore::default();
-    let cpush = CPushCoordinator::default();
+    let actions = CustomActionCoordinator::default();
     assert!(!repo_store.has_active_write());
-    assert!(!cpush.has_active_operation());
+    assert!(!actions.has_active_operation());
 
     {
         let _write_guard = repo_store.track_write();
@@ -88,11 +88,11 @@ fn enforces_git_busy_guard_blockers_and_version_matching_before_install() {
     assert!(!repo_store.has_active_write());
 
     {
-        let _op_guard = cpush.track_operation();
-        assert!(cpush.has_active_operation());
+        let _op_guard = actions.track_operation();
+        assert!(actions.has_active_operation());
         let err_zh = validate_install_preconditions(
             UpdateInstallBlocker::None,
-            cpush.has_active_operation(),
+            actions.has_active_operation(),
             "0.2.0",
             Some("0.2.0"),
             LanguageKind::Zh,
@@ -103,7 +103,7 @@ fn enforces_git_busy_guard_blockers_and_version_matching_before_install() {
             crate::i18n::updater::updater_git_busy_error(LanguageKind::Zh)
         );
     }
-    assert!(!cpush.has_active_operation());
+    assert!(!actions.has_active_operation());
 
     // Blocker prevents install with localized explanation:
     for blocker in [

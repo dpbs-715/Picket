@@ -177,38 +177,153 @@ export function createRunPlatformCliTool(bridge: ToolBridge): AgentTool<any, { c
 
 export function createCommitExactScopeTool(
   bridge: ToolBridge,
-): AgentTool<any, { fileIds: string[]; editedPaths: string[] }> {
+  options?: { cpushMode?: boolean },
+): AgentTool<any, { fileIds: string[]; editedPaths: string[]; groupCount?: number; stopAgent?: boolean }> {
+  const cpushMode = options?.cpushMode === true;
   return {
     name: 'commit_exact_scope',
     label: 'Commit Exact Scope',
-    description: 'Create a local Git commit containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['message'],
-      properties: {
-        fileIds: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Exact `fileId`s from `Authorized selected files` to include in this commit.',
+    description: cpushMode
+      ? 'Commit all authorized selected files as one or more cohesive exact-scope commits (preserving partial staging, unselected files, and Local Keep byte-for-byte) and optionally push the current branch. Reference authorized files by their "@1".."@N" alias or exact `fileId`. Every authorized file must appear once across `groups[].fileIds` and user-confirmed `skippedFileIds`.'
+      : 'Create a local Git commit containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
+    parameters: cpushMode
+      ? {
+          type: 'object',
+          additionalProperties: false,
+          required: ['groups'],
+          properties: {
+            groups: {
+              type: 'array',
+              description: 'Ordered list of cohesive commit groups. Default to 1 group unless the scope mixes genuinely independent intents or the user asked to split. May be empty ONLY when every authorized file is listed in `skippedFileIds` after user confirmation.',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['fileIds', 'message'],
+                properties: {
+                  id: { type: 'string', description: 'Optional short group ID (e.g. `group-1`).' },
+                  fileIds: {
+                    type: 'array',
+                    minItems: 1,
+                    items: { type: 'string' },
+                    description: 'Authorized file references (`"@1"`, `"@2"`, ... or exact `fileId`s) belonging to this commit.',
+                  },
+                  message: {
+                    type: 'string',
+                    description: 'Two-part Conventional Commit message (`<type>(<optional scope>): <subject>\\n\\n- bullet 1\\n- bullet 2`).',
+                  },
+                },
+              },
+            },
+            skippedFileIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Authorized file references explicitly excluded AFTER user confirmation via `message_user` (must be `[]` if not confirmed).',
+            },
+            push: {
+              type: 'boolean',
+              description: 'Whether to sync and push after committing (default `true`; set `false` ONLY when the user explicitly asked to commit locally without pushing).',
+            },
+            summary: {
+              type: 'string',
+              description: 'Concise 1-line summary in the UI language describing the commit/push plan.',
+            },
+          },
+        }
+      : {
+          type: 'object',
+          additionalProperties: false,
+          required: ['message'],
+          properties: {
+            fileIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Exact `fileId`s from `Authorized selected files` to include in this commit.',
+            },
+            editedPaths: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Repository-relative paths created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (or verified from the previous run checkpoint) to include in this commit.',
+            },
+            message: {
+              type: 'string',
+              description: 'Two-part Conventional Commit message (`<type>(<scope>): <subject>\\n\\n- bullet 1`).',
+            },
+            push: {
+              type: 'boolean',
+              description: 'If true, immediately push the current branch after committing (default false).',
+            },
+          },
         },
-        editedPaths: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Repository-relative paths created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (or verified from the previous run checkpoint) to include in this commit.',
-        },
-        message: {
-          type: 'string',
-          description: 'Two-part Conventional Commit message (`<type>(<scope>): <subject>\\n\\n- bullet 1`).',
-        },
-        push: {
-          type: 'boolean',
-          description: 'If true, immediately push the current branch after committing (default false).',
-        },
-      },
-    },
     executionMode: 'sequential',
     async execute(_toolCallId, params, signal) {
+      const skippedFileIds = Array.isArray(params?.skippedFileIds)
+        ? params.skippedFileIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
+        : [];
+      const summary = typeof params?.summary === 'string' && params.summary.trim()
+        ? params.summary.trim().slice(0, 300)
+        : undefined;
+
+      if (Array.isArray(params?.groups) || (cpushMode && !Array.isArray(params?.fileIds))) {
+        const rawGroups = Array.isArray(params?.groups) ? params.groups : [];
+        const groups: Array<{ id: string; fileIds: string[]; message: string }> = [];
+        for (let idx = 0; idx < rawGroups.length; idx += 1) {
+          const entry = rawGroups[idx];
+          if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            return {
+              content: [{ type: 'text', text: `Invalid commit group at index ${idx}: expected an object with \`fileIds\` and \`message\`.` }],
+              details: { fileIds: [], editedPaths: [] },
+              isError: true,
+            };
+          }
+          const rec = entry as Record<string, unknown>;
+          const gFileIds = Array.isArray(rec.fileIds)
+            ? rec.fileIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
+            : [];
+          const gMessage = typeof rec.message === 'string' ? rec.message.trim() : '';
+          if (gFileIds.length === 0 || !gMessage) {
+            return {
+              content: [{ type: 'text', text: `Commit group ${idx + 1} requires non-empty \`fileIds\` and non-empty \`message\`.` }],
+              details: { fileIds: [], editedPaths: [] },
+              isError: true,
+            };
+          }
+          const gId = typeof rec.id === 'string' && rec.id.trim()
+            ? rec.id.trim().slice(0, 64)
+            : `group-${idx + 1}`;
+          groups.push({ id: gId, fileIds: gFileIds, message: gMessage });
+        }
+        if (groups.length === 0 && skippedFileIds.length === 0) {
+          return {
+            content: [{ type: 'text', text: 'commit_exact_scope requires at least one commit group in `groups` (or all authorized files in confirmed `skippedFileIds`).' }],
+            details: { fileIds: [], editedPaths: [] },
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          groups,
+          ...(skippedFileIds.length > 0 ? { skippedFileIds } : {}),
+          ...(typeof params?.push === 'boolean' ? { push: params.push } : {}),
+          ...(summary ? { summary } : {}),
+        };
+        const response = await bridge.invokeHostTool('commit_exact_scope', payload, signal);
+        const stopAgent = response.ok
+          && !response.isError
+          && typeof response.details === 'object'
+          && response.details !== null
+          && (response.details as Record<string, unknown>).stopAgent === true;
+        return {
+          content: [{ type: 'text', text: response.content }],
+          details: {
+            fileIds: groups.flatMap((g) => g.fileIds),
+            editedPaths: [],
+            groupCount: groups.length,
+            ...(stopAgent ? { stopAgent: true } : {}),
+          },
+          isError: response.isError || !response.ok,
+          ...(stopAgent ? { terminate: true } : {}),
+        };
+      }
+
       const fileIds = Array.isArray(params?.fileIds)
         ? params.fileIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
         : [];
@@ -223,17 +338,35 @@ export function createCommitExactScopeTool(
           isError: true,
         };
       }
-      const payload: Record<string, unknown> = {
-        ...(fileIds.length > 0 ? { fileIds } : {}),
-        ...(editedPaths.length > 0 ? { editedPaths } : {}),
-        message,
-        ...(typeof params?.push === 'boolean' ? { push: params.push } : {}),
-      };
+      const payload: Record<string, unknown> = cpushMode
+        ? {
+            groups: [{ id: 'group-1', fileIds, message }],
+            ...(skippedFileIds.length > 0 ? { skippedFileIds } : {}),
+            ...(typeof params?.push === 'boolean' ? { push: params.push } : {}),
+            ...(summary ? { summary } : {}),
+          }
+        : {
+            ...(fileIds.length > 0 ? { fileIds } : {}),
+            ...(editedPaths.length > 0 ? { editedPaths } : {}),
+            message,
+            ...(typeof params?.push === 'boolean' ? { push: params.push } : {}),
+            ...(summary ? { summary } : {}),
+          };
       const response = await bridge.invokeHostTool('commit_exact_scope', payload, signal);
+      const stopAgent = response.ok
+        && !response.isError
+        && typeof response.details === 'object'
+        && response.details !== null
+        && (response.details as Record<string, unknown>).stopAgent === true;
       return {
         content: [{ type: 'text', text: response.content }],
-        details: { fileIds, editedPaths },
+        details: {
+          fileIds,
+          editedPaths,
+          ...(stopAgent ? { stopAgent: true } : {}),
+        },
         isError: response.isError || !response.ok,
+        ...(stopAgent ? { terminate: true } : {}),
       };
     },
   };

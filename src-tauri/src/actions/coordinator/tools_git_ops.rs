@@ -5,9 +5,9 @@ use super::{
     tools_workspace::sha256_hex,
 };
 use crate::{
-    cpush::types::CPushLandedCommit,
-    foundation::pi::PiToolExecutionResult,
+    actions::types::CPushLandedCommit,
     i18n,
+    pi_runtime::PiToolExecutionResult,
     repository::{
         read_tools::validate_safe_repo_path,
         remote::{PushOutcome, RebaseSyncOutcome},
@@ -296,7 +296,7 @@ pub(super) async fn handle_commit_exact_scope(
                 }
             }
             (ctx.emit)("running", None, None, Some(latest_snap));
-            (ctx.persist)("running", String::new());
+            ctx.persist("running", String::new()).await;
             PiToolExecutionResult::success(response_json.to_string())
         }
         Err(err) => PiToolExecutionResult::error(err),

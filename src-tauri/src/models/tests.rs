@@ -6,8 +6,8 @@ use super::{
     types::*,
 };
 use crate::{
-    foundation::pi::{PiPaths, PiSupervisor},
     i18n::LanguageKind,
+    pi_runtime::{PiPaths, PiSupervisor},
 };
 use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
 

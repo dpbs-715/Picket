@@ -2,8 +2,9 @@
 
 use super::geometry::{
     AnimateWindowFrameReply, LogicalExtent, LogicalPoint, MonitorWorkArea, ScaledMonitorWorkAreas,
-    ValidatedRequest, WindowFramePlacement,
+    ValidatedRequest, WindowFramePlacement, resolve_visible_window_position,
 };
+use crate::repository::types::WindowPosition;
 
 pub(super) async fn set_main_window_pinned(
     window: tauri::WebviewWindow,
@@ -15,6 +16,7 @@ pub(super) async fn set_main_window_pinned(
     window.is_always_on_top().map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "smoke-harness")]
 pub(super) async fn read_main_window_visible_on_all_spaces(
     _window: tauri::WebviewWindow,
 ) -> Result<bool, String> {
@@ -214,8 +216,19 @@ pub(super) async fn animate_main_window(
         }
         WindowFramePlacement::RestorePosition => {
             if let (Some(x), Some(y)) = (req.target_x, req.target_y) {
+                let (monitors, primary, _) = read_monitors_on_main(&window);
+                let (cx, cy, _) = resolve_visible_window_position(
+                    Some(WindowPosition {
+                        x: x.round() as i32,
+                        y: y.round() as i32,
+                    }),
+                    target_w,
+                    req.height,
+                    &monitors,
+                    primary,
+                );
                 window
-                    .set_position(tauri::LogicalPosition::new(x, y))
+                    .set_position(tauri::LogicalPosition::new(cx, cy))
                     .map_err(|e| e.to_string())?;
             }
         }
