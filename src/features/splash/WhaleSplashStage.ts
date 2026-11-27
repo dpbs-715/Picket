@@ -19,14 +19,14 @@ export interface SplashThemePalette {
 
 export const SPLASH_THEME_PALETTES: Record<ResolvedTheme, SplashThemePalette> = {
   dark: {
-    bodyStops: ['#FFFFFF', '#F4F6FA', '#E3E7F0'],
-    shadowColor: '#090C14',
-    shadowOpacities: ['0.58', '0.26', '0'],
+    bodyStops: ['#FFFFFF', '#F1F5FF', '#DCE6FA'],
+    shadowColor: '#0F172A',
+    shadowOpacities: ['0.52', '0.22', '0'],
   },
   light: {
-    bodyStops: ['#2E3340', '#1B1F29', '#11141C'],
-    shadowColor: '#0F172A',
-    shadowOpacities: ['0.34', '0.15', '0'],
+    bodyStops: ['#5B7DB1', '#3B5988', '#253D63'],
+    shadowColor: '#1E3A5F',
+    shadowOpacities: ['0.34', '0.14', '0'],
   },
 };
 

@@ -119,8 +119,8 @@ describe('whaleMath', () => {
     expect(resolveSplashTheme(undefined)).toBe('dark');
     expect(resolveSplashTheme('unknown')).toBe('dark');
 
-    expect(SPLASH_THEME_PALETTES.dark.bodyStops).toEqual(['#FFFFFF', '#F4F6FA', '#E3E7F0']);
-    expect(SPLASH_THEME_PALETTES.light.bodyStops).toEqual(['#2E3340', '#1B1F29', '#11141C']);
+    expect(SPLASH_THEME_PALETTES.dark.bodyStops).toEqual(['#FFFFFF', '#F1F5FF', '#DCE6FA']);
+    expect(SPLASH_THEME_PALETTES.light.bodyStops).toEqual(['#5B7DB1', '#3B5988', '#253D63']);
     expect(SPLASH_THEME_PALETTES.light.bodyStops[0]).not.toBe(SPLASH_THEME_PALETTES.dark.bodyStops[0]);
   });
 });
