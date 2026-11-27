@@ -1,5 +1,6 @@
 import { act } from 'react';
 import type { ModelMutateReply, ModelSaveReply, ProviderSaveReply } from '../../../../../shared/model-protocol';
+import { DesktopCommandError } from '../../../../desktop/errors';
 import type { ModelConfiguration, ProviderConnection } from '../../../settings/modelProviders';
 import { disconnectedBackend } from '../../commands';
 import type { WorkbenchCommand } from '../../commands';
@@ -283,7 +284,12 @@ export async function runCoreWorkbenchChecks(harness: BrowserCheckHarness) {
     ...disconnectedBackend,
     async execute(command) {
       if (command.kind === 'cPush') {
-        throw new Error('Rate limit or quota exceeded (402/429). Check your account balance.');
+        throw new DesktopCommandError({
+          code: 'modelRateLimited',
+          category: 'model',
+          message: 'Rate limit or quota exceeded (402/429). Check your account balance.',
+          retryable: true,
+        });
       }
       return disconnectedBackend.execute(command);
     },

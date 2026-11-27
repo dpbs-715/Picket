@@ -3,6 +3,7 @@ import { version as PACKAGE_VERSION } from '../../../../../package.json';
 import type { ModelSaveReply, ProviderRevealKeyReply, ProviderUpdateReply } from '../../../../../shared/model-protocol';
 import { PICKET_RELEASES_URL, UPDATE_PROTOCOL_VERSION, type UpdateStateSnapshot } from '../../../../../shared/update-protocol';
 import type { WorkbenchSaveRequest } from '../../../../../shared/workbench-persistence-protocol';
+import { DesktopCommandError } from '../../../../desktop/errors';
 import type { WindowController } from '../../../../desktop/window';
 import type { ModelConfiguration, ProviderConnection } from '../../../settings/modelProviders';
 import { disconnectedBackend } from '../../commands';
@@ -563,7 +564,11 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
     ...disconnectedBackend,
     async execute(command) {
       if (command.kind === 'cPush') {
-        throw new Error('Authentication failed (401/403). Verify your API key.');
+        throw new DesktopCommandError({
+          code: 'modelAuthFailed',
+          category: 'model',
+          message: 'Authentication failed (401/403). Verify your API key.',
+        });
       }
       return disconnectedBackend.execute(command);
     },
@@ -738,7 +743,11 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
       async listProviderModels(input) {
         listRequests.push(input as unknown as Record<string, unknown>);
         if (shouldFailList) {
-          throw new Error('Authentication failed (401/403).');
+          throw new DesktopCommandError({
+            code: 'modelAuthFailed',
+            category: 'model',
+            message: 'Authentication failed (401/403).',
+          });
         }
         return [
           { id: 'kimi-k3.1-pro', displayName: 'Kimi K3.1 Pro' },

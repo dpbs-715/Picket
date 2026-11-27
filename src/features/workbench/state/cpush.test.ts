@@ -79,8 +79,11 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     expect(payAfterSelect.selectedIds).toContain('lock');
     expect(payAfterSelect.scopeVersion).not.toBe(frozenTarget.scopeVersion);
     // Frozen C-Push target & authorized fileIds remain strictly immutable:
-    expect(payAfterSelect.cPush?.frozenTarget).toEqual(frozenTarget);
-    expect(payAfterSelect.cPush?.frozenFileIds).toEqual(['order', 'pay', 'retry', 'release']);
+    expect(payAfterSelect.activeRun?.kind).toBe('cpush');
+    if (payAfterSelect.activeRun?.kind === 'cpush') {
+      expect(payAfterSelect.activeRun.frozenTarget).toEqual(frozenTarget);
+      expect(payAfterSelect.activeRun.frozenFileIds).toEqual(['order', 'pay', 'retry', 'release']);
+    }
 
     // Question arrives while viewing `fix-tree`: updates ONLY `pay-tree`, never auto-expands dock!
     state = workbenchReducer(state, {
@@ -210,7 +213,10 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     expect(pay.sessionId).toBe('sess-frozen');
     expect(pay.sessionStatus).toBe('needsDecision');
     expect(pay.dockExpanded).toBe(false);
-    expect(pay.cPush?.canRetryRemaining).toBe(true);
-    expect(pay.cPush?.commits).toHaveLength(1);
+    expect(pay.activeRun?.kind).toBe('cpush');
+    if (pay.activeRun?.kind === 'cpush') {
+      expect(pay.activeRun.canRetryRemaining).toBe(true);
+      expect(pay.activeRun.commits).toHaveLength(1);
+    }
   });
 });

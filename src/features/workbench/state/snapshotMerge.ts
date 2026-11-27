@@ -83,7 +83,7 @@ export function projectWorktree(
     unselectedIds,
     prompt,
     sessionStatus: previous?.sessionStatus ?? 'idle', messages: previous?.messages ?? [],
-    cPush: previous?.cPush,
+    activeRun: previous?.activeRun,
     dockExpanded: previous?.dockExpanded ?? false, replies: previous?.replies ?? {},
   };
   if (incoming.readError && previous) {

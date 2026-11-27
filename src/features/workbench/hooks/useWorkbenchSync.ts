@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { TrayMainWindowAction } from '../../../../shared/tray-protocol';
 import {
   subscribeTrayMainAction,
@@ -8,7 +8,11 @@ import {
 import { normalizeFullWindowSize, type WindowController } from '../../../desktop/window';
 import { getMessages } from '../../../i18n';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
-import { serializeWorkbenchPersistence } from '../state/repositories';
+import {
+  resolvePersistenceKeys,
+  serializeWorkbenchPersistence,
+  type PersistenceKeySnapshot,
+} from '../state/persistence';
 import {
   orderedMessages,
   targetOf,
@@ -70,6 +74,7 @@ export function useWorkbenchSync({
   const saveRevision = useRef(0);
   const lastPersistedKey = useRef<string | null>(null);
   const lastStructuralKey = useRef<string | null>(null);
+  const persistenceSnapshotRef = useRef<PersistenceKeySnapshot | null>(null);
   const executeRef = useRef(execute);
   executeRef.current = execute;
   const trayActionHandlerRef = useRef<(action: TrayMainWindowAction) => void>(() => {});
@@ -187,47 +192,9 @@ export function useWorkbenchSync({
     }
   }, [hydrated, state.locale, state.worktrees, windowController]);
 
-  const persistenceKey = useMemo(
-    () => JSON.stringify(serializeWorkbenchPersistence(state, 0)),
-    [
-      state.locale,
-      state.theme,
-      state.editor,
-      state.defaultCommitLanguage,
-      state.repositorySettings,
-      state.windowPrefs,
-      state.activeWorktreeId,
-      state.emptyPrompt,
-      state.repositories,
-      state.worktrees,
-    ],
-  );
-  const structuralKey = useMemo(
-    () => JSON.stringify([
-      state.locale,
-      state.theme,
-      state.editor,
-      state.defaultCommitLanguage,
-      state.repositorySettings,
-      state.windowPrefs.pinned,
-      state.windowPrefs.compactMode,
-      state.windowPrefs.pinnedExpanded,
-      state.activeWorktreeId,
-      state.worktrees.map((tree) => [tree.worktreeId, tree.selectedIds, tree.scopeVersion]),
-    ]),
-    [
-      state.locale,
-      state.theme,
-      state.editor,
-      state.defaultCommitLanguage,
-      state.repositorySettings,
-      state.windowPrefs.pinned,
-      state.windowPrefs.compactMode,
-      state.windowPrefs.pinnedExpanded,
-      state.activeWorktreeId,
-      state.worktrees,
-    ],
-  );
+  const keySnapshot = resolvePersistenceKeys(state, persistenceSnapshotRef.current);
+  persistenceSnapshotRef.current = keySnapshot;
+  const { persistenceKey, structuralKey } = keySnapshot;
 
   useEffect(() => {
     if (!hydrated || !backend.saveWorkbenchState) return;

@@ -79,9 +79,10 @@ export function MessageDock(props: Props) {
   const canReply = primary
     ? !isQuestionnaire && (primary.kind === 'question' || primary.kind === 'conflict')
     : false;
+  const activeRun = props.worktree.activeRun;
   const canFollowUpAction = primary
     ? !isQuestionnaire
-      && Boolean(props.worktree.customAction)
+      && activeRun?.kind === 'customAction'
       && Boolean(props.onFollowUpCustomAction)
       && (primary.kind === 'done' || (primary.kind === 'error' && !primary.options?.length))
     : false;
@@ -101,7 +102,7 @@ export function MessageDock(props: Props) {
   const primaryKind = primary?.kind;
   const activePrimaryIdRef = useRef(primaryId);
   activePrimaryIdRef.current = primaryId;
-  const activeTimeline = props.worktree.customAction?.timeline ?? props.worktree.cPush?.timeline ?? [];
+  const activeTimeline = activeRun?.timeline ?? [];
   const lastTimelineStep = activeTimeline[activeTimeline.length - 1];
 
   useEffect(() => {
@@ -170,8 +171,8 @@ export function MessageDock(props: Props) {
   const hasCardBlocks = Boolean(primary?.card?.blocks && primary.card.blocks.length > 0);
   const sheetTone = primary ? resolveSheetTone(primary) : 'info';
   const toneIcon = primary ? resolveToneIcon(primary, sheetTone) : { icon: 'sparkles' as IconName };
-  const timeline = props.worktree.cPush?.timeline ?? props.worktree.customAction?.timeline ?? [];
-  const qaLog = props.worktree.cPush?.qaLog ?? [];
+  const timeline = activeTimeline;
+  const qaLog = activeRun?.kind === 'cpush' ? activeRun.qaLog : [];
   const hasTraceDetails = !isQuestionnaire && (timeline.length > 0 || qaLog.length > 0);
   const collapseTraceByDefault = Boolean(hasCardBlocks && primary?.kind !== 'progress');
 
@@ -181,7 +182,7 @@ export function MessageDock(props: Props) {
       isQuestionnaire
       || Boolean(primary.options?.length)
       || primary.kind === 'waitingManual'
-      || (primary.kind === 'progress' && (props.worktree.customAction || props.worktree.cPush) && props.onCancelCustomAction)
+      || (primary.kind === 'progress' && Boolean(activeRun) && props.onCancelCustomAction)
       || canReply
       || canFollowUpAction
     ),
@@ -380,7 +381,7 @@ export function MessageDock(props: Props) {
                         </button>
                       )}
 
-                      {primary.kind === 'progress' && (props.worktree.customAction || props.worktree.cPush) && props.onCancelCustomAction && (
+                      {primary.kind === 'progress' && Boolean(activeRun) && props.onCancelCustomAction && (
                         <button
                           type="button"
                           className={`d2-action-btn d2-centered-btn ${pendingAction?.kind === 'cancelAction' ? 'is-loading' : ''}`}

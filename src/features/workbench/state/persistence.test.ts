@@ -4,7 +4,7 @@ import {
   type WorkbenchRestoreReply,
 } from '../../../../shared/workbench-persistence-protocol';
 import { repositorySnapshot } from '../testing/repository-fixture';
-import { readScopeVersion, serializeWorkbenchPersistence } from './repositories';
+import { readScopeVersion, resolvePersistenceKeys, serializeWorkbenchPersistence } from './repositories';
 import { effectiveCommitLanguageFor, effectiveEditorFor, emptyWorkbench, workbenchReducer } from './workbench';
 
 describe('Workbench cross-restart v2 persistence projection and hydration', () => {
@@ -415,5 +415,74 @@ describe('Workbench cross-restart v2 persistence projection and hydration', () =
       snapshots: [],
       warning: null,
     })).toThrow(/protocol mismatch/i);
+  });
+
+  it('reuses cached persistence keys when only high-frequency runtime workflow state changes', () => {
+    const snapshot = repositorySnapshot(1);
+    const base = workbenchReducer(emptyWorkbench(), {
+      type: 'workbenchHydrated',
+      restored: {
+        protocolVersion: 2,
+        editor: 'idea',
+        activeWorktreeId: 'pay-tree',
+        emptyPrompt: '',
+        worktrees: [],
+        snapshots: [snapshot],
+        warning: null,
+      },
+    });
+    const first = resolvePersistenceKeys(base, null);
+
+    // High-frequency streaming updates (activeRun, messages, dockExpanded, replies) must reuse cached snapshot reference:
+    const afterStart = workbenchReducer(base, {
+      type: 'customActionStarted',
+      worktreeId: 'pay-tree',
+      runId: 'run-stream-1',
+      actionId: 'act-1',
+      actionLabel: 'Review',
+      expandDock: true,
+    });
+    const afterTick = workbenchReducer(afterStart, {
+      type: 'event',
+      event: {
+        type: 'customActionProgress',
+        progress: {
+          protocolVersion: 1,
+          runId: 'run-stream-1',
+          repositoryId: 'orders',
+          worktreeId: 'pay-tree',
+          sessionId: afterStart.worktrees[0].sessionId,
+          actionId: 'act-1',
+          actionLabel: 'Review',
+          status: 'running',
+          message: {
+            id: 'progress-run-stream-1',
+            kind: 'progress',
+            title: 'Review',
+            description: 'Checking step 2',
+          },
+          timeline: [
+            { state: 'done', label: 'Step 1' },
+            { state: 'active', label: 'Step 2' },
+          ],
+          commits: [],
+          links: [],
+        },
+      },
+    });
+    expect(resolvePersistenceKeys(afterStart, first)).toBe(first);
+    expect(resolvePersistenceKeys(afterTick, first)).toBe(first);
+
+    // Persisted changes (prompt text or file selection) produce a fresh key:
+    const afterPrompt = workbenchReducer(afterTick, { type: 'prompt', worktreeId: 'pay-tree', text: 'extra note' });
+    const promptKeys = resolvePersistenceKeys(afterPrompt, first);
+    expect(promptKeys).not.toBe(first);
+    expect(promptKeys.persistenceKey).not.toBe(first.persistenceKey);
+    expect(promptKeys.structuralKey).toBe(first.structuralKey);
+
+    const afterSelect = workbenchReducer(afterPrompt, { type: 'select', worktreeId: 'pay-tree', fileId: 'order' });
+    const selectKeys = resolvePersistenceKeys(afterSelect, promptKeys);
+    expect(selectKeys).not.toBe(promptKeys);
+    expect(selectKeys.structuralKey).not.toBe(promptKeys.structuralKey);
   });
 });

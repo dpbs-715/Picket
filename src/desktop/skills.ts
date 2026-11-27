@@ -1,4 +1,5 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import type { AppLocale } from '../../shared/language-protocol';
 import {
   DEFAULT_GIT_SKILLS,
@@ -31,7 +32,7 @@ export async function getDesktopSkillsState(locale?: AppLocale): Promise<SkillsS
   if (!isTauri()) {
     return initialBrowserSkillsSnapshot();
   }
-  const reply = await invoke<unknown>('get_skills_state', {
+  const reply = await invokeDesktop<unknown>('get_skills_state', {
     request: {
       ...(locale ? { locale } : {}),
     },
@@ -47,7 +48,7 @@ export async function syncDesktopSkills(
     throw new Error(getMessages(locale).desktop.disconnectedSkills);
   }
   const trimmed = sourceRepo?.trim();
-  const reply = await invoke<unknown>('sync_skills', {
+  const reply = await invokeDesktop<unknown>('sync_skills', {
     request: {
       ...(trimmed ? { sourceRepo: trimmed } : {}),
       ...(locale ? { locale } : {}),
@@ -63,7 +64,7 @@ export async function setDesktopEnabledSkills(
   if (!isTauri()) {
     throw new Error(getMessages(locale).desktop.disconnectedSkills);
   }
-  const reply = await invoke<unknown>('set_enabled_skills', {
+  const reply = await invokeDesktop<unknown>('set_enabled_skills', {
     request: {
       enabledSkills,
       ...(locale ? { locale } : {}),
@@ -76,7 +77,7 @@ export async function resetDesktopSkills(locale?: AppLocale): Promise<SkillsStat
   if (!isTauri()) {
     throw new Error(getMessages(locale).desktop.disconnectedSkills);
   }
-  const reply = await invoke<unknown>('reset_skills_to_bundled', {
+  const reply = await invokeDesktop<unknown>('reset_skills_to_bundled', {
     request: {
       ...(locale ? { locale } : {}),
     },

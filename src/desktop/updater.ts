@@ -1,4 +1,5 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import { listen } from '@tauri-apps/api/event';
 import { version as PACKAGE_VERSION } from '../../package.json';
 import type { AppLocale } from '../../shared/language-protocol';
@@ -27,7 +28,7 @@ export async function getUpdateStatus(): Promise<UpdateStateSnapshot> {
   if (!isTauri()) {
     return initialBrowserUpdateSnapshot();
   }
-  const reply = await invoke<unknown>('get_update_status');
+  const reply = await invokeDesktop<unknown>('get_update_status');
   return decodeUpdateStateSnapshot(reply);
 }
 
@@ -35,7 +36,7 @@ export async function checkForUpdate(manual: boolean, locale?: AppLocale): Promi
   if (!isTauri()) {
     throw new Error(getMessages(locale).desktop.disconnectedUpdater);
   }
-  const reply = await invoke<unknown>('check_for_update', {
+  const reply = await invokeDesktop<unknown>('check_for_update', {
     request: {
       manual,
       ...(locale ? { locale } : {}),
@@ -48,7 +49,7 @@ export async function installUpdate(version: string, locale?: AppLocale): Promis
   if (!isTauri()) {
     throw new Error(getMessages(locale).desktop.disconnectedUpdater);
   }
-  const reply = await invoke<unknown>('install_update', {
+  const reply = await invokeDesktop<unknown>('install_update', {
     request: {
       version,
       ...(locale ? { locale } : {}),
@@ -61,7 +62,7 @@ export async function cancelUpdate(locale?: AppLocale): Promise<UpdateStateSnaps
   if (!isTauri()) {
     return initialBrowserUpdateSnapshot();
   }
-  const reply = await invoke<unknown>('cancel_update', {
+  const reply = await invokeDesktop<unknown>('cancel_update', {
     request: {
       ...(locale ? { locale } : {}),
     },
@@ -76,7 +77,7 @@ export async function openReleasePage(locale?: AppLocale): Promise<void> {
     }
     return;
   }
-  await invoke<void>('open_release_page', {
+  await invokeDesktop<void>('open_release_page', {
     request: {
       ...(locale ? { locale } : {}),
     },

@@ -341,18 +341,21 @@ describe('Phase 2 custom actions persistence, prompt-hash trust invalidation, co
     const hydrated = hydrateWorkbench(emptyState, decoded);
     const wt = hydrated.worktrees[0];
     expect(wt.sessionStatus).toBe('idle');
-    expect(wt.customAction?.runId).toBe('run-submit-1');
-    expect(wt.customAction?.links).toEqual([{ label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' }]);
+    expect(wt.activeRun?.kind).toBe('customAction');
+    expect(wt.activeRun?.runId).toBe('run-submit-1');
+    if (wt.activeRun?.kind === 'customAction') {
+      expect(wt.activeRun.links).toEqual([{ label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' }]);
+    }
     expect(wt.messages).toHaveLength(1);
     expect(wt.messages[0].id).toBe('interrupted-action-run-submit-1');
 
-    // Dismissing the restored interrupted message clears both message and customAction state cleanly:
+    // Dismissing the restored interrupted message clears both message and activeRun state cleanly:
     const afterDismiss = workbenchReducer(hydrated, {
       type: 'dismissMessage',
       worktreeId: 'wt-1',
       messageId: 'interrupted-action-run-submit-1',
     });
     expect(afterDismiss.worktrees[0].messages).toHaveLength(0);
-    expect(afterDismiss.worktrees[0].customAction).toBeUndefined();
+    expect(afterDismiss.worktrees[0].activeRun).toBeUndefined();
   });
 });

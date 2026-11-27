@@ -84,7 +84,8 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     expect(failedTree.dockExpanded).toBe(true);
     // Prompt MUST remain intact while pushFailed is retryable:
     expect(failedTree.prompt.text).toBe('split lockfile separately');
-    expect(failedTree.cPush?.commits).toHaveLength(1);
+    expect(failedTree.activeRun?.kind).toBe('cpush');
+    expect(failedTree.activeRun?.commits).toHaveLength(1);
     expect(orderedMessages(failedTree.messages)[0].title).toBe('Committed locally, push failed');
 
     const snapAfterPush = repositoryReply('after-push', 3).snapshot!;
@@ -211,6 +212,7 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     const pay = hydrated.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     expect(pay.sessionStatus).toBe('conflict');
     expect(pay.dockExpanded).toBe(false);
-    expect(pay.cPush?.commits).toHaveLength(1);
+    expect(pay.activeRun?.kind).toBe('cpush');
+    expect(pay.activeRun?.commits).toHaveLength(1);
   });
 });

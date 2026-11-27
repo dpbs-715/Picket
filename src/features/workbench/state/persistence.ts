@@ -11,6 +11,109 @@ import { computeNormalUnselectedIds, defaultWindowPreferences } from './selector
 import { mergeSnapshot, normalizeWorktreeLocalKeep, projectWorktree, readScopeVersion } from './snapshotMerge';
 import type { EditorId, RepositorySettings, WorkbenchState, Worktree } from './types';
 
+export interface PersistenceKeySnapshot {
+  locale: WorkbenchState['locale'];
+  theme: WorkbenchState['theme'];
+  editor: WorkbenchState['editor'];
+  defaultCommitLanguage: WorkbenchState['defaultCommitLanguage'];
+  repositorySettings: WorkbenchState['repositorySettings'];
+  windowPrefs: WorkbenchState['windowPrefs'];
+  activeWorktreeId: WorkbenchState['activeWorktreeId'];
+  emptyPrompt: WorkbenchState['emptyPrompt'];
+  worktreeSlices: Array<{
+    repositoryId: string;
+    worktreeId: string;
+    promptText: string;
+    selectedIds: string[];
+    unselectedIds: string[] | undefined;
+    filesIfNeeded: Worktree['files'] | undefined;
+    scopeVersion: string;
+  }>;
+  persistenceKey: string;
+  structuralKey: string;
+}
+
+/**
+ * Computes persistence & structural dirty-check keys while skipping `JSON.stringify`
+ * whenever high-frequency runtime fields (messages, activeRun timeline/commits,
+ * dockExpanded, sessionStatus, replies) change without touching any persisted field.
+ */
+export function resolvePersistenceKeys(
+  state: WorkbenchState,
+  previous: PersistenceKeySnapshot | null,
+): PersistenceKeySnapshot {
+  if (
+    previous
+    && previous.locale === state.locale
+    && previous.theme === state.theme
+    && previous.editor === state.editor
+    && previous.defaultCommitLanguage === state.defaultCommitLanguage
+    && previous.repositorySettings === state.repositorySettings
+    && previous.windowPrefs === state.windowPrefs
+    && previous.activeWorktreeId === state.activeWorktreeId
+    && previous.emptyPrompt === state.emptyPrompt
+    && previous.worktreeSlices.length === state.worktrees.length
+  ) {
+    let allSlicesUnchanged = true;
+    for (let i = 0; i < state.worktrees.length; i += 1) {
+      const tree = state.worktrees[i];
+      const prev = previous.worktreeSlices[i];
+      const filesIfNeeded = tree.unselectedIds === undefined ? tree.files : undefined;
+      if (
+        prev.repositoryId !== tree.repositoryId
+        || prev.worktreeId !== tree.worktreeId
+        || prev.promptText !== tree.prompt.text
+        || prev.selectedIds !== tree.selectedIds
+        || prev.unselectedIds !== tree.unselectedIds
+        || prev.filesIfNeeded !== filesIfNeeded
+        || prev.scopeVersion !== tree.scopeVersion
+      ) {
+        allSlicesUnchanged = false;
+        break;
+      }
+    }
+    if (allSlicesUnchanged) {
+      return previous;
+    }
+  }
+
+  const persistenceKey = JSON.stringify(serializeWorkbenchPersistence(state, 0));
+  const structuralKey = JSON.stringify([
+    state.locale,
+    state.theme,
+    state.editor,
+    state.defaultCommitLanguage,
+    state.repositorySettings,
+    state.windowPrefs.pinned,
+    state.windowPrefs.compactMode,
+    state.windowPrefs.pinnedExpanded,
+    state.activeWorktreeId,
+    state.worktrees.map((tree) => [tree.worktreeId, tree.selectedIds, tree.scopeVersion]),
+  ]);
+
+  return {
+    locale: state.locale,
+    theme: state.theme,
+    editor: state.editor,
+    defaultCommitLanguage: state.defaultCommitLanguage,
+    repositorySettings: state.repositorySettings,
+    windowPrefs: state.windowPrefs,
+    activeWorktreeId: state.activeWorktreeId,
+    emptyPrompt: state.emptyPrompt,
+    worktreeSlices: state.worktrees.map((tree) => ({
+      repositoryId: tree.repositoryId,
+      worktreeId: tree.worktreeId,
+      promptText: tree.prompt.text,
+      selectedIds: tree.selectedIds,
+      unselectedIds: tree.unselectedIds,
+      filesIfNeeded: tree.unselectedIds === undefined ? tree.files : undefined,
+      scopeVersion: tree.scopeVersion,
+    })),
+    persistenceKey,
+    structuralKey,
+  };
+}
+
 export function serializeWorkbenchPersistence(state: WorkbenchState, revision: number): WorkbenchSaveRequest {
   const windowPreferences: PersistedWindowPreferences = {
     pinned: state.windowPrefs.pinned,
@@ -190,7 +293,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
           sessionStatus: savedCPush.sessionStatus,
           messages: savedCPush.message ? [savedCPush.message] : [],
           dockExpanded: false,
-          cPush: {
+          activeRun: {
+            kind: 'cpush',
             runId: savedCPush.runId,
             frozenTarget: {
               repositoryId: savedCPush.repositoryId,
@@ -214,7 +318,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
           sessionStatus: savedAction.status === 'done' ? 'done' : 'idle',
           messages: [savedAction.message],
           dockExpanded: false,
-          customAction: {
+          activeRun: {
+            kind: 'customAction',
             runId: savedAction.runId,
             actionId: savedAction.actionId,
             actionLabel: savedAction.actionLabel,

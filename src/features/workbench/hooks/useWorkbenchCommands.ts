@@ -202,7 +202,8 @@ export function useWorkbenchCommands({
 
   function followUpCustomAction(message: Message, text: string): boolean {
     const trimmed = text.trim();
-    if (!worktree || !trimmed || !worktree.customAction) return false;
+    const customRun = worktree?.activeRun?.kind === 'customAction' ? worktree.activeRun : undefined;
+    if (!worktree || !trimmed || !customRun) return false;
     if (!model) {
       if (compactMode) {
         openConfigureModelFromCompact();
@@ -213,17 +214,17 @@ export function useWorkbenchCommands({
     }
     if (worktree.readError) return false;
     const savedAction = state.repositorySettings[worktree.repositoryId]?.customActions?.find(
-      (item) => item.id === worktree.customAction?.actionId,
+      (item) => item.id === customRun.actionId,
     );
     const targetAction: CustomActionConfig = savedAction ?? {
-      id: worktree.customAction.actionId,
-      label: worktree.customAction.actionLabel,
+      id: customRun.actionId,
+      label: customRun.actionLabel,
       prompt: trimmed,
     };
     dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId: message.id, text: '' });
     launchCustomAction(targetAction, {
       followUpPrompt: trimmed,
-      resumeFromRunId: worktree.customAction.runId,
+      resumeFromRunId: customRun.runId,
       forceExpandDock: !compactMode,
     });
     return true;
@@ -293,12 +294,8 @@ export function useWorkbenchCommands({
   ): Promise<boolean> {
     if (!worktree) return false;
     const id = worktree.worktreeId;
-    const livePendingRunId = worktree.customAction?.pendingCallId
-      ? worktree.customAction.runId
-      : worktree.cPush?.pendingCallId
-        ? worktree.cPush.runId
-        : undefined;
-    const livePendingCallId = worktree.customAction?.pendingCallId ?? worktree.cPush?.pendingCallId;
+    const livePendingRunId = worktree.activeRun?.pendingCallId ? worktree.activeRun.runId : undefined;
+    const livePendingCallId = worktree.activeRun?.pendingCallId;
     if (livePendingRunId && livePendingCallId && answer.questionnaireResponse && backend.respondCustomAction) {
       const respKey = `${id}:respondCustomAction`;
       if (inFlight.current.has(respKey)) return false;
@@ -322,8 +319,9 @@ export function useWorkbenchCommands({
         setPending([...inFlight.current]);
       }
     }
-    const target = worktree.cPush?.frozenTarget ?? targetOf(worktree);
-    const runId = worktree.cPush?.runId;
+    const cPushRun = worktree.activeRun?.kind === 'cpush' ? worktree.activeRun : undefined;
+    const target = cPushRun?.frozenTarget ?? targetOf(worktree);
+    const runId = cPushRun?.runId;
     const { questionnaireResponse, ...wireAnswer } = answer;
     const accepted = await execute({
       kind: 'respond',
@@ -343,7 +341,7 @@ export function useWorkbenchCommands({
   }
 
   function cancelActiveCustomAction() {
-    const runId = worktree?.customAction?.runId ?? worktree?.cPush?.runId;
+    const runId = worktree?.activeRun?.runId;
     if (!runId) return;
     void backend.cancelCustomAction?.(runId).catch(() => {});
   }

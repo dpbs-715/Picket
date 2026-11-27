@@ -1,9 +1,9 @@
 import type { MutableRefObject } from 'react';
+import { isModelCommandError } from '../../../desktop/errors';
 import { getMessages } from '../../../i18n';
 import type { WorkbenchBackend, WorkbenchCommand, WorkbenchCommandReply } from '../commands';
 import {
   editors,
-  isModelErrorText,
   splitPath,
   type WorkbenchState,
 } from '../state/workbench';
@@ -237,5 +237,5 @@ export function applyCommandError(
     'deleteModel',
     'deleteProviderConnection',
   ].includes(command.kind);
-  notify(message, targetKey, modelRelatedCommand && isModelErrorText(message));
+  notify(message, targetKey, modelRelatedCommand && isModelCommandError(error));
 }

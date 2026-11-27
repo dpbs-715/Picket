@@ -13,4 +13,4 @@ export {
   finishCustomActionCommand,
   receiveCPushProgress,
 } from './sessionSync';
-export { hydrateWorkbench, serializeWorkbenchPersistence } from './persistence';
+export { hydrateWorkbench, resolvePersistenceKeys, serializeWorkbenchPersistence } from './persistence';

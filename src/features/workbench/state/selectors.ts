@@ -331,37 +331,6 @@ export function isActiveSession(worktree: Worktree) {
   return worktree.sessionStatus !== 'idle' && worktree.sessionStatus !== 'done';
 }
 
-export function isModelErrorText(message: string): boolean {
-  if (!message) return false;
-  const lower = message.toLowerCase();
-  return /\b(?:401|402|403|404|429|5\d\d)\b/.test(lower)
-    || lower.includes('authentication')
-    || lower.includes('unauthorized')
-    || lower.includes('api key')
-    || lower.includes('base url')
-    || lower.includes('quota')
-    || lower.includes('rate limit')
-    || lower.includes('insufficient balance')
-    || lower.includes('timed out')
-    || lower.includes('timeout')
-    || lower.includes('connect to model')
-    || lower.includes('model service')
-    || lower.includes('model request')
-    || lower.includes('model provider')
-    || lower.includes('selected model')
-    || lower.includes('credentials.json')
-    || lower.includes('provider connection')
-    || message.includes('\u9274\u6743')
-    || message.includes('\u989d\u5ea6')
-    || message.includes('\u8bf7\u6c42\u8fc7\u4e8e\u9891\u7e41')
-    || message.includes('\u6a21\u578b\u670d\u52a1')
-    || message.includes('\u8fde\u63a5\u6a21\u578b')
-    || message.includes('\u6a21\u578b\u8bf7\u6c42')
-    || message.includes('\u63a5\u53e3\u5730\u5740')
-    || message.includes('\u4f9b\u5e94\u5546\u8fde\u63a5')
-    || message.includes('\u5f53\u524d\u9009\u4e2d\u7684\u6a21\u578b');
-}
-
 function extractCommitStepProgress(message?: Message): { completed: number; total: number } | undefined {
   if (!message) return undefined;
   if (message.id.includes('-step-') || /commit|\u63d0\u4ea4/i.test(`${message.title} ${message.progress?.label ?? ''}`)) {

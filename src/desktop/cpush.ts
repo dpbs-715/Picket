@@ -1,4 +1,5 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { Channel } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import {
   decodeCPushCommandReply,
   decodeCPushProgressEvent,
@@ -36,7 +37,7 @@ export async function startDesktopCPush(
       }
     };
   }
-  const reply = decodeCPushCommandReply(await invoke('start_cpush', { request, onEvent }));
+  const reply = decodeCPushCommandReply(await invokeDesktop('start_cpush', { request, onEvent }));
   if (reply.requestId !== request.requestId
     || reply.session.modelId !== request.modelId
     || !isMatchingCPushTarget(reply.session, request.target)) {
@@ -58,7 +59,7 @@ export async function pullRebaseDesktop(
       }
     };
   }
-  const reply = decodeCPushCommandReply(await invoke('pull_rebase_repository', { request, onEvent }));
+  const reply = decodeCPushCommandReply(await invokeDesktop('pull_rebase_repository', { request, onEvent }));
   if (reply.requestId !== request.requestId || !isMatchingWorktree(reply.session, request.target)) {
     throw new Error(getMessages(request.locale).desktop.pullRebaseMismatch);
   }
@@ -68,7 +69,7 @@ export async function pullRebaseDesktop(
 export async function reconcileDesktopCPush(
   request: ReconcileCPushRequest,
 ): Promise<CPushProgressEvent | null> {
-  const raw = await invoke('reconcile_cpush_session', { request });
+  const raw = await invokeDesktop('reconcile_cpush_session', { request });
   if (raw === null || raw === undefined) return null;
   const decoded = decodeCPushProgressEvent(raw);
   if (!isMatchingWorktree(decoded.session, request.target)) {
@@ -90,7 +91,7 @@ export async function respondDesktopCPush(
       }
     };
   }
-  const reply = decodeCPushCommandReply(await invoke('respond_cpush', { request, onEvent }));
+  const reply = decodeCPushCommandReply(await invokeDesktop('respond_cpush', { request, onEvent }));
   if (reply.requestId !== request.requestId
     || reply.session.runId !== request.runId
     || !isMatchingWorktree(reply.session, request.target)) {

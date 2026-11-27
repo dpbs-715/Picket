@@ -73,7 +73,7 @@ function reduceWorktreeLocal(worktree: Worktree, action: WorkbenchAction): Workt
         messages: nextMessages,
         replies: nextReplies,
         sessionStatus: nextSessionStatus,
-        customAction: nextSessionStatus === 'idle' ? undefined : worktree.customAction,
+        activeRun: nextSessionStatus === 'idle' ? undefined : worktree.activeRun,
         dockExpanded: false,
       };
     }
@@ -116,8 +116,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           sessionStatus: 'running',
           dockExpanded: action.expandDock ? true : tree.dockExpanded,
           messages: [progressMsg],
-          customAction: undefined,
-          cPush: {
+          activeRun: {
+            kind: 'cpush',
             runId: action.runId,
             frozenTarget: action.frozenTarget,
             frozenFileIds: action.frozenFileIds,
@@ -140,7 +140,12 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     return {
       ...state,
       worktrees: state.worktrees.map((tree) => {
-        if (tree.worktreeId !== action.worktreeId || tree.cPush?.runId !== action.runId || tree.cPush.commits.length > 0) {
+        if (
+          tree.worktreeId !== action.worktreeId
+          || tree.activeRun?.kind !== 'cpush'
+          || tree.activeRun.runId !== action.runId
+          || tree.activeRun.commits.length > 0
+        ) {
           return tree;
         }
         return {
@@ -148,7 +153,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           sessionStatus: 'idle',
           dockExpanded: false,
           messages: [],
-          cPush: undefined,
+          activeRun: undefined,
         };
       }),
     };

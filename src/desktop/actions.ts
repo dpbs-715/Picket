@@ -1,4 +1,5 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { Channel } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import {
   decodeCustomActionCommandReply,
   decodeCustomActionProgressEvent,
@@ -27,7 +28,7 @@ export async function startDesktopCustomAction(
       }
     };
   }
-  const reply = decodeCustomActionCommandReply(await invoke('start_custom_action', { request, onEvent }));
+  const reply = decodeCustomActionCommandReply(await invokeDesktop('start_custom_action', { request, onEvent }));
   if (reply.requestId !== request.requestId
     || reply.repositoryId !== request.target.repositoryId
     || reply.worktreeId !== request.target.worktreeId) {
@@ -39,7 +40,7 @@ export async function startDesktopCustomAction(
 export async function respondDesktopCustomAction(
   request: RespondCustomActionRequest,
 ): Promise<boolean> {
-  const result = await invoke('respond_custom_action', { request });
+  const result = await invokeDesktop('respond_custom_action', { request });
   return Boolean(result);
 }
 
@@ -56,7 +57,7 @@ export async function generateDesktopCustomAction(
       }
     };
   }
-  const reply = decodeGenerateCustomActionReply(await invoke('generate_custom_action', { request, onEvent }));
+  const reply = decodeGenerateCustomActionReply(await invokeDesktop('generate_custom_action', { request, onEvent }));
   if (reply.requestId !== request.requestId) {
     throw new Error('Desktop returned a mismatched custom action draft reply.');
   }
@@ -64,12 +65,12 @@ export async function generateDesktopCustomAction(
 }
 
 export async function cancelDesktopCustomAction(requestId: string): Promise<void> {
-  await invoke('cancel_custom_action', { requestId });
+  await invokeDesktop('cancel_custom_action', { requestId });
 }
 
 export async function dismissDesktopSessionDone(
   request: DismissSessionDoneRequest,
 ): Promise<boolean> {
-  const result = await invoke('dismiss_session_done', { request });
+  const result = await invokeDesktop('dismiss_session_done', { request });
   return Boolean(result);
 }

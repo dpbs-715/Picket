@@ -1,4 +1,5 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import { LogicalPosition, LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isPermissionGranted, onAction, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
@@ -144,8 +145,8 @@ export function normalizeFullWindowSize(size?: WindowSize): WindowSize {
 
 const tauriEnvironment: NativeWindowEnvironment = {
   window: () => getCurrentWindow(),
-  setPinned: (pinned) => invoke<boolean>('set_window_pinned', { pinned }),
-  animateFrame: (request) => invoke<AnimateWindowFrameReply>('animate_window_frame', { request }),
+  setPinned: (pinned) => invokeDesktop<boolean>('set_window_pinned', { pinned }),
+  animateFrame: (request) => invokeDesktop<AnimateWindowFrameReply>('animate_window_frame', { request }),
   prefersReducedMotion,
 };
 
@@ -419,7 +420,7 @@ export function createDesktopWindowController(): WindowController {
     },
     async setTheme(theme) {
       if (!isTauri()) return;
-      const resolved = await invoke<string>('set_window_theme', { theme }).catch(() => undefined);
+      const resolved = await invokeDesktop<string>('set_window_theme', { theme }).catch(() => undefined);
       if (resolved === 'dark' || resolved === 'light') return resolved;
     },
     async applyWindowMode(options) {
@@ -443,7 +444,7 @@ export function createDesktopWindowController(): WindowController {
     },
     async notifyWorkbenchReady() {
       if (!isTauri()) return;
-      await invoke('notify_workbench_ready').catch(() => {});
+      await invokeDesktop('notify_workbench_ready').catch(() => {});
     },
     subscribeGeometry(listener) {
       if (!isTauri()) return () => {};
@@ -507,7 +508,7 @@ export function createDesktopWindowController(): WindowController {
       let cleanup: (() => void) | undefined;
       void onAction(() => {
         if (disposed) return;
-        void invoke('tray_open_main_window', { action: { kind: 'show' } }).catch(() => {
+        void invokeDesktop('tray_open_main_window', { action: { kind: 'show' } }).catch(() => {
           void getCurrentWindow().setFocus().catch(() => {});
         });
         onTap();

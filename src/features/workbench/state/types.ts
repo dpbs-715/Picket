@@ -56,7 +56,8 @@ export interface Message {
   progress?: { completed: number; total: number; label: string };
 }
 
-export interface ActiveCPushState {
+export interface ActiveCPushRun {
+  kind: 'cpush';
   runId: string;
   frozenTarget: Target;
   frozenFileIds: string[];
@@ -69,7 +70,8 @@ export interface ActiveCPushState {
   canRetryRemaining: boolean;
 }
 
-export interface ActiveCustomActionState {
+export interface ActiveCustomActionRun {
+  kind: 'customAction';
   runId: string;
   actionId: string;
   actionLabel: string;
@@ -78,6 +80,8 @@ export interface ActiveCustomActionState {
   commits: CPushLandedCommit[];
   links: CustomActionLink[];
 }
+
+export type ActiveWorkflowRun = ActiveCPushRun | ActiveCustomActionRun;
 
 export interface Worktree extends Target {
   label: string;
@@ -95,8 +99,7 @@ export interface Worktree extends Target {
   prompt: { text: string; revision: number };
   sessionStatus: 'idle' | 'running' | 'needsDecision' | 'conflict' | 'waitingManual' | 'pushFailed' | 'done';
   messages: Message[];
-  cPush?: ActiveCPushState;
-  customAction?: ActiveCustomActionState;
+  activeRun?: ActiveWorkflowRun;
   dockExpanded: boolean;
   replies: Record<string, string>;
 }

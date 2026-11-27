@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import { decodeGitBranchReply } from '../../shared/git-branch-protocol';
 import { decodeGitOpenFileReply } from '../../shared/ide-protocol';
 import { decodeGitLocalKeepReply, decodeGitReadReply } from '../../shared/git-read-protocol';
@@ -99,10 +99,10 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
     });
   },
   async loadWorkbenchState() {
-    return decodeWorkbenchRestoreReply(await invoke('load_workbench_state'));
+    return decodeWorkbenchRestoreReply(await invokeDesktop('load_workbench_state'));
   },
   async saveWorkbenchState(request) {
-    await invoke('save_workbench_state', { request });
+    await invokeDesktop('save_workbench_state', { request });
   },
   async execute(command) {
     const t = getMessages(command.locale).desktop;
@@ -196,7 +196,7 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
         ...(command.line !== undefined ? { line: command.line } : {}),
         ...(command.locale ? { locale: command.locale } : {}),
       };
-      const reply = decodeGitOpenFileReply(await invoke('open_in_editor', { request }));
+      const reply = decodeGitOpenFileReply(await invokeDesktop('open_in_editor', { request }));
       if (reply.requestId !== command.requestId
         || reply.editor !== command.editor
         || (['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const).some((key) => reply.target[key] !== command.target[key])
@@ -214,7 +214,7 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
         branchToken: command.branchToken,
         ...(command.locale ? { locale: command.locale } : {}),
       };
-      const reply = decodeGitBranchReply(await invoke('change_repository_branch', { request }));
+      const reply = decodeGitBranchReply(await invokeDesktop('change_repository_branch', { request }));
       const activeBranch = reply.snapshot.worktrees.find((tree) => tree.worktreeId === reply.snapshot.activeWorktreeId)?.branch;
       const expectedMatches = command.kind === 'switchBranch'
         ? activeBranch === command.branch
@@ -235,7 +235,7 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
         keep: command.keep,
         ...(command.locale ? { locale: command.locale } : {}),
       };
-      const reply = decodeGitLocalKeepReply(await invoke('set_repository_local_keep', { request }));
+      const reply = decodeGitLocalKeepReply(await invokeDesktop('set_repository_local_keep', { request }));
       if (reply.requestId !== command.requestId
         || (['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const).some((key) => reply.target[key] !== command.target[key])
         || reply.snapshot.repository.id !== command.target.repositoryId
@@ -248,7 +248,7 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
     const request = command.kind === 'openRepository'
       ? { requestId: command.requestId, ...(command.locale ? { locale: command.locale } : {}) }
       : { requestId: command.requestId, target: command.target, ...(command.locale ? { locale: command.locale } : {}) };
-    const reply = decodeGitReadReply(await invoke(command.kind === 'openRepository' ? 'open_repository' : 'refresh_repository', { request }));
+    const reply = decodeGitReadReply(await invokeDesktop(command.kind === 'openRepository' ? 'open_repository' : 'refresh_repository', { request }));
     const expectedTarget = command.kind === 'refresh' ? command.target : undefined;
     if (reply.requestId !== command.requestId || (expectedTarget && (!reply.target || !reply.snapshot
       || (['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const).some((key) => reply.target![key] !== expectedTarget[key])

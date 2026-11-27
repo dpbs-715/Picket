@@ -66,8 +66,8 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           sessionStatus: 'running',
           dockExpanded: action.expandDock ? true : tree.dockExpanded,
           messages: [progressMsg],
-          cPush: undefined,
-          customAction: {
+          activeRun: {
+            kind: 'customAction',
             runId: action.runId,
             actionId: action.actionId,
             actionLabel: action.actionLabel,
@@ -86,14 +86,18 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
     return {
       ...state,
       worktrees: state.worktrees.map((tree) => {
-        if (tree.worktreeId !== action.worktreeId || tree.customAction?.runId !== action.runId) {
+        if (
+          tree.worktreeId !== action.worktreeId
+          || tree.activeRun?.kind !== 'customAction'
+          || tree.activeRun.runId !== action.runId
+        ) {
           return tree;
         }
         const errorMsg: Message | undefined = action.message
           ? {
               id: `error-${action.runId}`,
               kind: 'error',
-              title: tree.customAction.actionLabel,
+              title: tree.activeRun.actionLabel,
               description: action.message,
             }
           : undefined;
@@ -102,9 +106,9 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           sessionStatus: 'idle',
           dockExpanded: errorMsg ? tree.dockExpanded : false,
           messages: errorMsg ? [errorMsg] : [],
-          customAction: errorMsg
+          activeRun: errorMsg
             ? {
-                ...tree.customAction,
+                ...tree.activeRun,
                 pendingCallId: undefined,
               }
             : undefined,

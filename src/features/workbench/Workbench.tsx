@@ -230,9 +230,7 @@ export function Workbench({
     || customActionBusy
     || localKeepBusy
     || commands.pending.some((key) => key.startsWith(`${viewKey}:`));
-  const hasLivePendingQuestion = Boolean(
-    worktree?.customAction?.pendingCallId || worktree?.cPush?.pendingCallId,
-  );
+  const hasLivePendingQuestion = Boolean(worktree?.activeRun?.pendingCallId);
   const dockBusy = hasLivePendingQuestion
     ? commands.pending.includes(`${worktree!.worktreeId}:respondCustomAction`)
     : busy;
@@ -427,8 +425,10 @@ export function Workbench({
                     onResizeKeyDown={handleDockResizeKeyDown}
                     onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })}
                     onDismiss={(message) => {
-                      const dismissTarget = worktree.cPush?.frozenTarget ?? targetOf(worktree);
-                      const dismissRunId = worktree.customAction?.runId ?? worktree.cPush?.runId;
+                      const dismissTarget = worktree.activeRun?.kind === 'cpush'
+                        ? worktree.activeRun.frozenTarget
+                        : targetOf(worktree);
+                      const dismissRunId = worktree.activeRun?.runId;
                       dispatch({ type: 'dismissMessage', worktreeId: worktree.worktreeId, messageId: message.id });
                       void backend.dismissSessionDone?.(dismissTarget, dismissRunId, message.id, state.locale).catch(() => {});
                     }}

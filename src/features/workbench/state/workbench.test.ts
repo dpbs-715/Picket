@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DesktopCommandError, isModelCommandError, toDesktopCommandError } from '../../../desktop/errors';
 import { getMessages } from '../../../i18n/messages';
 import { fixture, releaseQuestion } from '../testing/fixtures';
 import { readScopeVersion } from './repositories';
@@ -11,7 +12,6 @@ import {
   effectiveEditorFor,
   emptyWorkbench,
   groupFiles,
-  isModelErrorText,
   localKeepChanges,
   localKeepPathsFor,
   normalChanges,
@@ -55,14 +55,24 @@ describe('Workbench selection, per-project settings, zero-model guidance, and lo
     });
   });
 
-  it('classifies model errors accurately across connection, 401/403 auth, 402/429 quota, and timeout in en and zh', () => {
-    expect(isModelErrorText('Authentication failed (401/403). Verify your API key and permissions.')).toBe(true);
-    expect(isModelErrorText('Rate limit or quota exceeded (402/429). Check your account balance.')).toBe(true);
-    expect(isModelErrorText('Unable to connect to model service (http://127.0.0.1:8080).')).toBe(true);
-    expect(isModelErrorText('Model request timed out.')).toBe(true);
-    expect(isModelErrorText('\u9274\u6743\u5931\u8d25\uff08401/403\uff09')).toBe(true);
-    expect(isModelErrorText('\u989d\u5ea6\u4e0d\u8db3\uff08402/429\uff09')).toBe(true);
-    expect(isModelErrorText('Working directory is not a Git repository')).toBe(false);
+  it('classifies structured model errors by category instead of localized text matching', () => {
+    expect(isModelCommandError(new DesktopCommandError({
+      code: 'modelAuthFailed',
+      category: 'model',
+      message: 'Authentication failed (401/403). Verify your API key and permissions.',
+    }))).toBe(true);
+    expect(isModelCommandError(toDesktopCommandError({
+      code: 'modelRateLimited',
+      category: 'model',
+      message: '\u989d\u5ea6\u4e0d\u8db3\uff08402/429\uff09',
+      retryable: true,
+    }))).toBe(true);
+    expect(isModelCommandError(new DesktopCommandError({
+      code: 'gitFailed',
+      category: 'git',
+      message: 'Working directory is not a Git repository',
+    }))).toBe(false);
+    expect(isModelCommandError(new Error('Authentication failed (401/403) without structured category'))).toBe(false);
   });
 
   it('isolates per-repository editor and commitLanguage while updating fallback editor for unconfigured repos', () => {

@@ -18,6 +18,7 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
   const traySnapshot: TrayStateSnapshot = {
     protocolVersion: 1,
     locale: 'zh',
+    theme: 'system',
     hasUpdate: true,
     refreshing: false,
     repositories: [
@@ -84,7 +85,8 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
     };
     followUpState.worktrees[0].sessionStatus = 'done';
     followUpState.worktrees[0].dockExpanded = true;
-    followUpState.worktrees[0].customAction = {
+    followUpState.worktrees[0].activeRun = {
+      kind: 'customAction',
       runId: 'run-prev-42',
       actionId: 'act-release',
       actionLabel: 'Patch Release',
@@ -164,7 +166,8 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
     };
     progressState.worktrees[0].sessionStatus = 'running';
     progressState.worktrees[0].dockExpanded = true;
-    progressState.worktrees[0].customAction = {
+    progressState.worktrees[0].activeRun = {
+      kind: 'customAction',
       runId: 'run-progress-scroll',
       actionId: 'act-merge',
       actionLabel: 'Merge test',

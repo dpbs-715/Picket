@@ -20,16 +20,17 @@ export function applyCPushSnapshot(
     (tree) => tree.repositoryId === session.repositoryId && tree.worktreeId === session.worktreeId,
   );
   if (!previousTree) return state;
+  const previousCPush = previousTree.activeRun?.kind === 'cpush' ? previousTree.activeRun : undefined;
   if (
-    previousTree.cPush
-    && previousTree.cPush.runId !== session.runId
+    previousCPush
+    && previousCPush.runId !== session.runId
     && previousTree.sessionStatus !== 'idle'
     && previousTree.sessionStatus !== 'done'
   ) {
     return state;
   }
 
-  const promptRevAtStart = previousTree.cPush?.promptRevisionAtStart ?? previousTree.prompt.revision;
+  const promptRevAtStart = previousCPush?.promptRevisionAtStart ?? previousTree.prompt.revision;
   const isCPushCompleted = session.sessionStatus === 'done'
     && !session.message?.id.startsWith('done-local-')
     && !session.message?.id.startsWith('done-merge-pull-')
@@ -73,16 +74,17 @@ export function applyCPushSnapshot(
           : expandDockOnSettle
             ? true
             : tree.dockExpanded;
+      const existingCPush = tree.activeRun?.kind === 'cpush' ? tree.activeRun : undefined;
       return {
         ...tree,
         sessionStatus: session.sessionStatus,
         dockExpanded: nextDockExpanded,
         messages: nextMessages,
         prompt: nextPrompt,
-        customAction: undefined,
-        cPush: session.sessionStatus === 'idle'
+        activeRun: session.sessionStatus === 'idle'
           ? undefined
           : {
+              kind: 'cpush',
               runId: session.runId,
               frozenTarget: {
                 repositoryId: session.repositoryId,
@@ -91,7 +93,7 @@ export function applyCPushSnapshot(
                 scopeVersion: session.frozenScopeVersion,
               },
               frozenFileIds: session.frozenFileIds,
-              promptRevisionAtStart: tree.cPush?.promptRevisionAtStart ?? promptRevAtStart,
+              promptRevisionAtStart: existingCPush?.promptRevisionAtStart ?? promptRevAtStart,
               modelId: session.modelId,
               ...(session.pendingCallId ? { pendingCallId: session.pendingCallId } : {}),
               timeline: session.timeline,
@@ -185,10 +187,10 @@ export function applyCustomActionProgress(
         sessionStatus: nextStatus,
         dockExpanded: shouldExpand,
         messages: nextMessages,
-        cPush: undefined,
-        customAction: progress.status === 'cancelled' || progress.status === 'failed'
+        activeRun: progress.status === 'cancelled' || progress.status === 'failed'
           ? undefined
           : {
+              kind: 'customAction',
               runId: progress.runId,
               actionId: progress.actionId,
               actionLabel: progress.actionLabel,
@@ -229,9 +231,9 @@ export function finishCustomActionCommand(
         sessionStatus: nextStatus,
         dockExpanded: nextDockExpanded,
         messages: nextMessages,
-        cPush: undefined,
-        customAction: reply.status === 'done' || (reply.status === 'failed' && Boolean(reply.message))
+        activeRun: reply.status === 'done' || (reply.status === 'failed' && Boolean(reply.message))
           ? {
+              kind: 'customAction',
               runId: reply.runId,
               actionId: reply.actionId,
               actionLabel: reply.actionLabel,

@@ -239,7 +239,8 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
     case 'rich-card':
       tree.sessionStatus = 'done';
       tree.dockExpanded = true;
-      tree.customAction = {
+      tree.activeRun = {
+        kind: 'customAction',
         runId: 'run-review-1',
         actionId: 'act-review',
         actionLabel: 'Review Diff',

@@ -1,4 +1,5 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { invokeDesktop } from './errors';
 import { listen } from '@tauri-apps/api/event';
 import type { GitRepositorySnapshot } from '../../shared/git-read-protocol';
 import {
@@ -12,12 +13,12 @@ import {
 } from '../../shared/tray-protocol';
 
 export async function readTrayState(): Promise<TrayStateSnapshot> {
-  return invoke<TrayStateSnapshot>('read_tray_state');
+  return invokeDesktop<TrayStateSnapshot>('read_tray_state');
 }
 
 export async function syncTrayContext(context: TrayUiContextUpdate): Promise<void> {
   if (!isTauri()) return;
-  await invoke('sync_tray_context', {
+  await invokeDesktop('sync_tray_context', {
     context: {
       ...(context.locale ? { locale: context.locale } : {}),
       ...(context.theme ? { theme: context.theme } : {}),
@@ -28,27 +29,27 @@ export async function syncTrayContext(context: TrayUiContextUpdate): Promise<voi
 
 export async function requestTrayRefresh(): Promise<void> {
   if (!isTauri()) return;
-  await invoke('request_tray_refresh');
+  await invokeDesktop('request_tray_refresh');
 }
 
 export async function resizeTrayPopover(height: number): Promise<void> {
   if (!isTauri()) return;
-  await invoke('resize_tray_popover', { height });
+  await invokeDesktop('resize_tray_popover', { height });
 }
 
 export async function hideTrayPopover(): Promise<void> {
   if (!isTauri()) return;
-  await invoke('hide_tray_popover');
+  await invokeDesktop('hide_tray_popover');
 }
 
 export async function openMainWindowFromTray(action?: TrayMainWindowAction): Promise<void> {
   if (!isTauri()) return;
-  await invoke('tray_open_main_window', { action: action ?? { kind: 'show' } });
+  await invokeDesktop('tray_open_main_window', { action: action ?? { kind: 'show' } });
 }
 
 export async function quitAppFromTray(): Promise<void> {
   if (!isTauri()) return;
-  await invoke('tray_quit_app');
+  await invokeDesktop('tray_quit_app');
 }
 
 function subscribeTauriEvent<T>(eventName: string, listener: (payload: T) => void): () => void {
