@@ -151,28 +151,6 @@ export function Workbench({
     }
   }
 
-  useEffect(() => {
-    if (!hasExpandedDock) {
-      cleanupDockResizeRef.current?.();
-    }
-  }, [hasExpandedDock]);
-
-  useLayoutEffect(() => {
-    if (!hasExpandedDock || typeof dockSizePref !== 'number') return;
-    const syncAvailable = () => {
-      const { available } = measureDockArea();
-      if (available > 0) {
-        setDockAvailableHeight((prev) => (prev === available ? prev : available));
-      }
-    };
-    syncAvailable();
-    const contentEl = workbenchContentRef.current;
-    if (!contentEl || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => syncAvailable());
-    observer.observe(contentEl);
-    return () => observer.disconnect();
-  }, [hasExpandedDock, dockSizePref]);
-
   useEffect(() => () => {
     cleanupDockResizeRef.current?.();
   }, []);
@@ -184,7 +162,6 @@ export function Workbench({
     cleanupDockResizeRef.current?.();
     const initial = measureDockArea();
     const measuredAvailable = initial.available || dockAvailableHeight;
-    if (measuredAvailable > 0) setDockAvailableHeight(measuredAvailable);
     const startDockHeight = initial.dock > 0 ? initial.dock : (dockSplit.dockHeightPx ?? Math.round(measuredAvailable * 0.75));
     const pointerId = event.pointerId;
     const startY = event.clientY;
@@ -408,6 +385,35 @@ export function Workbench({
   useEffect(() => {
     setNoticePaused(false);
   }, [windowMode.presentation.surface, setNoticePaused]);
+
+  const workbenchContentMounted = windowMode.presentation.mountWorkbenchContent
+    && (hydrated || !windowController.isDesktopWindow || Boolean(initialState));
+  const canMeasureDock = hasExpandedDock
+    && workbenchContentMounted
+    && windowMode.presentation.windowSizeMode === 'full'
+    && !windowMode.pinBusy;
+
+  useEffect(() => {
+    if (!canMeasureDock) {
+      cleanupDockResizeRef.current?.();
+    }
+  }, [canMeasureDock]);
+
+  useLayoutEffect(() => {
+    if (!canMeasureDock) return;
+    const syncAvailable = () => {
+      const { available } = measureDockArea();
+      if (available > 0) {
+        setDockAvailableHeight((prev) => (prev === available ? prev : available));
+      }
+    };
+    syncAvailable();
+    const contentEl = workbenchContentRef.current;
+    if (!contentEl || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => syncAvailable());
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [canMeasureDock]);
 
   if (!hydrated && windowController.isDesktopWindow && !initialState) {
     return <div className="workbench-hydrating" aria-busy="true" />;

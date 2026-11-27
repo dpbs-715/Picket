@@ -4579,9 +4579,9 @@ export async function verifyWorkbench(root: Root) {
         splashDomTheme() === 'dark'
           && splashStage.getTheme() === 'dark'
           && darkStop0 === '#FFFFFF'
-          && darkEyeFill === 'rgb(16, 19, 25)'
-          && darkDropletFill === 'rgb(250, 251, 253)',
-        `Dark splash whale must use luminous white body & dark eye (stop0=${darkStop0}, eye=${darkEyeFill}, droplet=${darkDropletFill})`,
+          && darkEyeFill === 'rgb(30, 41, 59)'
+          && darkDropletFill === 'rgb(99, 102, 241)',
+        `Dark splash whale must use Pearl Whale palette (stop0=${darkStop0}, eye=${darkEyeFill}, droplet=${darkDropletFill})`,
       );
 
       splashStage.updatePlan({
@@ -4600,16 +4600,137 @@ export async function verifyWorkbench(root: Root) {
       assert(
         splashDomTheme() === 'light'
           && splashStage.getTheme() === 'light'
-          && lightStop0 === '#2E3340'
-          && lightEyeFill === 'rgb(247, 248, 250)'
-          && lightDropletFill === 'rgb(39, 43, 54)',
-        `Light splash whale must use obsidian slate body & alabaster eye (stop0=${lightStop0}, eye=${lightEyeFill}, droplet=${lightDropletFill})`,
+          && lightStop0 === '#5B7DB1'
+          && lightEyeFill === 'rgb(248, 250, 252)'
+          && lightDropletFill === 'rgb(96, 165, 250)',
+        `Light splash whale must use Slate Marine palette (stop0=${lightStop0}, eye=${lightEyeFill}, droplet=${lightDropletFill})`,
       );
     } finally {
       splashStage.dispose();
       splashHost.remove();
     }
     checks.push('Appearance theme setting (System / Dark / Light): live workbench, tray & startup whale splash tokens, native window sync, persistence, and EN/ZH labels');
+  }
+
+  // Regression: Compact -> Full workbench switch with persisted numeric dock height must not flash MessageDock to bottom on first grab-handle click:
+  {
+    const en = getMessages('en');
+    const rootEl = document.getElementById('root')!;
+    const prevRootHeight = rootEl.style.height;
+    const savedDockHeight = 220;
+    const createAnimatedViewportWindow = () => {
+      const base = createControlledWindow();
+      const controller: WindowController = {
+        ...base.controller,
+        async applyWindowMode(opts) {
+          // Simulate native macOS window height shrinking/expanding while applyWindowMode runs:
+          rootEl.style.height = opts.compactMode ? `${opts.compactHeight ?? 86}px` : `${opts.fullSize.height}px`;
+          await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+          return base.controller.applyWindowMode(opts);
+        },
+      };
+      return controller;
+    };
+
+    try {
+      // Scenario A: Normal (expanded dock at 220px) -> Collapse to Compact (window shrinks to 86px) -> Expand back to Normal -> first pointerdown on grab handle:
+      window.localStorage.setItem('picket.dockHeight', String(savedDockHeight));
+      const fullWithDock = fixture('question');
+      fullWithDock.worktrees[0].dockExpanded = true;
+      await mount(fullWithDock, disconnectedBackend, createAnimatedViewportWindow());
+      await tick();
+
+      const lowerBeforeCollapse = document.querySelector<HTMLElement>('.lower-workspace')!.getBoundingClientRect().height;
+      assert(
+        Math.abs(lowerBeforeCollapse - savedDockHeight) <= 3,
+        `Initial expanded dock must honor saved numeric height ${savedDockHeight}px (got ${lowerBeforeCollapse})`,
+      );
+
+      await click(en.header.collapseWindow);
+      await waitUntil(
+        () => Boolean(document.querySelector('.compact-bar')),
+        'did not enter compact mode',
+      );
+
+      await click('Expand Workbench');
+      await waitUntil(
+        () => Boolean(document.querySelector('.d2-grab-zone')),
+        'did not return to full workbench with expanded dock',
+      );
+      await tick();
+
+      const grabAfterReturn = document.querySelector<HTMLElement>('.d2-grab-zone')!;
+      const lowerAfterReturn = document.querySelector<HTMLElement>('.lower-workspace')!;
+      const changesAfterReturn = document.querySelector<HTMLElement>('.changes-panel')!;
+      const grabTopBeforeClick = grabAfterReturn.getBoundingClientRect().top;
+      const lowerHeightBeforeClick = lowerAfterReturn.getBoundingClientRect().height;
+      assert(
+        changesAfterReturn.getAttribute('data-layout-mode') === 'peek'
+          && Math.abs(lowerHeightBeforeClick - savedDockHeight) <= 3,
+        `Returning from compact mode must immediately restore saved ${savedDockHeight}px dock height without shrinking-frame poisoning (mode=${changesAfterReturn.getAttribute('data-layout-mode')}, height=${lowerHeightBeforeClick})`,
+      );
+
+      // Bare first pointerdown on grab handle must NOT flash or jump dock position:
+      await act(async () => {
+        grabAfterReturn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 91, clientX: 180, clientY: grabTopBeforeClick + 6 }));
+      });
+      const grabTopOnFirstClick = grabAfterReturn.getBoundingClientRect().top;
+      const lowerHeightOnFirstClick = lowerAfterReturn.getBoundingClientRect().height;
+      assert(
+        Math.abs(grabTopOnFirstClick - grabTopBeforeClick) <= 1
+          && Math.abs(lowerHeightOnFirstClick - lowerHeightBeforeClick) <= 1,
+        `First pointerdown on grab handle after compact->full must not jump (top ${grabTopBeforeClick} -> ${grabTopOnFirstClick}, height ${lowerHeightBeforeClick} -> ${lowerHeightOnFirstClick})`,
+      );
+
+      // Drag upward by 90px smoothly grows dock from saved height:
+      await act(async () => {
+        window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 91, clientX: 180, clientY: grabTopBeforeClick + 6 - 90 }));
+        window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 91, clientX: 180, clientY: grabTopBeforeClick + 6 - 90 }));
+      });
+      const lowerHeightAfterDrag = lowerAfterReturn.getBoundingClientRect().height;
+      assert(
+        Math.abs(lowerHeightAfterDrag - (savedDockHeight + 90)) <= 4,
+        `Dragging grab handle upward after compact->full must track pointer smoothly (expected ~${savedDockHeight + 90}, got ${lowerHeightAfterDrag})`,
+      );
+
+      // Scenario B: Cold-start directly in Compact Mode with saved 220px dock height -> Expand to Normal -> first pointerdown on grab handle:
+      window.localStorage.setItem('picket.dockHeight', String(savedDockHeight));
+      rootEl.style.height = '86px';
+      const coldCompactWithDock = fixture('question');
+      coldCompactWithDock.windowPrefs = { ...coldCompactWithDock.windowPrefs, compactMode: true };
+      coldCompactWithDock.worktrees[0].dockExpanded = true;
+      await mount(coldCompactWithDock, disconnectedBackend, createAnimatedViewportWindow());
+      await tick();
+
+      await click('Expand Workbench');
+      await waitUntil(
+        () => Boolean(document.querySelector('.d2-grab-zone')),
+        'cold-compact expand did not mount expanded dock',
+      );
+      await tick();
+
+      const grabAfterColdExpand = document.querySelector<HTMLElement>('.d2-grab-zone')!;
+      const lowerAfterColdExpand = document.querySelector<HTMLElement>('.lower-workspace')!;
+      const coldTopBefore = grabAfterColdExpand.getBoundingClientRect().top;
+      const coldHeightBefore = lowerAfterColdExpand.getBoundingClientRect().height;
+      assert(
+        Math.abs(coldHeightBefore - savedDockHeight) <= 3,
+        `Cold-start compact->full expand must measure freshly mounted workbench immediately (expected ~${savedDockHeight}, got ${coldHeightBefore})`,
+      );
+      await act(async () => {
+        grabAfterColdExpand.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 92, clientX: 180, clientY: coldTopBefore + 6 }));
+        window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 92, clientX: 180, clientY: coldTopBefore + 6 }));
+      });
+      const coldTopAfter = grabAfterColdExpand.getBoundingClientRect().top;
+      assert(
+        Math.abs(coldTopAfter - coldTopBefore) <= 1,
+        `First click on grab handle after cold compact->full must not flash to bottom (top ${coldTopBefore} -> ${coldTopAfter})`,
+      );
+      checks.push('Compact->Full switch re-measures dock split cleanly without shrink poisoning or first-click grab-handle flash');
+    } finally {
+      rootEl.style.height = prevRootHeight;
+      window.localStorage.removeItem('picket.dockHeight');
+    }
   }
 
   return {
