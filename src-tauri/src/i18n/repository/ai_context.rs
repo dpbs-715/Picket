@@ -27,55 +27,6 @@ pub fn patch_omitted_middle(
     }
 }
 
-pub fn ai_skipped_lockfile_review(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (lockfile skipped by default)"),
-        LanguageKind::Zh => format!("{path}（锁文件默认忽略审查）"),
-    }
-}
-
-pub fn ai_skipped_binary(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (binary file)"),
-        LanguageKind::Zh => format!("{path}（二进制文件）"),
-    }
-}
-
-pub fn ai_skipped_non_utf8(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (non-UTF-8 text encoding, partially covered)"),
-        LanguageKind::Zh => format!("{path}（非 UTF-8 文本编码，未完整覆盖）"),
-    }
-}
-
-pub fn ai_skipped_diff_too_large(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (diff too large, skipped)"),
-        LanguageKind::Zh => format!("{path}（大文件超出单文件审查上限）"),
-    }
-}
-
-pub fn ai_skipped_total_too_large(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (diff too large, skipped)"),
-        LanguageKind::Zh => format!("{path}（所选总改动较大，超出单次上下文上限）"),
-    }
-}
-
-pub fn ai_skipped_sensitive_redacted(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (local env or sensitive values redacted locally)"),
-        LanguageKind::Zh => format!("{path}（本地环境或敏感凭据值已本地脱敏）"),
-    }
-}
-
-pub fn ai_skipped_large_partial(locale: LanguageKind, path: &str) -> String {
-    match locale {
-        LanguageKind::En => format!("{path} (large diff, partially covered)"),
-        LanguageKind::Zh => format!("{path}（大文件改动较大，仅部分覆盖）"),
-    }
-}
-
 pub fn cpush_skip_lockfile(locale: LanguageKind, added: u64, removed: u64) -> String {
     match locale {
         LanguageKind::En => {

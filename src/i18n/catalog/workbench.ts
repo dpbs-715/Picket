@@ -61,8 +61,6 @@ export interface WorkbenchMessages {
     };
     conflictBadge: string;
     partialStagedBadge: string;
-    skipReviewBadge: string;
-    findingCountLabel(path: string, count: number): string;
     emptyRepoTitle: string;
     browserPreviewHint: string;
     openingRepo: string;
@@ -73,10 +71,14 @@ export interface WorkbenchMessages {
     rootDirectory: string;
     selectDirectory(directory: string): string;
     deselectDirectory(directory: string): string;
+    collapseDirectory(directory: string): string;
+    expandDirectory(directory: string): string;
     localKeepTitle: string;
     localKeepBadge: string;
     localKeepConflicts(count: number): string;
     localKeepEmptyHint: string;
+    resizeLocalKeepLabel: string;
+    resizeLocalKeepTitle: string;
     noNormalChanges: string;
     keepLocallyAction: string;
     moveBackToChangesAction: string;
@@ -91,13 +93,15 @@ export interface WorkbenchMessages {
     expandMessage(title: string): string;
     activeRegionLabel: string;
     collapseMessage: string;
+    resizeDockLabel: string;
+    resizeDockTitle: string;
     taskProgressLabel: string;
     timelineLabel: string;
     qaLogLabel: string;
     qaEntry(question: string, answer: string): string;
-    viewReview: string;
+    detailsToggle: string;
     openConflictInEditor(editorShort: string): string;
-    gotIt: string;
+    openInEditor(editorShort: string): string;
     dismissDone: string;
     recommendedBadge: string;
     multiSelectHint: string;
@@ -113,6 +117,20 @@ export interface WorkbenchMessages {
     followUpActionPlaceholder: string;
     sendReply: string;
     cancelAction: string;
+    copyCode: string;
+    copiedCode: string;
+    expandCode: string;
+    collapseCode: string;
+    defaultCodeTitle: string;
+    codeLines(count: number): string;
+    skippedFilesToggle(count: number): string;
+    emptyFindingsDefault: string;
+    severityLabels: {
+      high: string;
+      medium: string;
+      low: string;
+      info: string;
+    };
   };
   footer: {
     addModel: string;
@@ -134,7 +152,6 @@ export interface WorkbenchMessages {
     actionsDrawerLabel: string;
     selectedTrigger(selected: number, total: number): string;
     noModelBadge: string;
-    planBadge(count: number, outdated: boolean): string;
     status: {
       noRepo: string;
       clean: string;
@@ -143,10 +160,6 @@ export interface WorkbenchMessages {
       noneSelected(total: number): string;
       selectedNoModel(selected: number, total: number): string;
       selectedReady(selected: number, total: number): string;
-      planReady(count: number): string;
-      planOutdated(count: number): string;
-      emptyPlanMessage: string;
-      planning: string;
       committingStep(completed: number, total: number): string;
       running: string;
       needsDecision: string;
@@ -164,16 +177,11 @@ export interface WorkbenchMessages {
   workbench: {
     ariaLabel: string;
     lowerWorkspaceLabel: string;
-    workspaceTabsLabel: string;
     loadStateFailedFallback: string;
     saveStateFailedFallback: string;
     readPinFailedFallback: string;
     setPinFailedFallback: string;
     openModelSettingsAction: string;
-    reviewNoRisksSummary: string;
-    reviewFindingsSummary(high: number, suggestion: number): string;
-    reviewCompleteTitle(summary: string): string;
-    reviewCompleteDescription: string;
     pullRebaseTrackedDone(branch: string): string;
     pullRebaseDone: string;
     openFileMismatchError: string;
@@ -183,9 +191,6 @@ export interface WorkbenchMessages {
     branchSwitched(landedBranch: string): string;
     readMismatchError: string;
     genericOperationFailed: string;
-    noChangedFilesToReReview: string;
-    cancelledPlan: string;
-    cancelledReview: string;
     detachedPrimaryBlocked: string;
     readFailedFallback: string;
     missingWorktreeError: string;
@@ -262,8 +267,6 @@ export const workbenchEn: WorkbenchMessages = {
     },
     conflictBadge: '· Conflict',
     partialStagedBadge: '· Partial staged',
-    skipReviewBadge: '· Skip review',
-    findingCountLabel: (path, count) => `${path}: ${count} review finding${count === 1 ? '' : 's'}`,
     emptyRepoTitle: 'Open Your Git Repository',
     browserPreviewHint: 'Browser preview cannot read local directories',
     openingRepo: 'Opening…',
@@ -274,10 +277,14 @@ export const workbenchEn: WorkbenchMessages = {
     rootDirectory: '(root)',
     selectDirectory: (directory) => `Select directory ${directory}`,
     deselectDirectory: (directory) => `Deselect directory ${directory}`,
+    collapseDirectory: (directory) => `Collapse directory ${directory}`,
+    expandDirectory: (directory) => `Expand directory ${directory}`,
     localKeepTitle: 'Local Keep',
     localKeepBadge: '· Local keep',
     localKeepConflicts: (count) => `${count} conflict${count === 1 ? '' : 's'}`,
     localKeepEmptyHint: 'Drag files here or right-click a file to keep locally without committing',
+    resizeLocalKeepLabel: 'Resize Local Keep height',
+    resizeLocalKeepTitle: 'Drag to resize Local Keep height (double-click to reset)',
     noNormalChanges: 'No changes outside Local Keep',
     keepLocallyAction: 'Keep Locally (Do Not Commit)',
     moveBackToChangesAction: 'Move Back to Changes',
@@ -293,28 +300,44 @@ export const workbenchEn: WorkbenchMessages = {
     expandMessage: (title) => `Expand message: ${title}`,
     activeRegionLabel: 'Active Session',
     collapseMessage: 'Collapse Message',
+    resizeDockLabel: 'Resize message panel height',
+    resizeDockTitle: 'Drag to resize message panel (double-click to toggle full height / reset)',
     taskProgressLabel: 'Task progress',
     timelineLabel: 'Session execution steps',
     qaLogLabel: 'Session Q&A log',
     qaEntry: (question, answer) => `Q&A: ${question} → ${answer}`,
-    viewReview: 'View',
+    detailsToggle: 'Execution details',
     openConflictInEditor: (editorShort) => `Open conflicted file in ${editorShort}`,
-    gotIt: 'Got it',
+    openInEditor: (editorShort) => `Open in ${editorShort}`,
     dismissDone: 'Dismiss completed notice',
     recommendedBadge: 'Recommended',
     multiSelectHint: 'Select one or more',
     showPreview: 'Preview',
-    hidePreview: 'Hide preview',
+    hidePreview: 'Hide',
     submitAnswers: 'Submit',
     cancelQuestion: 'Cancel',
     dontAskAgainDefault: 'Do not ask again for this action',
-    customOptionPlaceholder: 'Or enter a custom answer…',
+    customOptionPlaceholder: 'Or type another instruction and press Enter…',
     replyLabel: 'Reply to active message',
     conflictReplyPlaceholder: 'Enter merge instructions and press Enter…',
     questionReplyPlaceholder: 'Or enter custom instructions and press Enter…',
     followUpActionPlaceholder: 'Continue or adjust this action and press Enter…',
     sendReply: 'Send Reply',
     cancelAction: 'Cancel',
+    copyCode: 'Copy',
+    copiedCode: 'Copied',
+    expandCode: 'Expand',
+    collapseCode: 'Collapse',
+    defaultCodeTitle: 'Output',
+    codeLines: (count) => `${count} line${count === 1 ? '' : 's'}`,
+    skippedFilesToggle: (count) => `${count} file${count === 1 ? '' : 's'} skipped`,
+    emptyFindingsDefault: 'No issues found',
+    severityLabels: {
+      high: 'High',
+      medium: 'Medium',
+      low: 'Suggestion',
+      info: 'Info',
+    },
   },
   footer: {
     addModel: 'Add Model',
@@ -336,7 +359,6 @@ export const workbenchEn: WorkbenchMessages = {
     actionsDrawerLabel: 'Switch primary action',
     selectedTrigger: (selected, total) => `Selected ${selected}/${total}`,
     noModelBadge: 'No model',
-    planBadge: (count, outdated) => (outdated ? `Plan ${count} · Outdated ▸` : `Plan ${count} ▸`),
     status: {
       noRepo: 'Open a repository ▸',
       clean: 'Working tree clean',
@@ -345,10 +367,6 @@ export const workbenchEn: WorkbenchMessages = {
       noneSelected: (total) => `0/${total} selected ▸`,
       selectedNoModel: (selected, total) => `Selected ${selected}/${total} · No model`,
       selectedReady: (selected, total) => `Selected ${selected}/${total} · Ready`,
-      planReady: (count) => `Plan: ${count} commit${count === 1 ? '' : 's'} ▸`,
-      planOutdated: (count) => `Plan: ${count} commit${count === 1 ? '' : 's'} (Outdated) ▸`,
-      emptyPlanMessage: 'Plan has empty message ▸',
-      planning: 'Generating plan…',
       committingStep: (completed, total) => `Committing ${completed}/${total}…`,
       running: 'Running C-Push…',
       needsDecision: 'Needs decision ▸',
@@ -365,22 +383,12 @@ export const workbenchEn: WorkbenchMessages = {
   },
   workbench: {
     ariaLabel: 'Picket Workbench',
-    lowerWorkspaceLabel: 'Commit plan, review, and messages',
-    workspaceTabsLabel: 'Workspace',
+    lowerWorkspaceLabel: 'Prompt and messages',
     loadStateFailedFallback: 'Unable to load saved local workbench state.',
     saveStateFailedFallback: 'Unable to save local prompt state; current window input is preserved.',
     readPinFailedFallback: 'Unable to read window pin state. Try pinning the window again.',
     setPinFailedFallback: 'Unable to change window pin state.',
     openModelSettingsAction: 'Model Settings',
-    reviewNoRisksSummary: 'No risks found',
-    reviewFindingsSummary: (high, suggestion) => {
-      const parts: string[] = [];
-      if (high) parts.push(`${high} high-risk`);
-      if (suggestion) parts.push(`${suggestion} suggestion${suggestion === 1 ? '' : 's'}`);
-      return parts.join(', ');
-    },
-    reviewCompleteTitle: (summary) => `Review complete: ${summary}`,
-    reviewCompleteDescription: 'Review findings updated.',
     pullRebaseTrackedDone: (branch) => `Pull & rebase complete (${branch}); working tree changes preserved.`,
     pullRebaseDone: 'Pull & rebase complete.',
     openFileMismatchError: 'Desktop did not return a matching editor launch result.',
@@ -397,9 +405,6 @@ export const workbenchEn: WorkbenchMessages = {
     branchSwitched: (landedBranch) => `Switched to ${landedBranch}; prompt and selection preserved.`,
     readMismatchError: 'Git did not return a matching read result; prompt and selection preserved.',
     genericOperationFailed: 'Operation did not complete; prompt and selection preserved.',
-    noChangedFilesToReReview: 'No modified files to re-review in the selected scope.',
-    cancelledPlan: 'Cancelled commit plan generation; prompt and selection preserved.',
-    cancelledReview: 'Cancelled code review; prompt and selection preserved.',
     detachedPrimaryBlocked: 'HEAD is detached. Switch to a local branch in the header or in your IDE/terminal first; prompt and selection preserved.',
     readFailedFallback: 'Status read failed. Refresh to try again; prompt and selection preserved.',
     missingWorktreeError: 'This worktree is no longer in Git’s active worktree list; prompt and selection preserved. Reopen the directory.',
@@ -476,8 +481,6 @@ export const workbenchZh: WorkbenchMessages = {
     },
     conflictBadge: '· 冲突',
     partialStagedBadge: '· 部分暂存',
-    skipReviewBadge: '· 忽略审查',
-    findingCountLabel: (path, count) => `${path}：${count} 项审查意见`,
     emptyRepoTitle: '打开你的 Git 仓库',
     browserPreviewHint: '浏览器预览不读取本机目录',
     openingRepo: '正在打开…',
@@ -488,10 +491,14 @@ export const workbenchZh: WorkbenchMessages = {
     rootDirectory: '(根目录)',
     selectDirectory: (directory) => `选择目录 ${directory}`,
     deselectDirectory: (directory) => `取消选择目录 ${directory}`,
+    collapseDirectory: (directory) => `折叠目录 ${directory}`,
+    expandDirectory: (directory) => `展开目录 ${directory}`,
     localKeepTitle: '本地保留',
     localKeepBadge: '· 本地保留',
     localKeepConflicts: (count) => `${count} 个冲突`,
     localKeepEmptyHint: '将文件拖入此处，或在文件上右键选择“本地保留（不提交）”',
+    resizeLocalKeepLabel: '调整本地保留区域高度',
+    resizeLocalKeepTitle: '上下拖拽调整本地保留高度（双击恢复默认）',
     noNormalChanges: '除本地保留外暂无其他变更',
     keepLocallyAction: '本地保留（不提交）',
     moveBackToChangesAction: '移回变更列表',
@@ -506,28 +513,44 @@ export const workbenchZh: WorkbenchMessages = {
     expandMessage: (title) => `展开消息：${title}`,
     activeRegionLabel: '当前事项',
     collapseMessage: '收起消息',
+    resizeDockLabel: '调整消息面板高度',
+    resizeDockTitle: '上下拖拽调整高度（双击撑满或恢复默认）',
     taskProgressLabel: '任务进度',
     timelineLabel: '会话执行步骤',
     qaLogLabel: '会话问答记录',
     qaEntry: (question, answer) => `问答：${question} → ${answer}`,
-    viewReview: '查看',
+    detailsToggle: '执行过程',
     openConflictInEditor: (editorShort) => `在 ${editorShort} 中打开冲突文件`,
-    gotIt: '知道了',
+    openInEditor: (editorShort) => `在 ${editorShort} 打开`,
     dismissDone: '关闭已完成提示',
     recommendedBadge: '推荐',
     multiSelectHint: '可多选',
     showPreview: '预览',
-    hidePreview: '收起预览',
+    hidePreview: '收起',
     submitAnswers: '提交选择',
     cancelQuestion: '取消',
     dontAskAgainDefault: '此按钮不再提示',
-    customOptionPlaceholder: '或输入自定义说明…',
+    customOptionPlaceholder: '或输入其他要求并回车…',
     replyLabel: '回复当前事项',
     conflictReplyPlaceholder: '输入合并要求，回车发送…',
     questionReplyPlaceholder: '或输入更具体的要求，回车发送…',
     followUpActionPlaceholder: '继续追问或补充下一步指令，回车发送…',
     sendReply: '发送回复',
     cancelAction: '取消执行',
+    copyCode: '复制',
+    copiedCode: '已复制',
+    expandCode: '展开',
+    collapseCode: '收起',
+    defaultCodeTitle: '输出',
+    codeLines: (count) => `${count} 行`,
+    skippedFilesToggle: (count) => `已跳过 ${count} 个未审查文件`,
+    emptyFindingsDefault: '未发现风险项',
+    severityLabels: {
+      high: '高危',
+      medium: '中危',
+      low: '建议',
+      info: '提示',
+    },
   },
   footer: {
     addModel: '添加模型',
@@ -549,7 +572,6 @@ export const workbenchZh: WorkbenchMessages = {
     actionsDrawerLabel: '切换主按钮动作',
     selectedTrigger: (selected, total) => `已选 ${selected}/${total}`,
     noModelBadge: '未配模型',
-    planBadge: (count, outdated) => (outdated ? `计划 ${count} · 已过期 ▸` : `计划 ${count} ▸`),
     status: {
       noRepo: '打开仓库 ▸',
       clean: '工作区干净',
@@ -558,10 +580,6 @@ export const workbenchZh: WorkbenchMessages = {
       noneSelected: (total) => `已选 0/${total} ▸`,
       selectedNoModel: (selected, total) => `已选 ${selected}/${total} · 未配置模型`,
       selectedReady: (selected, total) => `已选 ${selected}/${total} · 就绪`,
-      planReady: (count) => `计划：${count} 个提交 ▸`,
-      planOutdated: (count) => `计划：${count} 个提交（已过期）▸`,
-      emptyPlanMessage: '计划含空白说明 ▸',
-      planning: '正在生成计划…',
       committingStep: (completed, total) => `正在提交 ${completed}/${total}…`,
       running: '正在执行 C-Push…',
       needsDecision: '待你决定 ▸',
@@ -578,18 +596,12 @@ export const workbenchZh: WorkbenchMessages = {
   },
   workbench: {
     ariaLabel: 'Picket 工作台',
-    lowerWorkspaceLabel: '提交计划、审查与消息',
-    workspaceTabsLabel: '工作区',
+    lowerWorkspaceLabel: '提示词与消息',
     loadStateFailedFallback: '无法读取本地工作台保存记录。',
     saveStateFailedFallback: '无法保存本地提示词状态；当前窗口输入仍已保留。',
     readPinFailedFallback: '无法读取窗口置顶状态，请重试窗口置顶操作。',
     setPinFailedFallback: '无法设置窗口置顶',
     openModelSettingsAction: '模型设置',
-    reviewNoRisksSummary: '未发现风险项',
-    reviewFindingsSummary: (high, suggestion) =>
-      `${high ? `${high} 项高危` : ''}${high && suggestion ? '、' : ''}${suggestion ? `${suggestion} 项建议` : ''}`,
-    reviewCompleteTitle: (summary) => `审查完成：${summary}`,
-    reviewCompleteDescription: '已更新审查意见。',
     pullRebaseTrackedDone: (branch) => `已完成拉取并变基（${branch}），工作区改动已保全。`,
     pullRebaseDone: '已完成拉取并变基。',
     openFileMismatchError: '桌面层未返回匹配的编辑器联动结果。',
@@ -607,9 +619,6 @@ export const workbenchZh: WorkbenchMessages = {
     branchSwitched: (landedBranch) => `已切换到 ${landedBranch}，提示词和选择已保留。`,
     readMismatchError: 'Git 未返回匹配的读取结果，当前提示词与选择已保留。',
     genericOperationFailed: '操作未完成，当前提示词与选择已保留。',
-    noChangedFilesToReReview: '当前所选范围内没有待复审的变动文件。',
-    cancelledPlan: '已取消预生成提交计划；提示词与选择已保留。',
-    cancelledReview: '已取消代码审查；提示词与选择已保留。',
     detachedPrimaryBlocked: '当前处于分离 HEAD，请先在顶部切换已有分支，或在 IDE / 终端切好分支。提示词和所选范围已保留。',
     readFailedFallback: '状态读取失败，请重新刷新；提示词与选择已保留。',
     missingWorktreeError: '该工作树已不在 Git 的最新列表中，提示词和选择已保留，请重新打开目录。',

@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import type { Change } from '../state/workbench';
 import {
+  LOCAL_KEEP_DEFAULT_HEIGHT_PX,
+  LOCAL_KEEP_MIN_HEIGHT_PX,
+  buildDirectoryTree,
+  clampLocalKeepHeight,
+  collectVisibleTreePaths,
   computeChangesDragScrollDelta,
+  formatDirectoryLabel,
   resolveContextMenuSelection,
   resolveRowSelectionOnClick,
+  splitFileNameExt,
 } from './ChangesPanel';
 
 describe('ChangesPanel drag-to-edge auto-scroll delta calculation', () => {
@@ -157,5 +165,87 @@ describe('ChangesPanel IDEA-style row selection and batch context menu', () => {
       anchorPath: 'e.ts',
       targetPaths: ['e.ts'],
     });
+  });
+});
+
+describe('ChangesPanel Local Keep vertical height clamping', () => {
+  it('enforces minimum height and preserves normal-changes headroom on desktop and compact viewports', () => {
+    expect(clampLocalKeepHeight(20, 540)).toBe(LOCAL_KEEP_MIN_HEIGHT_PX);
+    expect(clampLocalKeepHeight(LOCAL_KEEP_DEFAULT_HEIGHT_PX, 540)).toBe(180);
+    expect(clampLocalKeepHeight(500, 540)).toBe(380);
+    expect(clampLocalKeepHeight(300, 320)).toBe(160);
+    expect(clampLocalKeepHeight(240, 0)).toBe(240);
+  });
+});
+
+function makeChange(id: string, path: string): Change {
+  return { id, path, status: 'M', range: { kind: 'unstaged', added: 1, removed: 0 } };
+}
+
+describe('ChangesPanel hierarchical compressed directory tree', () => {
+  it('compacts single-child chains across multi-module Java paths and keeps root files grouped', () => {
+    const files: Change[] = [
+      makeChange('1', 'inspur-scm-aggregation-service/src/main/java/com/inspur/industry/module/aggregation/vo/LimsIndicatorsSaveVO.java'),
+      makeChange('2', 'inspur-scm-aggregation-service/src/main/java/com/inspur/industry/module/aggregation/service/ShipOrderReportService.java'),
+      makeChange('3', 'inspur-scm-aggregation-service/src/test/java/com/inspur/industry/module/aggregation/service/ShipSpendTimeSummaryServiceTest.java'),
+      makeChange('4', 'inspur-scm-work-inf/src/main/java/com/inspur/industry/scm/work/bean/LimsIndicatorsSaveDTO.java'),
+      makeChange('5', 'README.md'),
+    ];
+
+    const tree = buildDirectoryTree(files, '(root)');
+    expect(tree.map((node) => node.label)).toEqual([
+      'inspur-scm-aggregation-service/src',
+      'inspur-scm-work-inf/src/main/java/com/inspur/industry/scm/work/bean',
+      '(root)',
+    ]);
+
+    const agg = tree[0];
+    expect(agg.allFiles.map((f) => f.id)).toEqual(['1', '2', '3']);
+    expect(agg.children.map((node) => node.label)).toEqual([
+      'main/java/com/inspur/industry/module/aggregation',
+      'test/java/com/inspur/industry/module/aggregation/service',
+    ]);
+    expect(agg.children[0].children.map((node) => node.label)).toEqual(['vo', 'service']);
+    expect(tree[1].files.map((f) => f.id)).toEqual(['4']);
+    expect(tree[2].isRootGroup).toBe(true);
+    expect(tree[2].files.map((f) => f.id)).toEqual(['5']);
+  });
+
+  it('keeps short paths intact and middle-elides deep paths while preserving head and leaf segments', () => {
+    expect(formatDirectoryLabel(['inspur-meta-starter', 'src', 'main', 'resources'])).toEqual({
+      prefix: 'inspur-meta-starter/src/main',
+      leaf: 'resources',
+    });
+    expect(formatDirectoryLabel(['src', 'main', 'java', 'com', 'inspur', 'industry', 'module', 'aggregation'])).toEqual({
+      prefix: 'src/main/…/module',
+      leaf: 'aggregation',
+    });
+    expect(formatDirectoryLabel(['src', 'test', 'java', 'com', 'inspur', 'industry', 'module', 'aggregation', 'service'])).toEqual({
+      prefix: 'src/test/…/aggregation',
+      leaf: 'service',
+    });
+    expect(formatDirectoryLabel(['inspur-scm-work-inf', 'src', 'main', 'java', 'com', 'inspur', 'industry', 'scm', 'work', 'bean'])).toEqual({
+      prefix: 'inspur-scm-work-inf/…/work',
+      leaf: 'bean',
+    });
+    expect(formatDirectoryLabel(['vo'])).toEqual({ prefix: '', leaf: 'vo' });
+  });
+
+  it('excludes files inside collapsed branches from visible tree paths and splits short extensions cleanly', () => {
+    const files: Change[] = [
+      makeChange('1', 'mod-a/src/a.ts'),
+      makeChange('2', 'mod-a/test/b.ts'),
+      makeChange('3', 'mod-b/c.ts'),
+    ];
+    const tree = buildDirectoryTree(files, '(root)');
+    const collapsed = new Set<string>(['wt:normal:mod-a']);
+    expect(collectVisibleTreePaths(tree, collapsed, 'wt:normal')).toEqual(['mod-b/c.ts']);
+
+    expect(splitFileNameExt('InspectPendingMatchServiceImplTest.java')).toEqual({
+      stem: 'InspectPendingMatchServiceImplTest',
+      ext: '.java',
+    });
+    expect(splitFileNameExt('Dockerfile')).toEqual({ stem: 'Dockerfile', ext: '' });
+    expect(splitFileNameExt('.gitignore')).toEqual({ stem: '.gitignore', ext: '' });
   });
 });

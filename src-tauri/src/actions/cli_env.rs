@@ -456,7 +456,7 @@ pub async fn check_cli_env(
 }
 
 /// Strictly whitelisted Homebrew installation for `gh` or `glab`.
-/// Callers MUST verify session user authorization recorded from `ask_user_question` before calling.
+/// Callers MUST verify session user authorization recorded from `message_user` before calling.
 pub async fn install_platform_cli<F>(
     tool: &str,
     worktree_root: &Path,

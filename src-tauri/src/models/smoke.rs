@@ -198,27 +198,6 @@ fn handle_connection(
         || body.contains("<cpush_skill_spec>")
     {
         build_cpush_smoke_plan(&body)
-    } else if body.contains("pre-commit code reviewer") {
-        let file_id = extract_marker(&body, "fileId: ").unwrap_or_else(|| "unknown".into());
-        let file_path = extract_marker(&body, "### File: ")
-            .map(|raw| {
-                raw.split(" (renamed from ")
-                    .next()
-                    .unwrap_or(&raw)
-                    .to_owned()
-            })
-            .unwrap_or_else(|| "part.txt".into());
-        serde_json::json!({
-            "findings": [{
-                "fileId": file_id,
-                "path": file_path,
-                "line": 1,
-                "severity": "high",
-                "title": "Verify staged configuration boundary",
-                "reason": "Detected key-value update; verify upstream callers remain compatible before committing."
-            }]
-        })
-        .to_string()
     } else {
         "OK".to_owned()
     };
@@ -317,13 +296,6 @@ fn wait_slow(ms: u64, stop: &AtomicBool) {
         thread::sleep(Duration::from_millis(20));
         waited += 20;
     }
-}
-
-fn extract_marker(haystack: &str, prefix: &str) -> Option<String> {
-    let idx = haystack.find(prefix)?;
-    let rest = &haystack[idx + prefix.len()..];
-    let end = rest.find(['\\', '\n', '\r', '"'])?;
-    Some(rest[..end].trim().to_owned())
 }
 
 fn extract_authorized_plan_files(body: &str) -> Vec<(String, String)> {

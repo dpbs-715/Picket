@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getMessages } from '../../../i18n/messages';
-import { fixture, releaseQuestion, sampleFindings } from '../testing/fixtures';
+import { fixture, releaseQuestion } from '../testing/fixtures';
 import { readScopeVersion } from './repositories';
 import {
   compactStatusSummary,
@@ -12,7 +12,6 @@ import {
   emptyWorkbench,
   groupFiles,
   isModelErrorText,
-  isPlanOutdated,
   localKeepChanges,
   localKeepPathsFor,
   normalChanges,
@@ -85,7 +84,7 @@ describe('Workbench selection, per-project settings, zero-model guidance, and lo
     expect(effectiveEditorFor(filtered, 'orders')).toBe('idea');
   });
 
-  it('toggles selection without mutating file metadata; selectAll and directory selectFiles update scopeVersion and invalidate in-flight plan/review requests', () => {
+  it('toggles selection without mutating file metadata; selectAll and directory selectFiles update scopeVersion', () => {
     const state = fixture();
     const beforeFiles = structuredClone(state.worktrees[0].files);
     const next = apply(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
@@ -98,34 +97,18 @@ describe('Workbench selection, per-project settings, zero-model guidance, and lo
     liveState.worktrees[0].head = 'head-1';
     liveState.worktrees[0].statusVersion = 'status-1';
     liveState.worktrees[0].scopeVersion = readScopeVersion(liveState.worktrees[0]);
-    liveState.worktrees[0].plan = {
-      id: 'plan-live',
-      baseScopeVersion: liveState.worktrees[0].scopeVersion,
-      modelId: 'test-claude',
-      summary: '1 commit',
-      groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: live' }],
-      skippedFileIds: [],
-    };
     const beforeScope = liveState.worktrees[0].scopeVersion;
-    const withReq = apply(liveState, { type: 'request', target: targetOf(liveState.worktrees[0]), kind: 'plan', requestId: 'plan-select-all' });
-    const allSelected = apply(withReq, { type: 'selectAll', worktreeId: 'pay-tree' });
+    const allSelected = apply(liveState, { type: 'selectAll', worktreeId: 'pay-tree' });
     expect(allSelected.worktrees[0].selectedIds).toEqual(beforeFiles.map((file) => file.id));
     expect(allSelected.worktrees[0].scopeVersion).not.toBe(beforeScope);
-    expect(isPlanOutdated(allSelected.worktrees[0])).toBe(true);
-    expect(allSelected.worktrees[0].requests.plan).toBeUndefined();
 
     const clearedAll = apply(allSelected, { type: 'selectAll', worktreeId: 'pay-tree' });
     expect(clearedAll.worktrees[0].selectedIds).toEqual([]);
     expect(clearedAll.worktrees[0].scopeVersion).not.toBe(allSelected.worktrees[0].scopeVersion);
 
-    let dirState = structuredClone(liveState);
-    dirState = apply(dirState, { type: 'request', target: targetOf(dirState.worktrees[0]), kind: 'review', requestId: 'rev-dir-select' });
-    const rootSelected = apply(dirState, { type: 'selectFiles', worktreeId: 'pay-tree', fileIds: ['release', 'lock'] });
+    const rootSelected = apply(liveState, { type: 'selectFiles', worktreeId: 'pay-tree', fileIds: ['release', 'lock'] });
     expect(rootSelected.worktrees[0].selectedIds).toEqual(['order', 'pay', 'retry', 'release', 'lock']);
     expect(rootSelected.worktrees[0].scopeVersion).not.toBe(beforeScope);
-    expect(isPlanOutdated(rootSelected.worktrees[0])).toBe(true);
-    expect(rootSelected.worktrees[0].requests.review).toBeUndefined();
-    expect(rootSelected.worktrees[0].review.status).toBe('idle');
 
     const rootCleared = apply(rootSelected, { type: 'selectFiles', worktreeId: 'pay-tree', fileIds: ['release', 'lock'] });
     expect(rootCleared.worktrees[0].selectedIds).toEqual(['order', 'pay', 'retry']);
@@ -142,15 +125,14 @@ describe('Workbench selection, per-project settings, zero-model guidance, and lo
     expect(groupFiles(tree.files, getMessages('zh').changes.rootDirectory).find((group) => group.directory === getMessages('zh').changes.rootDirectory)?.files.map((file) => file.id)).toEqual(['release', 'lock']);
   });
 
-  it('preserves per-worktree prompt, selection, active tab, and replies across switches', () => {
+  it('preserves per-worktree prompt, selection, and replies across switches', () => {
     let state = fixture();
     state = apply(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'own instruction' });
     state = apply(state, { type: 'reply', worktreeId: 'pay-tree', messageId: 'question', text: 'split docs commit' });
-    state = apply(state, { type: 'tab', worktreeId: 'pay-tree', tab: 'review' });
     state = apply(state, { type: 'switch', worktreeId: 'fix-tree' });
     expect(state.worktrees[1].prompt.text).toBe('write concise bullets');
     state = apply(state, { type: 'switch', worktreeId: 'pay-tree' });
-    expect(state.worktrees[0]).toMatchObject({ prompt: { text: 'own instruction' }, tab: 'review', replies: { question: 'split docs commit' } });
+    expect(state.worktrees[0]).toMatchObject({ prompt: { text: 'own instruction' }, replies: { question: 'split docs commit' } });
     expect(state.worktrees[0].selectedIds).toHaveLength(4);
   });
 
@@ -180,17 +162,15 @@ describe('Workbench selection, per-project settings, zero-model guidance, and lo
   });
 });
 
-describe('Background events and prompt/plan preservation', () => {
-  it('incoming question never auto-expands dock, switches tab, or alters prompt; review stays secondary', () => {
+describe('Background events and prompt preservation', () => {
+  it('incoming question never auto-expands dock or alters prompt', () => {
     const state = fixture('typing');
     const tree = state.worktrees[0];
-    let next = apply(state, { type: 'event', event: { type: 'message', target: targetOf(tree), message: releaseQuestion(), sessionStatus: 'needsDecision' } });
-    next = apply(next, { type: 'event', event: { type: 'message', target: targetOf(tree), message: { id: 'review', kind: 'review', title: 'Review complete', description: '1 high-risk' } } });
+    const next = apply(state, { type: 'event', event: { type: 'message', target: targetOf(tree), message: releaseQuestion(), sessionStatus: 'needsDecision' } });
     expect(next.worktrees[0].prompt).toEqual(tree.prompt);
-    expect(next.worktrees[0].tab).toBe('commit');
     expect(next.worktrees[0].dockExpanded).toBe(false);
     expect(orderedMessages(next.worktrees[0].messages)[0].kind).toBe('question');
-    expect(orderedMessages(next.worktrees[0].messages)).toHaveLength(2);
+    expect(orderedMessages(next.worktrees[0].messages)).toHaveLength(1);
   });
 
   it.each(['repositoryId', 'worktreeId', 'sessionId', 'scopeVersion'] as const)('rejects late event with mismatched %s', (field) => {
@@ -207,71 +187,12 @@ describe('Background events and prompt/plan preservation', () => {
     expect(next.worktrees[1].messages).toHaveLength(1);
   });
 
-  it('discards late planPrepared response after prompt edit, plan clear, newer request, or selection change', () => {
-    let state = fixture('typing');
-    state.worktrees[0] = { ...state.worktrees[0], plan: undefined };
-    const target = targetOf(state.worktrees[0]);
-    state = apply(state, { type: 'request', target, kind: 'plan', requestId: 'plan-1' });
-    state = apply(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'updated extra instruction' });
-    state = apply(state, {
-      type: 'event',
-      event: { type: 'planPrepared', target, requestId: 'plan-1', modelId: 'test-claude', plan: { summary: 'stale', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: stale' }], skippedFileIds: [] } },
-    });
-    expect(state.worktrees[0].plan).toBeUndefined();
-    expect(state.worktrees[0].requests.plan).toBeUndefined();
-
-    state = apply(state, { type: 'request', target, kind: 'plan', requestId: 'old' });
-    state = apply(state, { type: 'request', target, kind: 'plan', requestId: 'new' });
-    state = apply(state, {
-      type: 'event',
-      event: { type: 'planPrepared', target, requestId: 'old', modelId: 'test-claude', plan: { summary: 'old', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: old' }], skippedFileIds: [] } },
-    });
-    expect(state.worktrees[0].requests.plan?.id).toBe('new');
-    state = apply(state, { type: 'planCleared', worktreeId: 'pay-tree' });
-    state = apply(state, {
-      type: 'event',
-      event: { type: 'planPrepared', target, requestId: 'new', modelId: 'test-claude', plan: { summary: 'cleared', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: cleared' }], skippedFileIds: [] } },
-    });
-    expect(state.worktrees[0].plan).toBeUndefined();
-  });
-
-  it('marks plan outdated only when selected files change, ignoring unselected changes', () => {
-    const state = fixture('typing');
-    const tree = state.worktrees[0];
-    expect(isPlanOutdated(tree)).toBe(false);
-    const unrelated = apply(state, { type: 'event', event: { type: 'files', target: targetOf(tree), nextScopeVersion: tree.scopeVersion, files: tree.files, changedPaths: ['pnpm-lock.yaml'] } });
-    expect(isPlanOutdated(unrelated.worktrees[0])).toBe(false);
-    const related = apply(state, { type: 'event', event: { type: 'files', target: targetOf(tree), nextScopeVersion: 'scope-2', files: tree.files, changedPaths: ['src/api/pay.ts'] } });
-    expect(isPlanOutdated(related.worktrees[0])).toBe(true);
-  });
-
-  it('re-review replaces findings and skipped entries (both ASCII and fullwidth parens) only for re-reviewed files', () => {
-    let state = fixture('changed');
-    state.worktrees[0].review.skippedPaths = ['src/service/Order.ts (oversized diff)', 'pnpm-lock.yaml\uff08lockfile\uff09'];
-    const target = targetOf(state.worktrees[0]);
-    state = apply(state, { type: 'request', target, kind: 'review', requestId: 'review-order', fileIds: ['order'] });
-    state = apply(state, { type: 'event', event: { type: 'reviewed', target, requestId: 'review-order', findings: [], skippedPaths: [] } });
-    expect(state.worktrees[0].review.findings).toEqual([sampleFindings()[0]]);
-    expect(state.worktrees[0].review.changedPaths).toEqual([]);
-    expect(state.worktrees[0].review.skippedPaths).toEqual(['pnpm-lock.yaml\uff08lockfile\uff09']);
-  });
-
-  it('preserves previous passed review status when re-review fails', () => {
-    let state = fixture();
-    state.worktrees[0].review = { status: 'done', findings: [], skippedPaths: ['pnpm-lock.yaml'], changedPaths: [], scopeFileIds: ['order', 'pay'] };
-    const target = targetOf(state.worktrees[0]);
-    state = apply(state, { type: 'request', target, kind: 'review', requestId: 'failed-review' });
-    state = apply(state, { type: 'requestFailed', target, kind: 'review', requestId: 'failed-review' });
-    expect(state.worktrees[0].review.status).toBe('done');
-    expect(state.worktrees[0].review.skippedPaths).toEqual(['pnpm-lock.yaml']);
-  });
-
-  it('collapses dock and removes stale question while preserving secondary review notice when terminal push completes', () => {
-    const state = fixture('review-during-question');
+  it('collapses dock and removes stale question when terminal push completes', () => {
+    const state = fixture('question');
     state.worktrees[0].dockExpanded = true;
     const next = apply(state, { type: 'event', event: { type: 'message', target: targetOf(state.worktrees[0]), sessionStatus: 'done',
       message: { id: 'terminal-pushed', kind: 'done', title: 'Remote verified', description: 'Question resolved' } } });
-    expect(next.worktrees[0].messages.map((message) => message.kind)).toEqual(['review', 'done']);
+    expect(next.worktrees[0].messages.map((message) => message.kind)).toEqual(['done']);
     expect(orderedMessages(next.worktrees[0].messages)[0].kind).toBe('done');
     expect(next.worktrees[0].dockExpanded).toBe(false);
     expect(next.worktrees[0].sessionStatus).toBe('done');
@@ -284,7 +205,7 @@ describe('Background events and prompt/plan preservation', () => {
     expect(state.worktrees[0].messages).toHaveLength(1);
   });
 
-  it('shares Local Keep across worktrees of the same repository, unchecks newly kept files, and invalidates in-flight plan requests', () => {
+  it('shares Local Keep across worktrees of the same repository, unchecks newly kept files, and updates scopeVersion', () => {
     let state = fixture('typing');
     state.worktrees[1] = {
       ...state.worktrees[1],
@@ -303,11 +224,9 @@ describe('Background events and prompt/plan preservation', () => {
     };
     state.worktrees[0] = { ...state.worktrees[0], statusVersion: 'pay-status-1' };
     state.worktrees[0].scopeVersion = readScopeVersion(state.worktrees[0]);
-    state.worktrees[0].plan = { ...state.worktrees[0].plan!, baseScopeVersion: state.worktrees[0].scopeVersion };
     state.worktrees[1].scopeVersion = readScopeVersion(state.worktrees[1]);
 
     const staleTarget = targetOf(state.worktrees[0]);
-    state = apply(state, { type: 'request', target: staleTarget, kind: 'plan', requestId: 'plan-before-keep' });
 
     state = apply(state, {
       type: 'localKeepUpdated',
@@ -326,8 +245,6 @@ describe('Background events and prompt/plan preservation', () => {
     expect(payTree.selectedIds).not.toContain('release');
     expect(fixTree.selectedIds).not.toContain('fix-notes');
     expect(payTree.scopeVersion).not.toBe(staleTarget.scopeVersion);
-    expect(isPlanOutdated(payTree)).toBe(true);
-    expect(payTree.requests.plan).toBeUndefined();
   });
 
   it('computes selectAll strictly from normal changes, clears manually checked kept files on deselect, and evaluates renames by new path', () => {
@@ -462,14 +379,14 @@ describe('Compact Mode and Pin state transitions, status summaries, and non-auto
     }
   });
 
-  it('formats compactStatusSummary accurately across ready, plan, step progress, actionable sessions, and blocking errors in en and zh', () => {
+  it('formats compactStatusSummary accurately across ready, step progress, actionable sessions, and blocking errors in en and zh', () => {
     expect(compactStatusSummary(undefined, false)).toEqual({
       tone: 'muted',
       label: 'Open a repository \u25b8',
       expandTarget: 'repo',
     });
 
-    const readyTree = { ...fixture('typing').worktrees[0], plan: undefined };
+    const readyTree = fixture('typing').worktrees[0];
     expect(compactStatusSummary(readyTree, true, 'en')).toEqual({
       tone: 'ready',
       label: 'Selected 4/5 \u00b7 Ready',
@@ -479,20 +396,6 @@ describe('Compact Mode and Pin state transitions, status summaries, and non-auto
       tone: 'ready',
       label: '\u5df2\u9009 4/5 \u00b7 \u5c31\u7eea',
       expandTarget: 'changes',
-    });
-
-    // Pre-generated plan (valid vs outdated):
-    const plannedTree = fixture('typing').worktrees[0];
-    expect(compactStatusSummary(plannedTree, true, 'zh')).toEqual({
-      tone: 'ready',
-      label: '\u8ba1\u5212\uff1a1 \u4e2a\u63d0\u4ea4 \u25b8',
-      expandTarget: 'plan',
-    });
-    const outdatedTree = fixture('changed').worktrees[0];
-    expect(compactStatusSummary(outdatedTree, true, 'zh')).toEqual({
-      tone: 'warning',
-      label: '\u8ba1\u5212\uff1a2 \u4e2a\u63d0\u4ea4\uff08\u5df2\u8fc7\u671f\uff09\u25b8',
-      expandTarget: 'plan',
     });
 
     // Committing step progress:

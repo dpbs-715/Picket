@@ -5,9 +5,12 @@
 //! non-secret checkpoints (Issues, PR/MR URLs, branches, verified commit SHAs, owned isolated
 //! worktree paths, and preflight path hashes for Step 5 verified duplicate cleanup).
 
-use super::types::{
-    CustomActionLink, CustomActionMessageCommitSummary, CustomActionTimelineItem,
-    CustomActionUiMessage,
+use super::{
+    message_user::format_card_for_checkpoint,
+    types::{
+        CustomActionLink, CustomActionMessageCommitSummary, CustomActionTimelineItem,
+        CustomActionUiMessage, MessageUserCard,
+    },
 };
 use crate::{
     cpush::types::CPushLandedCommit,
@@ -196,6 +199,8 @@ pub struct PersistedActionSession {
     pub updated_at_ms: u64,
     #[serde(default)]
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<MessageUserCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed_message_id: Option<String>,
     #[serde(default)]
@@ -464,21 +469,38 @@ fn build_restored_ui_message(
             files: None,
             commits: (!commit_summaries.is_empty()).then_some(commit_summaries),
             links: (!session.links.is_empty()).then_some(session.links.clone()),
+            card: session.card.clone(),
             questionnaire: None,
             progress: None,
         }),
-        "done" => Some(CustomActionUiMessage {
-            id: format!("done-action-{}", session.run_id),
-            kind: "done".into(),
-            title: i18n::actions::action_completed_title(locale, &session.action_label),
-            description: session.summary.clone(),
-            scope: None,
-            files: None,
-            commits: (!commit_summaries.is_empty()).then_some(commit_summaries),
-            links: (!session.links.is_empty()).then_some(session.links.clone()),
-            questionnaire: None,
-            progress: None,
-        }),
+        "done" => {
+            let (title, description) = if let Some(ref card) = session.card {
+                (
+                    card.title.clone(),
+                    card.subtitle
+                        .clone()
+                        .unwrap_or_else(|| session.summary.clone()),
+                )
+            } else {
+                (
+                    i18n::actions::action_completed_title(locale, &session.action_label),
+                    session.summary.clone(),
+                )
+            };
+            Some(CustomActionUiMessage {
+                id: format!("done-action-{}", session.run_id),
+                kind: "done".into(),
+                title,
+                description,
+                scope: None,
+                files: None,
+                commits: (!commit_summaries.is_empty()).then_some(commit_summaries),
+                links: (!session.links.is_empty()).then_some(session.links.clone()),
+                card: session.card.clone(),
+                questionnaire: None,
+                progress: None,
+            })
+        }
         _ => None,
     }
 }
@@ -520,6 +542,9 @@ pub fn format_resume_checkpoint_for_prompt(session: &PersistedActionSession) -> 
     ));
     if !session.summary.trim().is_empty() {
         lines.push(format!("Summary: {}", session.summary.trim()));
+    }
+    if let Some(ref card) = session.card {
+        lines.extend(format_card_for_checkpoint(card));
     }
     if !session.submit_ledger.workflow_kind.is_empty() {
         lines.push(format!(

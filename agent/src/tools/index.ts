@@ -5,7 +5,7 @@ export {
   createReadSkillDocTool,
   createSearchRepoTool,
 } from './read';
-export { createAskUserQuestionTool } from './interaction';
+export { createMessageUserTool } from './interaction';
 export {
   createCheckCliEnvTool,
   createCommitExactScopeTool,

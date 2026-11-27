@@ -249,7 +249,6 @@ impl ModelStore {
                 Err(i18n::models::model_test_cancelled_error(locale).into())
             }
             PiTaskOutcome::ModelsListed { .. }
-            | PiTaskOutcome::ReviewCompleted { .. }
             | PiTaskOutcome::CPushPlanCompleted { .. }
             | PiTaskOutcome::ConflictResolved { .. }
             | PiTaskOutcome::CustomActionCompleted { .. }
@@ -378,7 +377,6 @@ impl ModelStore {
                 Err(i18n::models::model_test_cancelled_error(locale).into())
             }
             PiTaskOutcome::Completed { .. }
-            | PiTaskOutcome::ReviewCompleted { .. }
             | PiTaskOutcome::CPushPlanCompleted { .. }
             | PiTaskOutcome::ConflictResolved { .. }
             | PiTaskOutcome::CustomActionCompleted { .. }

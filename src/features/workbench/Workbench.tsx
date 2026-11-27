@@ -1,4 +1,5 @@
-import { useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { desktopWindowController, type WindowController } from '../../desktop/window';
 import { getMessages, I18nProvider } from '../../i18n';
 import {
@@ -9,14 +10,21 @@ import {
   useInstantMotion,
 } from '../../ui/motion';
 import { disconnectedBackend, type WorkbenchBackend } from './commands';
+import { ActionContextStrip } from './components/ActionContextStrip';
 import { ActionFooter } from './components/ActionFooter';
 import { ChangesPanel } from './components/ChangesPanel';
 import { CompactBar } from './components/CompactBar';
 import { ContextHeader } from './components/ContextHeader';
+import {
+  computeDraggedDockPreference,
+  readSavedDockSize,
+  resolveDockSplit,
+  writeSavedDockSize,
+  type DockSizePreference,
+} from './components/dockResize';
 import { MessageDock } from './components/MessageDock';
 import { OperationNoticeBar } from './components/OperationNoticeBar';
 import { WorkbenchOverlays } from './components/WorkbenchOverlays';
-import { WorkspaceTabsPanel } from './components/WorkspaceTabsPanel';
 import { useNoticeFeedback } from './hooks/useNoticeFeedback';
 import { useSettingsServices } from './hooks/useSettingsServices';
 import { useWindowMode } from './hooks/useWindowMode';
@@ -29,8 +37,6 @@ import {
   effectiveCommitLanguageFor,
   effectiveEditorFor,
   emptyWorkbench,
-  isActiveSession,
-  isPlanOutdated,
   selectedFiles,
   targetOf,
   workbenchReducer,
@@ -56,11 +62,20 @@ export function Workbench({
 
   const [modelOverlay, setModelOverlay] = useState<ModelOverlayState>({ kind: 'closed' });
   const [actionStack, setActionStack] = useState<ActionOverlayItem[]>([]);
-  const [emptyTab, setEmptyTab] = useState<'commit' | 'review'>('commit');
+  const [dockSizePref, setDockSizePref] = useState<DockSizePreference>(() => readSavedDockSize());
+  const [dockAvailableHeight, setDockAvailableHeight] = useState(0);
+  const [resizingDock, setResizingDock] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
   const [hydrated, setHydrated] = useState(() => !!initialState || !backend.loadWorkbenchState);
 
-  const commitPanelRef = useRef<HTMLDivElement>(null);
+  const workbenchContentRef = useRef<HTMLDivElement>(null);
+  const lowerWorkspaceRef = useRef<HTMLElement>(null);
+  const cleanupDockResizeRef = useRef<(() => void) | null>(null);
+  const contextStripRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const promptFocusRequestedRef = useRef(false);
+  const prevPromptViewKeyRef = useRef<string | null>(null);
+  const prevPromptTextRef = useRef('');
 
   const instantMotion = useInstantMotion();
   const t = getMessages(state.locale);
@@ -70,8 +85,184 @@ export function Workbench({
   const worktree = state.worktrees.find((tree) => tree.worktreeId === state.activeWorktreeId);
   const repository = state.repositories.find((item) => item.id === worktree?.repositoryId);
   const viewKey = worktree?.worktreeId ?? 'empty';
-  const tab = worktree?.tab ?? emptyTab;
   const promptText = worktree ? worktree.prompt.text : state.emptyPrompt;
+  const showPromptBox = promptOpen || promptText.length > 0;
+  const hasExpandedDock = Boolean(worktree && worktree.dockExpanded && worktree.messages.length > 0);
+  const hasCollapsedDockBar = Boolean(worktree && !worktree.dockExpanded && worktree.messages.length > 0);
+  const dockSplit = hasExpandedDock
+    ? resolveDockSplit(dockSizePref, dockAvailableHeight)
+    : { fullHeight: false, changesHeightPx: null, dockHeightPx: null };
+  const changesLayoutMode: 'idle' | 'peek' | 'hidden' = !hasExpandedDock
+    ? 'idle'
+    : dockSplit.fullHeight
+      ? 'hidden'
+      : 'peek';
+
+  function measureDockArea(): { available: number; dock: number } {
+    const contentEl = workbenchContentRef.current;
+    const changesEl = contentEl?.querySelector<HTMLElement>('.changes-panel');
+    const lowerEl = lowerWorkspaceRef.current;
+    const changesH = changesEl?.getBoundingClientRect().height ?? 0;
+    const lowerH = lowerEl?.getBoundingClientRect().height ?? 0;
+    return {
+      available: Math.round(changesH + lowerH),
+      dock: Math.round(lowerH),
+    };
+  }
+
+  useLayoutEffect(() => {
+    if (!promptFocusRequestedRef.current) return;
+    promptFocusRequestedRef.current = false;
+    textareaRef.current?.focus();
+  }, [showPromptBox, hasExpandedDock]);
+
+  useLayoutEffect(() => {
+    if (prevPromptViewKeyRef.current !== null && prevPromptViewKeyRef.current !== viewKey) {
+      prevPromptViewKeyRef.current = viewKey;
+      prevPromptTextRef.current = promptText;
+      setPromptOpen(false);
+      return;
+    }
+    prevPromptViewKeyRef.current = viewKey;
+    if (prevPromptTextRef.current.length > 0 && promptText.length === 0) {
+      const focused = typeof document !== 'undefined' && document.activeElement === textareaRef.current;
+      if (!focused) {
+        setPromptOpen(false);
+      }
+    }
+    prevPromptTextRef.current = promptText;
+  }, [promptText, viewKey]);
+
+  function handleTogglePrompt() {
+    if (hasExpandedDock && worktree) {
+      dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded: false });
+      promptFocusRequestedRef.current = true;
+      setPromptOpen(true);
+      return;
+    }
+    if (showPromptBox && !promptText) {
+      setPromptOpen(false);
+    } else {
+      promptFocusRequestedRef.current = true;
+      setPromptOpen(true);
+      textareaRef.current?.focus();
+    }
+  }
+
+  useEffect(() => {
+    if (!hasExpandedDock) {
+      cleanupDockResizeRef.current?.();
+    }
+  }, [hasExpandedDock]);
+
+  useLayoutEffect(() => {
+    if (!hasExpandedDock || typeof dockSizePref !== 'number') return;
+    const syncAvailable = () => {
+      const { available } = measureDockArea();
+      if (available > 0) {
+        setDockAvailableHeight((prev) => (prev === available ? prev : available));
+      }
+    };
+    syncAvailable();
+    const contentEl = workbenchContentRef.current;
+    if (!contentEl || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => syncAvailable());
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [hasExpandedDock, dockSizePref]);
+
+  useEffect(() => () => {
+    cleanupDockResizeRef.current?.();
+  }, []);
+
+  function handleDockResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || !hasExpandedDock) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cleanupDockResizeRef.current?.();
+    const initial = measureDockArea();
+    const measuredAvailable = initial.available || dockAvailableHeight;
+    if (measuredAvailable > 0) setDockAvailableHeight(measuredAvailable);
+    const startDockHeight = initial.dock > 0 ? initial.dock : (dockSplit.dockHeightPx ?? Math.round(measuredAvailable * 0.75));
+    const pointerId = event.pointerId;
+    const startY = event.clientY;
+    let latestPref: DockSizePreference = dockSizePref;
+    let didDrag = false;
+
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    setResizingDock(true);
+
+    const teardown = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+      window.removeEventListener('blur', handleBlur);
+      cleanupDockResizeRef.current = null;
+      setResizingDock(false);
+    };
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      const deltaY = startY - moveEvent.clientY;
+      if (!didDrag && Math.abs(deltaY) < 3) return;
+      didDrag = true;
+      const currentAvailable = measureDockArea().available || measuredAvailable;
+      if (currentAvailable > 0) setDockAvailableHeight(currentAvailable);
+      const nextPref = computeDraggedDockPreference(startDockHeight + deltaY, currentAvailable);
+      latestPref = nextPref;
+      setDockSizePref(nextPref);
+    };
+
+    const finishResize = (endEvent: PointerEvent) => {
+      if (endEvent.pointerId !== pointerId) return;
+      teardown();
+      if (didDrag) writeSavedDockSize(latestPref);
+    };
+
+    const handleBlur = () => {
+      teardown();
+      if (didDrag) writeSavedDockSize(latestPref);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+    window.addEventListener('blur', handleBlur);
+    cleanupDockResizeRef.current = teardown;
+  }
+
+  function handleDockResizeDoubleClick() {
+    if (!hasExpandedDock) return;
+    const next: DockSizePreference = dockSizePref === null ? 'full' : null;
+    setDockSizePref(next);
+    writeSavedDockSize(next);
+  }
+
+  function handleDockResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!hasExpandedDock) return;
+    const measured = measureDockArea();
+    const available = measured.available || dockAvailableHeight;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      const base = dockSizePref === 'full'
+        ? available
+        : measured.dock || dockSplit.dockHeightPx || Math.round(available * 0.75);
+      const delta = event.key === 'ArrowUp' ? 32 : (dockSizePref === 'full' ? -56 : -32);
+      const next = computeDraggedDockPreference(base + delta, available);
+      if (available > 0) setDockAvailableHeight(available);
+      setDockSizePref(next);
+      writeSavedDockSize(next);
+    } else if (event.key === 'Home' || event.key === '0') {
+      event.preventDefault();
+      setDockSizePref(null);
+      writeSavedDockSize(null);
+    }
+  }
 
   const model = state.models.find((item) => item.id === state.activeModelId);
   const activeEditor = effectiveEditorFor(state, worktree?.repositoryId);
@@ -82,16 +273,8 @@ export function Workbench({
   const editor = editors.find((item) => item.id === activeEditor) ?? editors[0];
   const editorShort = state.installedEditors?.length === 0 ? 'IDE' : editor.short;
   const selected = worktree ? selectedFiles(worktree) : [];
-  const canUseModel = !!model && selected.length > 0 && !worktree?.readError;
-  const canPlan = canUseModel && !worktree?.detached && (!worktree || !isActiveSession(worktree) || !!worktree.cPush?.planOnly);
-  const planOutdated = worktree ? isPlanOutdated(worktree) : false;
 
   const { setFeedback, activeNotice, setNoticePaused, notify } = useNoticeFeedback(viewKey);
-
-  function setTab(next: 'commit' | 'review') {
-    if (worktree) dispatch({ type: 'tab', worktreeId: worktree.worktreeId, tab: next });
-    else setEmptyTab(next);
-  }
 
   function clearTransientOverlays() {
     setModelOverlay({ kind: 'closed' });
@@ -102,7 +285,7 @@ export function Workbench({
     const active = typeof document !== 'undefined' ? document.activeElement : null;
     if (!active) return false;
     if (active === textareaRef.current) return true;
-    return !!commitPanelRef.current && commitPanelRef.current.contains(active) && active.tagName === 'TEXTAREA';
+    return !!contextStripRef.current && contextStripRef.current.contains(active) && active.tagName === 'TEXTAREA';
   }
 
   const windowMode = useWindowMode({
@@ -117,7 +300,6 @@ export function Workbench({
     notify,
     setModelOverlay,
     onClearOverlays: clearTransientOverlays,
-    onSelectCommitTab: () => setTab('commit'),
   });
 
   const commands = useWorkbenchCommands({
@@ -130,8 +312,6 @@ export function Workbench({
     activeCustomAction,
     selected,
     promptText,
-    canPlan,
-    canUseModel,
     compactMode: windowMode.compactMode,
     viewKey,
     backend,
@@ -168,6 +348,7 @@ export function Workbench({
     pinInFlight: windowMode.pinInFlight,
     desiredCompactHeightRef: windowMode.desiredCompactHeightRef,
     activeSurfaceRef: windowMode.activeSurfaceRef,
+    isEditingCommitInput,
     execute: commands.execute,
     openSettingsFromWorkbench: windowMode.openSettingsFromWorkbench,
     openSettingsFromCompact: windowMode.openSettingsFromCompact,
@@ -191,7 +372,7 @@ export function Workbench({
     || pullBusy
     || customActionBusy
     || localKeepBusy
-    || commands.pending.some((key) => key.startsWith(`${viewKey}:`) && !key.endsWith(':planCPush') && !key.endsWith(':review'));
+    || commands.pending.some((key) => key.startsWith(`${viewKey}:`));
   const dockBusy = worktree?.customAction?.pendingCallId
     ? commands.pending.includes(`${worktree.worktreeId}:respondCustomAction`)
     : busy;
@@ -248,8 +429,8 @@ export function Workbench({
                 onOpenRepository={() => void commands.execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
                 onBranch={async (kind, branch) => worktree ? commands.execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
                 onPull={() => { if (worktree) void commands.execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
-                onSelect={(fileId) => { if (worktree) { commands.cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
-                onSelectAll={() => { if (worktree) { commands.cancelActiveModelRequests(worktree); dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
+                onSelect={(fileId) => { if (worktree) { dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
+                onSelectAll={() => { if (worktree) { dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
                 onSelectAction={(actionId) => { if (worktree) dispatch({ type: 'selectActiveAction', repositoryId: worktree.repositoryId, actionId }); }}
                 onNewAction={(mode) => openActionOverlayFromCompact({ kind: 'create', mode })}
                 onManageActions={() => openActionOverlayFromCompact({ kind: 'manage' })}
@@ -267,6 +448,7 @@ export function Workbench({
           )}
           {windowMode.presentation.mountWorkbenchContent && (
             <m.div
+              ref={workbenchContentRef}
               className="workbench-content"
               inert={windowMode.settingsOpen || modelOverlayOpen || actionOverlayOpen}
               initial={instantMotion ? false : { opacity: 0 }}
@@ -307,40 +489,33 @@ export function Workbench({
                 editorShort={editorShort}
                 opening={opening}
                 repositoryReadsAvailable={!!backend.repositoryReadsAvailable}
+                layoutMode={changesLayoutMode}
+                peekHeightPx={dockSplit.changesHeightPx}
+                resizingDock={resizingDock}
                 onOpenRepository={() => void commands.execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
-                onSelect={(fileId) => { if (worktree) { commands.cancelActiveModelRequests(worktree); dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
-                onSelectAll={() => { if (worktree) { commands.cancelActiveModelRequests(worktree); dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
-                onSelectFiles={(fileIds) => { if (worktree) { commands.cancelActiveModelRequests(worktree); dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
+                onSelect={(fileId) => { if (worktree) { dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
+                onSelectAll={() => { if (worktree) { dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
+                onSelectFiles={(fileIds) => { if (worktree) { dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
                 onSetLocalKeep={commands.setLocalKeep}
                 onOpenFile={commands.openFile}
-                onReview={() => setTab('review')}
                 refreshing={refreshing}
                 onRefresh={() => { if (worktree) void commands.execute({ kind: 'refresh', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }); }}
               />
-              <section className="lower-workspace" aria-label={t.workbench.lowerWorkspaceLabel}>
-                <WorkspaceTabsPanel
-                  locale={state.locale}
+              <section
+                ref={lowerWorkspaceRef}
+                className={`lower-workspace ${hasExpandedDock ? 'is-dock-expanded' : ''}`}
+                aria-label={t.workbench.lowerWorkspaceLabel}
+              >
+                <ActionContextStrip
                   worktree={worktree}
                   viewKey={viewKey}
-                  tab={tab}
                   promptText={promptText}
-                  selected={selected}
-                  hasModel={!!model}
-                  canUseModel={canUseModel}
-                  canPlan={canPlan}
-                  planOutdated={planOutdated}
+                  showPromptBox={showPromptBox}
                   activeCustomAction={activeCustomAction}
-                  mounted={windowMode.presentation.mountWorkbenchContent}
-                  commitPanelRef={commitPanelRef}
+                  inert={hasExpandedDock}
+                  stripRef={contextStripRef}
                   textareaRef={textareaRef}
-                  onSelectTab={setTab}
-                  onRunPlan={() => void commands.runPlan()}
-                  onCancelPlan={() => commands.cancelModel('plan')}
-                  onRunReview={(changedOnly) => void commands.runReview(changedOnly)}
-                  onCancelReview={() => commands.cancelModel('review')}
-                  onConfigureModel={windowMode.openConfigureModel}
-                  onOpenModelSettings={() => windowMode.openSettingsFromWorkbench(true)}
-                  onOpenFile={commands.openFile}
+                  onClosePrompt={() => setPromptOpen(false)}
                   onEditAction={(action) => setActionStack([{ kind: 'edit', action }])}
                   dispatch={dispatch}
                 />
@@ -349,6 +524,12 @@ export function Workbench({
                     worktree={worktree}
                     busy={dockBusy}
                     editorShort={editorShort}
+                    fullHeight={dockSplit.fullHeight}
+                    resizing={resizingDock}
+                    dockHeightPx={dockSplit.dockHeightPx}
+                    onResizeStart={handleDockResizeStart}
+                    onResizeDoubleClick={handleDockResizeDoubleClick}
+                    onResizeKeyDown={handleDockResizeKeyDown}
                     onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })}
                     onDismiss={(message) => {
                       const dismissTarget = worktree.cPush?.frozenTarget ?? targetOf(worktree);
@@ -369,7 +550,7 @@ export function Workbench({
                     onReply={(messageId, text) => dispatch({ type: 'reply', worktreeId: worktree.worktreeId, messageId, text })}
                     onRespond={(message, answer) => void commands.respond(message, answer)}
                     onOpenFile={commands.openFile}
-                    onReview={() => setTab('review')}
+                    onOpenRepoPath={commands.openRepoPath}
                     onCancelCustomAction={commands.cancelActiveCustomAction}
                     onFollowUpCustomAction={commands.followUpCustomAction}
                   />
@@ -384,6 +565,10 @@ export function Workbench({
                 customActions={activeRepoCustomActions}
                 activeAction={activeCustomAction}
                 busy={busy}
+                promptOpen={showPromptBox && !hasExpandedDock}
+                hasPromptText={promptText.length > 0}
+                hasPromptAbove={showPromptBox && !hasExpandedDock && !hasCollapsedDockBar}
+                onTogglePrompt={handleTogglePrompt}
                 onConfigureModel={windowMode.openConfigureModel}
                 onManageModels={() => windowMode.openSettingsFromWorkbench(true)}
                 onSelectModel={(id) => void commands.selectModel(id)}

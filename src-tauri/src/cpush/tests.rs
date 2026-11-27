@@ -1,6 +1,6 @@
 use super::{CPushCoordinator, types::*};
 use crate::{
-    foundation::pi::{PiCPushCommitGroup, PiPaths, PiSupervisor},
+    foundation::pi::{PiPaths, PiSupervisor},
     i18n::LanguageKind,
     models::{
         smoke::LocalModelSseServer,
@@ -88,7 +88,6 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
                     commit_token: part.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -169,7 +168,6 @@ async fn clear_scope_commits_directly_and_skip_option_leaves_skipped_file_untouc
                 model_id: saved.model.id.clone(),
                 selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -285,7 +283,6 @@ async fn splits_commits_rejects_out_of_scope_recovers_from_step2_hook_failure_an
         model_id: saved.model.id.clone(),
         selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
         prompt: "clarify callback idempotency guard".into(),
-        confirmed_plan: None,
         push: None,
         locale: LanguageKind::En,
         commit_language: LanguageKind::En,
@@ -561,7 +558,6 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
                 model_id: saved.model.id.clone(),
                 selections,
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -710,7 +706,6 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                     commit_token: stale_scratch.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -751,7 +746,6 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                 model_id: saved.model.id.clone(),
                 selections: default_selections,
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -809,7 +803,6 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
                     commit_token: explicit_scratch.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -832,7 +825,7 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
 }
 
 #[tokio::test]
-async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthorized_prompt() {
+async fn cpush_guards_unauthorized_prompt_and_persists_done_notice_dismissal() {
     let temp = tempfile::tempdir().unwrap();
     let models = make_models(temp.path());
     let server = LocalModelSseServer::start().unwrap();
@@ -843,8 +836,8 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
                 provider: ProviderKind::Custom,
                 connection_name: "CPush Gateway".into(),
                 base_url: format!("{}/v1", server.base_url),
-                api_key: "sk-preview-plan-key".into(),
-                model_name: "CPush Preview Planner".into(),
+                api_key: "sk-cpush-guard-key".into(),
+                model_name: "CPush Planner".into(),
                 model_id: "planner-v1".into(),
                 locale: LanguageKind::En,
                 ..Default::default()
@@ -855,18 +848,13 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
 
     let fixture = Fixture::new().unwrap();
     let bare = attach_bare_remote(&fixture.root);
-    fs::write(
-        fixture.root.join("RELEASE_NOTES.md"),
-        "# v1.0\n- preview plan Q&A check\n",
-    )
-    .unwrap();
     let repo_store = RepositoryStore::default();
     let snapshot = repo_store.open(&fixture.root).await.unwrap();
     let tree = &snapshot.worktrees[0];
     let target = ReadTarget {
         repository_id: tree.repository_id.clone(),
         worktree_id: tree.worktree_id.clone(),
-        session_id: "sess-preview-plan".into(),
+        session_id: "sess-guard-dismiss".into(),
         scope_version: tree.status_version.clone(),
     };
     let sel_of = |path: &str| {
@@ -883,18 +871,19 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
 
     // 1. Unauthorized prompt instruction ("include unselected ... / force-push") pauses with Question without committing:
     let boundary_reply = coordinator
-        .plan_cpush(
+        .start_cpush(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &PlanCPushRequest {
-                request_id: "plan-unauthorized-1".into(),
+            &StartCPushRequest {
+                request_id: "cpush-unauthorized-1".into(),
                 target: target.clone(),
                 model_id: saved.model.id.clone(),
                 selections: vec![sel_of("part.txt")],
                 prompt: "also include unselected pnpm-lock.yaml and force-push".into(),
+                push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
             },
@@ -906,14 +895,13 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
         boundary_reply.session.session_status,
         CPushSessionStatus::NeedsDecision
     );
-    assert!(boundary_reply.prepared_plan.is_none());
     assert_eq!(
         text_git(&fixture.root, &["rev-list", "--count", "HEAD"]),
         "1"
     );
 
-    // Resolve the active Q&A session (`proceed-authorized`) to obtain `prepared_plan` without committing yet:
-    let resolved_plan_reply = coordinator
+    // 2. Answering `proceed-authorized` executes strictly within selected scope and pushes cleanly:
+    let executed = coordinator
         .respond_cpush(
             temp.path(),
             &paths,
@@ -921,7 +909,7 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
             &models,
             &repo_store,
             &RespondCPushRequest {
-                request_id: "plan-unauthorized-ans".into(),
+                request_id: "cpush-unauthorized-ans".into(),
                 target: target.clone(),
                 run_id: boundary_reply.session.run_id.clone(),
                 message_id: boundary_reply.session.message.unwrap().id,
@@ -934,196 +922,8 @@ async fn plan_cpush_edits_verbatim_rejects_mismatched_plan_and_guards_unauthoriz
         )
         .await
         .unwrap();
-    assert_eq!(
-        resolved_plan_reply.session.session_status,
-        CPushSessionStatus::Idle
-    );
-    let prepared = resolved_plan_reply.prepared_plan.unwrap();
-    assert_eq!(prepared.groups.len(), 1);
-    assert_eq!(
-        text_git(&fixture.root, &["rev-list", "--count", "HEAD"]),
-        "1"
-    );
-
-    // 2. Preview Plan Q&A (`part.txt` + `RELEASE_NOTES.md`) -> answer `split` -> returns 2-group `prepared_plan` with 0 commits:
-    let ambiguous_plan = coordinator
-        .plan_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &PlanCPushRequest {
-                request_id: "plan-ambiguous-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
-                prompt: "write clear detail bullets".into(),
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        ambiguous_plan.session.session_status,
-        CPushSessionStatus::NeedsDecision
-    );
-    let split_plan_reply = coordinator
-        .respond_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &RespondCPushRequest {
-                request_id: "plan-ambiguous-ans".into(),
-                target: target.clone(),
-                run_id: ambiguous_plan.session.run_id.clone(),
-                message_id: ambiguous_plan.session.message.unwrap().id,
-                option_id: Some("split".into()),
-                text: None,
-                model_id: Some(saved.model.id.clone()),
-                locale: None,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        split_plan_reply.session.session_status,
-        CPushSessionStatus::Idle
-    );
-    let split_plan = split_plan_reply.prepared_plan.unwrap();
-    assert_eq!(split_plan.groups.len(), 2);
-    assert_eq!(
-        text_git(&fixture.root, &["rev-list", "--count", "HEAD"]),
-        "1"
-    );
-
-    // 3. Reject invalid/mismatched `confirmed_plan` (empty message or missing selected file) before touching Git:
-    let empty_msg_err = coordinator
-        .start_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-bad-empty".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt")],
-                prompt: String::new(),
-                confirmed_plan: Some(CPushConfirmedPlan {
-                    groups: vec![PiCPushCommitGroup {
-                        id: "g1".into(),
-                        file_ids: vec![sel_of("part.txt").file_id],
-                        message: "   ".into(),
-                    }],
-                    skipped_file_ids: vec![],
-                    skip_push: false,
-                }),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap_err();
-    assert!(empty_msg_err.contains("empty"), "{empty_msg_err}");
-
-    let missing_file_err = coordinator
-        .start_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-bad-coverage".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
-                prompt: String::new(),
-                confirmed_plan: Some(CPushConfirmedPlan {
-                    groups: vec![PiCPushCommitGroup {
-                        id: "g1".into(),
-                        file_ids: vec![sel_of("part.txt").file_id],
-                        message: "feat: partial".into(),
-                    }],
-                    skipped_file_ids: vec![],
-                    skip_push: false,
-                }),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        missing_file_err.contains("did not cover all selected files"),
-        "{missing_file_err}"
-    );
-    assert_eq!(
-        text_git(&fixture.root, &["rev-list", "--count", "HEAD"]),
-        "1"
-    );
-
-    // 4. Execute user-edited `confirmed_plan` verbatim WITHOUT calling the LLM planner again:
-    let mut edited_groups = split_plan.groups.clone();
-    edited_groups[0].message =
-        "feat(part): verbatim user-edited group 1\n\n- commit staged part.txt exactly".into();
-    edited_groups[1].message =
-        "docs(notes): verbatim user-edited group 2\n\n- commit release notes verbatim".into();
-
-    let llm_requests_before = server.requests().len();
-    let executed = coordinator
-        .start_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-confirmed-verbatim".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
-                prompt: "original extra instruction".into(),
-                confirmed_plan: Some(CPushConfirmedPlan {
-                    groups: edited_groups,
-                    skipped_file_ids: split_plan.skipped_file_ids,
-                    skip_push: split_plan.skip_push,
-                }),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap();
-
     assert_eq!(executed.session.session_status, CPushSessionStatus::Done);
-    assert_eq!(executed.session.commits.len(), 2);
-    assert_eq!(
-        server.requests().len(),
-        llm_requests_before,
-        "confirmed_plan execution must NOT call the LLM planner again"
-    );
-    assert_eq!(
-        text_git(&fixture.root, &["show", "-s", "--format=%B", "HEAD~1"]),
-        "feat(part): verbatim user-edited group 1\n\n- commit staged part.txt exactly"
-    );
-    assert_eq!(
-        text_git(&fixture.root, &["show", "-s", "--format=%B", "HEAD"]),
-        "docs(notes): verbatim user-edited group 2\n\n- commit release notes verbatim"
-    );
+    assert_eq!(executed.session.commits.len(), 1);
     assert_eq!(
         text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]),
         text_git(&fixture.root, &["rev-parse", "HEAD"])
@@ -1255,7 +1055,6 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                     commit_token: lock_part.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -1269,36 +1068,6 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
         server.requests().len(),
         requests_before,
         "start_cpush must fail fast before invoking Pi Core when static commit preflight fails"
-    );
-
-    let plan_err = coordinator
-        .plan_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &PlanCPushRequest {
-                request_id: "plan-fail-fast-lock".into(),
-                target: lock_target,
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
-                    file_id: lock_part.id.clone(),
-                    commit_token: lock_part.commit_token.clone(),
-                }],
-                prompt: String::new(),
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap_err();
-    assert!(plan_err.contains("index.lock"), "{plan_err}");
-    assert_eq!(
-        server.requests().len(),
-        requests_before,
-        "plan_cpush must also fail fast before invoking Pi Core"
     );
 
     // 2. Repo containing an untouched tracked 160000 submodule succeeds end-to-end through C-Push:
@@ -1368,7 +1137,6 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                     commit_token: rules.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -1418,7 +1186,7 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
         session_id: "sess-non-retryable".into(),
         scope_version: mid_tree.status_version.clone(),
     };
-    let blocked = coordinator
+    let asked = coordinator
         .start_cpush(
             temp.path(),
             &paths,
@@ -1426,8 +1194,8 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
             &models,
             &repo_store,
             &StartCPushRequest {
-                request_id: "cpush-mid-non-retryable".into(),
-                target: mid_target,
+                request_id: "cpush-mid-non-retryable-ask".into(),
+                target: mid_target.clone(),
                 model_id: saved.model.id.clone(),
                 selections: vec![
                     CommitSelection {
@@ -1440,25 +1208,34 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                     },
                 ],
                 prompt: String::new(),
-                confirmed_plan: Some(CPushConfirmedPlan {
-                    groups: vec![
-                        PiCPushCommitGroup {
-                            id: "g1".into(),
-                            message: "feat: step 1 lands cleanly".into(),
-                            file_ids: vec![mid_part.id.clone()],
-                        },
-                        PiCPushCommitGroup {
-                            id: "g2".into(),
-                            message: "docs: step 2 hits sparse-checkout".into(),
-                            file_ids: vec![mid_notes.id.clone()],
-                        },
-                    ],
-                    skipped_file_ids: Vec::new(),
-                    skip_push: false,
-                }),
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        asked.session.session_status,
+        CPushSessionStatus::NeedsDecision
+    );
+    let blocked = coordinator
+        .respond_cpush(
+            temp.path(),
+            &paths,
+            &supervisor,
+            &models,
+            &repo_store,
+            &RespondCPushRequest {
+                request_id: "cpush-mid-non-retryable".into(),
+                target: mid_target,
+                run_id: asked.session.run_id.clone(),
+                message_id: asked.session.message.unwrap().id,
+                option_id: Some("split".into()),
+                text: None,
+                model_id: Some(saved.model.id.clone()),
+                locale: None,
             },
             |_| Ok(()),
         )
@@ -1585,31 +1362,7 @@ async fn cpush_supports_local_only_commit_and_on_demand_read_scope_diff() {
     let paths = PiPaths::development();
     let supervisor = PiSupervisor::default();
 
-    // 2. Preview Plan with `+ Prompt` requesting local-only commit propagates `skip_push: true`:
-    let planned = coordinator
-        .plan_cpush(
-            temp.path(),
-            &paths,
-            &supervisor,
-            &models,
-            &repo_store,
-            &PlanCPushRequest {
-                request_id: "plan-local-only-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: part_sel.clone(),
-                prompt: "只提交不推送".into(),
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
-        )
-        .await
-        .unwrap();
-    let prepared = planned.prepared_plan.expect("prepared plan expected");
-    assert!(prepared.skip_push);
-
-    // 3. Direct C-Push with `prompt: "commit locally without pushing"` commits locally without pushing to bare remote:
+    // 2. Direct C-Push with `prompt: "commit locally without pushing"` commits locally without pushing to bare remote:
     let local_done = coordinator
         .start_cpush(
             temp.path(),
@@ -1623,7 +1376,6 @@ async fn cpush_supports_local_only_commit_and_on_demand_read_scope_diff() {
                 model_id: saved.model.id.clone(),
                 selections: part_sel,
                 prompt: "commit locally without pushing".into(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,

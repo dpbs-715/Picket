@@ -37,7 +37,7 @@ async function checkDefaultWorkbench() {
   if (!text.includes('Open Your Git Repository')
     || !text.includes('Open Local Repository')
     || !text.includes('Configure Model')
-    || !text.includes('+ Prompt')
+    || !document.querySelector('.action-footer .prompt-footer-toggle[aria-label="+ Prompt"]')
     || text.includes('Write Manually')
     || !!document.querySelector('.prompt-textarea')
     || !!document.querySelector('.action-dropdown')
@@ -231,7 +231,7 @@ async function checkReadOnlyRepository() {
   await waitForUi(() => !selectAllBox.checked && !selectAllBox.indeterminate && !extra.checked && selectAllBox.getAttribute('aria-label') === 'Select all changes', 'select-all-cleared');
   document.querySelector<HTMLInputElement>('input[aria-label="Select part.txt"]')!.click();
   await waitForUi(() => document.querySelector<HTMLInputElement>('input[aria-label="Select part.txt"]')!.checked && selectAllBox.indeterminate, 'reselect-part-txt');
-  const promptToggle = [...document.querySelectorAll<HTMLButtonElement>('button')].find((btn) => btn.textContent?.trim() === '+ Prompt');
+  const promptToggle = document.querySelector<HTMLButtonElement>('.action-footer .prompt-footer-toggle[aria-label="+ Prompt"]');
   if (!promptToggle) throw new Error('Missing + Prompt toggle button');
   promptToggle.click();
   await waitForUi(() => !!document.querySelector('.prompt-textarea'), 'expand-prompt-box');
@@ -482,49 +482,26 @@ async function checkModelAndPreviewPlanOperations() {
   findButton('Close Settings')!.click();
   await waitForUi(() => !document.querySelector('.overlay'), 'm3-settings-closed');
 
-  // Review selected scope (`part.txt` + `pnpm-lock.yaml`) with extra instructions attached:
+  // One-click C-Push on `part.txt` with extra instructions attached (verifies partial-scope staging and prompt clearing):
   const partCheckbox = document.querySelector<HTMLInputElement>('input[aria-label="Select part.txt"]')!;
   const lockCheckbox = document.querySelector<HTMLInputElement>('input[aria-label="Select pnpm-lock.yaml"]')!;
   if (!partCheckbox.checked) partCheckbox.click();
-  if (!lockCheckbox.checked) lockCheckbox.click();
-  await waitForUi(() => partCheckbox.checked && lockCheckbox.checked, 'm3-review-selection');
-  document.querySelector<HTMLButtonElement>('#review-tab')!.click();
-  await waitForUi(() => !!findButton('Review Selected Scope'), 'm3-review-tab');
-  findButton('Review Selected Scope')!.click();
-  await waitForUi(
-    () => !!document.querySelector('.review-finding')
-      && (document.querySelector('.review-coverage')?.textContent ?? '').includes('pnpm-lock.yaml'),
-    'm3-review-completed',
-    15_000,
-  );
-
-  // Switch back to Commit Plan, select only `part.txt`, preview plan, edit verbatim, and C-Push:
-  document.querySelector<HTMLButtonElement>('#commit-tab')!.click();
-  await waitForUi(() => !!document.querySelector('.prompt-textarea'), 'm3-commit-tab');
-  if (lockCheckbox.checked) {
-    lockCheckbox.click();
-    await waitForUi(() => !lockCheckbox.checked && partCheckbox.checked, 'm3-plan-only-part');
-  }
-  findButton('Preview Plan')!.click();
-  await waitForUi(() => !!document.querySelector('.plan-group-textarea'), 'm3-preview-plan-ready', 15_000);
+  if (lockCheckbox.checked) lockCheckbox.click();
+  await waitForUi(() => !lockCheckbox.checked && partCheckbox.checked, 'm3-cpush-only-part');
   if (document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value !== 'persisted-across-restart: extra instruction') {
-    throw new Error('Preview Plan unexpectedly overwrote user extra instructions');
+    throw new Error('Extra instruction prompt did not stay intact before one-click C-Push');
   }
-
-  const planTextarea = document.querySelector<HTMLTextAreaElement>('.plan-group-textarea')!;
-  setTextarea(planTextarea, 'feat(smoke): commit edited plan verbatim\n\n- commit only staged part');
 
   const cPushBtn = document.querySelector<HTMLButtonElement>('.action-footer button.primary')!;
   if (!cPushBtn.textContent?.includes('C-Push') || cPushBtn.disabled) {
-    throw new Error('C-Push primary button should be enabled when a valid plan exists');
+    throw new Error('C-Push primary button should be enabled when a model and selection exist');
   }
   cPushBtn.click();
   await waitForUi(
     () => !!document.querySelector('.message-done')
       && (document.querySelector('.workbench')?.textContent ?? '').includes('origin/feat/branch-proof')
-      && !document.querySelector('.prompt-textarea')
-      && !document.querySelector('.plan-group-textarea'),
-    'confirmed-plan-cpush-done',
+      && !document.querySelector('.prompt-textarea'),
+    'one-click-cpush-done',
     15_000,
   );
 
@@ -561,7 +538,7 @@ async function checkCPushM4Operations(secret: string) {
   await waitForUi(
     () => !!document.querySelector('.message-done')
       && (document.querySelector('.workbench')?.textContent ?? '').includes('origin/feat/branch-proof')
-      && document.querySelectorAll('.message-commits > div').length === 2,
+      && document.querySelectorAll('.d2-commits > div').length === 2,
     'm4-split-and-pushed',
     15_000,
   );
@@ -585,7 +562,7 @@ async function checkCPushM4Operations(secret: string) {
   await waitForUi(
     () => !!document.querySelector('.message-done')
       && (document.querySelector('.workbench')?.textContent ?? '').includes('origin/feat/branch-proof')
-      && document.querySelectorAll('.message-commits > div').length === 1,
+      && document.querySelectorAll('.d2-commits > div').length === 1,
     'm5-conflict-merged-and-pushed',
     15_000,
   );

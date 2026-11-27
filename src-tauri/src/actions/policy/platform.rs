@@ -65,7 +65,7 @@ pub fn classify_platform_cli_command(
             _ => CommandDecision::DenyRedline {
                 code: "interactive_auth_blocked",
                 reason: format!(
-                    "`{cli} auth {sub}` cannot run inside controlled CLI execution. Ask the user via `ask_user_question` to run `{cli} auth login` in their terminal."
+                    "`{cli} auth {sub}` cannot run inside controlled CLI execution. Ask the user via `message_user` (with `questions`) to run `{cli} auth login` in their terminal."
                 ),
             },
         };

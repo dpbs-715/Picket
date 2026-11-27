@@ -21,7 +21,6 @@ export interface CommonMessages {
     resolved: string;
     pushFailed: string;
     done: string;
-    review: string;
     error: string;
   };
   primaryActions: {
@@ -75,7 +74,6 @@ export const commonEn: CommonMessages = {
     resolved: 'Ready to Push',
     pushFailed: 'Push Failed',
     done: 'Completed',
-    review: 'Review Done',
     error: 'Action Needed',
   },
   primaryActions: {
@@ -129,7 +127,6 @@ export const commonZh: CommonMessages = {
     resolved: '待推送',
     pushFailed: '推送失败',
     done: '已完成',
-    review: '审查完成',
     error: '需要处理',
   },
   primaryActions: {

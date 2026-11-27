@@ -297,8 +297,8 @@ pub fn action_tool_status_label(locale: LanguageKind, tool_name: &str, detail: &
         (LanguageKind::Zh, "read_repo_file") => format!("读取 {detail}"),
         (LanguageKind::En, "search_repo") => "Searching repository".into(),
         (LanguageKind::Zh, "search_repo") => "检索仓库代码".into(),
-        (LanguageKind::En, "ask_user_question") => "Waiting for your decision".into(),
-        (LanguageKind::Zh, "ask_user_question") => "等待你的确认".into(),
+        (LanguageKind::En, "message_user") => "Updating message".into(),
+        (LanguageKind::Zh, "message_user") => "更新消息卡片".into(),
         (LanguageKind::En, other) => format!("Running {other}"),
         (LanguageKind::Zh, other) => format!("调用工具 {other}"),
     }

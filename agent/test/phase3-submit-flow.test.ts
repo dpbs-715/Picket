@@ -213,7 +213,7 @@ describe('Phase 3 submit full-chain sidecar tools and resume checkpoint', () => 
           return {
             toolCalls: [{
               id: 'c9',
-              name: 'ask_user_question',
+              name: 'message_user',
               arguments: {
                 questions: [{
                   header: 'Step 5 Cleanup',
@@ -340,7 +340,7 @@ describe('Phase 3 submit full-chain sidecar tools and resume checkpoint', () => 
         if (event.type === 'toolCall') {
           hostTools.push({ name: event.toolName, args: event.args });
           queueMicrotask(() => {
-            if (event.toolName === 'ask_user_question') {
+            if (event.toolName === 'message_user') {
               runner.deliverToolResult?.({
                 type: 'toolResult',
                 requestId: event.requestId,
@@ -382,7 +382,7 @@ describe('Phase 3 submit full-chain sidecar tools and resume checkpoint', () => 
       'run_platform_cli',
       'run_platform_cli',
       'record_action_checkpoint',
-      'ask_user_question',
+      'message_user',
       'cleanup_submit_duplicates',
       'run_platform_cli',
       'run_platform_cli',

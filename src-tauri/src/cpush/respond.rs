@@ -247,7 +247,6 @@ impl CPushCoordinator {
             kind: "cPush",
             request_id: request_id.to_owned(),
             session: public,
-            prepared_plan: None,
             repository_snapshot: None,
         })
     }
@@ -371,7 +370,6 @@ impl CPushCoordinator {
             kind: "cPush",
             request_id: request_id.to_owned(),
             session: public,
-            prepared_plan: None,
             repository_snapshot: Some(snapshot),
         })
     }
@@ -442,7 +440,6 @@ impl CPushCoordinator {
             kind: "cPush",
             request_id: request_id.to_owned(),
             session: public,
-            prepared_plan: None,
             repository_snapshot: Some(snapshot),
         })
     }

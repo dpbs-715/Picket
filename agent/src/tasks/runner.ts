@@ -10,7 +10,6 @@ import type {
   PlanCPushCommand,
   ProbeEvent,
   ResolveConflictCommand,
-  ReviewScopeCommand,
   RunCustomActionCommand,
   TestConnectionRequest,
 } from '../../../shared/pi-protocol';
@@ -20,13 +19,13 @@ import { createIsolatedModelRuntime, fetchProviderModels, sanitizeProviderError 
 import { SkillRegistry } from '../skills';
 import {
   ToolBridge,
-  createAskUserQuestionTool,
   createCheckCliEnvTool,
   createCleanupSubmitDuplicatesTool,
   createCommitExactScopeTool,
   createEditRepoFileTool,
   createInstallPlatformCliTool,
   createManageSubmitWorktreeTool,
+  createMessageUserTool,
   createReadRepoFileTool,
   createReadScopeDiffTool,
   createReadSkillDocTool,
@@ -46,20 +45,21 @@ import {
   parseCustomActionDraft,
   parseCustomActionResult,
 } from './custom-actions';
-import { buildReviewPrompts, parseReviewFindings } from './review';
 import { RecoverablePlanValidationError } from './shared';
+import {
+  CUSTOM_ACTION_GUARD_DEFAULTS,
+  createToolLoopGuard,
+  type ToolLoopGuardPolicy,
+} from './tool-guard';
 
 const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
 const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
-const MAX_REVIEW_TOOL_CALLS = 24;
 const MAX_CPUSH_PLAN_TOOL_CALLS = 8;
-const MAX_CUSTOM_ACTION_TOOL_CALLS = 80;
 const MAX_GENERATE_ACTION_TOOL_CALLS = 16;
 
 type AgentTaskCommand =
   | TestConnectionRequest
-  | ReviewScopeCommand
   | PlanCPushCommand
   | ResolveConflictCommand
   | RunCustomActionCommand
@@ -78,30 +78,13 @@ async function prepareAgentTaskConfig(
 ): Promise<{
   prompts: { systemPrompt: string; userPrompt: string };
   tools: AgentTool<any>[];
-  toolBudget: number;
+  guardPolicy: ToolLoopGuardPolicy;
 }> {
   if (command.type === 'testConnection') {
     return {
       prompts: { systemPrompt: 'Reply with OK only.', userPrompt: 'Connection check.' },
       tools: [],
-      toolBudget: 0,
-    };
-  }
-  if (command.type === 'reviewScope') {
-    const dcrDoc = await registry.readDoc('dcr', 'SKILL.md');
-    const prompts = buildReviewPrompts(command, dcrDoc.content);
-    if (!command.enableTools) {
-      return { prompts, tools: [], toolBudget: 0 };
-    }
-    return {
-      prompts,
-      tools: [
-        createReadScopeDiffTool(bridge),
-        createReadRepoFileTool(bridge),
-        createSearchRepoTool(bridge),
-        createReadSkillDocTool(registry),
-      ],
-      toolBudget: MAX_REVIEW_TOOL_CALLS,
+      guardPolicy: { kind: 'none' },
     };
   }
   if (command.type === 'planCPush') {
@@ -114,7 +97,7 @@ async function prepareAgentTaskConfig(
       commit: commitDoc.content,
     });
     if (!command.enableTools) {
-      return { prompts, tools: [], toolBudget: 0 };
+      return { prompts, tools: [], guardPolicy: { kind: 'none' } };
     }
     return {
       prompts,
@@ -123,7 +106,7 @@ async function prepareAgentTaskConfig(
         createReadRepoFileTool(bridge),
         createSearchRepoTool(bridge),
       ],
-      toolBudget: MAX_CPUSH_PLAN_TOOL_CALLS,
+      guardPolicy: { kind: 'fixed', maxCalls: MAX_CPUSH_PLAN_TOOL_CALLS },
     };
   }
   if (command.type === 'runCustomAction') {
@@ -145,9 +128,12 @@ async function prepareAgentTaskConfig(
         createRecordActionCheckpointTool(bridge),
         createReadRepoFileTool(bridge),
         createSearchRepoTool(bridge),
-        createAskUserQuestionTool(bridge),
+        createMessageUserTool(bridge),
       ],
-      toolBudget: MAX_CUSTOM_ACTION_TOOL_CALLS,
+      guardPolicy: {
+        kind: 'adaptive',
+        ...CUSTOM_ACTION_GUARD_DEFAULTS,
+      },
     };
   }
   if (command.type === 'generateCustomAction') {
@@ -159,15 +145,15 @@ async function prepareAgentTaskConfig(
         createRunGitTool(bridge, true),
         createReadRepoFileTool(bridge),
         createSearchRepoTool(bridge),
-        createAskUserQuestionTool(bridge),
+        createMessageUserTool(bridge),
       ],
-      toolBudget: MAX_GENERATE_ACTION_TOOL_CALLS,
+      guardPolicy: { kind: 'fixed', maxCalls: MAX_GENERATE_ACTION_TOOL_CALLS },
     };
   }
   return {
     prompts: buildResolveConflictPrompts(command),
     tools: [],
-    toolBudget: 0,
+    guardPolicy: { kind: 'none' },
   };
 }
 
@@ -211,8 +197,7 @@ function runAgentTask(
         const { models, model } = createIsolatedModelRuntime(command.model, locale);
         const isTest = command.type === 'testConnection';
 
-        const overrideCatalog = command.type === 'reviewScope'
-          || command.type === 'planCPush'
+        const overrideCatalog = command.type === 'planCPush'
           || command.type === 'runCustomAction'
           || command.type === 'generateCustomAction'
           ? command.skillOverrides
@@ -222,13 +207,13 @@ function runAgentTask(
           return response.ok && !response.isError ? response.content : null;
         });
 
-        const { prompts, tools, toolBudget } = await prepareAgentTaskConfig(command, bridge, registry);
+        const { prompts, tools, guardPolicy } = await prepareAgentTaskConfig(command, bridge, registry);
         if (cancelled) {
           emit({ ...envelope, type: 'cancelled' });
           return;
         }
 
-        let toolCallsExecuted = 0;
+        const toolGuard = createToolLoopGuard(guardPolicy);
         const agent = new Agent({
           sessionId: command.context.sessionId,
           identity: { attribution: null },
@@ -238,18 +223,8 @@ function runAgentTask(
             thinkingLevel: 'off',
             systemPrompt: prompts.systemPrompt,
           },
-          beforeToolCall: toolBudget > 0
-            ? async () => {
-                if (toolCallsExecuted >= toolBudget) {
-                  return {
-                    block: true,
-                    reason: `Tool call budget (${toolBudget} calls) reached. Do not call more tools; return your final JSON response now using the evidence already collected.`,
-                  };
-                }
-                toolCallsExecuted += 1;
-                return undefined;
-              }
-            : undefined,
+          beforeToolCall: toolGuard ? (ctx) => toolGuard.beforeToolCall(ctx) : undefined,
+          afterToolCall: toolGuard ? (ctx) => toolGuard.afterToolCall(ctx) : undefined,
           streamFn: (targetModel, context, options) => models.streamSimple(targetModel, context, {
             ...options,
             maxTokens: isTest
@@ -332,11 +307,6 @@ function runAgentTask(
 
         if (command.type === 'testConnection') {
           emit({ ...envelope, type: 'completed', text: firstTurn.rawText.trim() || 'OK' });
-        } else if (command.type === 'reviewScope') {
-          const findings = wrapLengthTruncation(firstTurn.stopReason, () =>
-            parseReviewFindings(firstTurn.rawText, command.files, locale),
-          );
-          emit({ ...envelope, type: 'reviewCompleted', findings });
         } else if (command.type === 'planCPush') {
           let plan: PiCPushPlan;
           try {

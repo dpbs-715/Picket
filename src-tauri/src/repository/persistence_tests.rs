@@ -62,7 +62,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
                         selected_ids: vec![main_wt.files[0].id.clone()],
                         unselected_ids: vec![main_wt.files[1].id.clone()],
                         scope_version: "scope-main".into(),
-                        tab: WorkbenchTab::Commit,
+                        tab: Some(WorkbenchTab::Commit),
                     },
                     PersistedWorktreeState {
                         repository_id: linked_wt.repository_id.clone(),
@@ -71,7 +71,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
                         selected_ids: vec![],
                         unselected_ids: vec![],
                         scope_version: "scope-linked".into(),
-                        tab: WorkbenchTab::Review,
+                        tab: Some(WorkbenchTab::Review),
                     },
                 ],
             },
@@ -196,7 +196,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                     selected_ids: vec![],
                     unselected_ids: vec![],
                     scope_version: "v1".into(),
-                    tab: WorkbenchTab::Commit,
+                    tab: None,
                 }],
             },
         )
@@ -425,7 +425,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
         v1_restore.worktrees[0].selected_ids,
         vec![v1_wt.files[0].id.clone()]
     );
-    assert_eq!(v1_restore.worktrees[0].tab, WorkbenchTab::Review);
+    assert_eq!(v1_restore.worktrees[0].tab, Some(WorkbenchTab::Review));
     assert!(v1_restore.warning.is_none());
 
     // Wire format rejects injected paths or tokens:

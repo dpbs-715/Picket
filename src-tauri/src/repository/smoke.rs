@@ -197,7 +197,7 @@ impl Fixture {
             || git(&self.root, &["rev-list", "--count", "HEAD"])? != b"2\n"
             || local_head != remote_head
             || head_body.trim()
-                != "feat(smoke): commit edited plan verbatim\n\n- commit only staged part"
+                != "feat(scope): commit selected scope changes\n\n- write local commit for the exact selected scope\n- preserve unselected files and unstaged drafts"
             || git(&self.root, &["show", "HEAD:part.txt"])? != b"first=2\nsecond=1\n"
             || git(&self.root, &["show", ":part.txt"])? != b"first=2\nsecond=1\n"
             || fs::read(self.root.join("part.txt")).map_err(|error| error.to_string())?

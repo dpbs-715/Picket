@@ -5,7 +5,6 @@
 mod catalog;
 mod connection;
 mod persistence;
-mod review;
 
 pub use persistence::ResolvedRuntimeSpec;
 

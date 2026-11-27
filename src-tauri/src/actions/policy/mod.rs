@@ -4,7 +4,7 @@
 //! - Tier 0 (`AllowTier0`): Read-only inspection commands (auto-allowed).
 //! - Tier 1 (`AllowTier1`): Routine in-scope write commands that pass every permanent redline.
 //! - Tier 2 (`RequireConfirmTier2`): Destructive, irreversible, or unconventional custom write
-//!   commands requiring explicit user confirmation via `ask_user_question`.
+//!   commands requiring explicit user confirmation via `message_user`.
 //! - Hard Redline (`DenyRedline`): Permanently blocked regardless of skills, model output, or
 //!   "don't ask again" preferences.
 

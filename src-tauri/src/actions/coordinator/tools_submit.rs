@@ -402,7 +402,7 @@ pub(super) async fn handle_cleanup_submit_duplicates(
         .unwrap_or(false);
     if !user_confirmed {
         return PiToolExecutionResult::error(
-            "Step 5 duplicate cleanup is opt-in: ask the user via `ask_user_question` first, then invoke `cleanup_submit_duplicates` with `userConfirmed: true`.",
+            "Step 5 duplicate cleanup is opt-in: ask the user via `message_user` (with `questions`) first, then invoke `cleanup_submit_duplicates` with `userConfirmed: true`.",
         );
     }
     let filter_ids: HashSet<String> = args

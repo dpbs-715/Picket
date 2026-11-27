@@ -66,7 +66,7 @@ export interface PersistedWorktreeState {
   selectedIds: string[];
   unselectedIds?: string[];
   scopeVersion: string;
-  tab: 'commit' | 'review';
+  tab?: 'commit' | 'review';
 }
 
 export interface WorkbenchSaveRequest {
@@ -198,7 +198,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
       || typeof item.worktreeId !== 'string' || !item.worktreeId
       || typeof item.promptText !== 'string'
       || typeof item.scopeVersion !== 'string'
-      || !['commit', 'review'].includes(item.tab as string)
+      || !(item.tab === undefined || item.tab === null || ['commit', 'review'].includes(item.tab as string))
       || !Array.isArray(item.selectedIds) || !item.selectedIds.every((id) => typeof id === 'string')
       || !(item.unselectedIds === undefined || (Array.isArray(item.unselectedIds) && item.unselectedIds.every((id) => typeof id === 'string')))) {
       return fail();

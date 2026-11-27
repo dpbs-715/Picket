@@ -1,18 +1,18 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  formatAskUserQuestionResponseForModel,
-  validateAskUserQuestionRequest,
-} from '../../shared/ask-user-protocol';
-import type { ProbeEvent, ReviewScopeCommand } from '../../shared/pi-protocol';
+  extractMessageUserCard,
+  formatMessageUserResponseForModel,
+  hasMessageQuestions,
+  validateMessageUserRequest,
+} from '../../shared/message-user-protocol';
+import type { ProbeEvent } from '../../shared/pi-protocol';
 import { sanitizeProviderError } from '../src/providers';
 import {
   SkillRegistry,
   getBundledSkillsManifest,
   normalizeUpstreamSkillMarkdown,
 } from '../src/skills';
-import { createTaskRunner, parseReviewFindings } from '../src/tasks';
-import { ToolBridge, createAskUserQuestionTool } from '../src/tools';
+import { ToolBridge, createMessageUserTool } from '../src/tools';
 
 describe('Dual-layer Git skill registry & upstream normalization', () => {
   it('bundles all 8 Git skills with references and normalizes {{REPO_ROOT}} links', async () => {
@@ -76,9 +76,13 @@ describe('Dual-layer Git skill registry & upstream normalization', () => {
   });
 });
 
-describe('ask_user_question validation, formatting, and tool wrapper', () => {
-  it('validates constraints and rejects reserved labels or preview+multiSelect', () => {
-    expect(validateAskUserQuestionRequest({
+describe('message_user validation, rich blocks, formatting, and tool wrapper', () => {
+  it('validates question constraints, non-blocking cards, and sanitizes unsafe paths/links', () => {
+    // Rejects completely empty message_user calls:
+    expect(validateMessageUserRequest({})).toMatchObject({ ok: false, code: 'missing_title' });
+
+    // Rejects reserved labels:
+    expect(validateMessageUserRequest({
       questions: [{
         header: 'Scope',
         question: 'How should we group these changes?',
@@ -89,7 +93,8 @@ describe('ask_user_question validation, formatting, and tool wrapper', () => {
       }],
     })).toMatchObject({ ok: false, code: 'reserved_option_label' });
 
-    expect(validateAskUserQuestionRequest({
+    // Rejects preview with multiSelect:
+    expect(validateMessageUserRequest({
       questions: [{
         header: 'Labels',
         question: 'Pick labels',
@@ -101,7 +106,103 @@ describe('ask_user_question validation, formatting, and tool wrapper', () => {
       }],
     })).toMatchObject({ ok: false, code: 'preview_with_multiselect' });
 
-    const valid = validateAskUserQuestionRequest({
+    // Rejects unsafe path escapes and .git paths in findings and files blocks:
+    expect(validateMessageUserRequest({
+      title: 'Unsafe finding path',
+      blocks: [{
+        type: 'findings',
+        items: [{
+          severity: 'low',
+          title: 'Escape attempt',
+          detail: 'Should reject ../ path.',
+          path: '../outside/secret.env',
+          line: 1,
+        }],
+      }],
+    })).toMatchObject({ ok: false, code: 'invalid_finding_path' });
+
+    expect(validateMessageUserRequest({
+      title: 'Unsafe file chip path',
+      blocks: [{
+        type: 'files',
+        items: [{ path: '.git/config', badge: 'blocked' }],
+      }],
+    })).toMatchObject({ ok: false, code: 'invalid_file_path' });
+
+    // Validates non-blocking rich card with all 7 blocks and strips unsafe links:
+    const richCardRes = validateMessageUserRequest({
+      tone: 'warning',
+      title: 'Code review finished',
+      subtitle: '2 findings across 3 files',
+      blocks: [
+        { type: 'markdown', content: 'Review completed on `feat/pay`.' },
+        { type: 'callout', tone: 'warning', title: 'Action suggested', content: 'Address P1 before merging.' },
+        {
+          type: 'facts',
+          items: [
+            { label: 'Scope', value: '3 files', mono: true },
+            { label: 'High risk', value: '1', tone: 'danger' },
+          ],
+        },
+        {
+          type: 'findings',
+          items: [
+            {
+              severity: 'high',
+              tag: 'P1',
+              title: 'Plaintext secret logged',
+              detail: 'Redact payload before logging.',
+              path: 'src/api/pay.ts',
+              line: 46,
+            },
+            {
+              severity: 'low',
+              title: 'General observation',
+              detail: 'Optional finding without file path.',
+            },
+          ],
+          skipped: [{ path: 'pnpm-lock.yaml', reason: 'Lockfile' }],
+        },
+        {
+          type: 'checklist',
+          items: [{ status: 'pass', label: 'TypeScript check' }],
+        },
+        {
+          type: 'code',
+          title: 'tsc output',
+          content: 'No errors',
+          collapsed: false,
+        },
+        {
+          type: 'files',
+          items: [
+            { path: 'src/api/pay.ts', line: 46, badge: 'M' },
+          ],
+        },
+      ],
+      context: {
+        links: [
+          { label: 'PR #42', url: 'https://github.com/acme/demo/pull/42' },
+          { label: 'XSS', url: 'javascript:alert(1)' },
+        ],
+      },
+    });
+    expect(richCardRes.ok).toBe(true);
+    if (!richCardRes.ok) return;
+    expect(hasMessageQuestions(richCardRes.request)).toBe(false);
+    const card = extractMessageUserCard(richCardRes.request);
+    expect(card?.blocks).toHaveLength(7);
+    const findingsBlock = card?.blocks?.[3];
+    expect(findingsBlock?.type === 'findings' && findingsBlock.items[0].path).toBe('src/api/pay.ts');
+    expect(findingsBlock?.type === 'findings' && findingsBlock.items[1].path).toBeUndefined();
+    const filesBlock = card?.blocks?.[6];
+    expect(filesBlock?.type === 'files' && filesBlock.items).toHaveLength(1);
+    expect(richCardRes.request.context?.links).toEqual([
+      { label: 'PR #42', url: 'https://github.com/acme/demo/pull/42' },
+    ]);
+
+    // Validates blocking Q&A + response formatting:
+    const valid = validateMessageUserRequest({
       questions: [
         {
           header: 'Grouping',
@@ -119,8 +220,9 @@ describe('ask_user_question validation, formatting, and tool wrapper', () => {
     });
     expect(valid.ok).toBe(true);
     if (!valid.ok) return;
+    expect(hasMessageQuestions(valid.request)).toBe(true);
 
-    const answeredText = formatAskUserQuestionResponseForModel(valid.request, {
+    const answeredText = formatMessageUserResponseForModel(valid.request, {
       cancelled: false,
       answers: [{
         questionIndex: 0,
@@ -135,7 +237,7 @@ describe('ask_user_question validation, formatting, and tool wrapper', () => {
     expect(answeredText).toContain('[Grouping] Split into 2 PRs (id=split)');
     expect(answeredText).toContain('do not ask again');
 
-    const cancelledText = formatAskUserQuestionResponseForModel(valid.request, {
+    const cancelledText = formatMessageUserResponseForModel(valid.request, {
       cancelled: true,
       answers: [],
       unanswered: [0],
@@ -143,40 +245,63 @@ describe('ask_user_question validation, formatting, and tool wrapper', () => {
     expect(cancelledText).toBe('User declined to answer questions.');
   });
 
-  it('bridges ask_user_question tool execution over ToolBridge', async () => {
+  it('bridges message_user tool execution for both non-blocking display cards and blocking Q&A', async () => {
     const events: ProbeEvent[] = [];
     const bridge = new ToolBridge(
       {
-        requestId: 'req-ask',
+        requestId: 'req-msg',
         context: { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' },
       },
       (event) => {
         events.push(event);
         if (event.type === 'toolCall') {
-          bridge.deliverToolResult({
-            type: 'toolResult',
-            requestId: 'req-ask',
-            callId: event.callId,
-            ok: true,
-            content: '{}',
-            details: {
-              cancelled: false,
-              answers: [{
-                questionIndex: 0,
-                questionId: 'q-1',
-                header: 'CLI Install',
-                selectedOptionIds: ['brew-install'],
-                selectedLabels: ['Install gh with Homebrew'],
-              }],
-              unanswered: [],
-            },
-          });
+          const args = event.args as { questions?: unknown[] };
+          if (args.questions?.length) {
+            bridge.deliverToolResult({
+              type: 'toolResult',
+              requestId: 'req-msg',
+              callId: event.callId,
+              ok: true,
+              content: '{}',
+              details: {
+                cancelled: false,
+                answers: [{
+                  questionIndex: 0,
+                  questionId: 'q-1',
+                  header: 'CLI Install',
+                  selectedOptionIds: ['brew-install'],
+                  selectedLabels: ['Install gh with Homebrew'],
+                }],
+                unanswered: [],
+              },
+            });
+          } else {
+            bridge.deliverToolResult({
+              type: 'toolResult',
+              requestId: 'req-msg',
+              callId: event.callId,
+              ok: true,
+              content: 'Message displayed to user in Picket MessageDock.',
+            });
+          }
         }
       },
     );
 
-    const tool = createAskUserQuestionTool(bridge);
+    const tool = createMessageUserTool(bridge);
+
+    // 1. Non-blocking display call:
+    const displayResult = await tool.execute('call-display', {
+      tone: 'success',
+      title: 'Checks passed',
+      blocks: [{ type: 'checklist', items: [{ status: 'pass', label: 'cargo test' }] }],
+    });
+    expect(displayResult.isError).toBeFalsy();
+    expect((displayResult.content[0] as { text: string }).text).toContain('Message displayed');
+
+    // 2. Blocking question call:
     const result = await tool.execute('call-1', {
+      title: 'Install GitHub CLI?',
       questions: [{
         header: 'CLI Install',
         question: 'GitHub CLI (`gh`) is missing. Install via Homebrew?',
@@ -189,176 +314,7 @@ describe('ask_user_question validation, formatting, and tool wrapper', () => {
     expect(result.isError).toBeFalsy();
     expect(result.content[0]).toMatchObject({ type: 'text' });
     expect((result.content[0] as { text: string }).text).toContain('Install gh with Homebrew (id=brew-install)');
-    expect(events.some((e) => e.type === 'toolCall' && e.toolName === 'ask_user_question')).toBe(true);
-  });
-});
-
-describe('DCR review with real Pi Core multi-turn tool loop', () => {
-  const servers: ReturnType<typeof createServer>[] = [];
-
-  afterEach(async () => {
-    while (servers.length > 0) {
-      const server = servers.pop();
-      await new Promise<void>((resolve) => server?.close(() => resolve()));
-    }
-  });
-
-  it('maps P0/P1 to high and P2 to suggestion and runs read_repo_file tool roundtrip', async () => {
-    const parsed = parseReviewFindings(
-      JSON.stringify({
-        findings: [
-          { fileId: 'f1', path: 'src/auth.ts', line: 2, severity: 'P1', title: 'Missing expiry check', reason: 'Expired tokens pass validation.' },
-          { fileId: 'f1', path: 'src/auth.ts', line: 5, severity: 'P2', title: 'Missing unit test', reason: 'Add regression test for expired token.' },
-        ],
-      }),
-      [{ fileId: 'f1', path: 'src/auth.ts', status: 'M', rangeKind: 'unstaged', added: 2, removed: 1, patch: '+return true;' }],
-    );
-    expect(parsed[0].severity).toBe('high');
-    expect(parsed[1].severity).toBe('suggestion');
-
-    let turn = 0;
-    const receivedBodies: string[] = [];
-    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
-      req.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8');
-        receivedBodies.push(body);
-        turn += 1;
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'close',
-        });
-
-        if (turn === 1) {
-          // Turn 1: model invokes read_repo_file tool via Anthropic Messages SSE
-          const toolArgs = JSON.stringify({ path: 'src/caller.ts', startLine: 1, endLine: 20 });
-          res.write(`event: message_start\ndata: ${JSON.stringify({
-            type: 'message_start',
-            message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-test', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } },
-          })}\n\n`);
-          res.write(`event: content_block_start\ndata: ${JSON.stringify({
-            type: 'content_block_start',
-            index: 0,
-            content_block: { type: 'tool_use', id: 'toolu_1', name: 'read_repo_file', input: {} },
-          })}\n\n`);
-          res.write(`event: content_block_delta\ndata: ${JSON.stringify({
-            type: 'content_block_delta',
-            index: 0,
-            delta: { type: 'input_json_delta', partial_json: toolArgs },
-          })}\n\n`);
-          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
-          res.write(`event: message_delta\ndata: ${JSON.stringify({
-            type: 'message_delta',
-            delta: { stop_reason: 'tool_use', stop_sequence: null },
-            usage: { output_tokens: 15 },
-          })}\n\n`);
-          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-          res.end();
-        } else {
-          // Turn 2: model emits final structured JSON after reading caller context
-          const finalJson = JSON.stringify({
-            findings: [{
-              fileId: 'f1',
-              path: 'src/auth.ts',
-              line: 2,
-              severity: 'P1',
-              title: 'Caller expects strict expiry rejection',
-              reason: 'src/caller.ts passes expired tokens expecting false; returning true bypasses auth.',
-            }],
-          });
-          res.write(`event: message_start\ndata: ${JSON.stringify({
-            type: 'message_start',
-            message: { id: 'msg_2', type: 'message', role: 'assistant', model: 'claude-test', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 20, output_tokens: 1 } },
-          })}\n\n`);
-          res.write(`event: content_block_start\ndata: ${JSON.stringify({
-            type: 'content_block_start',
-            index: 0,
-            content_block: { type: 'text', text: '' },
-          })}\n\n`);
-          res.write(`event: content_block_delta\ndata: ${JSON.stringify({
-            type: 'content_block_delta',
-            index: 0,
-            delta: { type: 'text_delta', text: finalJson },
-          })}\n\n`);
-          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
-          res.write(`event: message_delta\ndata: ${JSON.stringify({
-            type: 'message_delta',
-            delta: { stop_reason: 'end_turn', stop_sequence: null },
-            usage: { output_tokens: 25 },
-          })}\n\n`);
-          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-          res.end();
-        }
-      });
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
-
-    const command: ReviewScopeCommand = {
-      type: 'reviewScope',
-      requestId: 'req-dcr-loop',
-      context: { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' },
-      model: {
-        provider: 'anthropic',
-        apiFormat: 'anthropic-messages',
-        modelId: 'claude-test',
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        apiKey: 'sk-ant-test-key',
-      },
-      branch: 'feat/auth',
-      prompt: 'Check caller assumptions',
-      files: [{
-        fileId: 'f1',
-        path: 'src/auth.ts',
-        status: 'M',
-        rangeKind: 'unstaged',
-        added: 1,
-        removed: 1,
-        patch: '@@ -1,3 +1,3 @@\n-  return isValid(token);\n+  return true;',
-      }],
-      skippedPaths: [],
-      locale: 'en',
-      enableTools: true,
-    };
-
-    const emitted: ProbeEvent[] = [];
-    let runner!: ReturnType<typeof createTaskRunner>;
-    runner = createTaskRunner(command, (event) => {
-      emitted.push(event);
-      if (event.type === 'toolCall') {
-        expect(event.toolName).toBe('read_repo_file');
-        expect(event.args).toEqual({ path: 'src/caller.ts', startLine: 1, endLine: 20 });
-        runner.deliverToolResult?.({
-          type: 'toolResult',
-          requestId: command.requestId,
-          callId: event.callId,
-          ok: true,
-          content: 'File: src/caller.ts\n1: import { verifyToken } from "./auth";\n2: if (!verifyToken(expired)) deny();',
-        });
-      }
-    });
-
-    await runner.run();
-
-    expect(turn).toBe(2);
-    expect(receivedBodies[0]).toContain('<dcr_skill_spec>');
-    expect(receivedBodies[0]).toContain('read_scope_diff');
-    expect(receivedBodies[0]).toContain('read_repo_file');
-    expect(receivedBodies[1]).toContain('verifyToken(expired)');
-    const completed = emitted.find((e) => e.type === 'reviewCompleted');
-    expect(completed?.type).toBe('reviewCompleted');
-    if (completed?.type === 'reviewCompleted') {
-      expect(completed.findings).toHaveLength(1);
-      expect(completed.findings[0]).toMatchObject({
-        fileId: 'f1',
-        severity: 'high',
-        title: 'Caller expects strict expiry rejection',
-      });
-    }
+    expect(events.filter((e) => e.type === 'toolCall' && e.toolName === 'message_user')).toHaveLength(2);
   });
 
   it('surfaces localized actionable guidance when a model does not support tool calling', () => {

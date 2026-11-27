@@ -167,26 +167,15 @@ pub async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Res
                 && !req.body.contains("lock: updated")
         })
         .count();
-    let saw_review = recorded.iter().any(|req| {
-        req.path.ends_with("/chat/completions")
-            && req.authorization.as_deref() == Some(expected_bearer.as_str())
-            && req.body.contains("pre-commit code reviewer")
-            && req.body.contains("User review instructions / context")
-            && req.body.contains("+first=2")
-            && !req.body.contains("+second=3")
-            && !req.body.contains("lock: updated")
-            && !req.body.contains("### File: pnpm-lock.yaml")
-    });
-    if !saw_conn || plan_count != 1 || !saw_review {
-        return Err("Model smoke server did not observe connection test, single scoped preview plan (without re-planning on confirmed C-Push), and lockfile-filtered review requests".into());
+    if !saw_conn || plan_count != 1 {
+        return Err("Model smoke server did not observe connection test and single scoped one-click C-Push plan request".into());
     }
     println!(
         "{}",
         serde_json::json!({
             "type": "uiSmokeModelProof",
             "credentialsPersistedAndRestored": true,
-            "partialScopePreviewPlanVerified": true,
-            "lockfileFilteredReviewVerified": true
+            "partialScopeCPushPlanVerified": true
         })
     );
     Ok(())

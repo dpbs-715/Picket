@@ -80,7 +80,6 @@ impl CPushCoordinator {
                     kind: "cPush",
                     request_id: request.request_id.clone(),
                     session: idle_session,
-                    prepared_plan: None,
                     repository_snapshot: Some(snapshot),
                 };
                 self.record_processed_request(&request.request_id, &reply)?;
@@ -149,7 +148,6 @@ impl CPushCoordinator {
                     kind: "cPush",
                     request_id: request.request_id.clone(),
                     session: public,
-                    prepared_plan: None,
                     repository_snapshot: Some(snapshot),
                 };
                 self.record_processed_request(&request.request_id, &reply)?;
@@ -448,7 +446,6 @@ impl CPushCoordinator {
             kind: "cPush",
             request_id: request_id.to_owned(),
             session: public,
-            prepared_plan: None,
             repository_snapshot: final_snapshot,
         })
     }

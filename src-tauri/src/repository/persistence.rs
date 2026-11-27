@@ -246,7 +246,7 @@ fn parse_workbench_bytes(bytes: &[u8]) -> Option<StoredWorkbenchFile> {
                     selected_ids: wt.selected_ids,
                     unselected_ids: Vec::new(),
                     scope_version: wt.scope_version,
-                    tab: wt.tab,
+                    tab: Some(wt.tab),
                 })
                 .collect(),
         });

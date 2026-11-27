@@ -1,61 +1,21 @@
 export interface WorkflowMessages {
   commit: {
-    tabLabel: string;
-    planningBadge: string;
-    planOutdatedBadge: string;
-    planCountBadge(count: number): string;
     promptToggle: string;
     promptActiveToggle: string;
+    promptTooltip: string;
+    promptActiveTooltip: string;
     hidePromptLabel: string;
     clearPromptLabel: string;
     promptLabel: string;
     promptPlaceholder: string;
-    planningStatus: string;
-    cancelPlanning: string;
-    previewPlanButton: string;
     configureModelButton: string;
-    planSummary(groupCount: number, skippedCount: number): string;
-    regeneratePlanAction: string;
-    clearPlanAction: string;
-    groupHeading(index: number, total: number): string;
-    groupMessageLabel(index: number, total: number): string;
-    groupMessagePlaceholder: string;
-    emptyPlanMessageHint: string;
-    emptyPlanMessageError: string;
-    allSkippedPlanNote(count: number): string;
-  };
-  review: {
-    tabLabel: string;
-    reReviewLabel: string;
-    tabStatusRunning: string;
-    tabStatusChanged: string;
-    tabStatusUncovered: string;
-    tabStatusPassed: string;
-    tabStatusCounts(high: number, suggestion: number): string;
-    runningStatus: string;
-    cancelReview: string;
-    startReview: string;
-    addModelButton: string;
-    uncoveredNotice(count: number): string;
-    changedNotice(count: number): string;
-    reReviewChangedButton: string;
-    noFilesReviewedTitle: string;
-    previousScopePassedTitle: string;
-    passedTitle: string;
-    resultTipLabel: string;
-    noFilesReviewedTip: string;
-    changedScopeTip: string;
-    passedScopeTip: string;
-    severityHigh: string;
-    severitySuggestion: string;
-    skippedHeading: string;
-    skippedTipLabel: string;
-    skippedTipText: string;
   };
   actions: {
     customActionBadge: string;
     previewEditAction: string;
     switchBackCPush: string;
+    expandActionPreview: string;
+    collapseActionPreview: string;
     previewContextHint: string;
     newModalTitle: string;
     editModalTitle: string;
@@ -104,69 +64,22 @@ export interface WorkflowMessages {
 
 export const workflowsEn: WorkflowMessages = {
   commit: {
-    tabLabel: 'Commit Plan',
-    planningBadge: 'Planning',
-    planOutdatedBadge: 'Outdated',
-    planCountBadge: (count) => `${count} commit${count === 1 ? '' : 's'}`,
     promptToggle: '+ Prompt',
     promptActiveToggle: 'Prompt',
+    promptTooltip: 'Add extra instructions (optional)',
+    promptActiveTooltip: 'Extra instructions active (click to focus)',
     hidePromptLabel: 'Hide Extra Instructions',
     clearPromptLabel: 'Clear Extra Instructions',
     promptLabel: 'Extra instructions',
     promptPlaceholder: 'Optional instructions, e.g. split lockfile separately…',
-    planningStatus: 'Generating commit plan…',
-    cancelPlanning: 'Cancel',
-    previewPlanButton: 'Preview Plan',
     configureModelButton: 'Configure Model',
-    planSummary: (groupCount, skippedCount) => {
-      const base = `Plan · ${groupCount} commit${groupCount === 1 ? '' : 's'}`;
-      return skippedCount ? `${base} · ${skippedCount} skipped` : base;
-    },
-    regeneratePlanAction: 'Regenerate Plan',
-    clearPlanAction: 'Clear Plan',
-    groupHeading: (index, total) => `Commit ${index}/${total}`,
-    groupMessageLabel: (index, total) => `Commit ${index} of ${total} message`,
-    groupMessagePlaceholder: 'Edit commit message for this group…',
-    emptyPlanMessageHint: 'Enter a commit message or clear the plan.',
-    emptyPlanMessageError: 'Fill in every commit message in the plan, or clear the plan before running C-Push.',
-    allSkippedPlanNote: (count) => `All ${count} selected file${count === 1 ? ' is' : 's are'} marked as skipped in this plan.`,
-  },
-  review: {
-    tabLabel: 'Code Review',
-    reReviewLabel: 'Re-review Selected Scope',
-    tabStatusRunning: 'Reviewing',
-    tabStatusChanged: 'Changed',
-    tabStatusUncovered: 'Uncovered',
-    tabStatusPassed: 'Passed',
-    tabStatusCounts: (high, suggestion) =>
-      high
-        ? `${high} High${suggestion ? ` · ${suggestion} Sugg.` : ''}`
-        : `${suggestion} Sugg.`,
-    runningStatus: 'Reviewing selected scope…',
-    cancelReview: 'Cancel Review',
-    startReview: 'Review Selected Scope',
-    addModelButton: 'Add Model',
-    uncoveredNotice: (count) =>
-      `${count} selected file${count === 1 ? ' has' : 's have'} not been reviewed yet. Re-review the selected scope.`,
-    changedNotice: (count) => `${count} file${count === 1 ? '' : 's'} changed since review`,
-    reReviewChangedButton: 'Re-review Changed Files',
-    noFilesReviewedTitle: 'No files in selected scope were reviewed',
-    previousScopePassedTitle: 'No risks found in previously reviewed scope',
-    passedTitle: 'Review passed',
-    resultTipLabel: 'Review result info',
-    noFilesReviewedTip: 'Lockfiles and binary files skip review by default and can still be committed normally.',
-    changedScopeTip: 'The selected scope has changed. Re-review to inspect the latest changes.',
-    passedScopeTip: 'No risk items were found within the reviewed scope.',
-    severityHigh: 'High',
-    severitySuggestion: 'Suggestion',
-    skippedHeading: 'Skipped during review',
-    skippedTipLabel: 'Skipped review info',
-    skippedTipText: 'Lockfiles, binary files, or oversized diffs skip review by default without blocking commits.',
   },
   actions: {
     customActionBadge: 'Custom Action',
     previewEditAction: 'Edit',
     switchBackCPush: 'C-Push',
+    expandActionPreview: 'Show action prompt',
+    collapseActionPreview: 'Hide action prompt',
     previewContextHint: 'Runs with current branch, checked files, and optional + Prompt instructions.',
     newModalTitle: 'New Custom Action',
     editModalTitle: 'Edit Custom Action',
@@ -221,68 +134,22 @@ export const workflowsEn: WorkflowMessages = {
 
 export const workflowsZh: WorkflowMessages = {
   commit: {
-    tabLabel: '提交计划',
-    planningBadge: '规划中',
-    planOutdatedBadge: '已过期',
-    planCountBadge: (count) => `${count} 个提交`,
     promptToggle: '+ 提示词',
     promptActiveToggle: '提示词',
+    promptTooltip: '补充提示词（可选）',
+    promptActiveTooltip: '已填写补充提示词（点击聚焦）',
     hidePromptLabel: '收起扩展提示词',
     clearPromptLabel: '清空扩展提示词',
     promptLabel: '扩展提示词',
     promptPlaceholder: '补充要求（可选），如：lock 文件单独提交…',
-    planningStatus: '正在生成提交计划…',
-    cancelPlanning: '取消',
-    previewPlanButton: '预生成计划',
     configureModelButton: '配置模型',
-    planSummary: (groupCount, skippedCount) => {
-      const base = `计划 · ${groupCount} 个提交`;
-      return skippedCount ? `${base} · 跳过 ${skippedCount} 项` : base;
-    },
-    regeneratePlanAction: '重新预生成',
-    clearPlanAction: '清空计划',
-    groupHeading: (index, total) => `提交 ${index}/${total}`,
-    groupMessageLabel: (index, total) => `第 ${index}/${total} 个提交说明`,
-    groupMessagePlaceholder: '编辑本组提交说明…',
-    emptyPlanMessageHint: '请填写提交说明，或清空当前计划。',
-    emptyPlanMessageError: '请补全预生成计划中的每条提交说明，或清空计划后再执行 C-Push。',
-    allSkippedPlanNote: (count) => `当前计划已确认跳过全部 ${count} 个已选文件。`,
-  },
-  review: {
-    tabLabel: '审查意见',
-    reReviewLabel: '重新审查已选范围',
-    tabStatusRunning: '审查中',
-    tabStatusChanged: '已变化',
-    tabStatusUncovered: '未覆盖',
-    tabStatusPassed: '通过',
-    tabStatusCounts: (high, suggestion) =>
-      high
-        ? `${high} 高危${suggestion ? ` · ${suggestion} 建议` : ''}`
-        : `${suggestion} 建议`,
-    runningStatus: '正在审查已选范围…',
-    cancelReview: '取消审查',
-    startReview: '开始审查已选范围',
-    addModelButton: '添加模型',
-    uncoveredNotice: (count) => `当前选择有 ${count} 个文件尚未审查，请重新审查已选范围。`,
-    changedNotice: (count) => `审查后有 ${count} 个文件已变化`,
-    reReviewChangedButton: '复审变动文件',
-    noFilesReviewedTitle: '所选范围均未纳入审查',
-    previousScopePassedTitle: '原审查范围未发现风险项',
-    passedTitle: '审查通过',
-    resultTipLabel: '审查结果说明',
-    noFilesReviewedTip: '锁文件或二进制内容默认跳过审查，仍可正常勾选提交。',
-    changedScopeTip: '当前范围已有变化，需重新审查后才能判断最新内容。',
-    passedScopeTip: '仅代表实际已审范围内未发现风险项。',
-    severityHigh: '高危',
-    severitySuggestion: '建议',
-    skippedHeading: '以下内容未覆盖审查',
-    skippedTipLabel: '未覆盖审查说明',
-    skippedTipText: '锁文件、二进制或超长改动默认跳过审查，不影响正常勾选提交。',
   },
   actions: {
     customActionBadge: '自定义按钮',
     previewEditAction: '编辑',
     switchBackCPush: '切回 C-Push',
+    expandActionPreview: '展开按钮指令',
+    collapseActionPreview: '收起按钮指令',
     previewContextHint: '点击主按钮将自动附带当前分支、已选文件范围以及可选的 + 提示词。',
     newModalTitle: '新建自定义按钮',
     editModalTitle: '编辑自定义按钮',

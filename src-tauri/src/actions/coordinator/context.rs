@@ -38,6 +38,7 @@ pub(super) struct ActionRunState {
     pub(super) timeline: Vec<CustomActionTimelineItem>,
     pub(super) commits: Vec<CPushLandedCommit>,
     pub(super) links: Vec<CustomActionLink>,
+    pub(super) published_card: Option<MessageUserCard>,
     pub(super) committed_file_ids: HashSet<String>,
     pub(super) action_edited_hashes: HashMap<String, String>,
     pub(super) committed_edited_paths: HashSet<String>,
@@ -155,18 +156,21 @@ impl ActionToolContext {
             allow_dont_ask_again,
             &self.action_label,
         );
+        let first_q = &q.questions_slice()[0];
+        let card = q.to_card(&first_q.header);
         (self.emit)(
             "needsDecision",
             Some(confirm_call_id.clone()),
             Some(CustomActionUiMessage {
                 id: format!("ask-{}-{confirm_call_id}", self.run_id),
                 kind: "question".into(),
-                title: q.questions[0].header.clone(),
-                description: q.questions[0].question.clone(),
+                title: first_q.header.clone(),
+                description: first_q.question.clone(),
                 scope: Some(self.action_label.clone()),
                 files: None,
                 commits: None,
                 links: None,
+                card: Some(card),
                 questionnaire: Some(q.clone()),
                 progress: None,
             }),
@@ -212,7 +216,7 @@ fn build_tier2_confirm_questionnaire(
     preview: &str,
     allow_dont_ask_again: bool,
     action_label: &str,
-) -> AskUserQuestionRequest {
+) -> MessageUserRequest {
     let (header, question, approve_label, approve_desc) = match kind {
         Tier2ConfirmKind::Command => (
             i18n::actions::action_tier2_header(locale),
@@ -233,21 +237,26 @@ fn build_tier2_confirm_questionnaire(
             i18n::actions::action_tier2_create_approve_desc(locale),
         ),
     };
-    AskUserQuestionRequest {
-        questions: vec![AskUserQuestionItem {
+    MessageUserRequest {
+        title: Some(header.into()),
+        subtitle: Some(action_label.to_owned()),
+        tone: Some(MessageTone::Warning),
+        blocks: None,
+        links: None,
+        questions: Some(vec![MessageQuestionItem {
             id: "confirm-write".into(),
             header: header.into(),
             question,
             multi_select: None,
             options: vec![
-                AskUserQuestionOption {
+                MessageQuestionOption {
                     id: "approve-write".into(),
                     label: approve_label.into(),
                     description: approve_desc.into(),
                     recommended: Some(true),
                     preview: Some(preview.to_owned()),
                 },
-                AskUserQuestionOption {
+                MessageQuestionOption {
                     id: "cancel-write".into(),
                     label: i18n::actions::action_tier2_cancel_label(locale).into(),
                     description: i18n::actions::action_tier2_cancel_desc(locale).into(),
@@ -255,8 +264,8 @@ fn build_tier2_confirm_questionnaire(
                     preview: None,
                 },
             ],
-        }],
-        context: Some(AskUserQuestionContext {
+        }]),
+        context: Some(MessageQuestionContext {
             scope: Some(action_label.to_owned()),
             affected_file_ids: None,
             links: None,
@@ -266,6 +275,9 @@ fn build_tier2_confirm_questionnaire(
         }),
     }
 }
+
+const TIMELINE_MAX_ITEMS: usize = 60;
+const TIMELINE_DETAIL_MAX_CHARS: usize = 48;
 
 pub(super) fn push_timeline_step(
     timeline: &mut Vec<CustomActionTimelineItem>,
@@ -287,8 +299,9 @@ pub(super) fn push_timeline_step(
             }
         }
     }
-    if timeline.len() >= 12 {
-        timeline.remove(0);
+    if timeline.len() >= TIMELINE_MAX_ITEMS {
+        let excess = timeline.len() + 1 - TIMELINE_MAX_ITEMS;
+        timeline.drain(..excess);
     }
     timeline.push(CustomActionTimelineItem {
         state: state.to_owned(),
@@ -307,6 +320,141 @@ pub(super) fn append_unique_links(
     }
 }
 
+fn truncate_timeline_text(input: &str, max_chars: usize) -> String {
+    let mut chars = input.chars();
+    let collected: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{collected}…")
+    } else {
+        collected
+    }
+}
+
+fn is_short_identifier_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 24
+        && !token.starts_with('-')
+        && token.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '#' | '-' | '_' | '.' | '/' | ':' | '*')
+        })
+}
+
+fn format_git_detail(raw_args: &[&str]) -> String {
+    let mut idx = 0;
+    while idx < raw_args.len() {
+        let tok = raw_args[idx];
+        if matches!(tok, "-C" | "-c" | "--git-dir" | "--work-tree") {
+            idx += 2;
+        } else if tok.starts_with('-') {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    let Some(&sub) = raw_args.get(idx) else {
+        return "command".into();
+    };
+    let mut parts: Vec<String> = vec![sub.to_owned()];
+    let mut skip_next = false;
+    let mut target_tokens: Vec<String> = Vec::new();
+    let mut hint_flag: Option<String> = None;
+
+    for &arg in raw_args.iter().skip(idx + 1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if matches!(
+            arg,
+            "-m" | "--message"
+                | "-F"
+                | "--file"
+                | "-c"
+                | "--format"
+                | "--pretty"
+                | "-S"
+                | "-G"
+                | "--grep"
+        ) {
+            skip_next = true;
+            continue;
+        }
+        if arg == "--" {
+            continue;
+        }
+        if arg == "--help" || arg == "-h" {
+            hint_flag = Some("--help".into());
+            break;
+        }
+        if arg == "-n" {
+            skip_next = false;
+            hint_flag = hint_flag.or_else(|| Some("-n".into()));
+            continue;
+        }
+        if arg.starts_with('-') {
+            if hint_flag.is_none()
+                && matches!(
+                    arg,
+                    "--cached" | "--staged" | "--stat" | "--name-only" | "--oneline"
+                )
+            {
+                hint_flag = Some(arg.to_owned());
+            }
+            continue;
+        }
+        if hint_flag.as_deref() == Some("-n")
+            && target_tokens.is_empty()
+            && arg.chars().all(|c| c.is_ascii_digit())
+        {
+            hint_flag = Some(format!("-n {arg}"));
+            continue;
+        }
+        let compact = if arg.contains('/')
+            && arg
+                .rsplit('/')
+                .next()
+                .is_some_and(|leaf| leaf.contains('.'))
+        {
+            arg.rsplit('/').next().unwrap_or(arg)
+        } else {
+            arg
+        };
+        if !compact.is_empty() && target_tokens.len() < 2 {
+            target_tokens.push(truncate_timeline_text(compact, 24));
+        }
+    }
+
+    if let Some(flag) = hint_flag
+        && (target_tokens.is_empty()
+            || flag == "--help"
+            || matches!(flag.as_str(), "--cached" | "--staged"))
+    {
+        parts.push(flag);
+    }
+    parts.extend(target_tokens);
+    truncate_timeline_text(&parts.join(" "), TIMELINE_DETAIL_MAX_CHARS)
+}
+
+fn format_platform_cli_detail(cli: &str, raw_args: &[&str]) -> String {
+    let mut parts: Vec<String> = vec![cli.to_owned()];
+    if let Some(&first) = raw_args.first() {
+        parts.push(truncate_timeline_text(first, 20));
+        if let Some(&second) = raw_args.get(1) {
+            if second == "--help" || second == "-h" {
+                parts.push("--help".into());
+            } else if !second.starts_with('-') {
+                parts.push(truncate_timeline_text(second, 24));
+                if let Some(&third) = raw_args.get(2)
+                    && is_short_identifier_token(third)
+                {
+                    parts.push(truncate_timeline_text(third, 18));
+                }
+            }
+        }
+    }
+    truncate_timeline_text(&parts.join(" "), TIMELINE_DETAIL_MAX_CHARS)
+}
+
 pub(super) fn format_tool_status_label(
     locale: LanguageKind,
     tool_name: &str,
@@ -318,23 +466,22 @@ pub(super) fn format_tool_status_label(
             i18n::actions::action_tool_status_label(locale, tool_name, tool)
         }
         "run_git" => {
-            let sub = args
+            let arg_list: Vec<&str> = args
                 .get("args")
                 .and_then(Value::as_array)
-                .and_then(|arr| arr.first())
-                .and_then(Value::as_str)
-                .unwrap_or("command");
-            i18n::actions::action_tool_status_label(locale, tool_name, sub)
+                .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let detail = format_git_detail(&arg_list);
+            i18n::actions::action_tool_status_label(locale, tool_name, &detail)
         }
         "run_platform_cli" => {
             let cli = args.get("cli").and_then(Value::as_str).unwrap_or("cli");
-            let sub = args
+            let arg_list: Vec<&str> = args
                 .get("args")
                 .and_then(Value::as_array)
-                .and_then(|arr| arr.first())
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let detail = format!("{cli} {sub}");
+                .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let detail = format_platform_cli_detail(cli, &arg_list);
             i18n::actions::action_tool_status_label(locale, tool_name, detail.trim())
         }
         "read_repo_file" | "edit_repo_file" | "write_repo_file" => {
@@ -360,5 +507,92 @@ pub(super) fn format_tool_status_label(
             i18n::actions::action_tool_status_label(locale, tool_name, op)
         }
         _ => i18n::actions::action_tool_status_label(locale, tool_name, ""),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn formats_second_level_platform_cli_and_git_subcommands() {
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_platform_cli",
+                &json!({"cli": "glab", "args": ["issue", "create", "--title", "fix"]})
+            ),
+            "执行 glab issue create"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_platform_cli",
+                &json!({"cli": "glab", "args": ["issue", "view", "220"]})
+            ),
+            "执行 glab issue view 220"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_platform_cli",
+                &json!({"cli": "glab", "args": ["mr", "merge", "42", "--sha", "abcdef"]})
+            ),
+            "执行 glab mr merge 42"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_platform_cli",
+                &json!({"cli": "glab", "args": ["issue", "--help"]})
+            ),
+            "执行 glab issue --help"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_git",
+                &json!({"args": ["log", "-n", "5", "--oneline"]})
+            ),
+            "执行 git log -n 5"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_git",
+                &json!({"args": ["push", "origin", "220-fix-report"]})
+            ),
+            "执行 git push origin 220-fix-report"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_git",
+                &json!({"args": ["diff", "--cached", "--", "src/main/java/FooService.java"]})
+            ),
+            "执行 git diff --cached FooService.java"
+        );
+        assert_eq!(
+            format_tool_status_label(
+                LanguageKind::Zh,
+                "run_git",
+                &json!({"args": ["tag", "-a", "v0.2.0", "-m", "secret message body"]})
+            ),
+            "执行 git tag v0.2.0"
+        );
+    }
+
+    #[test]
+    fn retains_up_to_sixty_timeline_steps_and_updates_active_in_place() {
+        let mut timeline = Vec::new();
+        for idx in 1..=65 {
+            push_timeline_step(&mut timeline, "active", format!("step {idx}"));
+            push_timeline_step(&mut timeline, "done", format!("step {idx}"));
+        }
+        assert_eq!(timeline.len(), TIMELINE_MAX_ITEMS);
+        assert_eq!(timeline.first().unwrap().label, "step 6");
+        assert_eq!(timeline.last().unwrap().label, "step 65");
+        assert_eq!(timeline.last().unwrap().state, "done");
     }
 }

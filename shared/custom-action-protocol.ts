@@ -1,4 +1,9 @@
-import type { AskUserQuestionRequest, AskUserQuestionResponse } from './ask-user-protocol';
+import {
+  decodeMessageUserCard,
+  type MessageUserCard,
+  type MessageUserRequest,
+  type MessageUserResponse,
+} from './message-user-protocol';
 import type { CPushLandedCommit, CPushMessageKind } from './cpush-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
 import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
@@ -43,7 +48,8 @@ export interface CustomActionUiMessage {
   files?: { id: string; label: string; badge?: string }[];
   commits?: { hash: string; title: string }[];
   links?: CustomActionLink[];
-  questionnaire?: AskUserQuestionRequest;
+  card?: MessageUserCard;
+  questionnaire?: MessageUserRequest;
   progress?: { completed: number; total: number; label: string };
 }
 
@@ -70,7 +76,7 @@ export interface RespondCustomActionRequest {
   requestId: string;
   runId: string;
   callId: string;
-  response: AskUserQuestionResponse;
+  response: MessageUserResponse;
   locale?: AppLocale;
 }
 
@@ -155,7 +161,8 @@ export interface GenerateCustomActionProgressEvent {
   status: 'running' | 'needsDecision' | 'done' | 'cancelled' | 'failed';
   statusLabel: string;
   pendingCallId?: string;
-  questionnaire?: AskUserQuestionRequest;
+  card?: MessageUserCard;
+  questionnaire?: MessageUserRequest;
 }
 
 export interface GenerateCustomActionReply {
@@ -398,7 +405,12 @@ function decodeUiMessage(raw: unknown): CustomActionUiMessage | null {
     || typeof raw.description !== 'string') {
     throw new Error('Invalid custom action message payload.');
   }
-  return raw as unknown as CustomActionUiMessage;
+  const base = raw as unknown as CustomActionUiMessage;
+  const card = decodeMessageUserCard(raw.card);
+  return {
+    ...base,
+    ...(card ? { card } : { card: undefined }),
+  };
 }
 
 export function decodeCustomActionProgressEvent(value: unknown): CustomActionProgressEvent {
@@ -480,14 +492,16 @@ export function decodeGenerateCustomActionProgressEvent(value: unknown): Generat
     || !['running', 'needsDecision', 'done', 'cancelled', 'failed'].includes(String(value.status))) {
     throw new Error('Generate custom action progress event mismatch.');
   }
+  const card = decodeMessageUserCard(value.card);
   return {
     protocolVersion: CUSTOM_ACTION_PROTOCOL_VERSION,
     runId: value.runId,
     status: value.status as GenerateCustomActionProgressEvent['status'],
     statusLabel: value.statusLabel,
     ...(typeof value.pendingCallId === 'string' && value.pendingCallId ? { pendingCallId: value.pendingCallId } : {}),
+    ...(card ? { card } : {}),
     ...(value.questionnaire !== undefined && value.questionnaire !== null
-      ? { questionnaire: value.questionnaire as AskUserQuestionRequest }
+      ? { questionnaire: value.questionnaire as MessageUserRequest }
       : {}),
   };
 }

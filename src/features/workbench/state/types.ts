@@ -1,10 +1,7 @@
 import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
-import type { AskUserQuestionRequest } from '../../../../shared/ask-user-protocol';
 import type {
   CPushCommandReply,
   CPushLandedCommit,
-  CPushPlanGroup,
-  CPushPreparedPlan,
   CPushProgressEvent,
   CPushQaItem,
   CPushTimelineItem,
@@ -19,6 +16,7 @@ import type {
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitLocalKeepReply, GitReadReply, GitReadTarget, GitRemoteBranch } from '../../../../shared/git-read-protocol';
 import type { AppLocale, CommitLanguage } from '../../../../shared/language-protocol';
+import type { MessageUserCard, MessageUserRequest } from '../../../../shared/message-user-protocol';
 import type {
   PersistedWindowPreferences,
   WindowPosition,
@@ -42,19 +40,9 @@ export interface Change {
   commitToken?: string;
 }
 
-export interface Finding {
-  id: string;
-  fileId: string;
-  path: string;
-  line: number;
-  severity: 'high' | 'suggestion';
-  title: string;
-  reason: string;
-}
-
 export interface Message {
   id: string;
-  kind: 'progress' | 'question' | 'conflict' | 'waitingManual' | 'resolved' | 'pushFailed' | 'done' | 'review' | 'error';
+  kind: 'progress' | 'question' | 'conflict' | 'waitingManual' | 'resolved' | 'pushFailed' | 'done' | 'error';
   title: string;
   description: string;
   scope?: string;
@@ -62,18 +50,9 @@ export interface Message {
   commits?: { hash: string; title: string }[];
   links?: { label: string; url: string }[];
   options?: { id: string; label: string; description?: string; recommended?: boolean; preview?: string }[];
-  questionnaire?: AskUserQuestionRequest;
+  questionnaire?: MessageUserRequest;
+  card?: MessageUserCard;
   progress?: { completed: number; total: number; label: string };
-}
-
-export interface EditableCommitPlan {
-  id: string;
-  baseScopeVersion: string;
-  modelId: string;
-  summary: string;
-  groups: CPushPlanGroup[];
-  skippedFileIds: string[];
-  skipPush?: boolean;
 }
 
 export interface ActiveCPushState {
@@ -86,7 +65,6 @@ export interface ActiveCPushState {
   qaLog: CPushQaItem[];
   commits: CPushLandedCommit[];
   canRetryRemaining: boolean;
-  planOnly?: boolean;
 }
 
 export interface ActiveCustomActionState {
@@ -113,28 +91,12 @@ export interface Worktree extends Target {
   selectedIds: string[];
   unselectedIds?: string[];
   prompt: { text: string; revision: number };
-  plan?: EditableCommitPlan;
-  planRevision: number;
-  review: {
-    status: 'idle' | 'running' | 'done' | 'failed';
-    findings: Finding[];
-    skippedPaths: string[];
-    changedPaths: string[];
-    scopeFileIds?: string[];
-    reviewedFileIds?: string[];
-    error?: string;
-  };
   sessionStatus: 'idle' | 'running' | 'needsDecision' | 'conflict' | 'waitingManual' | 'pushFailed' | 'done';
   messages: Message[];
   cPush?: ActiveCPushState;
   customAction?: ActiveCustomActionState;
-  tab: 'commit' | 'review';
   dockExpanded: boolean;
   replies: Record<string, string>;
-  requests: Partial<{
-    plan: { id: string; promptRevision: number; planRevision: number; fileIds: string[] };
-    review: { id: string; promptRevision: number; fileIds: string[]; previousReviewStatus?: Worktree['review']['status'] };
-  }>;
 }
 
 export interface Repository {
@@ -198,7 +160,7 @@ export interface WorkbenchPresentation {
   showSettings: boolean;
 }
 
-export type CompactExpandTarget = 'changes' | 'dock' | 'plan' | 'repo';
+export type CompactExpandTarget = 'changes' | 'dock' | 'repo';
 export type CompactStatusTone = 'muted' | 'ready' | 'running' | 'warning' | 'danger' | 'success';
 
 export interface CompactStatusSummary {
@@ -209,8 +171,6 @@ export interface CompactStatusSummary {
 
 export type WorkbenchEvent =
   | { type: 'message'; target: Target; message: Message; sessionStatus?: Worktree['sessionStatus'] }
-  | { type: 'planPrepared'; target: Target; requestId: string; modelId: string; plan: CPushPreparedPlan }
-  | { type: 'reviewed'; target: Target; requestId: string; findings: Finding[]; skippedPaths: string[]; reviewedFileIds?: string[] }
   | { type: 'files'; target: Target; nextScopeVersion: string; files: Change[]; changedPaths: string[] }
   | { type: 'cPushProgress'; progress: CPushProgressEvent }
   | { type: 'customActionProgress'; progress: CustomActionProgressEvent };
@@ -243,14 +203,9 @@ export type WorkbenchAction =
   | { type: 'selectFiles'; worktreeId: string; fileIds: string[] }
   | { type: 'prompt'; worktreeId: string | null; text: string }
   | { type: 'clearPrompt'; worktreeId: string | null }
-  | { type: 'planGroupEdited'; worktreeId: string; groupId: string; message: string }
-  | { type: 'planCleared'; worktreeId: string }
-  | { type: 'tab'; worktreeId: string; tab: Worktree['tab'] }
   | { type: 'dock'; worktreeId: string; expanded: boolean }
   | { type: 'dismissMessage'; worktreeId: string; messageId: string }
   | { type: 'reply'; worktreeId: string; messageId: string; text: string }
-  | { type: 'request'; target: Target; kind: 'plan' | 'review'; requestId: string; fileIds?: string[] }
-  | { type: 'requestFailed'; target: Target; kind: 'plan' | 'review'; requestId: string; error?: string }
   | { type: 'locale'; locale: AppLocale }
   | { type: 'editor'; editor: EditorId; repositoryId?: string | null }
   | { type: 'commitLanguage'; commitLanguage: CommitLanguage; repositoryId?: string | null }
@@ -262,4 +217,4 @@ export type WorkbenchAction =
   | { type: 'modelSelected'; modelId: string }
   | { type: 'modelDeleted'; modelId: string }
   | { type: 'providerDeleted'; connectionId: string }
-  | { type: 'event'; event: WorkbenchEvent };
+  | { type: 'event'; event: WorkbenchEvent; suppressExpand?: boolean };

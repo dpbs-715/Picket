@@ -23,7 +23,6 @@ const MODELS_FILE: &str = "models.json";
 pub(super) const MAX_STORED_CONNECTIONS: usize = 32;
 pub(super) const MAX_STORED_MODELS: usize = 64;
 pub(super) const TEST_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(50);
-pub(super) const AI_TASK_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

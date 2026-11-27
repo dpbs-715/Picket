@@ -158,7 +158,7 @@ pub async fn exec_controlled_platform_cli(
 ) -> Result<ControlledCliOutput, String> {
     let binary = resolve_cli_binary(cli, override_dirs).ok_or_else(|| {
         format!(
-            "`{cli}` CLI was not found on this machine. Run `check_cli_env` first and offer installation via `ask_user_question`."
+            "`{cli}` CLI was not found on this machine. Run `check_cli_env` first and offer installation via `message_user`."
         )
     })?;
 

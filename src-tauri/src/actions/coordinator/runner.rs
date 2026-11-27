@@ -38,22 +38,29 @@ async fn dispatch_action_tool(
     args: Value,
 ) -> PiToolExecutionResult {
     let status_label = format_tool_status_label(ctx.locale, &tool_name, &args);
-    if tool_name != "read_skill_override_doc" && tool_name != "ask_user_question" {
-        if let Ok(mut st) = ctx.run_state.lock() {
+    if tool_name != "read_skill_override_doc" && tool_name != "message_user" {
+        let preserved_card = if let Ok(mut st) = ctx.run_state.lock() {
             push_timeline_step(&mut st.timeline, "active", status_label.clone());
-        }
+            st.published_card.clone()
+        } else {
+            None
+        };
         (ctx.emit)(
             "running",
             None,
             Some(CustomActionUiMessage {
                 id: format!("progress-{}", ctx.run_id),
                 kind: "progress".into(),
-                title: ctx.action_label.clone(),
+                title: preserved_card
+                    .as_ref()
+                    .map(|c| c.title.clone())
+                    .unwrap_or_else(|| ctx.action_label.clone()),
                 description: status_label.clone(),
                 scope: None,
                 files: None,
                 commits: None,
                 links: None,
+                card: preserved_card,
                 questionnaire: None,
                 progress: Some(CustomActionMessageProgress {
                     completed: 2,
@@ -65,14 +72,14 @@ async fn dispatch_action_tool(
         );
     }
 
-    match tool_name.as_str() {
+    let result = match tool_name.as_str() {
         "read_skill_override_doc" => tools_cli::handle_read_skill_override_doc(&ctx, &args),
         "read_repo_file" | "search_repo" => {
             tools_cli::handle_read_repo_tool(&ctx, &tool_name, &args, status_label).await
         }
         "check_cli_env" => tools_cli::handle_check_cli_env(&ctx, status_label).await,
         "install_platform_cli" => tools_cli::handle_install_platform_cli(&ctx, &args).await,
-        "ask_user_question" => tools_cli::handle_ask_user_question(&ctx, &call_id, args).await,
+        "message_user" => tools_cli::handle_message_user(&ctx, &call_id, args).await,
         "run_git" => tools_cli::handle_run_git(&ctx, &call_id, &args, status_label).await,
         "run_platform_cli" => {
             tools_cli::handle_run_platform_cli(&ctx, &call_id, &args, status_label).await
@@ -96,7 +103,22 @@ async fn dispatch_action_tool(
         other => PiToolExecutionResult::error(format!(
             "Unsupported tool `{other}` for custom action execution."
         )),
+    };
+
+    if tool_name != "read_skill_override_doc"
+        && tool_name != "message_user"
+        && let Ok(mut st) = ctx.run_state.lock()
+        && let Some(last) = st.timeline.last_mut()
+        && last.state == "active"
+    {
+        last.state = if result.ok && !result.is_error {
+            "done".into()
+        } else {
+            "failed".into()
+        };
     }
+
+    result
 }
 
 impl CustomActionCoordinator {
@@ -268,6 +290,7 @@ impl CustomActionCoordinator {
             }],
             commits: Vec::new(),
             links: Vec::new(),
+            published_card: None,
             committed_file_ids: HashSet::new(),
             action_edited_hashes: initial_edited_hashes,
             committed_edited_paths: HashSet::new(),
@@ -302,6 +325,7 @@ impl CustomActionCoordinator {
                         status: status.to_owned(),
                         updated_at_ms: session_store::now_millis(),
                         summary,
+                        card: st.published_card.clone(),
                         dismissed_message_id: None,
                         timeline: st.timeline.clone(),
                         commits: st.commits.clone(),
@@ -372,6 +396,7 @@ impl CustomActionCoordinator {
                 files: None,
                 commits: None,
                 links: None,
+                card: None,
                 questionnaire: None,
                 progress: Some(CustomActionMessageProgress {
                     completed: 1,
@@ -459,7 +484,7 @@ impl CustomActionCoordinator {
 
         match outcome {
             Ok(PiTaskOutcome::CustomActionCompleted { summary, links }) => {
-                let (timeline, commits, merged_links, trusted) = {
+                let (timeline, commits, merged_links, trusted, published_card) = {
                     let mut st = run_state.lock().unwrap();
                     append_unique_links(
                         &mut st.links,
@@ -481,6 +506,7 @@ impl CustomActionCoordinator {
                         st.commits.clone(),
                         st.links.clone(),
                         st.trusted_action_update.clone(),
+                        st.published_card.clone(),
                     )
                 };
                 let commit_summaries: Vec<CustomActionMessageCommitSummary> = commits
@@ -490,15 +516,27 @@ impl CustomActionCoordinator {
                         title: c.title.clone(),
                     })
                     .collect();
+                let (done_title, done_desc) = if let Some(ref card) = published_card {
+                    (
+                        card.title.clone(),
+                        card.subtitle.clone().unwrap_or_else(|| summary.clone()),
+                    )
+                } else {
+                    (
+                        i18n::actions::action_completed_title(locale, &action_label),
+                        summary.clone(),
+                    )
+                };
                 let done_msg = CustomActionUiMessage {
                     id: format!("done-action-{run_id}"),
                     kind: "done".into(),
-                    title: i18n::actions::action_completed_title(locale, &action_label),
-                    description: summary.clone(),
+                    title: done_title,
+                    description: done_desc,
                     scope: None,
                     files: None,
                     commits: (!commit_summaries.is_empty()).then_some(commit_summaries),
                     links: (!merged_links.is_empty()).then_some(merged_links.clone()),
+                    card: published_card,
                     questionnaire: None,
                     progress: None,
                 };

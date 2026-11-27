@@ -6,7 +6,6 @@ import {
   type CPushCommandReply,
   type CPushProgressEvent,
   type DismissCPushDoneRequest,
-  type PlanCPushRequest,
   type PullRebaseRequest,
   type ReconcileCPushRequest,
   type RespondCPushRequest,
@@ -23,28 +22,6 @@ function isMatchingWorktree(
     && !!target.worktreeId
     && session.repositoryId === target.repositoryId
     && session.worktreeId === target.worktreeId;
-}
-
-export async function planDesktopCPush(
-  request: PlanCPushRequest,
-  onProgress?: (event: CPushProgressEvent) => void,
-): Promise<CPushCommandReply> {
-  const onEvent = new Channel<unknown>();
-  if (onProgress) {
-    onEvent.onmessage = (raw) => {
-      const decoded = decodeCPushProgressEvent(raw);
-      if (isMatchingCPushTarget(decoded.session, request.target)) {
-        onProgress(decoded);
-      }
-    };
-  }
-  const reply = decodeCPushCommandReply(await invoke('plan_cpush', { request, onEvent }));
-  if (reply.requestId !== request.requestId
-    || reply.session.modelId !== request.modelId
-    || !isMatchingCPushTarget(reply.session, request.target)) {
-    throw new Error(getMessages(request.locale).desktop.cPushPlanMismatch);
-  }
-  return reply;
 }
 
 export async function startDesktopCPush(

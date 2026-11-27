@@ -1,4 +1,4 @@
-//! Provider connection, model catalog, credential reveal, and code review IPC commands.
+//! Provider connection, model catalog, and credential reveal IPC commands.
 
 use super::{picket_data_dir, runtime_paths};
 use crate::{
@@ -7,14 +7,13 @@ use crate::{
         store::ModelStore,
         types::{
             ConnectionIdRequest, CreateProviderConnectionInput, ListModelsInput, ModelIdRequest,
-            ModelListReply, ModelMutateReply, ModelSaveReply, ModelStreamEvent, ModelTestReply,
-            ProviderRevealKeyReply, ProviderSaveReply, ProviderUpdateReply, ReviewScopeReply,
-            ReviewScopeRequest, SaveModelInput, TestConnectionInput, UpdateProviderConnectionInput,
+            ModelListReply, ModelMutateReply, ModelSaveReply, ModelTestReply,
+            ProviderRevealKeyReply, ProviderSaveReply, ProviderUpdateReply, SaveModelInput,
+            TestConnectionInput, UpdateProviderConnectionInput,
         },
     },
-    repository::RepositoryStore,
 };
-use tauri::{State, ipc::Channel};
+use tauri::State;
 
 #[tauri::command]
 pub async fn test_model_connection(
@@ -112,25 +111,6 @@ pub async fn reveal_provider_api_key(
     let data_dir = picket_data_dir()?;
     models
         .reveal_provider_api_key(&data_dir, &request.connection_id, request.locale)
-        .await
-}
-
-#[tauri::command]
-pub async fn review_selected_scope(
-    app: tauri::AppHandle,
-    store: State<'_, RepositoryStore>,
-    models: State<'_, ModelStore>,
-    supervisor: State<'_, PiSupervisor>,
-    request: ReviewScopeRequest,
-    on_event: Channel<ModelStreamEvent>,
-) -> Result<ReviewScopeReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
-    models
-        .review_scope(&data_dir, &paths, &supervisor, &store, &request, |event| {
-            let _ = on_event.send(event);
-            Ok(())
-        })
         .await
 }
 

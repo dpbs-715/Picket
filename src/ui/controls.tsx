@@ -33,6 +33,16 @@ const iconPaths = {
   alert: 'm12 3 10 18H2zM12 9v5m0 3h.01',
   help: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01',
   power: 'M12 2v10M18.36 6.64a9 9 0 1 1-12.73 0',
+  checkCircle: 'M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3',
+  xCircle: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM15 9l-6 6M9 9l6 6',
+  alertCircle: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 8v4M12 16h.01',
+  info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 16v-4M12 8h.01',
+  terminal: 'm4 17 6-6-6-6M12 19h8',
+  fileCode: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M10 13l-2 2 2 2M14 13l2 2-2 2',
+  arrowUpRight: 'M7 17 17 7M7 7h10v10',
+  sendUp: 'M12 19V5M5 12l7-7 7 7',
+  messageSquare: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  promptNote: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 9h8M8 13h5',
 } as const;
 export type IconName = keyof typeof iconPaths;
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {

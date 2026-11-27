@@ -9,7 +9,8 @@ export type GitOpenFileAction = 'open' | 'goto' | 'diff' | 'stagedDiff' | 'merge
 export interface GitOpenFileRequest {
   requestId: string;
   target: GitReadTarget;
-  fileId: string;
+  fileId?: string;
+  path?: string;
   editor: GitEditorId;
   line?: number;
   locale?: AppLocale;

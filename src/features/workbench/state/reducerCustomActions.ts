@@ -53,8 +53,7 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
     return {
       ...state,
       worktrees: state.worktrees.map((tree) => {
-        if (tree.worktreeId !== action.worktreeId || (isActiveSession(tree) && !tree.cPush?.planOnly)) return tree;
-        const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+        if (tree.worktreeId !== action.worktreeId || isActiveSession(tree)) return tree;
         const progressMsg: Message = {
           id: `progress-${action.runId}`,
           kind: 'progress',
@@ -66,7 +65,7 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           ...tree,
           sessionStatus: 'running',
           dockExpanded: action.expandDock ? true : tree.dockExpanded,
-          messages: [...reviewMessages, progressMsg],
+          messages: [progressMsg],
           cPush: undefined,
           customAction: {
             runId: action.runId,
@@ -90,7 +89,6 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
         if (tree.worktreeId !== action.worktreeId || tree.customAction?.runId !== action.runId) {
           return tree;
         }
-        const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
         const errorMsg: Message | undefined = action.message
           ? {
               id: `error-${action.runId}`,
@@ -103,7 +101,7 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           ...tree,
           sessionStatus: 'idle',
           dockExpanded: errorMsg ? tree.dockExpanded : false,
-          messages: errorMsg ? [...reviewMessages, errorMsg] : reviewMessages,
+          messages: errorMsg ? [errorMsg] : [],
           customAction: errorMsg
             ? {
                 ...tree.customAction,

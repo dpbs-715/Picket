@@ -65,9 +65,9 @@ fn respond_tier2(
                 request_id: format!("resp-{call_id}"),
                 run_id: run_id.clone(),
                 call_id: call_id.clone(),
-                response: AskUserQuestionResponse {
+                response: MessageUserResponse {
                     cancelled: false,
-                    answers: vec![AskUserQuestionAnswer {
+                    answers: vec![MessageUserAnswer {
                         question_index: 0,
                         question_id: "confirm-write".into(),
                         header: "Confirm".into(),
@@ -195,6 +195,7 @@ echo "versionVerified=true tag=$1"
         trusted_action_update: None,
         wrote_repo: false,
         submit_ledger: Default::default(),
+        published_card: None,
     }));
     let mut local_keep = HashSet::new();
     local_keep.insert("local.txt".to_owned());
@@ -513,6 +514,7 @@ echo "formatted"
         trusted_action_update: None,
         wrote_repo: false,
         submit_ledger: Default::default(),
+        published_card: None,
     }));
     let local_keep = HashSet::from(["local.txt".to_owned()]);
     let ctx = ActionToolContext {
@@ -672,6 +674,7 @@ echo "formatted"
             status: "done".into(),
             updated_at_ms: now_millis(),
             summary: "Wrote draft release note.".into(),
+            card: None,
             dismissed_message_id: None,
             timeline: vec![CustomActionTimelineItem {
                 state: "done".into(),

@@ -71,6 +71,7 @@ impl CustomActionCoordinator {
             status: "running",
             status_label: i18n::actions::action_create_inspecting_label(locale).into(),
             pending_call_id: None,
+            card: None,
             questionnaire: None,
         });
 
@@ -118,7 +119,7 @@ impl CustomActionCoordinator {
                         let override_dirs = coordinator.override_cli_dirs();
                         let label = format_tool_status_label(locale, &tool_name, &args);
                         if tool_name != "read_skill_override_doc"
-                            && tool_name != "ask_user_question"
+                            && tool_name != "message_user"
                         {
                             cb(GenerateCustomActionProgressEvent {
                                 protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,
@@ -126,6 +127,7 @@ impl CustomActionCoordinator {
                                 status: "running",
                                 status_label: label,
                                 pending_call_id: None,
+                                card: None,
                                 questionnaire: None,
                             });
                         }
@@ -192,16 +194,43 @@ impl CustomActionCoordinator {
                                     Err(err) => PiToolExecutionResult::error(err),
                                 }
                             }
-                            "ask_user_question" => {
-                                let req: AskUserQuestionRequest = match serde_json::from_value(args)
-                                {
-                                    Ok(parsed) => parsed,
-                                    Err(err) => {
-                                        return PiToolExecutionResult::error(format!(
-                                            "Invalid ask_user_question payload: {err}"
-                                        ));
-                                    }
+                            "message_user" => {
+                                let raw_req: MessageUserRequest =
+                                    match serde_json::from_value(args) {
+                                        Ok(parsed) => parsed,
+                                        Err(err) => {
+                                            return PiToolExecutionResult::error(format!(
+                                                "Invalid message_user payload: {err}"
+                                            ));
+                                        }
+                                    };
+                                let req = match raw_req.sanitize_and_validate() {
+                                    Ok(valid) => valid,
+                                    Err(err) => return PiToolExecutionResult::error(err),
                                 };
+                                if !req.has_questions() {
+                                    let card = req.to_card(
+                                        i18n::actions::action_create_inspecting_label(locale),
+                                    );
+                                    cb(GenerateCustomActionProgressEvent {
+                                        protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,
+                                        run_id: run_id.clone(),
+                                        status: "running",
+                                        status_label: card.title.clone(),
+                                        pending_call_id: None,
+                                        card: Some(card),
+                                        questionnaire: None,
+                                    });
+                                    return PiToolExecutionResult {
+                                        ok: true,
+                                        content: "{\"displayed\":true}".into(),
+                                        details: Some(serde_json::json!({ "displayed": true })),
+                                        is_error: false,
+                                    };
+                                }
+                                let card = req.card_if_present(
+                                    i18n::actions::action_create_needs_input_label(locale),
+                                );
                                 cb(GenerateCustomActionProgressEvent {
                                     protocol_version: CUSTOM_ACTION_PROTOCOL_VERSION,
                                     run_id: run_id.clone(),
@@ -211,6 +240,7 @@ impl CustomActionCoordinator {
                                     )
                                     .into(),
                                     pending_call_id: Some(call_id.clone()),
+                                    card,
                                     questionnaire: Some(req.clone()),
                                 });
                                 match coordinator
@@ -226,6 +256,7 @@ impl CustomActionCoordinator {
                                                 i18n::actions::action_create_drafting_label(locale)
                                                     .into(),
                                             pending_call_id: None,
+                                            card: None,
                                             questionnaire: None,
                                         });
                                         let details = serde_json::to_value(&resp).ok();

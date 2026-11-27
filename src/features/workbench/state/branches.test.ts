@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import { repositoryReply } from '../testing/repository-fixture';
-import { emptyWorkbench, isPlanOutdated, targetOf, workbenchReducer } from './workbench';
+import { emptyWorkbench, targetOf, workbenchReducer } from './workbench';
 import type { WorkbenchState } from './workbench';
 
 function initial() {
@@ -24,24 +24,9 @@ function reply(state: WorkbenchState, jumpToOtherWorktree = false): GitBranchRep
 }
 function finish(state: WorkbenchState, result = reply(state)) { return workbenchReducer(state, { type: 'repositoryBranchFinished', repositoryId: 'orders', reply: result }); }
 
-describe('Branch switching merged with local prompts, plans, and view state', () => {
-  it('applies Git snapshot on switch, preserves latest prompt and selection, and marks pre-generated plan outdated', () => {
+describe('Branch switching merged with local prompts and view state', () => {
+  it('applies Git snapshot on switch, preserves latest prompt and selection, and updates scopeVersion', () => {
     let state = initial();
-    const beforeSwitch = source(state);
-    const targetBefore = targetOf(beforeSwitch);
-    state = workbenchReducer(state, { type: 'request', target: targetBefore, kind: 'plan', requestId: 'plan-1' });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: {
-        type: 'planPrepared',
-        target: targetBefore,
-        requestId: 'plan-1',
-        modelId: 'm1',
-        plan: { summary: '1 commit', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: plan' }], skippedFileIds: [] },
-      },
-    });
-    expect(isPlanOutdated(source(state))).toBe(false);
-
     const previous = source(state);
     state = started(state);
     state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'newer prompt typed while branch switch is in flight' });
@@ -51,7 +36,6 @@ describe('Branch switching merged with local prompts, plans, and view state', ()
     expect(source(state).prompt.text).toBe('newer prompt typed while branch switch is in flight');
     expect(source(state).selectedIds).toEqual(previous.selectedIds);
     expect(source(state).scopeVersion).not.toBe(previous.scopeVersion);
-    expect(isPlanOutdated(source(state))).toBe(true);
     expect(state.repositoryBranches).toEqual({});
   });
 

@@ -352,11 +352,3 @@ pub const fn cpush_plan_incomplete_coverage_error(locale: LanguageKind) -> &'sta
         "C-Push 规划未完整覆盖全部已勾选文件",
     )
 }
-
-pub const fn cpush_plan_invalid_message_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Commit message in the confirmed plan is empty or exceeds length limits",
-        "预生成提交计划中的提交说明为空或超出长度限制",
-    )
-}

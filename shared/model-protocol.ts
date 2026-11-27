@@ -1,4 +1,3 @@
-import type { GitReadTarget } from './git-read-protocol';
 import type { AppLocale } from './language-protocol';
 
 export const MODEL_PROTOCOL_VERSION = 2;
@@ -179,41 +178,6 @@ export interface ModelFileSelection {
   commitToken: string;
 }
 
-export interface ReviewFindingWire {
-  id: string;
-  fileId: string;
-  path: string;
-  line: number;
-  severity: 'high' | 'suggestion';
-  title: string;
-  reason: string;
-}
-
-export interface ReviewScopeRequest {
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  selections: ModelFileSelection[];
-  prompt: string;
-  changedPaths?: string[];
-  locale?: AppLocale;
-}
-
-export interface ReviewScopeReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  kind: 'review';
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  findings: ReviewFindingWire[];
-  skippedPaths: string[];
-  reviewedFileIds: string[];
-}
-
-export type ModelStreamEvent =
-  | { type: 'started'; requestId: string; kind: 'review'; target: GitReadTarget }
-  | { type: 'delta'; requestId: string; kind: 'review'; target: GitReadTarget; delta: string };
-
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -279,22 +243,6 @@ export function decodeSavedModelConfiguration(value: unknown): SavedModelConfigu
     ...(typeof value.baseUrl === 'string' && value.baseUrl ? { baseUrl: value.baseUrl } : {}),
     ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
     ...(typeof value.maxOutputTokens === 'number' ? { maxOutputTokens: value.maxOutputTokens } : {}),
-  };
-}
-
-function decodeTarget(value: unknown): GitReadTarget {
-  if (!record(value)
-    || typeof value.repositoryId !== 'string' || !value.repositoryId
-    || typeof value.worktreeId !== 'string' || !value.worktreeId
-    || typeof value.sessionId !== 'string' || !value.sessionId
-    || typeof value.scopeVersion !== 'string' || !value.scopeVersion) {
-    throw new Error('Model reply is missing a valid target identity.');
-  }
-  return {
-    repositoryId: value.repositoryId,
-    worktreeId: value.worktreeId,
-    sessionId: value.sessionId,
-    scopeVersion: value.scopeVersion,
   };
 }
 
@@ -438,52 +386,6 @@ export function decodeProviderRevealKeyReply(value: unknown): ProviderRevealKeyR
     };
   }
   throw new Error('Unknown provider reveal outcome.');
-}
-
-export function decodeReviewScopeReply(value: unknown): ReviewScopeReply {
-  if (!record(value)
-    || value.protocolVersion !== MODEL_PROTOCOL_VERSION
-    || value.kind !== 'review'
-    || 'apiKey' in value
-    || 'credentialRef' in value
-    || typeof value.requestId !== 'string' || !value.requestId
-    || typeof value.modelId !== 'string' || !value.modelId
-    || !Array.isArray(value.findings)
-    || !Array.isArray(value.skippedPaths) || !value.skippedPaths.every((item) => typeof item === 'string')
-    || !Array.isArray(value.reviewedFileIds) || !value.reviewedFileIds.every((item) => typeof item === 'string')) {
-    throw new Error('Code review reply mismatch.');
-  }
-  const findings: ReviewFindingWire[] = value.findings.map((raw) => {
-    if (!record(raw)
-      || typeof raw.id !== 'string' || !raw.id
-      || typeof raw.fileId !== 'string' || !raw.fileId
-      || typeof raw.path !== 'string' || !raw.path
-      || typeof raw.line !== 'number' || !Number.isSafeInteger(raw.line) || raw.line < 1
-      || (raw.severity !== 'high' && raw.severity !== 'suggestion')
-      || typeof raw.title !== 'string' || !raw.title
-      || typeof raw.reason !== 'string' || !raw.reason) {
-      throw new Error('Invalid code review finding entry.');
-    }
-    return {
-      id: raw.id,
-      fileId: raw.fileId,
-      path: raw.path,
-      line: raw.line,
-      severity: raw.severity,
-      title: raw.title,
-      reason: raw.reason,
-    };
-  });
-  return {
-    protocolVersion: MODEL_PROTOCOL_VERSION,
-    kind: 'review',
-    requestId: value.requestId,
-    target: decodeTarget(value.target),
-    modelId: value.modelId,
-    findings,
-    skippedPaths: value.skippedPaths as string[],
-    reviewedFileIds: value.reviewedFileIds as string[],
-  };
 }
 
 export function decodeModelListReply(value: unknown): ModelListReply {

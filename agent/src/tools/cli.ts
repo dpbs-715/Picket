@@ -27,7 +27,7 @@ export function createInstallPlatformCliTool(bridge: ToolBridge): AgentTool<any,
   return {
     name: 'install_platform_cli',
     label: 'Install Platform CLI',
-    description: 'Install `gh` or `glab` via Homebrew (`brew install gh` / `brew install glab`). Rust strictly requires that the user already approved this installation via `ask_user_question` in the current session.',
+    description: 'Install `gh` or `glab` via Homebrew (`brew install gh` / `brew install glab`). Rust strictly requires that the user already approved this installation via `message_user` (with `questions`) in the current session.',
     parameters: {
       type: 'object',
       additionalProperties: false,

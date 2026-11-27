@@ -81,7 +81,7 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
     }
   });
 
-  it('runs a multi-turn custom action tool loop (check_cli_env -> run_git -> ask_user_question -> completed with links)', async () => {
+  it('runs a multi-turn custom action tool loop (check_cli_env -> run_git -> message_user -> completed with links)', async () => {
     const srv = await startMockOpenAiServer((_body, callIndex) => {
       if (callIndex === 1) {
         return {
@@ -97,8 +97,9 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
         return {
           toolCalls: [{
             id: 'c3',
-            name: 'ask_user_question',
+            name: 'message_user',
             arguments: {
+              title: 'Push Release Tag',
               questions: [{
                 header: 'Push Tag',
                 question: 'Push v0.2.0 to origin?',
@@ -152,7 +153,7 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
         if (event.type === 'toolCall') {
           seenTools.push(event.toolName);
           queueMicrotask(() => {
-            if (event.toolName === 'ask_user_question') {
+            if (event.toolName === 'message_user') {
               runner.deliverToolResult?.({
                 type: 'toolResult',
                 requestId: event.requestId,
@@ -186,7 +187,7 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
     );
 
     await runner.run();
-    expect(seenTools).toEqual(['check_cli_env', 'run_git', 'ask_user_question']);
+    expect(seenTools).toEqual(['check_cli_env', 'run_git', 'message_user']);
     const done = events.find((e) => e.type === 'customActionCompleted');
     expect(done).toMatchObject({
       type: 'customActionCompleted',

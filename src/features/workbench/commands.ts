@@ -1,5 +1,4 @@
-import type { AskUserQuestionResponse } from '../../../shared/ask-user-protocol';
-import type { CPushCommandReply, CPushConfirmedPlan } from '../../../shared/cpush-protocol';
+import type { CPushCommandReply } from '../../../shared/cpush-protocol';
 import type {
   CustomActionCommandReply,
   CustomActionConfig,
@@ -11,6 +10,7 @@ import type {
 import type { GitBranchReply } from '../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../shared/ide-protocol';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
+import type { MessageUserResponse } from '../../../shared/message-user-protocol';
 import type {
   CreateProviderConnectionInput,
   ListModelsInput,
@@ -21,7 +21,6 @@ import type {
   ProviderSaveReply,
   ProviderUpdateReply,
   RemoteModelOption,
-  ReviewScopeReply,
   SaveModelInput,
   TestConnectionInput,
   UpdateProviderConnectionInput,
@@ -41,12 +40,10 @@ export type WorkbenchCommand =
   | { kind: 'setLocalKeep'; target: Target; requestId: string; paths: string[]; keep: boolean; locale?: AppLocale }
   | { kind: 'pull'; target: Target; requestId: string; modelId?: string; locale?: AppLocale }
   | { kind: 'switchBranch' | 'checkoutRemoteBranch'; target: Target; requestId: string; branch: string; branchToken: string; locale?: AppLocale }
-  | { kind: 'openFile'; target: Target; requestId: string; fileId: string; editor: EditorId; line?: number; locale?: AppLocale }
-  | { kind: 'planCPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
-  | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; confirmedPlan?: CPushConfirmedPlan; push?: boolean; locale?: AppLocale; commitLanguage?: CommitLanguage }
+  | { kind: 'openFile'; target: Target; requestId: string; fileId?: string; path?: string; editor: EditorId; line?: number; locale?: AppLocale }
+  | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; push?: boolean; locale?: AppLocale; commitLanguage?: CommitLanguage }
   | { kind: 'runCustomAction'; target: Target; requestId: string; action: CustomActionConfig; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; extraPrompt: string; followUpPrompt?: string; resumeFromRunId?: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
-  | { kind: 'review'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; changedPaths?: string[]; locale?: AppLocale }
-  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; questionnaireResponse?: AskUserQuestionResponse; modelId?: string; locale?: AppLocale }
+  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; questionnaireResponse?: MessageUserResponse; modelId?: string; locale?: AppLocale }
   | { kind: 'selectModel' | 'deleteModel'; modelId: string; locale?: AppLocale }
   | { kind: 'deleteProviderConnection'; connectionId: string; locale?: AppLocale };
 
@@ -55,7 +52,6 @@ export type WorkbenchCommandReply =
   | GitLocalKeepReply
   | GitBranchReply
   | GitOpenFileReply
-  | ReviewScopeReply
   | ModelMutateReply
   | CPushCommandReply
   | CustomActionCommandReply
@@ -100,7 +96,7 @@ export interface WorkbenchBackend {
 export const disconnectedBackend: WorkbenchBackend = {
   async execute(command) {
     const t = getMessages(command.locale).desktop;
-    if (['planCPush', 'review', 'selectModel', 'deleteModel', 'deleteProviderConnection', 'cPush', 'runCustomAction', 'respond'].includes(command.kind)) {
+    if (['selectModel', 'deleteModel', 'deleteProviderConnection', 'cPush', 'runCustomAction', 'respond'].includes(command.kind)) {
       throw new Error(t.disconnectedModelOrCPush);
     }
     throw new Error(t.disconnectedGit);

@@ -39,7 +39,8 @@ fn open_request(
             session_id: "ide-tests".into(),
             scope_version: tree.status_version.clone(),
         },
-        file_id: file_id(snapshot, path),
+        file_id: Some(file_id(snapshot, path)),
+        path: None,
         editor,
         line,
         locale: crate::i18n::LanguageKind::En,
@@ -455,6 +456,101 @@ async fn handles_conflicts_renames_newlines_symlinks_linked_worktrees_and_cli_er
         vec![EditorKind::Idea, EditorKind::Rustrover]
     );
     assert!(empty_launcher.detect_installed_editors().is_empty());
+
+    // 6. Direct repo-relative `path` open & goto works even on clean tracked files and blocks escapes / `.git`:
+    let clean_fixture = Fixture::new().unwrap();
+    git(
+        &clean_fixture.root,
+        &[
+            "add",
+            "--",
+            "part.txt",
+            "pnpm-lock.yaml",
+            "\u{65b0} \u{6587}\u{4ef6}.ts",
+        ],
+    )
+    .unwrap();
+    git(&clean_fixture.root, &["commit", "-m", "test: clean"]).unwrap();
+    let clean_snap = store.open(&clean_fixture.root).await.unwrap();
+    let clean_tree = active(&clean_snap);
+    assert!(clean_tree.files.is_empty());
+    let clean_target = ReadTarget {
+        repository_id: clean_tree.repository_id.clone(),
+        worktree_id: clean_tree.worktree_id.clone(),
+        session_id: "ide-path-tests".into(),
+        scope_version: clean_tree.status_version.clone(),
+    };
+    let path_goto = store
+        .open_in_editor(
+            &launcher,
+            &OpenFileRequest {
+                request_id: "ide-path-goto".into(),
+                target: clean_target.clone(),
+                file_id: None,
+                path: Some("./part.txt".into()),
+                editor: EditorKind::Idea,
+                line: Some(2),
+                locale: crate::i18n::LanguageKind::En,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(path_goto.action, OpenFileAction::Goto);
+    assert_eq!(path_goto.file_path, "part.txt");
+    assert_eq!(path_goto.line, Some(2));
+
+    let path_open = store
+        .open_in_editor(
+            &launcher,
+            &OpenFileRequest {
+                request_id: "ide-path-open".into(),
+                target: clean_target.clone(),
+                file_id: None,
+                path: Some("part.txt".into()),
+                editor: EditorKind::Vscode,
+                line: None,
+                locale: crate::i18n::LanguageKind::En,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(path_open.action, OpenFileAction::Open);
+
+    // Reject `.git` and `..` path traversal on direct path requests:
+    assert!(
+        store
+            .open_in_editor(
+                &launcher,
+                &OpenFileRequest {
+                    request_id: "ide-path-git".into(),
+                    target: clean_target.clone(),
+                    file_id: None,
+                    path: Some(".git/config".into()),
+                    editor: EditorKind::Idea,
+                    line: Some(1),
+                    locale: crate::i18n::LanguageKind::En,
+                },
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .open_in_editor(
+                &launcher,
+                &OpenFileRequest {
+                    request_id: "ide-path-escape".into(),
+                    target: clean_target,
+                    file_id: None,
+                    path: Some("../escape.txt".into()),
+                    editor: EditorKind::Idea,
+                    line: Some(1),
+                    locale: crate::i18n::LanguageKind::En,
+                },
+            )
+            .await
+            .is_err()
+    );
 
     launcher.cleanup().unwrap();
 }

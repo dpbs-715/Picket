@@ -30,9 +30,52 @@ export interface ContextMenuState {
 
 export const DRAG_THRESHOLD_PX = 5;
 export const DRAG_AUTOSCROLL_EDGE_PX = 32;
+export const LOCAL_KEEP_DEFAULT_HEIGHT_PX = 180;
+export const LOCAL_KEEP_MIN_HEIGHT_PX = 68;
+export const LOCAL_KEEP_PEEK_HEIGHT_PX = 56;
+export const LOCAL_KEEP_HEIGHT_STORAGE_KEY = 'picket.localKeepHeight';
+const CHANGES_CHROME_RESERVE_PX = 64;
+const CHANGES_NORMAL_MIN_HEIGHT_PX = 96;
 const DRAG_AUTOSCROLL_OUTSIDE_LIMIT_PX = 72;
 const DRAG_AUTOSCROLL_MIN_PX_PER_FRAME = 2.5;
 const DRAG_AUTOSCROLL_MAX_PX_PER_FRAME = 14;
+
+export function clampLocalKeepHeight(desiredPx: number, panelHeightPx: number): number {
+  const safeDesired = Number.isFinite(desiredPx) ? desiredPx : LOCAL_KEEP_DEFAULT_HEIGHT_PX;
+  if (!Number.isFinite(panelHeightPx) || panelHeightPx <= 0) {
+    return Math.round(Math.max(LOCAL_KEEP_MIN_HEIGHT_PX, Math.min(safeDesired, 360)));
+  }
+  const maxAvailable = Math.max(
+    LOCAL_KEEP_MIN_HEIGHT_PX,
+    Math.floor(panelHeightPx - CHANGES_CHROME_RESERVE_PX - CHANGES_NORMAL_MIN_HEIGHT_PX),
+  );
+  return Math.round(Math.max(LOCAL_KEEP_MIN_HEIGHT_PX, Math.min(safeDesired, maxAvailable)));
+}
+
+export function readSavedLocalKeepHeight(): number | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(LOCAL_KEEP_HEIGHT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= LOCAL_KEEP_MIN_HEIGHT_PX ? Math.round(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSavedLocalKeepHeight(heightPx: number | null): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    if (heightPx === null) {
+      window.localStorage.removeItem(LOCAL_KEEP_HEIGHT_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(LOCAL_KEEP_HEIGHT_STORAGE_KEY, String(Math.round(heightPx)));
+    }
+  } catch {
+    // Ignore storage quota or private-mode restrictions.
+  }
+}
 
 export interface DragAutoScrollOrigin {
   startY: number;

@@ -6,8 +6,8 @@ use crate::{
     cpush::{
         CPushCoordinator,
         types::{
-            CPushCommandReply, CPushProgressEvent, DismissCPushDoneRequest, PlanCPushRequest,
-            PullRebaseRequest, ReconcileCPushRequest, RespondCPushRequest, StartCPushRequest,
+            CPushCommandReply, CPushProgressEvent, DismissCPushDoneRequest, PullRebaseRequest,
+            ReconcileCPushRequest, RespondCPushRequest, StartCPushRequest,
         },
     },
     foundation::pi::PiSupervisor,
@@ -16,34 +16,6 @@ use crate::{
     repository::RepositoryStore,
 };
 use tauri::{State, ipc::Channel};
-
-#[tauri::command]
-pub async fn plan_cpush(
-    app: tauri::AppHandle,
-    store: State<'_, RepositoryStore>,
-    models: State<'_, ModelStore>,
-    supervisor: State<'_, PiSupervisor>,
-    cpush: State<'_, CPushCoordinator>,
-    request: PlanCPushRequest,
-    on_event: Channel<CPushProgressEvent>,
-) -> Result<CPushCommandReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
-    cpush
-        .plan_cpush(
-            &data_dir,
-            &paths,
-            &supervisor,
-            &models,
-            &store,
-            &request,
-            |event| {
-                let _ = on_event.send(event);
-                Ok(())
-            },
-        )
-        .await
-}
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]

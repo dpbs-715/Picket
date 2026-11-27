@@ -1,7 +1,7 @@
 import { emptyWorkbench } from '../state/workbench';
-import type { Change, Finding, Message, WorkbenchState, Worktree } from '../state/workbench';
+import type { Change, Message, WorkbenchState, Worktree } from '../state/workbench';
 
-export const scenarios = ['empty', 'compact', 'running', 'generating', 'question', 'typing', 'done', 'review-during-question', 'push-failed', 'conflict', 'manual', 'resolved', 'terminal-done', 'no-model', 'single', 'clean', 'unselected', 'changed', 'remote-error', 'long-paths'] as const;
+export const scenarios = ['empty', 'compact', 'running', 'question', 'typing', 'done', 'rich-card', 'push-failed', 'conflict', 'manual', 'resolved', 'terminal-done', 'no-model', 'single', 'clean', 'unselected', 'remote-error', 'long-paths'] as const;
 export type Scenario = typeof scenarios[number];
 
 export function sampleFiles(): Change[] {
@@ -10,30 +10,7 @@ export function sampleFiles(): Change[] {
     { id: 'pay', path: 'src/api/pay.ts', status: 'M', range: { kind: 'unstaged', added: 15, removed: 2 } },
     { id: 'retry', path: 'src/utils/retry.ts', status: 'A', range: { kind: 'unstaged', added: 68, removed: 0 } },
     { id: 'release', path: 'RELEASE_NOTES.md', status: 'M', range: { kind: 'unstaged', added: 18, removed: 2 } },
-    { id: 'lock', path: 'pnpm-lock.yaml', status: 'M', range: { kind: 'unstaged', added: 840, removed: 9 }, ignoredForReview: true },
-  ];
-}
-
-export function sampleFindings(): Finding[] {
-  return [
-    {
-      id: 'finding-pay',
-      fileId: 'pay',
-      path: 'src/api/pay.ts',
-      line: 46,
-      severity: 'high',
-      title: 'Signature failure log prints full request body',
-      reason: 'Payload may include channel secrets or credentials; log only traceId and orderId.',
-    },
-    {
-      id: 'finding-order',
-      fileId: 'order',
-      path: 'src/service/Order.ts',
-      line: 82,
-      severity: 'suggestion',
-      title: 'Extract idempotency lock TTL to a named constant',
-      reason: 'Consolidate the hardcoded 300s value into PAY_CALLBACK_LOCK_TTL_SEC.',
-    },
+    { id: 'lock', path: 'pnpm-lock.yaml', status: 'M', range: { kind: 'unstaged', added: 840, removed: 9 } },
   ];
 }
 
@@ -56,6 +33,70 @@ export function releaseQuestion(): Message {
   };
 }
 
+export function sampleRichCardMessage(): Message {
+  return {
+    id: 'done-action-review-1',
+    kind: 'done',
+    title: 'Code review complete',
+    description: 'Found 1 high-risk issue and 1 suggestion.',
+    links: [{ label: 'PR #128', url: 'https://github.com/acme/orders/pull/128' }],
+    card: {
+      tone: 'warning',
+      title: 'Code review complete',
+      subtitle: 'feat/pay · 4 files inspected',
+      blocks: [
+        {
+          type: 'facts',
+          items: [
+            { label: 'Scope', value: '4 files', mono: true },
+            { label: 'High Risk', value: '1', tone: 'danger' },
+            { label: 'Suggestions', value: '1', tone: 'warning' },
+            { label: 'Skipped', value: '1 lockfile' },
+          ],
+        },
+        {
+          type: 'findings',
+          items: [
+            {
+              severity: 'high',
+              tag: 'P1',
+              title: 'Signature failure log prints full request body',
+              detail: 'Payload may include channel secrets or credentials; log only traceId and orderId.',
+              path: 'src/api/pay.ts',
+              line: 46,
+            },
+            {
+              severity: 'low',
+              tag: 'P2',
+              title: 'Extract idempotency lock TTL to a named constant',
+              detail: 'Consolidate the hardcoded 300s value into PAY_CALLBACK_LOCK_TTL_SEC.',
+              path: 'src/service/Order.ts',
+              line: 82,
+            },
+          ],
+          skipped: [{ path: 'pnpm-lock.yaml', reason: 'Lockfile skipped by default' }],
+        },
+        {
+          type: 'checklist',
+          items: [
+            { status: 'pass', label: 'TypeScript check', detail: '0 errors' },
+            { status: 'warn', label: 'Secret redaction check', detail: '1 warning in pay.ts' },
+          ],
+        },
+        {
+          type: 'code',
+          title: 'diff excerpt',
+          content: 'line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10',
+        },
+        {
+          type: 'files',
+          items: [{ path: 'src/api/pay.ts', line: 46, badge: 'M' }],
+        },
+      ],
+    },
+  };
+}
+
 export function sampleWorktree(): Worktree {
   return {
     repositoryId: 'orders',
@@ -73,14 +114,10 @@ export function sampleWorktree(): Worktree {
       text: 'split release notes into its own commit and write detailed bullets',
       revision: 0,
     },
-    planRevision: 0,
-    review: { status: 'idle', findings: [], skippedPaths: [], changedPaths: [] },
     sessionStatus: 'idle',
     messages: [],
-    tab: 'commit',
     dockExpanded: false,
     replies: {},
-    requests: {},
   };
 }
 
@@ -181,18 +218,6 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
       };
       break;
     case 'typing':
-      tree.plan = {
-        id: 'plan-ready',
-        baseScopeVersion: tree.scopeVersion,
-        modelId: 'test-claude',
-        summary: 'Prepared 1 commit',
-        groups: [{
-          id: 'group-1',
-          fileIds: ['order', 'pay', 'retry', 'release'],
-          message: 'feat(order): add payment callback idempotency lock and backoff retry\n\n- keep staged Order.ts changes\n- add exponential backoff helper and release notes',
-        }],
-        skippedFileIds: [],
-      };
       break;
     case 'running':
       tree.sessionStatus = 'running';
@@ -206,39 +231,23 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
         progress: { completed: 1, total: 4, label: 'Read scope -> Plan -> Commit -> Push' },
       }];
       break;
-    case 'generating':
-      tree.prompt = { text: '', revision: 0 };
-      tree.requests = { plan: { id: 'plan-demo', promptRevision: 0, planRevision: 0, fileIds: tree.selectedIds } };
-      tree.sessionStatus = 'done';
-      tree.dockExpanded = false;
-      tree.messages = [{
-        id: 'done',
-        kind: 'done',
-        title: '2 commits pushed to upstream/feat/pay',
-        description: 'Selected scope completed. Unselected lockfile and unstaged Order.ts draft remain untouched.',
-        commits,
-      }];
-      break;
     case 'question':
-    case 'review-during-question':
       tree.sessionStatus = 'needsDecision';
       tree.messages = [releaseQuestion()];
-      tree.dockExpanded = scenario === 'question';
-      if (scenario === 'review-during-question') {
-        tree.review = {
-          status: 'done',
-          findings: sampleFindings(),
-          skippedPaths: ['pnpm-lock.yaml'],
-          changedPaths: [],
-          scopeFileIds: ['order', 'pay', 'retry', 'release'],
-        };
-        tree.messages.push({
-          id: 'review-notice',
-          kind: 'review',
-          title: 'Review complete: 1 high-risk, 1 suggestion',
-          description: 'Review findings updated.',
-        });
-      }
+      tree.dockExpanded = true;
+      break;
+    case 'rich-card':
+      tree.sessionStatus = 'done';
+      tree.dockExpanded = true;
+      tree.customAction = {
+        runId: 'run-review-1',
+        actionId: 'act-review',
+        actionLabel: 'Review Diff',
+        timeline: [{ state: 'done', label: 'Inspected 4 files' }],
+        commits: [],
+        links: [{ label: 'PR #128', url: 'https://github.com/acme/orders/pull/128' }],
+      };
+      tree.messages = [sampleRichCardMessage()];
       break;
     case 'done':
     case 'terminal-done':
@@ -322,34 +331,6 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
     case 'unselected':
       tree.selectedIds = [];
       tree.unselectedIds = tree.files.map((file) => file.id);
-      break;
-    case 'changed':
-      tree.plan = {
-        id: 'plan-stale',
-        baseScopeVersion: 'scope-0',
-        modelId: 'test-claude',
-        summary: 'Planned 2 commits',
-        groups: [
-          {
-            id: 'group-1',
-            fileIds: ['order', 'pay', 'retry'],
-            message: 'feat(order): add payment callback idempotency lock and backoff retry\n\n- keep staged Order.ts changes\n- add exponential backoff helper',
-          },
-          {
-            id: 'group-2',
-            fileIds: ['release'],
-            message: 'docs: update release notes\n\n- document payment retry behavior',
-          },
-        ],
-        skippedFileIds: [],
-      };
-      tree.review = {
-        status: 'done',
-        findings: sampleFindings(),
-        skippedPaths: ['pnpm-lock.yaml'],
-        changedPaths: ['src/service/Order.ts'],
-        scopeFileIds: ['order', 'pay'],
-      };
       break;
     case 'remote-error':
       tree.remote = { kind: 'error', reason: 'Remote status read failed; ahead/behind counts unavailable' };

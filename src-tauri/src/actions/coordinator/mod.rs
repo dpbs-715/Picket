@@ -1,6 +1,6 @@
 //! Phase 2 Custom Action & `Create with Pi` coordinator:
-//! manages same-repo write exclusion, real-time bidirectional `ask_user_question` oneshot
-//! round-trips, Rust-verified `install_platform_cli` grants, 3-tier controlled CLI policy
+//! manages same-repo write exclusion, real-time bidirectional `message_user` cards & oneshot
+//! Q&A round-trips, Rust-verified `install_platform_cli` grants, 3-tier controlled CLI policy
 //! enforcement with Tier-2 preview confirmation + "don't ask again" prompt-hash binding, and
 //! direct reuse of `RepositoryStore::commit` / `push_branch` / `sync_rebase_onto_upstream`.
 
@@ -42,7 +42,7 @@ pub(super) struct SessionAuthGrants {
 }
 
 struct PendingQuestion {
-    sender: oneshot::Sender<AskUserQuestionResponse>,
+    sender: oneshot::Sender<MessageUserResponse>,
     grants: Arc<Mutex<SessionAuthGrants>>,
     install_options: HashMap<String, String>,
 }
@@ -88,7 +88,7 @@ impl Drop for PendingQuestionGuard {
     }
 }
 
-fn detect_install_option_tool(option: &AskUserQuestionOption) -> Option<&'static str> {
+fn detect_install_option_tool(option: &MessageQuestionOption) -> Option<&'static str> {
     let id_lower = option.id.to_ascii_lowercase();
     let preview_lower = option.preview.as_deref().unwrap_or("").to_ascii_lowercase();
     let label_lower = option.label.to_ascii_lowercase();
@@ -228,11 +228,11 @@ impl CustomActionCoordinator {
         &self,
         run_id: &str,
         call_id: &str,
-        request: &AskUserQuestionRequest,
+        request: &MessageUserRequest,
         grants: Arc<Mutex<SessionAuthGrants>>,
-    ) -> Result<AskUserQuestionResponse, String> {
+    ) -> Result<MessageUserResponse, String> {
         let mut install_options = HashMap::new();
-        for question in &request.questions {
+        for question in request.questions_slice() {
             for option in &question.options {
                 if let Some(tool) = detect_install_option_tool(option) {
                     install_options.insert(option.id.clone(), tool.to_owned());
@@ -270,24 +270,29 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ask_user_question_oneshot_records_install_grant_only_when_user_approves() {
+    async fn message_user_oneshot_records_install_grant_only_when_user_approves() {
         let coordinator = CustomActionCoordinator::default();
         let grants = Arc::new(Mutex::new(SessionAuthGrants::default()));
-        let req = AskUserQuestionRequest {
-            questions: vec![AskUserQuestionItem {
+        let req = MessageUserRequest {
+            title: Some("Install gh".into()),
+            subtitle: None,
+            tone: Some(MessageTone::Warning),
+            blocks: None,
+            links: None,
+            questions: Some(vec![MessageQuestionItem {
                 id: "q-1".into(),
                 header: "Install gh".into(),
                 question: "GitHub CLI is missing. Install via Homebrew?".into(),
                 multi_select: None,
                 options: vec![
-                    AskUserQuestionOption {
+                    MessageQuestionOption {
                         id: "install-gh".into(),
                         label: "Install gh via Homebrew".into(),
                         description: "Runs brew install gh".into(),
                         recommended: Some(true),
                         preview: Some("brew install gh".into()),
                     },
-                    AskUserQuestionOption {
+                    MessageQuestionOption {
                         id: "skip".into(),
                         label: "Skip".into(),
                         description: "Cancel installation".into(),
@@ -295,7 +300,7 @@ mod tests {
                         preview: None,
                     },
                 ],
-            }],
+            }]),
             context: None,
         };
 
@@ -315,9 +320,9 @@ mod tests {
                 request_id: "resp-1".into(),
                 run_id: "run-1".into(),
                 call_id: "tc-1".into(),
-                response: AskUserQuestionResponse {
+                response: MessageUserResponse {
                     cancelled: false,
-                    answers: vec![AskUserQuestionAnswer {
+                    answers: vec![MessageUserAnswer {
                         question_index: 0,
                         question_id: "q-1".into(),
                         header: "Install gh".into(),
@@ -351,9 +356,9 @@ mod tests {
                 request_id: "resp-2".into(),
                 run_id: "run-1".into(),
                 call_id: "tc-2".into(),
-                response: AskUserQuestionResponse {
+                response: MessageUserResponse {
                     cancelled: false,
-                    answers: vec![AskUserQuestionAnswer {
+                    answers: vec![MessageUserAnswer {
                         question_index: 0,
                         question_id: "q-1".into(),
                         header: "Install gh".into(),
@@ -372,5 +377,110 @@ mod tests {
         assert!(!resp2.cancelled);
         assert!(grants.lock().unwrap().authorized_installs.contains("gh"));
         assert!(!grants.lock().unwrap().authorized_installs.contains("glab"));
+    }
+
+    #[test]
+    fn message_user_card_validation_filters_unsafe_links_and_paths_and_restores_after_restart() {
+        use crate::actions::message_user::{
+            MessageBlock, MessageFindingItem, MessageFindingSeverity,
+        };
+        use crate::actions::session_store::{PersistedActionSession, now_millis, upsert_session};
+
+        let raw = MessageUserRequest {
+            title: Some("Found 1 blocking issue".into()),
+            subtitle: Some("Reviewed 3 files".into()),
+            tone: Some(MessageTone::Warning),
+            blocks: Some(vec![MessageBlock::Findings {
+                heading: None,
+                items: vec![MessageFindingItem {
+                    severity: MessageFindingSeverity::High,
+                    tag: Some("P1".into()),
+                    title: "Missing lock release".into(),
+                    detail: "Use an RAII guard.".into(),
+                    path: Some("./src/main.rs".into()),
+                    line: Some(42),
+                }],
+                empty_text: None,
+                skipped: None,
+            }]),
+            links: Some(vec![
+                CustomActionLink {
+                    label: "PR #42".into(),
+                    url: "https://github.com/acme/picket/pull/42".into(),
+                },
+                CustomActionLink {
+                    label: "Bad".into(),
+                    url: "javascript:alert(1)".into(),
+                },
+            ]),
+            questions: None,
+            context: None,
+        };
+        let valid = raw.sanitize_and_validate().unwrap();
+        assert!(!valid.has_questions());
+        let card = valid.to_card("Fallback");
+        assert_eq!(card.links.as_ref().map(Vec::len), Some(1));
+        if let Some(MessageBlock::Findings { items, .. }) =
+            card.blocks.as_ref().and_then(|b| b.first())
+        {
+            assert_eq!(items[0].path.as_deref(), Some("src/main.rs"));
+        } else {
+            panic!("expected findings block");
+        }
+
+        // Unsafe path traversal in findings must be rejected:
+        let bad_path = MessageUserRequest {
+            title: Some("Bad".into()),
+            subtitle: None,
+            tone: None,
+            blocks: Some(vec![MessageBlock::Findings {
+                heading: None,
+                items: vec![MessageFindingItem {
+                    severity: MessageFindingSeverity::High,
+                    tag: None,
+                    title: "Traversal".into(),
+                    detail: "Blocked".into(),
+                    path: Some("../secret.txt".into()),
+                    line: Some(1),
+                }],
+                empty_text: None,
+                skipped: None,
+            }]),
+            links: None,
+            questions: None,
+            context: None,
+        };
+        assert!(bad_path.sanitize_and_validate().is_err());
+
+        // Cold restart restores persisted MessageUserCard intact:
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = tmp.path().join(".picket");
+        upsert_session(
+            &storage,
+            PersistedActionSession {
+                run_id: "run-card-1".into(),
+                repository_id: "repo-1".into(),
+                worktree_id: "wt-1".into(),
+                action_id: "act-dcr".into(),
+                action_label: "Review Code".into(),
+                action_prompt_hash: "hash-1".into(),
+                status: "done".into(),
+                updated_at_ms: now_millis(),
+                summary: "Review complete".into(),
+                card: Some(card.clone()),
+                dismissed_message_id: None,
+                timeline: vec![],
+                commits: vec![],
+                links: card.links.clone().unwrap_or_default(),
+                edited_file_hashes: Default::default(),
+                submit_ledger: Default::default(),
+            },
+        )
+        .unwrap();
+        let restored = session_store::reconcile_sessions_on_startup(&storage, LanguageKind::En);
+        assert_eq!(restored.len(), 1);
+        let msg = restored[0].message.as_ref().expect("restored message");
+        assert_eq!(msg.title, "Found 1 blocking issue");
+        assert_eq!(msg.card.as_ref(), Some(&card));
     }
 }

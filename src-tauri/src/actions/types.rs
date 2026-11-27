@@ -1,6 +1,12 @@
 //! Shared IPC types for Phase 2 custom actions, controlled CLI environment inspection,
-//! real-time `ask_user_question` round-trips, and Pi-guided `Create` button generation.
+//! structured `message_user` communication cards & Q&A round-trips, and Pi-guided `Create` button generation.
 
+#[cfg(test)]
+pub use super::message_user::MessageUserAnswer;
+pub use super::message_user::{
+    MessageQuestionContext, MessageQuestionItem, MessageQuestionOption, MessageTone,
+    MessageUserCard, MessageUserRequest, MessageUserResponse,
+};
 use crate::{
     cpush::types::CPushLandedCommit,
     i18n::{LanguageKind, deserialize_language_or_default},
@@ -28,80 +34,6 @@ pub struct CustomActionLink {
 pub struct CustomActionTimelineItem {
     pub state: String,
     pub label: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskUserQuestionOption {
-    pub id: String,
-    pub label: String,
-    pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recommended: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskUserQuestionItem {
-    pub id: String,
-    pub header: String,
-    pub question: String,
-    pub options: Vec<AskUserQuestionOption>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multi_select: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskUserQuestionContext {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub affected_file_ids: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub links: Option<Vec<CustomActionLink>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow_dont_ask_again: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dont_ask_again_label: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskUserQuestionRequest {
-    pub questions: Vec<AskUserQuestionItem>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<AskUserQuestionContext>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskUserQuestionAnswer {
-    pub question_index: usize,
-    pub question_id: String,
-    pub header: String,
-    #[serde(default)]
-    pub selected_option_ids: Vec<String>,
-    #[serde(default)]
-    pub selected_labels: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom_text: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AskUserQuestionResponse {
-    pub cancelled: bool,
-    #[serde(default)]
-    pub answers: Vec<AskUserQuestionAnswer>,
-    #[serde(default)]
-    pub unanswered: Vec<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub global_note: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dont_ask_again: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,7 +76,9 @@ pub struct CustomActionUiMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<Vec<CustomActionLink>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub questionnaire: Option<AskUserQuestionRequest>,
+    pub card: Option<MessageUserCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questionnaire: Option<MessageUserRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<CustomActionMessageProgress>,
 }
@@ -184,7 +118,7 @@ pub struct RespondCustomActionRequest {
     pub request_id: String,
     pub run_id: String,
     pub call_id: String,
-    pub response: AskUserQuestionResponse,
+    pub response: MessageUserResponse,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
 }
@@ -267,7 +201,9 @@ pub struct GenerateCustomActionProgressEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub questionnaire: Option<AskUserQuestionRequest>,
+    pub card: Option<MessageUserCard>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub questionnaire: Option<MessageUserRequest>,
 }
 
 #[derive(Clone, Debug, Serialize)]

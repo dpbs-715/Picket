@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
 import { repositoryReply } from '../testing/repository-fixture';
-import { sampleFindings } from '../testing/fixtures';
 import {
-  activeValidPlan,
   emptyWorkbench,
-  isPlanOutdated,
   orderedMessages,
-  primaryAction,
   targetOf,
   workbenchReducer,
 } from './workbench';
@@ -58,7 +54,7 @@ function makeCPushSession(overrides: Partial<CPushSessionSnapshot> = {}): CPushS
   };
 }
 
-describe('M4 C-Push session state, editable plan lifecycle, scope freezing, and recovery isolation', () => {
+describe('M4 C-Push session state, scope freezing, and recovery isolation', () => {
   it('keeps frozen session target and fileIds immutable when selection or worktree changes mid-run (W03)', () => {
     let state = openedWorkbench();
     state = workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
@@ -104,7 +100,7 @@ describe('M4 C-Push session state, editable plan lifecycle, scope freezing, and 
     expect(orderedMessages(payWaiting.messages)[0].title).toBe('Include release notes in this commit?');
   });
 
-  it('clears unchanged prompt after C-Push succeeds, preserves mid-run prompt edits, and keeps secondary review notice', () => {
+  it('clears unchanged prompt after C-Push succeeds and preserves mid-run prompt edits', () => {
     // Case A: Prompt untouched during C-Push -> cleared when push succeeds (`sessionStatus: 'done'`):
     let stateA = openedWorkbench();
     stateA = workbenchReducer(stateA, { type: 'prompt', worktreeId: 'pay-tree', text: 'split lockfile separately' });
@@ -155,14 +151,6 @@ describe('M4 C-Push session state, editable plan lifecycle, scope freezing, and 
       modelId: 'model-1',
       expandDock: false,
     });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: {
-        type: 'message',
-        target: frozenTarget,
-        message: { id: 'review-notice', kind: 'review', title: 'Review complete: 1 suggestion', description: 'Updated' },
-      },
-    });
     state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'extra instruction for next C-Push' });
 
     const snapAfter = repositoryReply('after-cpush', 2).snapshot!;
@@ -188,76 +176,7 @@ describe('M4 C-Push session state, editable plan lifecycle, scope freezing, and 
     const settled = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     expect(settled.sessionStatus).toBe('done');
     expect(settled.prompt.text).toBe('extra instruction for next C-Push');
-    expect(settled.messages.map((m) => m.kind).sort()).toEqual(['done', 'review']);
-    expect(sampleFindings()).toHaveLength(2);
-  });
-
-  it('manages editable pre-generated plans, invalidates outdated plans on scope changes, and blocks empty messages', () => {
-    let state = openedWorkbench();
-    let tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
-    const target = targetOf(tree);
-
-    state = workbenchReducer(state, { type: 'request', target, kind: 'plan', requestId: 'plan-1' });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: {
-        type: 'planPrepared',
-        target,
-        requestId: 'plan-1',
-        modelId: 'model-1',
-        plan: {
-          summary: '2 commits',
-          groups: [
-            { id: 'g1', fileIds: ['order', 'pay', 'retry'], message: 'feat(order): add lock\n\n- guard callbacks' },
-            { id: 'g2', fileIds: ['release'], message: 'docs: update release notes\n\n- document lock' },
-          ],
-          skippedFileIds: [],
-        },
-      },
-    });
-
-    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
-    expect(isPlanOutdated(tree)).toBe(false);
-    expect(activeValidPlan(tree)?.groups).toHaveLength(2);
-
-    // Editing a group updates the message verbatim; clearing a message disables C-Push until filled or cleared:
-    state = workbenchReducer(state, { type: 'planGroupEdited', worktreeId: 'pay-tree', groupId: 'g2', message: '   ' });
-    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
-    expect(primaryAction(tree, true).disabled).toBe(true);
-
-    state = workbenchReducer(state, {
-      type: 'planGroupEdited',
-      worktreeId: 'pay-tree',
-      groupId: 'g2',
-      message: 'docs(release): verbatim custom message\n\n- custom bullet',
-    });
-    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
-    expect(primaryAction(tree, true).disabled).toBe(false);
-    expect(activeValidPlan(tree)?.groups[1].message).toBe('docs(release): verbatim custom message\n\n- custom bullet');
-
-    // Late `planPrepared` arriving after user edited prompt or plan must NOT overwrite the newer plan:
-    const currentTarget = targetOf(tree);
-    state = workbenchReducer(state, { type: 'request', target: currentTarget, kind: 'plan', requestId: 'plan-late' });
-    state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'edited prompt while plan-late was running' });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: {
-        type: 'planPrepared',
-        target: currentTarget,
-        requestId: 'plan-late',
-        modelId: 'model-1',
-        plan: { summary: 'stale', groups: [{ id: 'g-stale', fileIds: ['order'], message: 'feat: stale' }], skippedFileIds: [] },
-      },
-    });
-    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
-    expect(tree.plan?.groups[1].message).toBe('docs(release): verbatim custom message\n\n- custom bullet');
-
-    // Changing selected files marks the plan outdated, so `activeValidPlan` becomes undefined (C-Push will discard and re-plan):
-    state = workbenchReducer(state, { type: 'select', worktreeId: 'pay-tree', fileId: 'lock' });
-    tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
-    expect(isPlanOutdated(tree)).toBe(true);
-    expect(activeValidPlan(tree)).toBeUndefined();
-    expect(primaryAction(tree, true).disabled).toBe(false);
+    expect(settled.messages.map((m) => m.kind)).toEqual(['done']);
   });
 
   it('hydrates interrupted C-Push session on cold start with collapsed dock and aligned sessionId', () => {

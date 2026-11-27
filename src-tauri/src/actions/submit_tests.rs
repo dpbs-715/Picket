@@ -799,6 +799,7 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
         status: "running".into(),
         updated_at_ms: now_millis(),
         summary: String::new(),
+        card: None,
         dismissed_message_id: None,
         timeline: vec![
             CustomActionTimelineItem {

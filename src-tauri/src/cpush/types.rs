@@ -155,7 +155,7 @@ pub(crate) struct StoredCPushSession {
     pub can_retry_remaining: bool,
     #[serde(default = "default_true")]
     pub push_authorized: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub plan_only: bool,
     #[serde(default)]
     pub auto_collapse: bool,
@@ -204,26 +204,6 @@ impl StoredCPushSession {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CPushConfirmedPlan {
-    pub groups: Vec<PiCPushCommitGroup>,
-    #[serde(default)]
-    pub skipped_file_ids: Vec<String>,
-    #[serde(default)]
-    pub skip_push: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CPushPreparedPlan {
-    pub summary: String,
-    pub groups: Vec<PiCPushCommitGroup>,
-    pub skipped_file_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub skip_push: bool,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartCPushRequest {
@@ -233,23 +213,7 @@ pub struct StartCPushRequest {
     pub selections: Vec<CommitSelection>,
     pub prompt: String,
     #[serde(default)]
-    pub confirmed_plan: Option<CPushConfirmedPlan>,
-    #[serde(default)]
     pub push: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_language_or_default")]
-    pub locale: LanguageKind,
-    #[serde(default, deserialize_with = "deserialize_language_or_default")]
-    pub commit_language: LanguageKind,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PlanCPushRequest {
-    pub request_id: String,
-    pub target: ReadTarget,
-    pub model_id: String,
-    pub selections: Vec<CommitSelection>,
-    pub prompt: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
@@ -321,8 +285,6 @@ pub struct CPushCommandReply {
     pub kind: &'static str,
     pub request_id: String,
     pub session: CPushSessionSnapshot,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prepared_plan: Option<CPushPreparedPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository_snapshot: Option<RepositorySnapshot>,
 }

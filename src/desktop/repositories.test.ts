@@ -169,23 +169,18 @@ describe('Desktop Git adapter and shared protocols', () => {
     expect(() => decodeGitReadReply(readMissingCommit)).toThrow('protocol mismatch');
   });
 
-  it('start_cpush with confirmedPlan, pull_rebase, and session reconciliation bind controlled IPC commands', async () => {
+  it('start_cpush, pull_rebase, and session reconciliation bind controlled IPC commands', async () => {
     const selections = [{ fileId: 'order', commitToken: 'commit-order' }];
-    const confirmedPlan = {
-      groups: [{ id: 'g1', fileIds: ['order'], message: 'feat(order): verbatim confirmed plan\n\n- commit staged hunk' }],
-      skippedFileIds: [],
-    };
     mockIPC((command, args) => {
       if (command === 'start_cpush') {
         expect((args as { request: unknown }).request).toEqual({
-          requestId: 'cpush-confirmed-1',
+          requestId: 'cpush-direct-1',
           target,
           modelId: 'm1',
           selections,
           prompt: 'keep concise',
-          confirmedPlan,
         });
-        return cPushReply('cpush-confirmed-1');
+        return cPushReply('cpush-direct-1');
       }
       if (command === 'pull_rebase_repository') {
         expect((args as { request: unknown }).request).toEqual({
@@ -201,14 +196,13 @@ describe('Desktop Git adapter and shared protocols', () => {
 
     await expect(desktopWorkbenchBackend.execute({
       kind: 'cPush',
-      requestId: 'cpush-confirmed-1',
+      requestId: 'cpush-direct-1',
       target,
       fileIds: ['order'],
       selections,
       modelId: 'm1',
       prompt: 'keep concise',
-      confirmedPlan,
-    })).resolves.toMatchObject({ kind: 'cPush', requestId: 'cpush-confirmed-1' });
+    })).resolves.toMatchObject({ kind: 'cPush', requestId: 'cpush-direct-1' });
 
     await expect(desktopWorkbenchBackend.execute({
       kind: 'pull', requestId: 'pull-1', target, modelId: 'm1',
@@ -220,22 +214,17 @@ describe('Desktop Git adapter and shared protocols', () => {
     unsubscribe();
     expect(observedEvents).toHaveLength(1);
 
-    expect(() => decodeCPushCommandReply({
-      ...cPushReply('bad-plan'),
-      preparedPlan: { summary: 'bad', groups: [{ id: 'g1', fileIds: [], message: 'empty' }], skippedFileIds: [] },
-    })).toThrow();
+    expect(decodeCPushCommandReply(cPushReply('ok-plan')).requestId).toBe('ok-plan');
   });
 
   it('rejects missing commitTokens or C-Push runId before invoking desktop IPC', async () => {
     const called = vi.fn(); mockIPC(called);
-    await expect(desktopWorkbenchBackend.execute({ kind: 'planCPush', requestId: 'plan-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
     await expect(desktopWorkbenchBackend.execute({ kind: 'cPush', requestId: 'cpush-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
-    await expect(desktopWorkbenchBackend.execute({ kind: 'review', requestId: 'rev-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
     await expect(desktopWorkbenchBackend.execute({ kind: 'respond', requestId: 'resp-1', target, messageId: 'q-1', optionId: 'split' })).rejects.toThrow('session identifier');
     expect(called).not.toHaveBeenCalled();
   });
 
-  it('external editor launch binds worktree target, editor, and optional line number', async () => {
+  it('external editor launch binds worktree target, editor, optional line number, and direct repo path', async () => {
     const openReply: GitOpenFileReply = {
       protocolVersion: 1, kind: 'openFile', requestId: 'ide-1', target, editor: 'vscode', filePath: 'src/api/pay.ts', action: 'goto', line: 46,
     };
@@ -247,6 +236,15 @@ describe('Desktop Git adapter and shared protocols', () => {
     await expect(desktopWorkbenchBackend.execute({
       kind: 'openFile', requestId: 'ide-1', target, fileId: 'pay', editor: 'vscode', line: 46,
     })).resolves.toEqual(openReply);
+
+    mockIPC((command, args) => {
+      expect(command).toBe('open_in_editor');
+      expect(args).toEqual({ request: { requestId: 'ide-path', target, path: 'src/api/pay.ts', editor: 'vscode', line: 46 } });
+      return { ...openReply, requestId: 'ide-path' };
+    });
+    await expect(desktopWorkbenchBackend.execute({
+      kind: 'openFile', requestId: 'ide-path', target, path: 'src/api/pay.ts', editor: 'vscode', line: 46,
+    })).resolves.toMatchObject({ requestId: 'ide-path', filePath: 'src/api/pay.ts', line: 46 });
 
     await expect(desktopWorkbenchBackend.execute({
       kind: 'openFile', requestId: 'ide-zero', target, fileId: 'pay', editor: 'vscode', line: 0,

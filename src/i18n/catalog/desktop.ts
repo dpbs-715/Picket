@@ -9,7 +9,6 @@ export interface DesktopMessages {
     browserWindowUnsupported: string;
     disconnectedUpdater: string;
     disconnectedSkills: string;
-    cPushPlanMismatch: string;
     cPushStartMismatch: string;
     pullRebaseMismatch: string;
     cPushRespondMismatch: string;
@@ -18,8 +17,6 @@ export interface DesktopMessages {
     modelSelectMismatch: string;
     modelDeleteFailed: string;
     modelRevealMismatch: string;
-    reviewMismatch: string;
-    missingModelScopeTokens: string;
     missingCPushScopeTokens: string;
     missingCPushRunId: string;
     invalidLineNumber: string;
@@ -97,7 +94,6 @@ export const desktopEn: DesktopMessages = {
     browserWindowUnsupported: 'Window resizing and pinning are unavailable in browser preview; compact layout is previewed inside the page.',
     disconnectedUpdater: 'Desktop update service is unavailable in browser preview.',
     disconnectedSkills: 'Desktop skill sync is unavailable in browser preview.',
-    cPushPlanMismatch: 'C-Push plan reply target or request identity mismatch; ignored reply.',
     cPushStartMismatch: 'C-Push start reply target or request identity mismatch; ignored reply.',
     pullRebaseMismatch: 'Pull & rebase reply target or request identity mismatch. Refresh to verify Git status.',
     cPushRespondMismatch: 'C-Push response reply session or request identity mismatch; ignored reply.',
@@ -106,8 +102,6 @@ export const desktopEn: DesktopMessages = {
     modelSelectMismatch: 'Model selection reply mismatch. Select the model again.',
     modelDeleteFailed: 'Model deletion did not take effect. Reopen Settings and try again.',
     modelRevealMismatch: 'Revealed API key reply did not match the requested model; ignored reply.',
-    reviewMismatch: 'Code review reply target or request identity mismatch; ignored result.',
-    missingModelScopeTokens: 'Missing Rust-issued file scope tokens. Refresh changes and retry; prompt and selection are preserved.',
     missingCPushScopeTokens: 'Missing Rust-issued file scope tokens. Refresh changes before starting C-Push; prompt and selection are preserved.',
     missingCPushRunId: 'Missing active C-Push session identifier. Refresh and retry from the message bar.',
     invalidLineNumber: 'Invalid line number; line numbers must start at 1.',
@@ -193,7 +187,6 @@ export const desktopZh: DesktopMessages = {
     browserWindowUnsupported: '浏览器预览不支持调整原生窗口大小或置顶；当前仅在页面内预览紧凑布局。',
     disconnectedUpdater: '浏览器预览未连接桌面更新服务。',
     disconnectedSkills: '浏览器预览未连接桌面技能同步服务。',
-    cPushPlanMismatch: 'C-Push 预生成计划回执的目标或请求身份不匹配，已忽略该回执。',
     cPushStartMismatch: 'C-Push 启动回执的目标工作树或请求身份不匹配，已忽略该回执。',
     pullRebaseMismatch: '拉取并变基回执的目标工作树或请求身份不匹配，请刷新核对实际 Git 状态。',
     cPushRespondMismatch: 'C-Push 确认回执的目标会话或请求身份不匹配，已忽略该回执。',
@@ -202,8 +195,6 @@ export const desktopZh: DesktopMessages = {
     modelSelectMismatch: '模型切换回执不匹配，请重新选择模型。',
     modelDeleteFailed: '模型删除未生效，请刷新设置后重试。',
     modelRevealMismatch: '显示密钥回执的模型标识不匹配，已忽略该回执。',
-    reviewMismatch: '代码审查回执的目标或请求身份不匹配，已忽略该结果。',
-    missingModelScopeTokens: '缺少 Rust 签发的文件范围凭证，请刷新变更状态后重试模型操作；提示词与选择已保留。',
     missingCPushScopeTokens: '缺少 Rust 签发的文件范围凭证，请刷新变更状态后再发起 C-Push；提示词与选择已保留。',
     missingCPushRunId: '缺少当前 C-Push 会话标识，请刷新后在消息栏重试。',
     invalidLineNumber: '跳转行号无效，行号必须从 1 开始。',

@@ -38,12 +38,6 @@ export function isTrayRepoCleanIdle(repo: TrayRepositorySummary): boolean {
 }
 
 function effectiveSessionStatus(tree: Worktree): TraySessionStatus {
-  if (tree.sessionStatus !== 'idle' && tree.sessionStatus !== 'done') {
-    return tree.sessionStatus;
-  }
-  if (tree.requests.plan || tree.requests.review || tree.review.status === 'running') {
-    return 'running';
-  }
   return tree.sessionStatus;
 }
 

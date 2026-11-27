@@ -32,24 +32,6 @@ fn pi_command_serializes_locale_and_commit_language_in_camel_case() {
     assert_eq!(test_conn["type"], "testConnection");
     assert_eq!(test_conn["locale"], "zh");
 
-    let review = serde_json::to_value(PiCommand::ReviewScope {
-        request_id: "req-rev".into(),
-        context: context.clone(),
-        model: sample_model(),
-        branch: "feat/i18n".into(),
-        prompt: "focus on auth".into(),
-        files: Vec::new(),
-        skipped_paths: Vec::new(),
-        locale: LanguageKind::Zh,
-        enable_tools: Some(true),
-        skill_overrides: None,
-    })
-    .unwrap();
-    assert_eq!(review["type"], "reviewScope");
-    assert_eq!(review["prompt"], "focus on auth");
-    assert_eq!(review["locale"], "zh");
-    assert_eq!(review["enableTools"], true);
-
     let plan = serde_json::to_value(PiCommand::PlanCPush {
         request_id: "req-plan".into(),
         context: context.clone(),

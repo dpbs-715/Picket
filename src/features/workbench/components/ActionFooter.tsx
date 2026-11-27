@@ -16,6 +16,10 @@ interface Props {
   customActions: CustomActionConfig[];
   activeAction?: CustomActionConfig;
   busy: boolean;
+  promptOpen: boolean;
+  hasPromptText: boolean;
+  hasPromptAbove?: boolean;
+  onTogglePrompt(): void;
   onConfigureModel(): void;
   onManageModels(): void;
   onSelectModel(id: string): void;
@@ -47,7 +51,7 @@ export function ActionFooter(props: Props) {
     : '';
 
   return (
-    <footer className="action-footer">
+    <footer className={`action-footer ${props.hasPromptAbove ? 'has-prompt-above' : ''}`}>
       <div className="menu-anchor model-anchor">
         {!model ? (
           <button type="button" className="add-model-button" onClick={props.onConfigureModel}>
@@ -117,107 +121,120 @@ export function ActionFooter(props: Props) {
           </>
         )}
       </div>
-      <div className="menu-anchor action-anchor">
-        <div className={`primary-button-group ${showSplitToggle ? 'is-split' : ''} ${action.resume ? `resume-button-group resume-${worktree?.sessionStatus ?? 'running'}` : ''}`}>
-          <button
-            type="button"
-            className="primary action-split-main"
-            disabled={action.disabled || (props.busy && !action.resume && !action.configureModel)}
-            title={action.label}
-            onClick={action.configureModel ? props.onConfigureModel : props.onPrimary}
-          >
-            <Icon name={primaryIcon} />
-            <span className="truncate">{action.label}</span>
-          </button>
-          {showSplitToggle && (
+      <div className="footer-right">
+        <button
+          type="button"
+          className={`prompt-footer-toggle ${props.promptOpen ? 'is-open' : ''} ${props.hasPromptText ? 'has-text' : ''}`}
+          aria-expanded={props.promptOpen}
+          aria-label={props.hasPromptText ? t.commit.promptActiveToggle : t.commit.promptToggle}
+          title={props.hasPromptText ? t.commit.promptActiveTooltip : t.commit.promptTooltip}
+          onClick={props.onTogglePrompt}
+        >
+          <Icon name="promptNote" />
+          {props.hasPromptText && <span className="prompt-dot prompt-footer-dot" aria-hidden="true" />}
+        </button>
+        <div className="menu-anchor action-anchor">
+          <div className={`primary-button-group ${showSplitToggle ? 'is-split' : ''} ${action.resume ? `resume-button-group resume-${worktree?.sessionStatus ?? 'running'}` : ''}`}>
             <button
               type="button"
-              className="primary action-split-toggle"
-              data-popover-trigger
-              aria-label={t.footer.switchActionAriaLabel}
-              aria-expanded={actionMenuOpen}
-              disabled={props.busy}
-              onClick={() => setActionMenuOpen((prev) => !prev)}
+              className="primary action-split-main"
+              disabled={action.disabled || (props.busy && !action.resume && !action.configureModel)}
+              title={action.label}
+              onClick={action.configureModel ? props.onConfigureModel : props.onPrimary}
             >
-              <RotatingChevron open={actionMenuOpen} direction="down-up" />
+              <Icon name={primaryIcon} />
+              <span className="truncate">{action.label}</span>
             </button>
-          )}
-        </div>
-        <MotionPresence>
-          {actionMenuOpen && showSplitToggle && (
-            <Popover
-              key="action-switcher-popover"
-              origin="bottom"
-              title={t.footer.switchActionTitle}
-              onClose={() => setActionMenuOpen(false)}
-              className="action-switcher-menu"
-            >
+            {showSplitToggle && (
               <button
                 type="button"
-                aria-pressed={!props.activeAction}
-                onClick={() => {
-                  props.onSelectAction(null);
-                  setActionMenuOpen(false);
-                }}
+                className="primary action-split-toggle"
+                data-popover-trigger
+                aria-label={t.footer.switchActionAriaLabel}
+                aria-expanded={actionMenuOpen}
+                disabled={props.busy}
+                onClick={() => setActionMenuOpen((prev) => !prev)}
               >
-                <span className="model-menu-label">
-                  <span className="model-menu-name truncate">{t.primaryActions.cPush}</span>
-                  <span className="muted small truncate">{t.footer.defaultCPushSubtitle}</span>
-                </span>
-                {!props.activeAction && <Icon name="check" className="success" />}
+                <RotatingChevron open={actionMenuOpen} direction="down-up" />
               </button>
-              {props.customActions.map((item) => (
+            )}
+          </div>
+          <MotionPresence>
+            {actionMenuOpen && showSplitToggle && (
+              <Popover
+                key="action-switcher-popover"
+                origin="bottom"
+                title={t.footer.switchActionTitle}
+                onClose={() => setActionMenuOpen(false)}
+                className="action-switcher-menu"
+              >
                 <button
                   type="button"
-                  key={item.id}
-                  aria-pressed={props.activeAction?.id === item.id}
+                  aria-pressed={!props.activeAction}
                   onClick={() => {
-                    props.onSelectAction(item.id);
+                    props.onSelectAction(null);
                     setActionMenuOpen(false);
                   }}
                 >
                   <span className="model-menu-label">
-                    <span className="model-menu-name truncate">{item.label}</span>
-                    <span className="muted small mono truncate">{item.prompt}</span>
+                    <span className="model-menu-name truncate">{t.primaryActions.cPush}</span>
+                    <span className="muted small truncate">{t.footer.defaultCPushSubtitle}</span>
                   </span>
-                  {props.activeAction?.id === item.id && <Icon name="check" className="success" />}
+                  {!props.activeAction && <Icon name="check" className="success" />}
                 </button>
-              ))}
-              <div className="menu-divider">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActionMenuOpen(false);
-                    props.onNewAction('create');
-                  }}
-                >
-                  <Icon name="sparkles" />
-                  {t.footer.createWithPiMenuItem}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActionMenuOpen(false);
-                    props.onNewAction('manual');
-                  }}
-                >
-                  <Icon name="plus" />
-                  {t.footer.newActionMenuItem}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActionMenuOpen(false);
-                    props.onManageActions();
-                  }}
-                >
-                  <Icon name="settings" />
-                  {t.footer.manageActionsMenuItem}
-                </button>
-              </div>
-            </Popover>
-          )}
-        </MotionPresence>
+                {props.customActions.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    aria-pressed={props.activeAction?.id === item.id}
+                    onClick={() => {
+                      props.onSelectAction(item.id);
+                      setActionMenuOpen(false);
+                    }}
+                  >
+                    <span className="model-menu-label">
+                      <span className="model-menu-name truncate">{item.label}</span>
+                      <span className="muted small mono truncate">{item.prompt}</span>
+                    </span>
+                    {props.activeAction?.id === item.id && <Icon name="check" className="success" />}
+                  </button>
+                ))}
+                <div className="menu-divider">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      props.onNewAction('create');
+                    }}
+                  >
+                    <Icon name="sparkles" />
+                    {t.footer.createWithPiMenuItem}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      props.onNewAction('manual');
+                    }}
+                  >
+                    <Icon name="plus" />
+                    {t.footer.newActionMenuItem}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionMenuOpen(false);
+                      props.onManageActions();
+                    }}
+                  >
+                    <Icon name="settings" />
+                    {t.footer.manageActionsMenuItem}
+                  </button>
+                </div>
+              </Popover>
+            )}
+          </MotionPresence>
+        </div>
       </div>
     </footer>
   );

@@ -5,7 +5,7 @@
 <h1 align="center">Picket</h1>
 
 <p align="center">
-  <strong>A macOS desktop Git Agent for scoping, reviewing, splitting, committing, and pushing changes in one click.</strong>
+  <strong>A macOS desktop Git Agent for scoping, splitting, committing, pushing, and running custom Git workflows in one click.</strong>
 </p>
 
 <p align="center">
@@ -18,46 +18,45 @@
 
 ---
 
-**Picket** sits quietly beside your IDE and handles the noisy last mile of Git. Instead of manually untangling mixed edits, writing repetitive commit messages, or risking half-finished drafts, you pick the files you want to ship, optionally review them or preview the commit plan, and click **C-Push** — Picket splits related changes into clean commits, writes messages, commits strictly within your selected scope, and pushes to your remote.
+**Picket** sits quietly beside your IDE and handles the noisy last mile of Git. Instead of manually untangling mixed edits, writing repetitive commit messages, or risking half-finished drafts, you pick the files you want to ship and click **C-Push** — Picket splits related changes into clean commits, writes messages, commits strictly within your selected scope, and pushes to your remote.
 
-It pauses to ask only when a real decision is needed, leaving unselected files, **Local Keep** paths, and unstaged IDE drafts completely untouched.
+It pauses to ask only when a real decision is needed, leaving unselected files, **Local Keep** paths, and unstaged IDE drafts completely untouched. When you need deeper workflows — such as `dcr` diff review, multi-stage `submit`, PR review, or release tagging — switch the primary action to a repository-bound Custom Action and interact through Picket's unified **Message Sheet**.
 
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="assets/screenshots/en/workbench-plan.png" alt="Picket Main Workbench showing editable Preview Plan and Local Keep" width="380" /><br />
-      <sub><strong>Main Workbench</strong> · Exact-scope selection, Local Keep &amp; editable Preview Plan</sub>
+      <img src="assets/screenshots/en/workbench-plan.png" alt="Picket Main Workbench showing exact-scope selection and Local Keep" width="380" /><br />
+      <sub><strong>Main Workbench</strong> · Exact-scope selection, Local Keep &amp; one-click C-Push</sub>
     </td>
     <td align="center" width="50%">
-      <img src="assets/screenshots/en/workbench-review.png" alt="Picket Main Workbench showing structured Code Review findings" width="380" /><br />
-      <sub><strong>Code Review</strong> · Structured findings with one-click IDE jump</sub>
+      <img src="assets/screenshots/en/workbench-review.png" alt="Picket structured findings with one-click IDE jump" width="380" /><br />
+      <sub><strong>Structured Feedback</strong> · Actionable findings with one-click IDE jump</sub>
     </td>
   </tr>
 </table>
 
 ## Highlights
 
-### One-Click C-Push & Editable Commit Plans
+### One-Click C-Push & Distraction-Free Workbench
 - **Smart split, commit & push**: Select your changes and click **C-Push**. Picket analyzes your authorized diff, groups related files into Conventional Commits, commits each group cleanly, and pushes to the remote branch.
 - **Ask only when it matters**: No confirmation popups on every commit. Picket pauses only for genuine ambiguity (such as unclear file ownership, sensitive files, or a missing upstream target).
-- **Optional `+ Prompt` instructions**: Add brief guidance (for example, *"split lockfile separately"* or *"keep messages concise"*) to steer commit planning and code review without widening your authorized scope.
-- **Editable Preview Plan**: Click **Preview Plan** whenever you want to inspect and edit commit messages before shipping. Valid edited plans are committed verbatim on **C-Push** and automatically flagged as **Outdated** if files or selections change.
+- **Full-height file list & zero-footprint prompt**: When idle, the changes list expands all the way to the footer with no empty strip above it. Click the compact prompt icon beside **C-Push** whenever you want to slide open a sleek input box for extra guidance (like *"split lockfile separately"* or *"commit locally without pushing"*); when a Custom Action is active, a one-line summary pill appears above the footer to preview or edit its instructions.
 
 ### Exact-Scope Git Safety & Local Keep
 - **Selection never mutates `.git/index`**: Checking or unchecking files in Picket only controls the active scope — it never runs `git add` or `git reset` behind your back.
 - **Partial staging preserved**: When a file has both staged and unstaged edits, Picket commits only the staged hunks by default and leaves your unstaged IDE drafts byte-for-byte intact.
 - **Zero leakage from unselected staged files**: Files staged in Git but unchecked in Picket are never swept into a commit.
-- **Local Keep**: Drag files (or right-click single or multi-selected rows) into the bottom **Local Keep** group to keep local-only edits out of **Select All**, **C-Push**, **Preview Plan**, and **Code Review** across every worktree of that repository — without touching `.gitignore`, `.git/info/exclude`, `skip-worktree`, or `assume-unchanged`.
+- **Local Keep**: Drag files (or right-click single or multi-selected rows) into the bottom **Local Keep** group to keep local-only edits out of **Select All** and **C-Push** across every worktree of that repository — without touching `.gitignore`, `.git/info/exclude`, `skip-worktree`, or `assume-unchanged`.
 
-### On-Demand Code Review
-- **Review selected changes before pushing**: Run structured AI code review (powered by the `dcr` skill with read-only repo context lookup) against the exact selected scope, optionally carrying your `+ Prompt` context.
-- **Actionable findings**: Issues are categorized as **High** or **Suggestion** with one-click navigation straight to the file and line number in your IDE.
-- **Honest coverage & incremental re-review**: Lockfiles, binaries, and oversized diffs are explicitly reported as skipped rather than silently marked clean. When reviewed files change, click **Re-review Changed Files** to refresh only what changed.
+### Unified Interactive Message Sheet (`message_user`)
+- **Rich structured communication**: Powered by Pi Core's unified `message_user` tool, Picket presents progress updates, structured reviews (`dcr`), release checklists, command previews, and blocking decision prompts in a tactile macOS floating sheet (`MessageDock`).
+- **Seven native dark-mode blocks**: Supports safe Markdown, callouts, recessed key-value facts bars, severity-tagged findings (click any finding or file chip to jump straight to `path:line` in your IDE, even on a clean working tree), status checklists, collapsible copyable code wells, and file chips — with zero raw HTML injection.
+- **Built for reading & follow-up**: Drag the top handle up or down to resize the sheet smoothly (drag to the top edge to snap full-height, double-click to reset), keep the live progress bar pinned while command logs scroll independently, send follow-up instructions in place after a custom action settles, and dismiss completed cards cleanly from the header `×` button.
 
 ### Custom Repository Actions & Hot-Synced Git Skills
-- **Main action switcher (Full & Compact)**: Keep `C-Push` as the default primary button, or switch via the Split Button menu (and Compact Mode drawer) to per-repository custom actions — such as multi-stage `submit` flows, PR reviews, or release tagging — usable even on a clean working tree.
+- **Main action switcher (Full & Compact)**: Keep `C-Push` as the default primary button, or switch via the Split Button menu (and Compact Mode drawer) to per-repository custom actions — such as `dcr` diff review, multi-stage `submit` flows, PR reviews, or release tagging — usable even on a clean working tree.
 - **Create with Picket & sync across repos**: Define actions manually or chat with Picket in natural language to inspect branches, tags, and remotes and draft a ready-to-save action. Copy any action to all registered repositories as independent editable copies in one click.
-- **Controlled `gh` / `glab` & isolated `submit` recovery**: Reuse your existing local `gh` / `glab` authentication without extra tokens, enforce hard safety redlines and Tier-2 command previews (with prompt-hash-bound "Don't ask again"), isolate `submit` commits in managed worktrees with verified backup cleanup, and restore interrupted sessions across cold restarts.
+- **Controlled `gh` / `glab` & isolated `submit` recovery**: Reuse your existing local `gh` / `glab` authentication without extra tokens, enforce hard safety redlines and Tier-2 command previews (with prompt-hash-bound "Don't ask again"), isolate `submit` commits in managed worktrees with verified backup cleanup, and restore interrupted sessions (including rich report cards and Issue/PR links) across cold restarts.
 - **Built-in & hot-synced skills (`Settings → Skills`)**: Eight Git collaboration skills (`commit`, `push`, `cpush`, `dcr`, `create-issues`, `create-pr`, `review-pr`, `submit`) ship bundled offline. Sync updates or custom `SKILL.md` repositories on demand via controlled shallow `/usr/bin/git` clones into `~/.picket/skills/`, toggle individual skills on or off, or restore the built-in snapshot in one click without disrupting running tasks.
 
 ### Branches, Worktrees, Sync & Controlled Recovery
@@ -92,7 +91,7 @@ It pauses to ask only when a real decision is needed, leaving unselected files, 
 
 1. **Open a local repository**: Launch Picket and open any local Git repository (linked worktrees are detected automatically).
 2. **Pick your scope**: Normal changes are selected by default; uncheck anything not ready yet or drag local-only files into **Local Keep**. Double-click any file or click **Diff** to inspect it in your IDE.
-3. **Review or preview (optional)**: Run **Code Review** on the selected scope, add brief extra instructions via **+ Prompt**, or click **Preview Plan** to inspect and tweak commit messages.
+3. **Add brief guidance or switch actions (optional)**: Click the footer prompt icon beside **C-Push** to pass extra instructions, or switch the footer primary button to a Custom Action (such as diff review with `dcr`, PR review, or `submit`).
 4. **Ship with C-Push**: Click **C-Push**. Picket splits, commits, syncs if needed, and pushes — notifying you only if a decision, conflict, or push retry needs your attention.
 
 ## Supported Providers & Editors

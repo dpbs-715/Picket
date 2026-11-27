@@ -71,68 +71,20 @@ export function projectWorktree(
         .map((file) => file.id)
     : incoming.files.filter((file) => !file.localKeep).map((file) => file.id);
   const unselectedIds = computeNormalUnselectedIds(incoming.files, selectedIds);
-  const baseChanged = !!previous && (previous.head !== incoming.head || previous.branch !== incoming.branch);
-  const changed = previous?.files.filter((file) => {
-    const next = incoming.files.find((item) => item.id === file.id);
-    return baseChanged
-      || next?.contentVersion !== file.contentVersion
-      || next?.range.kind !== file.range.kind
-      || Boolean(next?.localKeep) !== Boolean(file.localKeep);
-  }).map((file) => file.path) ?? [];
-  const nextScopeCandidate = readScopeVersion({
-    head: incoming.head,
-    branch: incoming.branch,
-    files: incoming.files,
-    selectedIds,
-    statusVersion: incoming.statusVersion,
-    scopeVersion: previous?.scopeVersion ?? incoming.statusVersion,
-  });
-  const relevant = baseChanged
-    || (!!previous && nextScopeCandidate !== previous.scopeVersion)
-    || !!previous?.files.some((file) => previous.selectedIds.includes(file.id) && changed.includes(file.path));
-  const reviewedPaths = previous?.files.filter((file) => previous.review.scopeFileIds?.includes(file.id)).map((file) => file.path) ?? [];
   const prompt = !previous
     ? { text: emptyPromptText ?? '', revision: 0 }
     : commitCompletion?.clearPrompt && !incoming.readError && previous.prompt.revision === commitCompletion.promptRevision
       ? { text: '', revision: previous.prompt.revision + 1 }
       : previous.prompt;
-  const review = !previous
-    ? { status: 'idle' as const, findings: [], skippedPaths: [], changedPaths: [] }
-    : committedSet && committedSet.size > 0
-      ? (() => {
-          const liveIds = new Set(incoming.files.map((file) => file.id));
-          const validScopeIds = (previous.review.scopeFileIds ?? []).filter((id) => liveIds.has(id) && !committedSet.has(id));
-          const validFindings = previous.review.findings.filter((finding) => liveIds.has(finding.fileId) && !committedSet.has(finding.fileId));
-          if (previous.review.status === 'done' && (previous.review.scopeFileIds?.length ?? 0) > 0 && validScopeIds.length === 0) {
-            return { status: 'idle' as const, findings: [], skippedPaths: [], changedPaths: [] };
-          }
-          return {
-            ...previous.review,
-            status: previous.review.status === 'running' ? previous.requests.review?.previousReviewStatus ?? 'idle' : previous.review.status,
-            findings: validFindings,
-            scopeFileIds: previous.review.scopeFileIds ? validScopeIds : undefined,
-            changedPaths: previous.review.changedPaths.filter((path) => incoming.files.some((file) => file.path === path && validScopeIds.includes(file.id))),
-          };
-        })()
-      : {
-          ...previous.review,
-          status: relevant && previous.review.status === 'running' ? previous.requests.review?.previousReviewStatus ?? 'idle' : previous.review.status,
-          changedPaths: [...new Set([...previous.review.changedPaths, ...changed.filter((path) => reviewedPaths.includes(path))])],
-        };
-  const shouldClearPlan = !!committedSet && committedSet.size > 0;
   const projected: Worktree = {
     ...previous, ...incoming,
     sessionId: previous?.sessionId ?? crypto.randomUUID(), scopeVersion: previous?.scopeVersion ?? incoming.statusVersion,
     selectedIds,
     unselectedIds,
     prompt,
-    plan: shouldClearPlan ? undefined : previous?.plan,
-    planRevision: shouldClearPlan && previous?.plan ? previous.planRevision + 1 : previous?.planRevision ?? 0,
-    review,
     sessionStatus: previous?.sessionStatus ?? 'idle', messages: previous?.messages ?? [],
     cPush: previous?.cPush,
-    tab: previous?.tab ?? 'commit', dockExpanded: previous?.dockExpanded ?? false, replies: previous?.replies ?? {},
-    requests: relevant ? {} : previous?.requests ?? {},
+    dockExpanded: previous?.dockExpanded ?? false, replies: previous?.replies ?? {},
   };
   if (incoming.readError && previous) {
     return {
@@ -141,8 +93,7 @@ export function projectWorktree(
       selectedIds: previous.selectedIds,
       unselectedIds: previous.unselectedIds ?? computeNormalUnselectedIds(previous.files, previous.selectedIds),
       scopeVersion: previous.scopeVersion,
-      prompt: previous.prompt, plan: previous.plan, planRevision: previous.planRevision,
-      review: { ...previous.review, status: previous.review.status === 'running' ? previous.requests.review?.previousReviewStatus ?? 'idle' : previous.review.status }, requests: {},
+      prompt: previous.prompt,
     };
   }
   return { ...projected, scopeVersion: readScopeVersion(projected) };
@@ -185,7 +136,7 @@ export function mergeSnapshot(state: WorkbenchState, snapshot: GitRepositorySnap
   });
   const missingError = getMessages(state.locale).workbench.missingWorktreeError;
   const missing = sameRepository.filter((tree) => !worktrees.some((incoming) => incoming.worktreeId === tree.worktreeId))
-    .map((tree) => ({ ...tree, readError: missingError, requests: {} }));
+    .map((tree) => ({ ...tree, readError: missingError }));
   const nextRepoPayload = {
     ...snapshot.repository,
     ...(resolvedKeepPaths.length ? { localKeepPaths: resolvedKeepPaths } : { localKeepPaths: undefined }),
@@ -252,7 +203,6 @@ export function applyLocalKeepUpdate(
       if (!isKept && file.localKeep) newlyNormalIds.add(file.id);
       return Boolean(file.localKeep) === isKept ? file : { ...file, localKeep: isKept };
     });
-    const hadSelectedRemoved = newlyKeptIds.size > 0 && tree.selectedIds.some((id) => newlyKeptIds.has(id));
     let selectedIds = newlyKeptIds.size > 0
       ? tree.selectedIds.filter((id) => !newlyKeptIds.has(id))
       : tree.selectedIds;
@@ -265,17 +215,12 @@ export function applyLocalKeepUpdate(
     }
     const unselectedIds = computeNormalUnselectedIds(files, selectedIds);
     const scopeVersion = readScopeVersion({ ...tree, files, selectedIds });
-    const scopeChanged = scopeVersion !== tree.scopeVersion || hadSelectedRemoved;
     return {
       ...tree,
       files,
       selectedIds,
       unselectedIds,
       scopeVersion,
-      requests: scopeChanged ? {} : tree.requests,
-      review: scopeChanged && tree.review.status === 'running'
-        ? { ...tree.review, status: tree.requests.review?.previousReviewStatus ?? 'idle' }
-        : tree.review,
     };
   });
   return {

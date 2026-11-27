@@ -23,7 +23,8 @@ describe('Workbench static rendering', () => {
       expect(html).toContain('aria-label="Changed Files"');
       expect(html).toContain('aria-label="Collapse to Compact Mode"');
       expect(html).toContain('aria-label="Settings"');
-      expect(html).toContain('role="tablist"');
+      expect(html).toContain('action-context-strip');
+      expect(html).not.toContain('role="tablist"');
     }
     expect(html).not.toContain('action-dropdown');
     expect(html).not.toMatch(/\u6a21\u62df\u4fee\u590d|\u6a21\u62df\u8fd4\u56de|\u6f14\u7ec3\u63a7\u5236\u53f0|\u63a8\u8fdb\u81f3\u63d0\u95ee|Simulate Fix|Simulation Console|sk-demo/);
@@ -63,16 +64,16 @@ describe('Workbench static rendering', () => {
     expect(html).toContain(zhMessages.commit.promptToggle);
   });
 
-  it('renders distinct structures for running, planning, question, editable plan, done, zero-model, and recovery states', () => {
+  it('renders distinct structures for running, question, rich-card, done, zero-model, and recovery states', () => {
     expect(render('running')).toContain('Task progress');
-    expect(render('generating')).toContain('Generating commit plan…');
-    expect(render('generating')).toContain('+ Prompt');
     expect(render('question')).toContain('Commit separately &amp; push together');
-    expect(render('typing')).toContain('Plan · 1 commit');
-    expect(render('typing')).toContain('plan-group-textarea');
     expect(render('typing')).toContain('prompt-textarea');
+    expect(render('typing')).not.toContain('plan-group-textarea');
+    expect(render('rich-card')).toContain('Signature failure log prints full request body');
+    expect(render('rich-card')).toContain('d2-facts-bar');
     expect(render('no-model')).toContain('Configure Model');
-    expect(render('done')).toContain('Got it');
+    expect(render('done')).toContain('Dismiss completed notice');
+    expect(render('done')).not.toContain('Got it');
     expect(render('push-failed')).toContain('Committed locally, push failed');
     expect(render('push-failed')).toContain('a19e7c2');
     expect(render('conflict')).toContain('Let Agent Merge');

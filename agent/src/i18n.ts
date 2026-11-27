@@ -22,11 +22,6 @@ export interface SidecarMessages {
   toolsUnsupported: (detail: string) => string;
   requestFailed: (detail: string) => string;
   emptyCommitMessage: string;
-  invalidReviewJson: string;
-  missingReviewFindings: string;
-  invalidReviewFindingItem: string;
-  unknownReviewSeverity: string;
-  missingReviewTitleOrReason: string;
   invalidCPushPlanJson: string;
   cPushPlanNotObject: string;
   emptyCPushFileRef: string;
@@ -83,11 +78,6 @@ const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
     toolsUnsupported: (detail) => `The selected model does not support tool calling; switch to a tool-capable model in Model Settings (${detail})`,
     requestFailed: (detail) => `Model request failed: ${detail}`,
     emptyCommitMessage: 'Model returned an empty commit message.',
-    invalidReviewJson: 'Model did not return valid structured review JSON.',
-    missingReviewFindings: 'Model review response is missing a findings array.',
-    invalidReviewFindingItem: 'Invalid review finding item format.',
-    unknownReviewSeverity: 'Review finding contains an unknown severity level.',
-    missingReviewTitleOrReason: 'Review finding is missing a title or reason.',
     invalidCPushPlanJson: 'Model did not return valid C-Push plan JSON.',
     cPushPlanNotObject: 'Model C-Push plan response is not a JSON object.',
     emptyCPushFileRef: 'C-Push plan contains an empty file reference.',
@@ -142,11 +132,6 @@ const SIDECAR_MESSAGES: Record<AppLocale, SidecarMessages> = {
     toolsUnsupported: (detail) => `当前选中的模型不支持工具调用（Tool Calling），请在模型设置中切换支持工具调用的模型（${detail}）`,
     requestFailed: (detail) => `模型请求未完成：${detail}`,
     emptyCommitMessage: '模型返回了空的提交说明',
-    invalidReviewJson: '模型未返回有效的结构化审查 JSON',
-    missingReviewFindings: '模型返回的审查结果缺少 findings 数组',
-    invalidReviewFindingItem: '审查结果项格式无效',
-    unknownReviewSeverity: '审查结果包含未知严重程度',
-    missingReviewTitleOrReason: '审查结果缺少标题或原因说明',
     invalidCPushPlanJson: '模型未返回有效的 C-Push 结构化规划 JSON',
     cPushPlanNotObject: '模型返回的 C-Push 规划不是 JSON 对象',
     emptyCPushFileRef: 'C-Push 规划包含空的文件引用',

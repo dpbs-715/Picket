@@ -160,8 +160,8 @@ try {
       throw new Error('IDE staged diff export or workbench persistence cold restore did not pass');
     }
     const modelM3 = events.find((event) => event.type === 'uiSmokeModelProof');
-    if (!modelM3?.credentialsPersistedAndRestored || !modelM3.partialScopePreviewPlanVerified || !modelM3.lockfileFilteredReviewVerified) {
-      throw new Error('M3 local credentials persistence, scoped preview plan, or lockfile-filtered review did not pass');
+    if (!modelM3?.credentialsPersistedAndRestored || !modelM3.partialScopeCPushPlanVerified) {
+      throw new Error('M3 local credentials persistence or scoped C-Push planning did not pass');
     }
     const cpushM4 = events.find((event) => event.type === 'uiSmokeCPushProof');
     if (!cpushM4?.splitCommitsVerified || !cpushM4.unselectedStagedPreserved || !cpushM4.sessionPersistedAndRestored) {
@@ -206,7 +206,7 @@ try {
       ideStagedDiffExportVerified: true,
       workbenchPersistenceColdRestoreVerified: true,
       localCredentialsPersistedAndRestoredVerified: true,
-      piPreviewPlanAndReviewVerified: true,
+      piScopedCPushPlanVerified: true,
       cPushSplitAndSessionVerified: true,
       m5RemotePushAndConflictMergeVerified: true,
       coldProcessRestartAndLeakScanVerified: true,

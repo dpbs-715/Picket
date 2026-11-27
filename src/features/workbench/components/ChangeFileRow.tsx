@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent }
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../../ui/controls';
 import { splitPath, type Change, type Worktree } from '../state/workbench';
+import { splitFileNameExt, treeGuideOffsets, treeIndentPx } from './changesPanelTree';
 
 export function TriStateCheckbox(props: {
   checked: boolean;
@@ -35,12 +36,12 @@ interface ChangeFileRowProps {
   file: Change;
   worktree: Worktree;
   grouped?: boolean;
+  treeDepth?: number;
   editorShort: string;
   isRowSelected: boolean;
   isDraggingThis: boolean;
   onSelect(fileId: string): void;
   onOpenFile(fileId: string): void;
-  onReview(): void;
   onPointerDown(event: ReactPointerEvent<HTMLDivElement>, file: Change, name: string): void;
   onContextMenu(event: ReactMouseEvent<HTMLDivElement>, file: Change): void;
   onRowClick(event: ReactMouseEvent<HTMLButtonElement>, file: Change): void;
@@ -52,12 +53,12 @@ export function ChangeFileRow({
   file,
   worktree,
   grouped = false,
+  treeDepth,
   editorShort,
   isRowSelected,
   isDraggingThis,
   onSelect,
   onOpenFile,
-  onReview,
   onPointerDown,
   onContextMenu,
   onRowClick,
@@ -66,8 +67,10 @@ export function ChangeFileRow({
 }: ChangeFileRowProps) {
   const { t } = useI18n();
   const { name, directory } = splitPath(file.path);
-  const findings = worktree.review.findings.filter((finding) => finding.fileId === file.id);
-  const hasHigh = findings.some((finding) => finding.severity === 'high');
+  const { stem, ext } = splitFileNameExt(name);
+  const hasDirectory = !grouped && Boolean(directory);
+  const effectiveDepth = grouped ? (treeDepth ?? 1) : 0;
+  const guideOffsets = grouped ? treeGuideOffsets(effectiveDepth) : [];
   const action = file.status === 'U'
     ? t.changes.ideActions.merge
     : file.range.kind === 'partial'
@@ -78,15 +81,19 @@ export function ChangeFileRow({
 
   return (
     <div
-      className={`file-row ${grouped ? 'grouped' : ''} ${file.status === 'U' ? 'conflicted' : ''} ${file.ignoredForReview && !worktree.selectedIds.includes(file.id) ? 'ignored' : ''} ${file.localKeep ? 'local-keep-row' : ''} ${isRowSelected ? 'is-selected' : ''} ${isDraggingThis ? 'dragging' : ''}`}
+      className={`file-row ${grouped ? 'grouped' : ''} ${hasDirectory ? 'has-directory' : ''} ${file.status === 'U' ? 'conflicted' : ''} ${file.localKeep ? 'local-keep-row' : ''} ${isRowSelected ? 'is-selected' : ''} ${isDraggingThis ? 'dragging' : ''}`}
       data-file-path={file.path}
       data-selected={isRowSelected ? 'true' : undefined}
+      style={grouped ? { paddingLeft: `${treeIndentPx(effectiveDepth)}px` } : undefined}
       onPointerDown={(event) => onPointerDown(event, file, name)}
       onContextMenu={(event) => onContextMenu(event, file)}
       onClickCapture={(event) => {
         consumeSuppressedClick(event);
       }}
     >
+      {guideOffsets.map((leftPx) => (
+        <span key={leftPx} className="tree-guide" style={{ left: `${leftPx}px` }} aria-hidden="true" />
+      ))}
       <input
         type="checkbox"
         className="file-checkbox"
@@ -105,12 +112,22 @@ export function ChangeFileRow({
           {file.status === 'U' ? '!' : file.status}
         </span>
         <span className="file-label">
-          <span className="mono file-name truncate">{name}</span>
-          {!grouped && directory && <span className="mono file-directory truncate">{directory}</span>}
-          {file.status === 'U'
-            ? <span className="file-badge danger">{t.changes.conflictBadge}</span>
-            : file.range.kind === 'partial' && <span className="file-badge warning">{t.changes.partialStagedBadge}</span>}
-          {file.ignoredForReview && <span className="file-badge muted">{t.changes.skipReviewBadge}</span>}
+          <span className="file-primary-line">
+            <span className="mono file-name">
+              {ext ? (
+                <>
+                  <span>{stem}</span>
+                  <span className="file-ext">{ext}</span>
+                </>
+              ) : (
+                name
+              )}
+            </span>
+            {file.status === 'U'
+              ? <span className="file-badge danger">{t.changes.conflictBadge}</span>
+              : file.range.kind === 'partial' && <span className="file-badge warning">{t.changes.partialStagedBadge}</span>}
+          </span>
+          {hasDirectory && <span className="mono file-directory truncate">{directory}</span>}
         </span>
         <span className="file-stats mono">
           {file.binary
@@ -134,16 +151,6 @@ export function ChangeFileRow({
       >
         {editorShort} {action}<Icon name="external" />
       </button>
-      {!!findings.length && (
-        <button
-          type="button"
-          className={`finding-count ${hasHigh ? 'danger' : 'warning'}`}
-          aria-label={t.changes.findingCountLabel(file.path, findings.length)}
-          onClick={onReview}
-        >
-          <span className="status-dot" />{findings.length}
-        </button>
-      )}
     </div>
   );
 }

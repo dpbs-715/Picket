@@ -1,5 +1,4 @@
 import { act, createElement } from 'react';
-import type { CPushCommandReply } from '../../../../shared/cpush-protocol';
 import { computeCustomActionPromptHash } from '../../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../../shared/ide-protocol';
@@ -9,7 +8,6 @@ import type {
   ProviderRevealKeyReply,
   ProviderSaveReply,
   ProviderUpdateReply,
-  ReviewScopeReply,
 } from '../../../../shared/model-protocol';
 import { version as PACKAGE_VERSION } from '../../../../package.json';
 import {
@@ -111,12 +109,18 @@ export async function verifyWorkbench(root: Root) {
   assert(text().includes('Open Your Git Repository') && !text().includes('my-order-service'), 'Default empty state leaked sample repository');
   assert(!document.querySelector('.changes-heading') && !document.querySelector('[aria-label="Switch to directory tree view"]') && !document.querySelector('[aria-label="Refresh Changes"]'), 'Empty repository state must not render changes toolbar');
   assert(document.querySelector<HTMLButtonElement>('.repository-open-button')?.classList.contains('primary'), 'Open Local Repository should be the single primary action in upper empty state');
-  assert(!document.querySelector('.plan-empty button.primary'), 'Lower workspace in empty state must not compete visually with Open Local Repository');
+  assert(document.querySelector('.changes-panel')?.getAttribute('data-layout-mode') === 'idle' && !document.querySelector('.lower-workspace .tab-list'), 'Idle workbench must expand ChangesPanel without legacy commit/review tabs');
   assert(!document.querySelector('.action-dropdown') && !text().includes('Write Manually'), 'Manual commit dropdown and Write Manually button must be removed');
   const footerConfigBtn = document.querySelector<HTMLButtonElement>('.action-footer button.primary')!;
   assert(footerConfigBtn.textContent?.includes('Configure Model') && !footerConfigBtn.disabled, 'Zero-model footer primary button must guide to Configure Model');
-  assert(!document.querySelector('.prompt-textarea') && button('+ Prompt').getAttribute('aria-expanded') === 'false', 'Prompt box must stay hidden by default until + Prompt is clicked');
-  assert(!text().includes('Or click C-Push below') && !text().includes('Configure a model first'), 'Minimalist Commit Plan must not render verbose filler descriptions');
+  assert(
+    !document.querySelector('.prompt-textarea')
+      && button('+ Prompt').getAttribute('aria-expanded') === 'false'
+      && !!document.querySelector('.action-footer .prompt-footer-toggle')
+      && document.querySelector('.action-context-strip')!.getBoundingClientRect().height === 0,
+    'Idle default state must place prompt icon inside footer with zero extra strip height until opened',
+  );
+  assert(!text().includes('Or click C-Push below') && !text().includes('Configure a model first'), 'Minimalist context strip must not render verbose filler descriptions');
   await click('Open Local Repository…');
   assert(text().includes('not connected in browser preview'), `Disconnected openRepository should explain preview boundary: ${text()}`);
   await click('+ Prompt');
@@ -127,7 +131,11 @@ export async function verifyWorkbench(root: Root) {
   await click('+ Prompt');
   promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
   type(promptArea, 'Extra instruction written before opening repository'); await tick();
-  assert(button('Prompt').getAttribute('aria-expanded') === 'true', 'Non-empty prompt must mark Prompt toggle active');
+  assert(
+    button('Prompt').getAttribute('aria-expanded') === 'true'
+      && !!document.querySelector('.action-footer .prompt-footer-dot'),
+    'Non-empty prompt must mark footer prompt icon active with indicator dot',
+  );
   await clickElement(footerConfigBtn);
   assert(!!document.querySelector('.model-form[data-form-mode="create-provider"]') && document.querySelector<HTMLInputElement>('input[type="password"]')?.value === '', 'Clicking Configure Model in footer must open Add Provider form with empty masked key');
   await click('Cancel');
@@ -170,7 +178,12 @@ export async function verifyWorkbench(root: Root) {
   await clickElement(appLangZhBtn);
   assert(document.documentElement.getAttribute('lang') === 'zh-CN' && text().includes(zh.settings.title) && text().includes(zh.settings.appLanguage), 'Switching App Language to zh should update document lang and Settings labels');
   await click(zh.common.closeOverlay(zh.settings.title));
-  assert(text().includes(zh.changes.emptyRepoTitle) && text().includes(zh.commit.configureModelButton) && text().includes(zh.commit.promptToggle), 'Workbench labels should switch to Chinese');
+  assert(
+    text().includes(zh.changes.emptyRepoTitle)
+      && text().includes(zh.commit.configureModelButton)
+      && !!document.querySelector(`[aria-label="${zh.commit.promptToggle}"]`),
+    'Workbench labels should switch to Chinese',
+  );
   await click(zh.changes.openLocalRepository);
   assert(localeCommands.at(-1)?.locale === 'zh' && text().includes(zh.desktop.disconnectedGit), 'Backend command in zh locale should receive locale: zh and localized error');
   await click(zh.header.settings);
@@ -182,7 +195,8 @@ export async function verifyWorkbench(root: Root) {
   assert(text().includes('Open Your Git Repository') && text().includes('Configure Model'), 'Main workbench should restore English labels');
   checks.push('App Language live switching between English and Chinese with backend locale forwarding');
 
-  // 3. Input focus, selection range, prompt preservation, message priority, and lower-workspace dock overlay:
+  // 3. Input focus, selection range, prompt preservation, message priority, and draggable lower-workspace dock:
+  window.localStorage.removeItem('picket.dockHeight');
   const subscription: { receive?: (event: WorkbenchEvent) => void } = {};
   const typingState = fixture('typing');
   await mount(typingState, { ...disconnectedBackend, subscribe(receive) { subscription.receive = receive; return () => { subscription.receive = undefined; }; } });
@@ -193,27 +207,77 @@ export async function verifyWorkbench(root: Root) {
   assert(document.activeElement === promptArea, 'Background question stole prompt textarea focus');
   assert(promptArea.value === 'Continuous typing must not be interrupted' && promptArea.selectionStart === 3 && promptArea.selectionEnd === 10, 'Background question altered prompt text or cursor selection');
   assert(!document.querySelector('.message-expanded'), 'Background question must not auto-expand while user is typing');
-  await act(async () => { subscription.receive?.({ type: 'message', target: targetOf(typingState.worktrees[0]), message: { id: 'review', kind: 'review', title: 'Review finished', description: 'Secondary update' } }); });
-  assert(text().includes('+1'), 'Review notification after question should appear as secondary count');
+  await act(async () => { subscription.receive?.({ type: 'message', target: targetOf(typingState.worktrees[0]), message: { id: 'secondary-done', kind: 'done', title: 'Background note', description: 'Secondary update' } }); });
+  assert(text().includes('+1'), 'Secondary notification after question should appear as secondary count');
   assert(document.activeElement === promptArea, 'Secondary notification stole prompt textarea focus');
   await click('Expand message: Include release notes in this commit?');
   const lower = document.querySelector('.lower-workspace')!.getBoundingClientRect();
+  const dockWrap = document.querySelector('.d2-wrap')!.getBoundingClientRect();
   const expanded = document.querySelector('.message-expanded')!.getBoundingClientRect();
-  assert(Math.abs(lower.top - expanded.top) <= 1 && Math.abs(lower.bottom - expanded.bottom) <= 1, 'Expanded message dock exceeded lower workspace bounds');
+  assert(Math.abs(lower.top - dockWrap.top) <= 1 && Math.abs(lower.bottom - dockWrap.bottom) <= 1, 'Expanded message dock wrapper exceeded lower workspace bounds');
+  assert(expanded.top >= lower.top && expanded.top <= lower.top + 8 && Math.abs(lower.bottom - expanded.bottom) <= 1, 'Expanded floating sheet exceeded lower workspace bounds');
+  assert(document.querySelector('.changes-panel')?.getAttribute('data-layout-mode') === 'peek', 'Expanded message dock must shift ChangesPanel to peek mode');
   assert(document.querySelector('.context-header')!.getBoundingClientRect().bottom <= expanded.top, 'Expanded message dock covered header');
   assert(document.querySelector('.action-footer')!.getBoundingClientRect().top >= expanded.bottom, 'Expanded message dock covered footer');
   const reply = document.querySelector<HTMLInputElement>('[aria-label="Reply to active message"]')!;
   type(reply, 'Commit docs separately'); await tick();
-  await click('Collapse Message'); await click('Expand message: Include release notes in this commit?');
+  await click('Collapse Message');
+  assert(document.querySelector('.changes-panel')?.getAttribute('data-layout-mode') === 'idle', 'Collapsing message dock must restore ChangesPanel to idle mode');
+  await click('Expand message: Include release notes in this commit?');
   assert(document.querySelector<HTMLInputElement>('[aria-label="Reply to active message"]')!.value === 'Commit docs separately', 'Collapsing message dock lost custom reply draft');
   await click('Commit separately & push together');
   assert(text().includes('Include release notes in this commit?'), 'Failed respond must not fabricate resolved question');
-  await click('View');
-  assert(button('Code Review').getAttribute('aria-selected') === 'true', 'Secondary review View action did not switch to Code Review tab');
-  checks.push('Input focus, cursor selection, prompt preservation, message priority, and lower-workspace dock overlay');
+  assert(text().includes('Background note'), 'Secondary message did not render inside expanded dock');
+  assert(
+    document.querySelectorAll('.d2-header-tools .d2-ibtn').length === 1
+      && !document.querySelector('[aria-label="Expand to full height"]'),
+    'MessageDock header must omit redundant expand/restore button when top handle is draggable',
+  );
+  const grabHandle = document.querySelector<HTMLElement>('.d2-grab-zone')!;
+  assert(grabHandle.getAttribute('role') === 'separator', 'Top grab handle must be an accessible horizontal separator');
+  const changesBeforeDrag = document.querySelector<HTMLElement>('.changes-panel')!.getBoundingClientRect().height;
+  const grabRect = grabHandle.getBoundingClientRect();
+  const dragStartY = grabRect.top + 6;
+  // Drag handle downward by 110px -> shrinks dock and reveals more of ChangesPanel:
+  await act(async () => {
+    grabHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 81, clientX: grabRect.left + 80, clientY: dragStartY }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 81, clientX: grabRect.left + 80, clientY: dragStartY + 110 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 81, clientX: grabRect.left + 80, clientY: dragStartY + 110 }));
+  });
+  const changesAfterDownDrag = document.querySelector<HTMLElement>('.changes-panel')!.getBoundingClientRect().height;
+  assert(
+    changesAfterDownDrag >= changesBeforeDrag + 85
+      && document.querySelector('.changes-panel')?.getAttribute('data-layout-mode') === 'peek'
+      && window.localStorage.getItem('picket.dockHeight') !== null,
+    `Dragging grab handle downward must grow ChangesPanel and persist dock height (before=${changesBeforeDrag}, after=${changesAfterDownDrag})`,
+  );
+  // Drag handle upward to top edge -> snaps cleanly into full-height reading mode and hides ChangesPanel:
+  const grabRect2 = grabHandle.getBoundingClientRect();
+  await act(async () => {
+    grabHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 82, clientX: grabRect2.left + 80, clientY: grabRect2.top + 6 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 82, clientX: grabRect2.left + 80, clientY: grabRect2.top - 320 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 82, clientX: grabRect2.left + 80, clientY: grabRect2.top - 320 }));
+  });
+  assert(
+    document.querySelector('.d2-wrap')?.classList.contains('is-full-height')
+      && document.querySelector('.changes-panel')?.getAttribute('data-layout-mode') === 'hidden'
+      && window.localStorage.getItem('picket.dockHeight') === 'full',
+    'Dragging grab handle to top edge must snap to full-height reading mode and hide ChangesPanel',
+  );
+  // Double-click handle -> resets back to default peek height and clears saved preference:
+  await act(async () => {
+    grabHandle.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  });
+  assert(
+    !document.querySelector('.d2-wrap')?.classList.contains('is-full-height')
+      && document.querySelector('.changes-panel')?.getAttribute('data-layout-mode') === 'peek'
+      && window.localStorage.getItem('picket.dockHeight') === null,
+    'Double-clicking grab handle must restore default peek height and clear persisted override',
+  );
+  checks.push('Input focus, cursor selection, prompt preservation, message priority, floating sheet bounds, and draggable resize handle');
 
   // 4. Tri-state checkboxes, partial staged stats, directory tree grouping, and worktree isolation:
-  await mount(fixture('changed'));
+  await mount(fixture('typing'));
   assert(!document.querySelector('.changes-heading h2') && !document.querySelector('.changes-select-all'), 'Changes header must not render redundant heading or text select-all button');
   const checkbox = document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]')!;
   const topCheckbox = document.querySelector<HTMLInputElement>('.changes-heading input[type="checkbox"]')!;
@@ -272,51 +336,26 @@ export async function verifyWorkbench(root: Root) {
   assert(!document.querySelector<HTMLInputElement>('[aria-label="Select src/service/Order.ts"]')!.checked, 'Worktree selection did not persist across switch');
   checks.push('Selection decoupled from file open, partial staged stats, directory grouping, and worktree isolation');
 
-  // 5. One-click C-Push direct dispatch, verbatim confirmedPlan dispatch, and outdated plan discard & re-plan:
+  // 5. One-click C-Push direct dispatch, deduplication, extra prompt forwarding, and scope isolation:
   const calls: WorkbenchCommand[] = [];
   let finishCPush: (() => void) | undefined;
   const directState = fixture('typing');
-  directState.worktrees[0].plan = undefined;
   await mount(directState, { ...disconnectedBackend, execute(command) { calls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
   await act(async () => { button('C-Push').click(); button('C-Push').click(); });
-  assert(calls.length === 1 && calls[0].kind === 'cPush' && !calls[0].confirmedPlan, 'Direct C-Push without pre-generated plan duplicated dispatch or fabricated confirmedPlan');
-  assert(!document.querySelector('.scope-menu'), 'C-Push must not open manual scope confirmation popover');
+  assert(calls.length === 1 && calls[0].kind === 'cPush', 'Direct one-click C-Push duplicated dispatch');
+  assert(!document.querySelector('.scope-menu') && !document.querySelector('.plan-group-textarea'), 'C-Push must run directly without scope popover or Preview Plan UI');
   if (calls[0].kind === 'cPush') {
-    assert(!calls[0].fileIds.includes('lock') && calls[0].target.worktreeId === 'pay-tree' && calls[0].locale === 'en' && calls[0].commitLanguage === 'en', 'C-Push expanded scope, mismatched target, or omitted locale/commitLanguage');
+    assert(
+      !calls[0].fileIds.includes('lock')
+        && calls[0].target.worktreeId === 'pay-tree'
+        && calls[0].locale === 'en'
+        && calls[0].commitLanguage === 'en'
+        && calls[0].prompt === 'split release notes into its own commit and write detailed bullets',
+      'C-Push expanded scope, mismatched target, or omitted prompt/locale/commitLanguage',
+    );
   }
   await act(async () => { finishCPush?.(); });
-
-  // Valid pre-generated plan edited by user -> C-Push forwards verbatim `confirmedPlan`:
-  const planCalls: WorkbenchCommand[] = [];
-  await mount(fixture('typing'), { ...disconnectedBackend, execute(command) { planCalls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
-  const planBox = document.querySelector<HTMLTextAreaElement>('.plan-group-textarea')!;
-  type(planBox, 'feat(order): edited verbatim plan\n\n- custom bullet 1'); await tick();
-  await click('C-Push');
-  const firstPlanCall = planCalls.at(0);
-  assert(
-    planCalls.length === 1
-      && firstPlanCall?.kind === 'cPush'
-      && firstPlanCall.confirmedPlan?.groups[0].message === 'feat(order): edited verbatim plan\n\n- custom bullet 1',
-    'C-Push with valid pre-generated plan did not send edited confirmedPlan verbatim',
-  );
-  await act(async () => { finishCPush?.(); });
-
-  // Scope change marks plan Outdated -> clicking C-Push discards outdated plan and re-plans (`confirmedPlan === undefined`):
-  const outdatedCalls: WorkbenchCommand[] = [];
-  await mount(fixture('typing'), { ...disconnectedBackend, execute(command) { outdatedCalls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
-  await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.click(); });
-  assert(text().includes('Outdated') && !document.querySelector('.commit-plan-panel .change-notice'), 'Changing selected files must show Outdated badge without verbose notice banner');
-  await click('C-Push');
-  const firstOutdatedCall = outdatedCalls.at(0);
-  assert(
-    outdatedCalls.length === 1
-      && firstOutdatedCall?.kind === 'cPush'
-      && firstOutdatedCall.confirmedPlan === undefined
-      && firstOutdatedCall.fileIds.includes('lock'),
-    'Clicking C-Push with an outdated plan must discard the stale plan and re-plan the new selection',
-  );
-  await act(async () => { finishCPush?.(); });
-  checks.push('One-click C-Push direct dispatch, verbatim edited confirmedPlan, and outdated plan discard & re-plan');
+  checks.push('One-click C-Push direct dispatch, deduplication, extra prompt forwarding, and exact scope isolation');
 
   // 6. Zero-model blocks commits, detached HEAD intercepts C-Push, and model errors offer 1-step Model Settings jump:
   const zeroModelCalls: WorkbenchCommand[] = [];
@@ -336,24 +375,17 @@ export async function verifyWorkbench(root: Root) {
   await mount(fixture('typing'), {
     ...disconnectedBackend,
     async execute(command) {
-      if (command.kind === 'cPush' || command.kind === 'planCPush' || command.kind === 'review') {
+      if (command.kind === 'cPush') {
         throw new Error('Rate limit or quota exceeded (402/429). Check your account balance.');
       }
       return disconnectedBackend.execute(command);
     },
   });
-  await click('Regenerate Plan');
+  await click('C-Push');
   const noticeModelBtn = [...document.querySelectorAll<HTMLButtonElement>('.operation-notice button')].find((b) => b.textContent?.trim() === 'Model Settings');
   assert(!!noticeModelBtn && text().includes('402/429'), 'Quota/auth model error in notice must show 1-step Model Settings button');
   await clickElement(noticeModelBtn!);
   assert(!!document.querySelector('#settings-models-section'), 'Clicking Model Settings from notice must open Settings at Models section');
-  await click('Close Settings');
-  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
-  await click('Review Selected Scope');
-  const reviewModelBtn = [...document.querySelectorAll<HTMLButtonElement>('.review-empty button')].find((b) => b.textContent?.trim() === 'Model Settings');
-  assert(!!reviewModelBtn, 'Model error in Code Review panel must also show 1-step Model Settings button');
-  await clickElement(reviewModelBtn!);
-  assert(!!document.querySelector('#settings-models-section'), 'Clicking Model Settings from Review panel must open Settings');
   await click('Close Settings');
   checks.push('Zero-model block, detached HEAD interception, and 1-step Model Settings jump on model errors');
 
@@ -581,9 +613,17 @@ export async function verifyWorkbench(root: Root) {
   assert(document.querySelector('.changes-list')!.scrollHeight > document.querySelector('.changes-list')!.clientHeight, 'Changes list did not scroll independently');
   for (const height of [600, 700]) {
     document.getElementById('root')!.style.height = `${height}px`; await tick();
-    assert(document.querySelector('.lower-workspace')!.getBoundingClientRect().height > 150, 'Lower workspace collapsed in compact height');
+    const changesRect = document.querySelector('.changes-panel')!.getBoundingClientRect();
+    const footerRect = document.querySelector('.action-footer')!.getBoundingClientRect();
+    assert(changesRect.height > 300 && footerRect.bottom <= height + 1, 'Idle ChangesPanel did not expand or footer overflowed compact height');
   }
-  checks.push('Long paths, independent file scrolling, and 600/700px viewport layout');
+  await mount(fixture('question'));
+  for (const height of [600, 700]) {
+    document.getElementById('root')!.style.height = `${height}px`; await tick();
+    assert(document.querySelector('.lower-workspace')!.getBoundingClientRect().height > 250, 'Expanded dock lower workspace collapsed in compact height');
+    assert(Math.abs(document.querySelector('.changes-panel')!.getBoundingClientRect().height - 116) <= 2, 'ChangesPanel peek height mismatch when dock is expanded');
+  }
+  checks.push('Long paths, independent file scrolling, and 600/700px idle/expanded viewport layout');
 
   // 11. Native macOS overlaid titlebar clearance & long repository badge truncation in Settings:
   document.documentElement.classList.add('native-titlebar');
@@ -761,11 +801,11 @@ export async function verifyWorkbench(root: Root) {
   assert(document.querySelector('.branch-anchor > button')?.textContent?.includes('fix/npe'), 'Late branch reply stole active worktree view');
   checks.push('Late branch reply updates only source worktree when view switched mid-flight');
 
-  // 14. Per-project Editor & Commit Message Language isolation (`orders` vs `cli`) + Preview Plan & C-Push forwarding:
+  // 14. Per-project Editor & Commit Message Language isolation (`orders` vs `cli`) + C-Push forwarding:
   const isolatedOpenCalls: Extract<WorkbenchCommand, { kind: 'openFile' }>[] = [];
-  const isolatedAiCalls: Extract<WorkbenchCommand, { kind: 'planCPush' | 'cPush' }>[] = [];
+  const isolatedAiCalls: Extract<WorkbenchCommand, { kind: 'cPush' }>[] = [];
   let failOpen = false;
-  const multiProjectState = fixture('changed');
+  const multiProjectState = fixture('typing');
   multiProjectState.worktrees = multiProjectState.worktrees.map((tree) => ({
     ...tree,
     files: tree.files.map((file) => ({ ...file, commitToken: `tok-${tree.worktreeId}-${file.id}` })),
@@ -778,27 +818,10 @@ export async function verifyWorkbench(root: Root) {
         if (failOpen) throw new Error(`Executable not found for ${command.editor}. Prompt and selection preserved.`);
         const reply: GitOpenFileReply = {
           protocolVersion: 1, kind: 'openFile', requestId: command.requestId, target: command.target,
-          editor: command.editor, filePath: command.line ? 'src/api/pay.ts' : 'src/service/Order.ts',
+          editor: command.editor, filePath: command.path ?? (command.line ? 'src/api/pay.ts' : 'src/service/Order.ts'),
           action: command.line ? 'goto' : 'stagedDiff', ...(command.line ? { line: command.line } : {}),
         };
         return reply;
-      }
-      if (command.kind === 'planCPush') {
-        isolatedAiCalls.push(command);
-        return {
-          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
-          preparedPlan: {
-            summary: `Planned (${command.commitLanguage})`,
-            groups: [{ id: 'g1', fileIds: command.fileIds, message: `feat(scope): planned-${command.commitLanguage}\n\n- bullet` }],
-            skippedFileIds: [],
-          },
-          session: {
-            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
-            frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
-          },
-        };
       }
       if (command.kind === 'cPush') {
         isolatedAiCalls.push(command);
@@ -808,7 +831,7 @@ export async function verifyWorkbench(root: Root) {
             runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
             sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
             frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'done', canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+            sessionStatus: 'done', autoCollapse: true, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
             message: { id: `done-${command.requestId}`, kind: 'done', title: `Done (${command.commitLanguage})`, description: 'Done' },
           },
         };
@@ -825,10 +848,6 @@ export async function verifyWorkbench(root: Root) {
     orderRow().querySelector<HTMLButtonElement>('.file-diff-link')!.click();
   });
   assert(isolatedOpenCalls.length === 1 && isolatedOpenCalls[0].editor === 'idea' && text().includes('Opened staged diff in IDEA: Order.ts'), 'Clicking right-side diff link did not open staged diff in IDEA');
-  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
-  await act(async () => { document.querySelector<HTMLButtonElement>('.review-finding')!.click(); });
-  assert(isolatedOpenCalls.at(1)?.line === 46 && text().includes('Jumped to pay.ts:46 in IDEA'), 'Review finding click did not jump to line in IDEA');
-  await act(async () => { document.querySelector<HTMLButtonElement>('#commit-tab')!.click(); });
 
   await click('Settings');
   assert(document.querySelector('.project-badge')?.textContent?.trim() === 'my-order-service', 'Settings project badge should show active repository name');
@@ -842,8 +861,8 @@ export async function verifyWorkbench(root: Root) {
     );
   });
   assert(isolatedOpenCalls.at(-1)?.editor === 'rustrover', 'Double-clicking file row should launch rustrover diff');
-  await click('Regenerate Plan');
-  assert(isolatedAiCalls.at(-1)?.kind === 'planCPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh' && isolatedAiCalls.at(-1)?.locale === 'en', 'orders planCPush should send commitLanguage: zh while keeping locale: en');
+  await click('C-Push');
+  assert(isolatedAiCalls.at(-1)?.kind === 'cPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh' && isolatedAiCalls.at(-1)?.locale === 'en', 'orders C-Push should send commitLanguage: zh while keeping locale: en');
 
   await click('my-order-service');
   await clickElement([...document.querySelectorAll<HTMLButtonElement>('.repository-menu button')].find((b) => b.textContent?.includes('picket-cli'))!);
@@ -988,27 +1007,43 @@ export async function verifyWorkbench(root: Root) {
   assert(!document.querySelector('[data-setting-group="editor"]') && text().includes('No supported editors detected'), 'Zero installed editors did not render empty state');
   checks.push('Dynamic installed IDE filtering, fallback, and zero-editor empty state');
 
-  // 16. Preview Plan loading spinner, API key redaction, prompt forwarding to Review, Q&A during Preview Plan, and cancellation:
-  const cancelledIds: string[] = [];
-  let finishPlan: ((reply: CPushCommandReply) => void) | undefined;
-  const m3State = fixture('typing');
-  m3State.worktrees[0].plan = undefined;
-  m3State.worktrees[0].prompt = { text: 'split lockfile separately and check callback auth', revision: 0 };
-  m3State.worktrees[0].files = m3State.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
-  await mount(m3State, {
+  // 16. API key redaction, rich message_user Direction 2 sheet (all 7 blocks + XSS safety + clean-tree IDE jump + fullHeight + dismissal):
+  const richOpenCalls: Extract<WorkbenchCommand, { kind: 'openFile' }>[] = [];
+  const richState = fixture('rich-card');
+  // Also verify clean working tree allows jumping from findings & files blocks via direct `path` + `line`:
+  richState.worktrees[0].files = [];
+  richState.worktrees[0].selectedIds = [];
+  richState.worktrees[0].messages[0].card!.blocks!.unshift(
+    {
+      type: 'markdown',
+      content: 'Checked **4 files** with `dcr` and [PR #128](https://github.com/acme/orders/pull/128). <img src=x onerror=alert(1)>',
+    },
+    {
+      type: 'callout',
+      tone: 'warning',
+      title: 'Attention',
+      content: 'One high-risk finding blocks release.',
+    },
+  );
+  await mount(richState, {
     ...disconnectedBackend,
     async testModel(input) {
       const secret = 'apiKey' in input ? input.apiKey : '';
       throw new Error(`Upstream auth error: Bearer ${secret} rejected`);
     },
-    async cancelRequest(requestId) { cancelledIds.push(requestId); },
-    execute(command) {
-      if (command.kind === 'planCPush') {
-        assert(command.selections?.length === command.fileIds.length && command.selections[0].commitToken === 'tok-order', 'Preview Plan did not pass per-file commitTokens');
-        return new Promise<CPushCommandReply>((resolve) => { finishPlan = resolve; });
-      }
-      if (command.kind === 'review') {
-        return new Promise<ReviewScopeReply>(() => {});
+    async execute(command) {
+      if (command.kind === 'openFile') {
+        richOpenCalls.push(command);
+        return {
+          protocolVersion: 1,
+          kind: 'openFile',
+          requestId: command.requestId,
+          target: command.target,
+          editor: command.editor,
+          filePath: command.path ?? 'src/api/pay.ts',
+          action: 'goto',
+          ...(command.line ? { line: command.line } : {}),
+        } satisfies GitOpenFileReply;
       }
       return disconnectedBackend.execute(command);
     },
@@ -1020,126 +1055,52 @@ export async function verifyWorkbench(root: Root) {
   assert(text().includes('[REDACTED]') && !text().includes('sk-form-secret-5566'), 'Model form error leaked plaintext API key');
   await click('Cancel'); await click('Close Settings');
 
-  await click('Preview Plan');
   assert(
-    text().includes('Generating commit plan…')
-      && !!document.querySelector('.commit-generating .spinning')
-      && (document.querySelector('#commit-tab')?.textContent ?? '').includes('Planning')
-      && !!document.querySelector('.prompt-textarea'),
-    'Generating commit plan should show centered spinner in plan region while keeping extra-instructions input visible above',
+    !!document.querySelector('.d2-sheet.tone-warning')
+      && !!document.querySelector('.d2-md strong')
+      && !document.querySelector('.d2-md img')
+      && text().includes('<img src=x onerror=alert(1)>')
+      && !!document.querySelector('.d2-callout.is-warning')
+      && document.querySelectorAll('.d2-fact-seg').length === 4
+      && document.querySelectorAll('.d2-group-row.is-clickable').length === 2
+      && document.querySelectorAll('.d2-checklist-row').length === 2
+      && !document.querySelector('.d2-code-well pre'),
+    'Direction 2 MessageDock must render all 7 safe blocks (with >8-line code collapsed by default and zero raw HTML execution)',
   );
-  await click('Cancel');
+  // Click finding row on clean tree -> invokes openFile with direct `path` and `line` (no fileId needed):
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-group-row.is-clickable[data-finding-path="src/api/pay.ts"]')!);
   assert(
-    cancelledIds.length === 1
-      && !text().includes('Generating commit plan…')
-      && !!document.querySelector('.plan-empty'),
-    'Cancel during Preview Plan did not invoke cancelRequest or restore empty plan state',
+    richOpenCalls.length === 1
+      && richOpenCalls[0].path === 'src/api/pay.ts'
+      && richOpenCalls[0].line === 46
+      && richOpenCalls[0].fileId === undefined
+      && text().includes('Jumped to pay.ts:46 in IDEA'),
+    'Clicking findings row in MessageDock must jump to path:line in IDE even on a clean working tree',
   );
-
-  // Late `planCPush` reply after user edits prompt must NOT overwrite prompt or populate a stale plan:
-  await click('Preview Plan');
-  const activePlanTarget = targetOf(m3State.worktrees[0]);
-  promptArea = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
-  type(promptArea, 'updated extra instruction while planning'); await tick();
-  await act(async () => {
-    finishPlan!({
-      protocolVersion: 1,
-      kind: 'cPush',
-      requestId: 'ignored',
-      preparedPlan: {
-        summary: 'Stale plan',
-        groups: [{ id: 'g-stale', fileIds: ['order'], message: 'feat: stale plan' }],
-        skippedFileIds: [],
-      },
-      session: {
-        runId: 'ignored', repositoryId: activePlanTarget.repositoryId, worktreeId: activePlanTarget.worktreeId,
-        sessionId: activePlanTarget.sessionId, frozenScopeVersion: activePlanTarget.scopeVersion, modelId: 'test-claude',
-        frozenFileIds: ['order'], committedFileIds: [], skippedFileIds: [],
-        sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
-      },
-    });
-  });
-  assert(promptArea.value === 'updated extra instruction while planning' && !document.querySelector('.plan-group-textarea'), 'Late planCPush reply must not overwrite newer prompt or populate stale plan');
-
-  let capturedPlanCmd: Extract<WorkbenchCommand, { kind: 'planCPush' }> | undefined;
-  let capturedRevCmd: Extract<WorkbenchCommand, { kind: 'review' }> | undefined;
-  await mount(m3State, {
-    ...disconnectedBackend,
-    async cancelRequest(requestId) { cancelledIds.push(requestId); },
-    async execute(command) {
-      if (command.kind === 'planCPush') {
-        capturedPlanCmd = command;
-        return {
-          protocolVersion: 1,
-          kind: 'cPush',
-          requestId: command.requestId,
-          preparedPlan: {
-            summary: 'Prepared 1 commit',
-            groups: [{
-              id: 'g1',
-              fileIds: command.fileIds,
-              message: 'feat(order): add payment callback idempotency lock\n\n- keep staged Order.ts changes\n- add backoff retry and signature error code',
-            }],
-            skippedFileIds: [],
-          },
-          session: {
-            runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
-            frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
-          },
-        };
-      }
-      if (command.kind === 'review') {
-        capturedRevCmd = command;
-        return new Promise<ReviewScopeReply>(() => {});
-      }
-      return disconnectedBackend.execute(command);
-    },
-  });
-  await click('Preview Plan');
-  const expectedPlannedMessage = 'feat(order): add payment callback idempotency lock\n\n- keep staged Order.ts changes\n- add backoff retry and signature error code';
-  assert(
-    capturedPlanCmd?.modelId === 'test-claude'
-      && capturedPlanCmd.prompt === 'split lockfile separately and check callback auth'
-      && document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'split lockfile separately and check callback auth'
-      && document.querySelector<HTMLTextAreaElement>('.plan-group-textarea')?.value === expectedPlannedMessage,
-    'Preview Plan did not populate editable plan below prompt or altered prompt input',
-  );
-  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
-  assert(!document.querySelector('.review-empty [data-help-tip]'), 'Review empty state must not render a ? HelpTip next to Review Selected Scope');
-  await click('Review Selected Scope');
-  assert(capturedRevCmd?.prompt === 'split lockfile separately and check callback auth', 'Code Review did not forward user extra instructions');
-  await click('Cancel Review');
-  assert(cancelledIds.includes(capturedRevCmd!.requestId) && !!document.querySelector('.review-empty'), 'Cancel Review did not restore review empty state');
-  checks.push('Preview Plan loading spinner, API key redaction, prompt forwarding to Code Review, and cancel restoration');
-
-  const lockOnlyState = fixture('typing');
-  lockOnlyState.worktrees[0].selectedIds = ['lock'];
-  lockOnlyState.worktrees[0].files = lockOnlyState.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
-  await mount(lockOnlyState, {
-    ...disconnectedBackend,
-    async execute(command) {
-      if (command.kind === 'review') {
-        return {
-          protocolVersion: 2, kind: 'review', requestId: command.requestId, target: command.target,
-          modelId: command.modelId, findings: [], skippedPaths: ['pnpm-lock.yaml (lockfile skipped by default)'], reviewedFileIds: [],
-        };
-      }
-      return disconnectedBackend.execute(command);
-    },
-  });
-  await act(async () => { document.querySelector<HTMLButtonElement>('#review-tab')!.click(); });
-  assert(!document.querySelector('.review-empty [data-help-tip]'), 'Review empty state must not render a ? HelpTip');
-  await click('Review Selected Scope');
-  assert(text().includes('No files in selected scope were reviewed') && !text().includes('Review passed') && text().includes('Uncovered') && text().includes('pnpm-lock.yaml (lockfile skipped by default)'), 'Lockfile-only review must report Uncovered rather than Review passed');
-  checks.push('M3 lockfile-filtered review coverage honesty without claiming Review passed');
+  // Toggle skipped files disclosure:
+  const skippedToggle = document.querySelector<HTMLButtonElement>('.d2-skipped-wrap .d2-skipped-toggle')!;
+  await clickElement(skippedToggle);
+  assert(skippedToggle.getAttribute('aria-expanded') === 'true' && text().includes('pnpm-lock.yaml'), 'Skipped files disclosure did not reveal skipped lockfile reason');
+  // Expand collapsed >8-line code block and copy:
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-code-title-btn')!);
+  assert(!!document.querySelector('.d2-code-well pre')?.textContent?.includes('line 10'), 'Clicking collapsed code block header did not expand code preview');
+  // Click files block pill -> invokes openFile with direct path/line:
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-blocks .d2-pill')!);
+  assert((richOpenCalls.length as number) === 2 && richOpenCalls[1]?.path === 'src/api/pay.ts' && richOpenCalls[1]?.line === 46, 'Clicking files block pill did not trigger openFile path jump');
+  // Trace details collapse by default when card blocks exist, and expand on click:
+  assert(!document.querySelector('[aria-label="Session execution steps"]'), 'Trace timeline should stay collapsed by default when card has structured blocks');
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-trace-disclosure .d2-skipped-toggle')!);
+  assert(!!document.querySelector('[aria-label="Session execution steps"]'), 'Clicking Details toggle did not expand session execution timeline');
+  // No bulky Got it button; top-right × dismisses completed card cleanly:
+  assert(![...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Got it'), 'Direction 2 sheet must not render legacy bottom Got it button');
+  await click('Dismiss completed notice');
+  assert(!document.querySelector('.message-expanded') && !document.querySelector('.message-collapsed'), 'Top-right dismiss icon must dismiss rich card cleanly');
+  checks.push('API key redaction, Direction 2 MessageDock with all 7 safe blocks, clean-tree findings/files IDE jump, collapsible code/trace, and header dismissal');
 
   // 17. M4 C-Push frozen scope, background question non-interruption, step pause/retry, and Q&A log:
   const cPushSub: { receive?: (event: WorkbenchEvent) => void } = {};
   const cPushCmds: WorkbenchCommand[] = [];
   const cPushState = fixture('typing');
-  cPushState.worktrees[0].plan = undefined;
   cPushState.worktrees[0].files = cPushState.worktrees[0].files.map((file) => ({ ...file, commitToken: `tok-${file.id}` }));
   let resolveInitialCPush: ((reply: Awaited<ReturnType<WorkbenchBackend['execute']>>) => void) | undefined;
   let step2Paused = true;
@@ -1430,7 +1391,7 @@ export async function verifyWorkbench(root: Root) {
     repositoryReadsAvailable: true,
     async execute(command) {
       if (command.kind === 'openFile') {
-        localKeepOpenCalls.push(command.fileId);
+        localKeepOpenCalls.push(command.fileId ?? command.path ?? '');
         return {
           protocolVersion: 1,
           kind: 'openFile',
@@ -1774,7 +1735,157 @@ export async function verifyWorkbench(root: Root) {
       && !document.querySelector('.normal-changes-zone .file-row[data-file-path="RELEASE_NOTES.md"]'),
     'Cold-start hydration did not restore Local Keep group collapsed with kept file excluded from normal changes',
   );
-  checks.push('Local Keep fixed group: collapsed default, right-click & drag move-in/move-out, select-all tri-state, gentle notice, conflict badge, and cold-restart restore');
+
+  // Full filename visibility in List & Tree views + draggable Local Keep height resize handle (hidden when empty):
+  {
+    window.localStorage.removeItem('picket.localKeepHeight');
+    const emptyKeepState = fixture('typing');
+    await mount(emptyKeepState);
+    await clickElement(keepHeader());
+    assert(
+      keepHeader().getAttribute('aria-expanded') === 'true'
+        && keepCount() === '0'
+        && !document.querySelector('.local-keep-resizer'),
+      'Resize handle must stay hidden when Local Keep is expanded with 0 files',
+    );
+
+    const longJavaPath = 'inspur-scm-aggregation-service/src/main/java/com/inspur/scm/aggregation/report/service/ShipSpendTimeCalculationService.java';
+    const siblingVoPath = 'inspur-scm-aggregation-service/src/main/java/com/inspur/scm/aggregation/report/vo/LimsIndicatorsSaveVO.java';
+    const siblingTestPath = 'inspur-scm-aggregation-service/src/test/java/com/inspur/scm/aggregation/report/service/InspectPendingMatchServiceImplTest.java';
+    const layoutState = fixture('typing');
+    layoutState.worktrees[0].files = [
+      {
+        id: 'java-vo',
+        path: siblingVoPath,
+        status: 'M',
+        range: { kind: 'unstaged', added: 3, removed: 0 },
+      },
+      {
+        id: 'java-main',
+        path: longJavaPath,
+        status: 'M',
+        range: { kind: 'unstaged', added: 42, removed: 43 },
+      },
+      {
+        id: 'java-test',
+        path: siblingTestPath,
+        status: 'M',
+        range: { kind: 'unstaged', added: 91, removed: 0 },
+      },
+      ...Array.from({ length: 12 }, (_, idx) => ({
+        id: `kept-${idx}`,
+        path: `inspur-meta-starter/src/main/resources/application-profile-${idx}.yml`,
+        status: 'M' as const,
+        localKeep: true,
+        range: { kind: 'unstaged' as const, added: 3, removed: 2 },
+      })),
+    ];
+    layoutState.worktrees[0].selectedIds = ['java-vo', 'java-main', 'java-test'];
+    await mount(layoutState);
+
+    const listNameEl = document.querySelector<HTMLElement>(`.file-row[data-file-path="${longJavaPath}"] .file-name`)!;
+    const listRowEl = listNameEl.closest<HTMLElement>('.file-row')!;
+    assert(
+      listRowEl.classList.contains('has-directory')
+        && listNameEl.getBoundingClientRect().width > 200
+        && listNameEl.scrollWidth <= listNameEl.clientWidth + 1,
+      `List view must stack directory below filename so long filenames stay legible (width=${listNameEl.getBoundingClientRect().width})`,
+    );
+
+    await click('Switch to directory tree view');
+    const moduleHeading = document.querySelector<HTMLElement>('.normal-changes-zone .directory-heading[data-dir-path="inspur-scm-aggregation-service/src"]')!;
+    const compactedMainHeading = document.querySelector<HTMLElement>('.normal-changes-zone .directory-heading[data-dir-path="inspur-scm-aggregation-service/src/main/java/com/inspur/scm/aggregation/report"]')!;
+    const treeNameEl = document.querySelector<HTMLElement>(`.file-row.grouped[data-file-path="${longJavaPath}"] .file-name`)!;
+    assert(
+      Boolean(moduleHeading)
+        && moduleHeading.classList.contains('is-module')
+        && moduleHeading.getBoundingClientRect().height <= 28
+        && Boolean(compactedMainHeading)
+        && (compactedMainHeading.textContent ?? '').includes('main/…')
+        && (compactedMainHeading.textContent ?? '').includes('report')
+        && compactedMainHeading.getBoundingClientRect().height <= 28
+        && treeNameEl.getBoundingClientRect().width > 200
+        && treeNameEl.scrollWidth <= treeNameEl.clientWidth + 1,
+      `Directory tree must render single-line compressed hierarchy with legible long filenames (moduleH=${moduleHeading?.getBoundingClientRect().height}, nameW=${treeNameEl?.getBoundingClientRect().width})`,
+    );
+
+    // Module-level checkbox deselects/selects all descendant files in one click; folding hides & restores descendants:
+    const moduleCheckbox = moduleHeading.querySelector<HTMLInputElement>('.file-checkbox')!;
+    await act(async () => { moduleCheckbox.click(); });
+    assert(
+      !moduleCheckbox.checked
+        && !document.querySelector<HTMLInputElement>(`[aria-label="Select ${siblingVoPath}"]`)!.checked
+        && !document.querySelector<HTMLInputElement>(`[aria-label="Select ${longJavaPath}"]`)!.checked
+        && !document.querySelector<HTMLInputElement>(`[aria-label="Select ${siblingTestPath}"]`)!.checked,
+      'Unchecking top-level module folder must deselect all descendant files',
+    );
+    await act(async () => { moduleCheckbox.click(); });
+    assert(moduleCheckbox.checked, 'Rechecking top-level module folder must select all descendant files');
+
+    const moduleToggle = moduleHeading.querySelector<HTMLButtonElement>('.directory-toggle')!;
+    await clickElement(moduleToggle);
+    assert(
+      moduleToggle.getAttribute('aria-expanded') === 'false'
+        && !document.querySelector(`.normal-changes-zone .file-row[data-file-path="${longJavaPath}"]`),
+      'Collapsing module folder must hide descendant rows',
+    );
+    await clickElement(moduleToggle);
+    assert(
+      moduleToggle.getAttribute('aria-expanded') === 'true'
+        && Boolean(document.querySelector(`.normal-changes-zone .file-row[data-file-path="${longJavaPath}"]`)),
+      'Re-expanding module folder must restore descendant rows',
+    );
+    await clickElement(keepHeader());
+    assert(
+      document.querySelectorAll('.local-keep-list .directory-heading').length === 1
+        && (document.querySelector('.local-keep-list .directory-heading')?.textContent ?? '').includes('inspur-meta-starter/src/main/resources')
+        && document.querySelectorAll('.local-keep-list .file-row.grouped').length === 12,
+      'Local Keep must also switch to directory tree grouping when tree view is active',
+    );
+    await click('Switch to list view');
+    assert(
+      document.querySelectorAll('.local-keep-list .directory-heading').length === 0
+        && document.querySelectorAll('.local-keep-list .file-row.has-directory').length === 12,
+      'Local Keep must switch back to flat list rows when list view is active',
+    );
+    await clickElement(keepHeader());
+
+    assert(!document.querySelector('.local-keep-resizer'), 'Resize handle must stay hidden while Local Keep is collapsed');
+    await clickElement(keepHeader());
+    const resizer = document.querySelector<HTMLElement>('.local-keep-resizer')!;
+    const keepList = document.querySelector<HTMLElement>('.local-keep-list')!;
+    const initialKeepHeight = keepList.getBoundingClientRect().height;
+    assert(
+      Boolean(resizer) && initialKeepHeight >= 170 && initialKeepHeight <= 190,
+      `Expanded Local Keep with 12 files should default to ~180px height with resize handle (got ${initialKeepHeight})`,
+    );
+
+    // Drag splitter upward by 120px -> Local Keep grows, normal changes retains headroom:
+    const resizerRect = resizer.getBoundingClientRect();
+    const startY = resizerRect.top + 4;
+    await act(async () => {
+      resizer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 41, clientX: resizerRect.left + 80, clientY: startY }));
+      window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 41, clientX: resizerRect.left + 80, clientY: startY - 120 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 41, clientX: resizerRect.left + 80, clientY: startY - 120 }));
+    });
+    const tallerHeight = keepList.getBoundingClientRect().height;
+    const normalListHeight = document.querySelector<HTMLElement>('.changes-list')!.getBoundingClientRect().height;
+    assert(
+      tallerHeight >= initialKeepHeight + 90 && normalListHeight >= 90,
+      `Dragging Local Keep resizer upward must enlarge Local Keep while keeping normal changes visible (taller=${tallerHeight}, normal=${normalListHeight})`,
+    );
+
+    // Double-click resizer -> resets cleanly back to default ~180px and clears persisted override:
+    await act(async () => {
+      resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    });
+    const resetHeight = keepList.getBoundingClientRect().height;
+    assert(
+      Math.abs(resetHeight - 180) <= 4 && window.localStorage.getItem('picket.localKeepHeight') === null,
+      `Double-clicking Local Keep resizer must restore default height (got ${resetHeight})`,
+    );
+  }
+  checks.push('Local Keep fixed group: collapsed default, right-click & drag move-in/move-out, resizable height, full list/tree filenames, select-all tri-state, gentle notice, conflict badge, and cold-restart restore');
 
   // 28. Pinned Compact Mode: browser-preview honesty, 2-row ~86px layout, project & file drawers with top-left anchored height adjustment, ▸ jump targets, non-auto-expand, and background notifications:
   await mount(fixture('typing'));
@@ -1925,7 +2036,6 @@ export async function verifyWorkbench(root: Root) {
   const compactCommands: WorkbenchCommand[] = [];
   const winMock2 = createControlledWindow({ x: 210, y: 145 }, { width: 400, height: 700 });
   const modeState = fixture('typing');
-  modeState.worktrees[0].plan = undefined;
   modeState.worktrees[0].branchToken = 'branch-token-compact';
   await mount(
     modeState,
@@ -2322,22 +2432,7 @@ export async function verifyWorkbench(root: Root) {
   await tick();
   assert(!document.querySelector('.compact-bar') && !!document.querySelector('.message-expanded'), 'Clicking Push failed ▸ must expand and open MessageDock');
 
-  // (b) Click "Plan 2 · Outdated ▸" pill -> expands to Commit Plan tab & focuses .plan-region
-  const outdatedPlanCompact = fixture('changed');
-  outdatedPlanCompact.worktrees[0].tab = 'review';
-  outdatedPlanCompact.windowPrefs = { ...outdatedPlanCompact.windowPrefs, pinned: true, compactMode: true };
-  await mount(outdatedPlanCompact, disconnectedBackend, jumpWin.controller);
-  assert(text().includes('Plan 2 \u00b7 Outdated \u25b8'), 'Compact Row 2 must display outdated plan pill alongside selection trigger');
-  await clickElement(document.querySelector<HTMLButtonElement>('[data-expand-target="plan"]')!);
-  await tick();
-  assert(
-    !document.querySelector('.compact-bar')
-      && document.querySelector<HTMLButtonElement>('#commit-tab')?.getAttribute('aria-selected') === 'true'
-      && !!document.querySelector('.plan-region')?.contains(document.activeElement),
-    'Clicking Plan ▸ pill in Compact Mode must switch to Commit Plan tab and focus .plan-region',
-  );
-
-  // (c) Zero-model Compact Mode -> primary button shows "Configure Model", clicking expands & opens AddModelForm:
+  // (b) Zero-model Compact Mode -> primary button shows "Configure Model", clicking expands & opens AddModelForm:
   const zeroModelCompact = fixture('no-model');
   zeroModelCompact.windowPrefs = { ...zeroModelCompact.windowPrefs, pinned: true, compactMode: true };
   await mount(zeroModelCompact, disconnectedBackend, jumpWin.controller);
@@ -2347,9 +2442,8 @@ export async function verifyWorkbench(root: Root) {
   await tick();
   assert(!document.querySelector('.compact-bar') && !!document.querySelector('.model-form'), 'Clicking Configure Model in Compact Mode must expand and open AddModelForm');
 
-  // (d) Blocking states in Compact Mode (Detached HEAD & Read Error) disable C-Push and explain reason in Row 2:
+  // (c) Blocking states in Compact Mode (Detached HEAD & Read Error) disable C-Push and explain reason in Row 2:
   const detachedCompact = fixture('compact');
-  detachedCompact.worktrees[0].plan = undefined;
   detachedCompact.worktrees[0].detached = true;
   await mount(detachedCompact, disconnectedBackend, jumpWin.controller);
   assert(
@@ -2787,28 +2881,27 @@ export async function verifyWorkbench(root: Root) {
   assert(!!document.querySelector('.compact-bar'), 'Closing Settings opened from Compact Mode after inspecting updates must return to Compact Mode');
   checks.push('In-app updater UI: disconnected boundary, unobtrusive Settings badge dot, progress/cancel, blocker fallback, and compact return');
 
-  // 31. Real DOM motion system: sliding tab indicator, overlay sheet/drill exit animations, popover/collapse/rotating chevrons, dock expand/collapse, and zero-flash compact Settings with animations enabled:
+  // 31. Real DOM motion system: sliding Settings tab indicator, overlay sheet/drill exit animations, popover/collapse/rotating chevrons, dock expand/collapse, and zero-flash compact Settings with animations enabled:
   setInstantMotion(false);
   await mount(fixture('question'));
-  const commitTab = document.querySelector<HTMLButtonElement>('#commit-tab')!;
-  const reviewTab = document.querySelector<HTMLButtonElement>('#review-tab')!;
-  const indicator = document.querySelector<HTMLElement>('.tab-active-indicator')!;
-  assert(
-    !!indicator
-      && Math.abs(indicator.getBoundingClientRect().width - commitTab.getBoundingClientRect().width) <= 2,
-    'Segmented tab list should render sliding active indicator aligned with active Commit Plan tab',
-  );
-  await clickElement(reviewTab);
-  await waitUntil(
-    () => Math.abs(indicator.getBoundingClientRect().left - reviewTab.getBoundingClientRect().left) <= 2,
-    'tab-indicator-slide-to-review',
-  );
   await click('Settings');
   assert(
     document.querySelector('.overlay')?.getAttribute('data-overlay-variant') === 'sheet',
     'Settings opened from Full Workbench must use sheet overlay variant',
   );
-  await openSettingsTab('models');
+  const generalTab = document.querySelector<HTMLButtonElement>('[data-settings-tab="general"]')!;
+  const modelsTab = document.querySelector<HTMLButtonElement>('[data-settings-tab="models"]')!;
+  const indicator = document.querySelector<HTMLElement>('.tab-active-indicator')!;
+  assert(
+    !!indicator
+      && Math.abs(indicator.getBoundingClientRect().width - generalTab.getBoundingClientRect().width) <= 2,
+    'Settings segmented tab list should render sliding active indicator aligned with General tab',
+  );
+  await clickElement(modelsTab);
+  await waitUntil(
+    () => Math.abs(indicator.getBoundingClientRect().left - modelsTab.getBoundingClientRect().left) <= 2,
+    'tab-indicator-slide-to-models',
+  );
   await click('Provider');
   assert(
     document.querySelectorAll('.overlay')[1]?.getAttribute('data-overlay-variant') === 'drill',
@@ -2838,12 +2931,14 @@ export async function verifyWorkbench(root: Root) {
   await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
   await waitUntil(() => !document.querySelector('.branch-menu'), 'branch-popover-exit');
 
-  // MessageDock smooth expand & collapse within lower workspace bounds (tab switch above collapsed the dock):
+  // MessageDock smooth collapse & expand within lower workspace bounds:
+  await click('Collapse Message');
+  await waitUntil(() => !document.querySelector('.message-expanded'), 'message-dock-initial-collapse');
   await click('Expand message: Include release notes in this commit?');
   await waitUntil(() => {
     const lowerRect = document.querySelector('.lower-workspace')?.getBoundingClientRect();
-    const expandedRect = document.querySelector('.message-expanded')?.getBoundingClientRect();
-    return !!lowerRect && !!expandedRect && Math.abs(lowerRect.top - expandedRect.top) <= 1.5;
+    const wrapRect = document.querySelector('.d2-wrap')?.getBoundingClientRect();
+    return !!lowerRect && !!wrapRect && Math.abs(lowerRect.top - wrapRect.top) <= 1.5;
   }, 'message-dock-expand-settle');
   await click('Collapse Message');
   await waitUntil(() => !document.querySelector('.message-expanded'), 'message-dock-collapse-exit');
@@ -2903,19 +2998,19 @@ export async function verifyWorkbench(root: Root) {
   }
   checks.push('Motion system: sliding tab pill, sheet/drill/standalone overlay transitions, popover & collapse exit animations, rotating chevrons, dock glide, and zero-flash compact Settings');
 
-  // Phase 1 UX: floating semantic Toast (zero layout shift), MessageDock true `done` dismissal, and `ask_user_question` questionnaire:
+  // Phase 1 UX: floating semantic Toast (zero layout shift), MessageDock true `done` dismissal, and `message_user` questionnaire:
   setInstantMotion(true);
   await mount(fixture('typing'), {
     ...disconnectedBackend,
     async execute(command) {
-      if (command.kind === 'planCPush') {
+      if (command.kind === 'cPush') {
         throw new Error('Authentication failed (401/403). Verify your API key.');
       }
       return disconnectedBackend.execute(command);
     },
   });
   const changesBeforeToast = document.querySelector('.changes-panel')!.getBoundingClientRect();
-  await click('Regenerate Plan');
+  await click('C-Push');
   const toastEl = document.querySelector<HTMLElement>('.operation-notice');
   const toastLayer = document.querySelector<HTMLElement>('.operation-notice-layer');
   const changesAfterToast = document.querySelector('.changes-panel')!.getBoundingClientRect();
@@ -2954,7 +3049,7 @@ export async function verifyWorkbench(root: Root) {
   await click('Dismiss notice');
   assert(!document.querySelector('.operation-notice'), 'Clicking Dismiss notice must clear the floating Toast');
 
-  // Done message dismissal via inline × (collapsed) and Got it (expanded) also persists read state via backend:
+  // Done message dismissal via inline × (collapsed) and header × (expanded) also persists read state via backend:
   const dismissedDoneIds: string[] = [];
   const doneDismissBackend: WorkbenchBackend = {
     ...disconnectedBackend,
@@ -2968,11 +3063,11 @@ export async function verifyWorkbench(root: Root) {
   assert(!document.querySelector('.message-collapsed') && !document.querySelector('.message-expanded'), 'Clicking inline × on done bar must dismiss the message completely');
   await mount(fixture('done'), doneDismissBackend);
   assert(!!document.querySelector('.message-expanded'), 'Expanded done fixture must open detail card');
-  await click('Got it');
-  assert(!document.querySelector('.message-collapsed') && !document.querySelector('.message-expanded'), 'Clicking Got it on done card must dismiss the message instead of collapsing it back');
+  await click('Dismiss completed notice');
+  assert(!document.querySelector('.message-collapsed') && !document.querySelector('.message-expanded'), 'Clicking header × on done card must dismiss the message instead of collapsing it back');
   assert(dismissedDoneIds.length === 2 && dismissedDoneIds.every((id) => id === 'done'), `Expected both done dismissals to notify backend persistence: ${JSON.stringify(dismissedDoneIds)}`);
 
-  // Multi-question ask_user_question questionnaire with preview, multi-select, and dontAskAgain:
+  // Multi-question message_user questionnaire with preview, multi-select, and dontAskAgain:
   const questionnaireCommands: WorkbenchCommand[] = [];
   const qState = fixture('typing');
   qState.worktrees[0].dockExpanded = true;
@@ -3031,13 +3126,13 @@ export async function verifyWorkbench(root: Root) {
   });
   assert(document.querySelectorAll('.questionnaire-tab').length === 2, 'Multi-question dock must render one tab per question');
   await click('Preview');
-  assert(document.querySelector('.option-preview-block')?.textContent?.includes('git tag -a v0.2.0'), 'Clicking Preview must reveal inline preview snippet');
-  await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="annotated"]')!);
+  assert(document.querySelector('.d2-preview-pre')?.textContent?.includes('git tag -a v0.2.0'), 'Clicking Preview must reveal inline preview snippet');
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="annotated"]')!);
   const dontAskCheckbox = document.querySelector<HTMLInputElement>('.dont-ask-toggle input[type="checkbox"]')!;
   await act(async () => { dontAskCheckbox.click(); });
   await clickElement(document.querySelectorAll<HTMLButtonElement>('.questionnaire-tab')[1]);
-  await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="release"]')!);
-  await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="changelog"]')!);
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="release"]')!);
+  await clickElement(document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="changelog"]')!);
   await click('Submit');
   const submitted = questionnaireCommands.find((cmd) => cmd.kind === 'respond');
   assert(
@@ -3045,9 +3140,9 @@ export async function verifyWorkbench(root: Root) {
       && submitted.questionnaireResponse?.dontAskAgain === true
       && submitted.questionnaireResponse.answers.find((item) => item.questionId === 'strategy')?.selectedLabels.includes('Annotated tag')
       && submitted.questionnaireResponse.answers.find((item) => item.questionId === 'checks')?.selectedLabels.length === 2,
-    `ask_user_question Submit did not forward structured answers and dontAskAgain: ${JSON.stringify(submitted)}`,
+    `message_user Submit did not forward structured answers and dontAskAgain: ${JSON.stringify(submitted)}`,
   );
-  checks.push('Phase 1 UX: zero-shift semantic floating Toast, MessageDock true done dismissal, and multi-question ask_user_question flow');
+  checks.push('Phase 1 UX: zero-shift semantic floating Toast, MessageDock true done dismissal, and multi-question message_user flow');
 
   // Model ID preset auto-fill (Kimi 1M/256K presets) without overwriting manual user edits:
   {
@@ -3347,47 +3442,60 @@ export async function verifyWorkbench(root: Root) {
     assert(text().includes('added to 1'), 'Sync to All Repos did not copy custom action to the second registered repo');
     await click('Save Action');
 
-    // Active button is now "Release Tag", CommitPanel shows its prompt preview, and main button is clickable on clean tree!
+    // Active button is now "Release Tag", ActionContextStrip shows compact 1-line pill that expands into full preview drawer, and main button is clickable on clean tree!
     const mainBtn = document.querySelector<HTMLButtonElement>('.action-split-main')!;
+    const contextPill = document.querySelector<HTMLButtonElement>('.action-context-pill')!;
     assert(
       mainBtn.textContent?.includes('Release Tag')
         && !mainBtn.disabled
-        && Boolean(document.querySelector('.custom-action-preview-card')),
-      'Saved custom action must become clickable on clean tree and display prompt preview in CommitPanel',
+        && Boolean(contextPill)
+        && contextPill.getAttribute('aria-expanded') === 'false'
+        && contextPill.textContent?.includes('Release Tag'),
+      'Saved custom action must become clickable on clean tree and display compact action pill in ActionContextStrip',
     );
+    await clickElement(contextPill);
+    assert(
+      contextPill.getAttribute('aria-expanded') === 'true'
+        && Boolean(document.querySelector('.action-context-drawer .custom-action-prompt-preview')?.textContent?.includes('git tag -a v0.2.0')),
+      'Clicking ActionContextStrip pill must expand custom action prompt drawer',
+    );
+    await clickElement(contextPill);
     await clickElement(mainBtn);
     await tick();
     assert(Boolean(document.querySelector('.message-expanded')), 'Tier-2 write confirmation should open in MessageDock');
     const tier2Checkbox = document.querySelector<HTMLInputElement>('.dont-ask-toggle input[type="checkbox"]')!;
     await act(async () => { tier2Checkbox.click(); });
-    await clickElement(document.querySelector<HTMLButtonElement>('.option-card[data-option-id="approve-write"]')!);
+    const approveBtn = document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="approve-write"]')!;
+    assert(Boolean(approveBtn.closest('.d2-opt-shell.is-primary')), 'Recommended single-select choice must receive high-contrast primary style');
+    await clickElement(approveBtn);
     await waitUntil(
-      () => text().includes('Release Tag completed') && Boolean(document.querySelector('.message-link-chip')),
+      () => text().includes('Release Tag completed') && Boolean(document.querySelector('.d2-link-pill')),
       () => `phase2-custom-action-done (responses=${JSON.stringify(phase2QuestionResponses)}, dockText=${document.querySelector('.message-expanded, .message-collapsed')?.textContent ?? '<none>'})`,
     );
     assert(
       phase2QuestionResponses.some((r) => r.callId === 'confirm-tc-1' && r.dontAskAgain === true),
       `Expected Tier-2 response with dontAskAgain=true, got ${JSON.stringify(phase2QuestionResponses)}`,
     );
-    await click('Got it');
+    await click('Dismiss completed notice');
 
-    // Trusted custom action preview card keeps title + single-line action buttons on row 1 and wrappable badges cleanly on row 2:
+    // Trusted custom action context pill displays Auto-approve badge and expands drawer with single-line Edit / C-Push buttons:
     {
-      const cardRect = document.querySelector('.custom-action-preview-card')!.getBoundingClientRect();
-      const topRect = document.querySelector('.custom-action-preview-top')!.getBoundingClientRect();
-      const metaRect = document.querySelector('.custom-action-preview-meta')!.getBoundingClientRect();
-      const badges = [...document.querySelectorAll('.custom-action-preview-meta .action-meta-badge')];
-      const actionBtns = [...document.querySelectorAll<HTMLButtonElement>('.custom-action-preview-actions button')];
+      const trustedPill = document.querySelector<HTMLButtonElement>('.action-context-pill')!;
+      assert(Boolean(trustedPill.querySelector('.action-meta-badge.is-amber')), 'Trusted custom action pill must show Auto-approve badge');
+      await clickElement(trustedPill);
+      const drawerRect = document.querySelector('.action-context-drawer')!.getBoundingClientRect();
+      const badges = [...document.querySelectorAll('.action-context-drawer .action-meta-badge')];
+      const actionBtns = [...document.querySelectorAll<HTMLButtonElement>('.action-context-drawer .custom-action-preview-actions button')];
       assert(
         badges.length === 2
-          && metaRect.top >= topRect.bottom - 1
           && actionBtns.length === 2
           && actionBtns.every((btn) => {
             const r = btn.getBoundingClientRect();
-            return r.height <= 28 && r.right <= cardRect.right + 1;
+            return r.height <= 28 && r.right <= drawerRect.right + 1;
           }),
-        'Trusted custom action preview header must keep action buttons single-line and place badges cleanly below the title row',
+        'Trusted custom action drawer header must display both badges and keep Edit / C-Push buttons single-line within drawer bounds',
       );
+      await clickElement(trustedPill);
     }
 
     // Compact Mode (400 x 86) Split Button & top-left-anchored actions drawer:
@@ -3501,16 +3609,16 @@ export async function verifyWorkbench(root: Root) {
         // 1) + Prompt textarea inside <Collapse> and MessageDock questionnaire selections survive Space switch:
         const promptBefore = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
         assert(Boolean(promptBefore), 'Expected + Prompt textarea inside Collapse');
-        await clickElement(document.querySelector<HTMLButtonElement>('.message-expanded .option-card[data-option-id="opt-a"]')!);
-        const dockCustomInput = document.querySelector<HTMLInputElement>('.message-expanded .message-reply input')!;
+        await clickElement(document.querySelector<HTMLButtonElement>('.message-expanded .d2-opt-btn[data-option-id="opt-a"]')!);
+        const dockCustomInput = document.querySelector<HTMLInputElement>('.message-expanded .d2-composer input')!;
         type(dockCustomInput, 'keep this note');
         const dockDontAsk = document.querySelector<HTMLInputElement>('.message-expanded .dont-ask-toggle input[type="checkbox"]')!;
         await act(async () => { dockDontAsk.click(); });
         await simulateSpaceSwitch();
         assert(
           document.querySelector<HTMLTextAreaElement>('.prompt-textarea') === promptBefore
-            && document.querySelector('.message-expanded .option-card[data-option-id="opt-a"]')?.classList.contains('is-selected')
-            && document.querySelector<HTMLInputElement>('.message-expanded .message-reply input')?.value === 'keep this note'
+            && document.querySelector('.message-expanded .d2-opt-btn[data-option-id="opt-a"]')?.classList.contains('is-selected')
+            && document.querySelector<HTMLInputElement>('.message-expanded .d2-composer input')?.value === 'keep this note'
             && document.querySelector<HTMLInputElement>('.message-expanded .dont-ask-toggle input[type="checkbox"]')?.checked === true,
           'Space switch (visibilitychange) must not unmount Collapse prompt or wipe MessageDock questionnaire state',
         );
@@ -3964,7 +4072,7 @@ export async function verifyWorkbench(root: Root) {
         return undefined;
       },
     });
-    const followUpInput = document.querySelector<HTMLInputElement>('.message-expanded .message-reply input')!;
+    const followUpInput = document.querySelector<HTMLInputElement>('.message-expanded .d2-composer input')!;
     assert(
       Boolean(followUpInput) && followUpInput.placeholder.includes('Continue or adjust'),
       'Settled Custom Action card in MessageDock must render follow-up steering input',
@@ -3982,9 +4090,70 @@ export async function verifyWorkbench(root: Root) {
       `Follow-up submission did not forward followUpPrompt and resumeFromRunId: ${JSON.stringify(sent)}`,
     );
     assert(text().includes('Committed and pushed follow-up changes.'), 'Follow-up completion message did not render in MessageDock');
-    await click('Got it');
-    assert(!document.querySelector('.message-expanded') && !document.querySelector('.message-collapsed'), 'Clicking Got it must dismiss settled follow-up action card');
+    await click('Dismiss completed notice');
+    assert(!document.querySelector('.message-expanded') && !document.querySelector('.message-collapsed'), 'Clicking header × must dismiss settled follow-up action card');
     checks.push('Custom Action in-place follow-up steering in MessageDock forwards followUpPrompt & resumeFromRunId and dismisses cleanly');
+  }
+
+  // Pinned MessageDock progress bar & independent auto-scrolling command timeline:
+  {
+    const progressState = fixture('typing');
+    const repoId = progressState.worktrees[0].repositoryId;
+    progressState.repositorySettings[repoId] = {
+      editor: 'idea',
+      commitLanguage: 'en',
+      customActions: [{ id: 'act-merge', label: 'Merge test', prompt: 'Merge into test branch' }],
+      activeActionId: 'act-merge',
+    };
+    progressState.worktrees[0].sessionStatus = 'running';
+    progressState.worktrees[0].dockExpanded = true;
+    progressState.worktrees[0].customAction = {
+      runId: 'run-progress-scroll',
+      actionId: 'act-merge',
+      actionLabel: 'Merge test',
+      timeline: [
+        ...Array.from({ length: 17 }, (_, idx) => ({ state: 'done' as const, label: `Run command step ${idx + 1}` })),
+        { state: 'active' as const, label: 'Run glab label' },
+      ],
+      commits: [],
+      links: [],
+    };
+    progressState.worktrees[0].messages = [{
+      id: 'progress-run-scroll',
+      kind: 'progress',
+      title: 'Merge test',
+      description: 'Run glab label',
+      progress: { completed: 60, total: 100, label: 'Run glab label' },
+    }];
+    await mount(progressState);
+    const headerEl = document.querySelector<HTMLElement>('.message-expanded .d2-header')!;
+    const pinnedProgress = document.querySelector<HTMLElement>('.message-expanded .d2-progress-pinned')!;
+    const scrollArea = document.querySelector<HTMLElement>('.message-expanded .d2-scroll')!;
+    const fallbackDesc = document.querySelector('.message-expanded .d2-fallback-desc');
+    assert(
+      Boolean(pinnedProgress)
+        && !scrollArea.contains(pinnedProgress)
+        && !fallbackDesc
+        && (pinnedProgress.textContent ?? '').includes('Run glab label')
+        && (pinnedProgress.textContent ?? '').includes('17/18')
+        && pinnedProgress.getBoundingClientRect().top >= headerEl.getBoundingClientRect().bottom - 1
+        && scrollArea.getBoundingClientRect().top >= pinnedProgress.getBoundingClientRect().bottom - 1,
+      'Progress bar must stay pinned directly beneath MessageDock header without duplicating identical description text',
+    );
+    const pinnedTopBefore = pinnedProgress.getBoundingClientRect().top;
+    assert(
+      scrollArea.scrollHeight > scrollArea.clientHeight && scrollArea.scrollTop > 0,
+      `Long running timeline must overflow and auto-scroll to latest step (scrollHeight=${scrollArea.scrollHeight}, clientHeight=${scrollArea.clientHeight}, scrollTop=${scrollArea.scrollTop})`,
+    );
+    await act(async () => {
+      scrollArea.scrollTop = 0;
+      scrollArea.dispatchEvent(new Event('scroll'));
+    });
+    assert(
+      Math.abs(pinnedProgress.getBoundingClientRect().top - pinnedTopBefore) < 0.5,
+      'Scrolling timeline body must keep pinned progress header fixed in place',
+    );
+    checks.push('MessageDock pins progress strip beneath header, deduplicates matching description, and auto-scrolls command timeline independently');
   }
 
   return {

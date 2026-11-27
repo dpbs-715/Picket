@@ -31,7 +31,7 @@ export function buildCustomActionPrompts(
     PICKET_DESKTOP_OVERLAY.customActionOverlay,
     '</picket_desktop_overlay>',
     '',
-    `UI / user-facing interaction language: ${uiLanguage}. Write all questions, explanations, and your final \`summary\` in concise ${uiLanguage}.`,
+    `UI / user-facing interaction language: ${uiLanguage}. Write all \`message_user\` cards, questions, explanations, and your final \`summary\` in concise ${uiLanguage}.`,
     `Commit message language preference: ${commitLangNote}`,
   ].join('\n');
 
@@ -97,7 +97,7 @@ export function buildGenerateCustomActionPrompts(
     PICKET_DESKTOP_OVERLAY.createActionOverlay,
     '</picket_desktop_overlay>',
     '',
-    `Write \`label\`, \`summary\`, and any clarifying \`ask_user_question\` text in concise ${uiLanguage}.`,
+    `Write \`label\`, \`summary\`, and any clarifying \`message_user\` text in concise ${uiLanguage}.`,
   ].join('\n');
 
   const parts = [

@@ -1,4 +1,4 @@
-//! C-Push planning, Rust-side plan validation, Preview Plan entry, and Start C-Push entry.
+//! C-Push planning, Rust-side plan validation, and Start C-Push entry.
 
 use super::{
     CPUSH_AI_IDLE_TIMEOUT, CPushCoordinator,
@@ -7,8 +7,8 @@ use super::{
 };
 use crate::{
     foundation::pi::{
-        PiCPushCommitGroup, PiCPushPlan, PiCPushQaTurn, PiCommand, PiPaths, PiPlanFileEntry,
-        PiSupervisor, PiTaskOutcome, PiToolExecutionResult, RequestContext,
+        PiCPushPlan, PiCPushQaTurn, PiCommand, PiPaths, PiPlanFileEntry, PiSupervisor,
+        PiTaskOutcome, PiToolExecutionResult, RequestContext,
     },
     i18n::{self, LanguageKind},
     models::store::{ModelStore, ResolvedRuntimeSpec},
@@ -117,146 +117,7 @@ pub(super) fn validate_plan_in_rust(
     }
 }
 
-pub(super) fn validate_confirmed_plan_in_rust(
-    confirmed: &CPushConfirmedPlan,
-    frozen_files: &[FrozenCPushFile],
-    locale: LanguageKind,
-) -> Result<(Vec<PiCPushCommitGroup>, Vec<String>), String> {
-    let authorized_ids: HashSet<&str> = frozen_files.iter().map(|f| f.file_id.as_str()).collect();
-    if confirmed.groups.is_empty() && confirmed.skipped_file_ids.is_empty() {
-        return Err(i18n::cpush::cpush_plan_empty_group_error(locale).into());
-    }
-    let mut seen = HashSet::with_capacity(frozen_files.len());
-    for skipped in &confirmed.skipped_file_ids {
-        if !authorized_ids.contains(skipped.as_str()) {
-            return Err(i18n::cpush::cpush_plan_unauthorized_skip_error(locale).into());
-        }
-        if !seen.insert(skipped.as_str()) {
-            return Err(i18n::cpush::cpush_plan_duplicate_file_error(locale).into());
-        }
-    }
-    let mut validated_groups = Vec::with_capacity(confirmed.groups.len());
-    for (index, group) in confirmed.groups.iter().enumerate() {
-        if group.file_ids.is_empty() {
-            return Err(i18n::cpush::cpush_plan_empty_group_error(locale).into());
-        }
-        if group.message.trim().is_empty()
-            || group.message.contains('\0')
-            || group.message.len() > 1024 * 1024
-        {
-            return Err(i18n::cpush::cpush_plan_invalid_message_error(locale).into());
-        }
-        for id in &group.file_ids {
-            if !authorized_ids.contains(id.as_str()) {
-                return Err(i18n::cpush::cpush_plan_unselected_file_error(locale).into());
-            }
-            if !seen.insert(id.as_str()) {
-                return Err(i18n::cpush::cpush_plan_duplicate_file_error(locale).into());
-            }
-        }
-        let id = if group.id.trim().is_empty() {
-            format!("group-{}", index + 1)
-        } else {
-            group.id.clone()
-        };
-        // Preserve the user's edited commit message verbatim without re-normalizing or rewriting:
-        validated_groups.push(PiCPushCommitGroup {
-            id,
-            message: group.message.clone(),
-            file_ids: group.file_ids.clone(),
-        });
-    }
-    if seen.len() != authorized_ids.len() {
-        return Err(i18n::cpush::cpush_plan_incomplete_coverage_error(locale).into());
-    }
-    Ok((validated_groups, confirmed.skipped_file_ids.clone()))
-}
-
 impl CPushCoordinator {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn plan_cpush(
-        &self,
-        storage_dir: &Path,
-        paths: &PiPaths,
-        supervisor: &PiSupervisor,
-        models: &ModelStore,
-        repo_store: &RepositoryStore,
-        request: &PlanCPushRequest,
-        mut on_progress: impl FnMut(CPushProgressEvent) -> Result<(), String> + Send,
-    ) -> Result<CPushCommandReply, String> {
-        let locale = request.locale;
-        repository::validate_request_id_with_locale(&request.request_id, locale)?;
-        let wt_gate = self.worktree_gate(&request.target.worktree_id)?;
-        let _wt_guard = wt_gate.lock_owned().await;
-        let _op_guard = self.track_operation();
-
-        if let Some(existing_reply) = self.lookup_processed_request(&request.request_id)? {
-            return Ok(existing_reply);
-        }
-        self.ensure_no_busy_session(storage_dir, &request.target.worktree_id, locale, true)
-            .await?;
-
-        let spec = models
-            .resolve_runtime_spec_with_locale(storage_dir, &request.model_id, locale)
-            .await?;
-        let extracted = repo_store
-            .extract_cpush_scope(&request.target, &request.selections, locale)
-            .await?;
-        repo_store
-            .preflight_commit_scope(&request.target, &request.selections, locale)
-            .await?;
-
-        let run_id = request.request_id.clone();
-        let mut session = StoredCPushSession {
-            run_id: run_id.clone(),
-            repository_id: request.target.repository_id.clone(),
-            worktree_id: request.target.worktree_id.clone(),
-            session_id: request.target.session_id.clone(),
-            frozen_scope_version: request.target.scope_version.clone(),
-            model_id: request.model_id.clone(),
-            branch: extracted.branch,
-            initial_head: extracted.initial_head,
-            prompt: request.prompt.clone(),
-            recent_commits: extracted.recent_commits,
-            unselected_paths: extracted.unselected_paths,
-            frozen_files: extracted.files,
-            planned_groups: Vec::new(),
-            skipped_file_ids: Vec::new(),
-            next_step_index: 0,
-            committed_file_ids: Vec::new(),
-            commits: Vec::new(),
-            qa_log: Vec::new(),
-            timeline: Vec::new(),
-            session_status: CPushSessionStatus::Idle,
-            message: None,
-            can_retry_remaining: false,
-            push_authorized: false,
-            plan_only: true,
-            auto_collapse: false,
-            notice_dismissed: false,
-            locale,
-            commit_language: request.commit_language,
-        };
-
-        let plan = self
-            .invoke_pi_planner(paths, supervisor, repo_store, &spec, &run_id, &session)
-            .await?;
-
-        let reply = self
-            .apply_plan_or_execute(
-                storage_dir,
-                repo_store,
-                &request.request_id,
-                &mut session,
-                plan,
-                &mut on_progress,
-            )
-            .await?;
-
-        self.record_processed_request(&request.request_id, &reply)?;
-        Ok(reply)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub async fn start_cpush(
         &self,
@@ -288,66 +149,6 @@ impl CPushCoordinator {
             .await?;
 
         let run_id = request.request_id.clone();
-        if let Some(confirmed) = &request.confirmed_plan {
-            let (validated_groups, validated_skipped) =
-                validate_confirmed_plan_in_rust(confirmed, &extracted.files, locale)?;
-            let planned_file_ids: HashSet<&str> = validated_groups
-                .iter()
-                .flat_map(|group| group.file_ids.iter().map(String::as_str))
-                .collect();
-            let planned_selections: Vec<_> = request
-                .selections
-                .iter()
-                .filter(|sel| planned_file_ids.contains(sel.file_id.as_str()))
-                .cloned()
-                .collect();
-            if !planned_selections.is_empty() {
-                repo_store
-                    .preflight_commit_scope(&request.target, &planned_selections, locale)
-                    .await?;
-            }
-            let mut session = StoredCPushSession {
-                run_id: run_id.clone(),
-                repository_id: request.target.repository_id.clone(),
-                worktree_id: request.target.worktree_id.clone(),
-                session_id: request.target.session_id.clone(),
-                frozen_scope_version: request.target.scope_version.clone(),
-                model_id: request.model_id.clone(),
-                branch: extracted.branch,
-                initial_head: extracted.initial_head,
-                prompt: request.prompt.clone(),
-                recent_commits: extracted.recent_commits,
-                unselected_paths: extracted.unselected_paths,
-                frozen_files: extracted.files,
-                planned_groups: validated_groups,
-                skipped_file_ids: validated_skipped,
-                next_step_index: 0,
-                committed_file_ids: Vec::new(),
-                commits: Vec::new(),
-                qa_log: Vec::new(),
-                timeline: Vec::new(),
-                session_status: CPushSessionStatus::Running,
-                message: None,
-                can_retry_remaining: false,
-                push_authorized: request.push.unwrap_or(true) && !confirmed.skip_push,
-                plan_only: false,
-                auto_collapse: false,
-                notice_dismissed: false,
-                locale,
-                commit_language: request.commit_language,
-            };
-            let reply = self
-                .execute_planned_groups(
-                    storage_dir,
-                    repo_store,
-                    &request.request_id,
-                    &mut session,
-                    &mut on_progress,
-                )
-                .await?;
-            self.record_processed_request(&request.request_id, &reply)?;
-            return Ok(reply);
-        }
 
         repo_store
             .preflight_commit_scope(&request.target, &request.selections, locale)
@@ -686,45 +487,15 @@ impl CPushCoordinator {
                     kind: "cPush",
                     request_id: request_id.to_owned(),
                     session: public,
-                    prepared_plan: None,
                     repository_snapshot: None,
                 })
             }
             PiCPushPlan::Ready {
-                summary,
+                summary: _,
                 groups,
                 skipped_file_ids,
                 skip_push,
             } => {
-                if session.plan_only {
-                    self.remove_in_memory(&session.worktree_id)?;
-                    self.persist_all(storage_dir).await?;
-                    let idle_public = CPushSessionSnapshot {
-                        session_status: CPushSessionStatus::Idle,
-                        message: None,
-                        timeline: Vec::new(),
-                        skipped_file_ids: skipped_file_ids.clone(),
-                        ..session.to_public()
-                    };
-                    let _ = on_progress(CPushProgressEvent {
-                        protocol_version: CPUSH_PROTOCOL_VERSION,
-                        session: idle_public.clone(),
-                        repository_snapshot: None,
-                    });
-                    return Ok(CPushCommandReply {
-                        protocol_version: CPUSH_PROTOCOL_VERSION,
-                        kind: "cPush",
-                        request_id: request_id.to_owned(),
-                        session: idle_public,
-                        prepared_plan: Some(CPushPreparedPlan {
-                            summary,
-                            groups,
-                            skipped_file_ids,
-                            skip_push,
-                        }),
-                        repository_snapshot: None,
-                    });
-                }
                 if skip_push {
                     session.push_authorized = false;
                 }

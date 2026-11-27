@@ -16,7 +16,6 @@ import {
 } from './actions';
 import {
   dismissDesktopCPushDone,
-  planDesktopCPush,
   pullRebaseDesktop,
   reconcileDesktopCPush,
   respondDesktopCPush,
@@ -29,7 +28,6 @@ import {
   deleteDesktopProviderConnection,
   listDesktopProviderModels,
   revealDesktopProviderApiKey,
-  reviewDesktopScope,
   saveDesktopModel,
   selectDesktopModel,
   testDesktopModelConnection,
@@ -127,39 +125,6 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
     if (command.kind === 'deleteProviderConnection') {
       return deleteDesktopProviderConnection(command.connectionId, command.locale);
     }
-    if (command.kind === 'review') {
-      if (!command.selections?.length || command.selections.length !== command.fileIds.length
-        || command.selections.some((item, index) => item.fileId !== command.fileIds[index] || !item.commitToken)) {
-        throw new Error(t.missingModelScopeTokens);
-      }
-      return reviewDesktopScope({
-        requestId: command.requestId,
-        target: command.target,
-        modelId: command.modelId,
-        selections: command.selections,
-        prompt: command.prompt,
-        changedPaths: command.changedPaths,
-        locale: command.locale,
-      });
-    }
-    if (command.kind === 'planCPush') {
-      if (!command.selections?.length || command.selections.length !== command.fileIds.length
-        || command.selections.some((item, index) => item.fileId !== command.fileIds[index] || !item.commitToken)) {
-        throw new Error(t.missingCPushScopeTokens);
-      }
-      return planDesktopCPush(
-        {
-          requestId: command.requestId,
-          target: command.target,
-          modelId: command.modelId,
-          selections: command.selections,
-          prompt: command.prompt,
-          ...(command.locale ? { locale: command.locale } : {}),
-          ...(command.commitLanguage ? { commitLanguage: command.commitLanguage } : {}),
-        },
-        (progress) => emitWorkbenchEvent({ type: 'cPushProgress', progress }),
-      );
-    }
     if (command.kind === 'cPush') {
       if (!command.selections?.length || command.selections.length !== command.fileIds.length
         || command.selections.some((item, index) => item.fileId !== command.fileIds[index] || !item.commitToken)) {
@@ -172,7 +137,6 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
           modelId: command.modelId,
           selections: command.selections,
           prompt: command.prompt,
-          ...(command.confirmedPlan ? { confirmedPlan: command.confirmedPlan } : {}),
           ...(command.push !== undefined ? { push: command.push } : {}),
           ...(command.locale ? { locale: command.locale } : {}),
           ...(command.commitLanguage ? { commitLanguage: command.commitLanguage } : {}),
@@ -227,13 +191,17 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
       );
     }
     if (command.kind === 'openFile') {
+      if (!command.fileId && !command.path) {
+        throw new Error(t.editorReplyMismatch);
+      }
       if (command.line !== undefined && (!Number.isSafeInteger(command.line) || command.line < 1)) {
         throw new Error(t.invalidLineNumber);
       }
       const request = {
         requestId: command.requestId,
         target: command.target,
-        fileId: command.fileId,
+        ...(command.fileId ? { fileId: command.fileId } : {}),
+        ...(command.path ? { path: command.path } : {}),
         editor: command.editor,
         ...(command.line !== undefined ? { line: command.line } : {}),
         ...(command.locale ? { locale: command.locale } : {}),

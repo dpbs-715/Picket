@@ -439,9 +439,6 @@ impl PiSupervisor {
                     PiEvent::ModelsListed { models, .. } => {
                         return Ok(PiTaskOutcome::ModelsListed { models });
                     }
-                    PiEvent::ReviewCompleted { findings, .. } => {
-                        return Ok(PiTaskOutcome::ReviewCompleted { findings });
-                    }
                     PiEvent::CPushPlanCompleted { plan, .. } => {
                         return Ok(PiTaskOutcome::CPushPlanCompleted { plan });
                     }

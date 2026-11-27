@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { repositoryReply } from '../testing/repository-fixture';
-import { emptyWorkbench, isPlanOutdated, targetOf, workbenchReducer } from './workbench';
+import { emptyWorkbench, workbenchReducer } from './workbench';
 import type { WorkbenchState } from './workbench';
 
 function open(state = emptyWorkbench(), requestId = 'open-1', sequence = 1) {
@@ -14,7 +14,7 @@ function refresh(state: WorkbenchState, change: (reply: ReturnType<typeof reposi
 }
 const active = (state: WorkbenchState) => state.worktrees.find((tree) => tree.worktreeId === 'pay-tree')!;
 
-describe('Real repository snapshot merged with local prompt and plan state', () => {
+describe('Real repository snapshot merged with local prompt state', () => {
   it('displays Git snapshot on open, seeds repositorySettings, and selects all normal changes including lockfiles by default', () => {
     const state = open();
     expect(state.activeWorktreeId).toBe('pay-tree'); expect(state.repositories[0].name).toBe('real-contract-fixture');
@@ -48,46 +48,32 @@ describe('Real repository snapshot merged with local prompt and plan state', () 
     expect(active(state).unselectedIds).toEqual(['lock']);
 
     state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'keep instruction' });
-    const target = targetOf(active(state));
-    state = workbenchReducer(state, { type: 'request', target, kind: 'plan', requestId: 'p1' });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: { type: 'planPrepared', target, requestId: 'p1', modelId: 'm1', plan: { summary: '1', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: x' }], skippedFileIds: [] } },
-    });
     const scope = active(state).scopeVersion;
 
-    // Manually unchecked lockfile changing on disk does NOT invalidate scope or plan:
+    // Manually unchecked lockfile changing on disk does NOT invalidate scope:
     state = refresh(state, (reply) => {
       reply.snapshot!.worktrees[0].files[4].contentVersion = 'changed-lock';
     });
     expect(active(state).prompt.text).toBe('keep instruction');
-    expect(isPlanOutdated(active(state))).toBe(false);
     expect(active(state).scopeVersion).toBe(scope);
     expect(active(state).selectedIds).not.toContain('lock');
 
-    // Newly appearing normal file IS automatically selected and marks existing plan outdated:
+    // Newly appearing normal file IS automatically selected and updates scopeVersion:
     state = refresh(state, (reply) => {
       reply.snapshot!.worktrees[0].files[4].contentVersion = 'changed-lock';
       reply.snapshot!.worktrees[0].files.push({ ...reply.snapshot!.worktrees[0].files[1], id: 'new-file', path: 'new.ts' });
     }, 'refresh-2', 3);
     expect(active(state).selectedIds).toContain('new-file');
     expect(active(state).selectedIds).not.toContain('lock');
-    expect(isPlanOutdated(active(state))).toBe(true);
+    expect(active(state).scopeVersion).not.toBe(scope);
   });
 
-  it('invalidates scope and marks plan outdated on selected content change while preserving prompt text and selection', () => {
+  it('invalidates scope on selected content change while preserving prompt text and selection', () => {
     let state = open();
     state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'manual instruction' });
-    const target = targetOf(active(state));
-    state = workbenchReducer(state, { type: 'request', target, kind: 'plan', requestId: 'p1' });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: { type: 'planPrepared', target, requestId: 'p1', modelId: 'm1', plan: { summary: '1', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: x' }], skippedFileIds: [] } },
-    });
     const oldScope = active(state).scopeVersion;
     state = refresh(state, (reply) => { reply.snapshot!.worktrees[0].files[0].contentVersion = 'changed-staged-content'; });
     expect(active(state).prompt.text).toBe('manual instruction');
-    expect(isPlanOutdated(active(state))).toBe(true);
     expect(active(state).scopeVersion).not.toBe(oldScope);
     expect(active(state).selectedIds).toHaveLength(5);
   });
@@ -133,18 +119,11 @@ describe('Real repository snapshot merged with local prompt and plan state', () 
     expect(missing.readError).toContain('no longer in Git'); expect(missing.prompt.text).toBe('other worktree prompt');
   });
 
-  it('invalidates scope and plan when HEAD or branch changes without fabricating push completion', () => {
+  it('invalidates scope when HEAD or branch changes without fabricating push completion', () => {
     let state = open();
-    const target = targetOf(active(state));
-    state = workbenchReducer(state, { type: 'request', target, kind: 'plan', requestId: 'p1' });
-    state = workbenchReducer(state, {
-      type: 'event',
-      event: { type: 'planPrepared', target, requestId: 'p1', modelId: 'm1', plan: { summary: '1', groups: [{ id: 'g1', fileIds: ['order'], message: 'feat: x' }], skippedFileIds: [] } },
-    });
     const scope = active(state).scopeVersion;
     state = refresh(state, (reply) => { reply.snapshot!.worktrees[0].branch = 'another'; reply.snapshot!.worktrees[0].head = 'head-2'; });
     expect(active(state).scopeVersion).not.toBe(scope);
-    expect(isPlanOutdated(active(state))).toBe(true);
     expect(active(state).messages).toEqual([]);
     expect(active(state).sessionStatus).toBe('idle');
   });

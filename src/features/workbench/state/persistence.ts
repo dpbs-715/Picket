@@ -42,7 +42,6 @@ export function serializeWorkbenchPersistence(state: WorkbenchState, revision: n
       selectedIds: [...tree.selectedIds],
       unselectedIds: [...(tree.unselectedIds ?? computeNormalUnselectedIds(tree.files, tree.selectedIds))],
       scopeVersion: tree.scopeVersion,
-      tab: tree.tab,
     })),
   };
 }
@@ -177,7 +176,6 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
           unselectedIds,
           scopeVersion,
           prompt: { text: saved.promptText, revision: 0 },
-          tab: saved.tab,
         };
       })();
       if (savedCPush && savedCPush.sessionStatus !== 'idle') {

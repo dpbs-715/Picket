@@ -46,7 +46,6 @@ interface UseWindowModeParams {
   notify: NotifyFn;
   setModelOverlay: Dispatch<SetStateAction<ModelOverlayState>>;
   onClearOverlays: () => void;
-  onSelectCommitTab: () => void;
 }
 
 export function useWindowMode({
@@ -61,7 +60,6 @@ export function useWindowMode({
   notify,
   setModelOverlay,
   onClearOverlays,
-  onSelectCommitTab,
 }: UseWindowModeParams) {
   const [settingsSession, setSettingsSession] = useState<SettingsSession | null>(null);
   const settingsSessionRef = useRef<SettingsSession | null>(null);
@@ -353,8 +351,6 @@ export function useWindowMode({
       captureModeSwitchFocus(target);
       if (target === 'dock' && worktree) {
         dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded: true });
-      } else if (target === 'plan') {
-        onSelectCommitTab();
       } else if (target === 'addModel') {
         openConfigureModel();
       }
@@ -400,14 +396,8 @@ export function useWindowMode({
       return;
     }
     if (pendingFocus.kind === 'dock') {
-      const dock = document.querySelector<HTMLElement>('.message-expanded, .message-collapsed');
-      (dock?.querySelector<HTMLElement>('.message-actions button, .message-reply input, button') ?? dock)?.focus();
-      return;
-    }
-    if (pendingFocus.kind === 'plan') {
-      const region = document.querySelector<HTMLElement>('.plan-region');
-      region?.scrollIntoView({ block: 'nearest' });
-      (region?.querySelector<HTMLElement>('textarea, button:not(:disabled)') ?? region)?.focus();
+      const dock = document.querySelector<HTMLElement>('.d2-sheet, .message-expanded, .message-collapsed');
+      (dock?.querySelector<HTMLElement>('.d2-bottom button, .d2-bottom input, .message-actions button, .message-reply input, button') ?? dock)?.focus();
       return;
     }
     if (pendingFocus.kind === 'repo') {

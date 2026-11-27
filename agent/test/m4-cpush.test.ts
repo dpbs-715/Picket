@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { describe, expect, it } from 'vitest';
 import type { PlanCPushCommand, ProbeEvent } from '../../shared/pi-protocol';
 import { getSidecarMessages } from '../src/i18n';
-import { buildCPushPlanPrompts, buildReviewPrompts, createTaskRunner, parseCPushPlan } from '../src/tasks';
+import { buildCPushPlanPrompts, createTaskRunner, parseCPushPlan } from '../src/tasks';
 
 function basePlanCommand(qaCount = 0, overrides: Partial<PlanCPushCommand> = {}): PlanCPushCommand {
   return {
@@ -164,7 +164,7 @@ describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
     });
   });
 
-  it('separates UI interaction locale from Git commitLanguage, enforces permission boundaries on user extra instructions, and forwards review instructions', () => {
+  it('separates UI interaction locale from Git commitLanguage and enforces permission boundaries on user extra instructions', () => {
     const enUiZhCommit = buildCPushPlanPrompts(basePlanCommand(0, {
       locale: 'en',
       commitLanguage: 'zh',
@@ -182,21 +182,25 @@ describe('M4 Pi Core C-Push plan parser and scope invariants', () => {
     expect(zhUiEnCommit.systemPrompt).toContain('UI interaction language (`locale = "zh"`): write `summary`');
     expect(zhUiEnCommit.systemPrompt).toContain('in clear, concise Chinese.');
     expect(zhUiEnCommit.systemPrompt).toContain('`commitLanguage = "en"`, `<commit_skill_spec>` flag `-en`');
-    expect(zhUiEnCommit.systemPrompt).toContain('1 to 4 concise `- ` bullet points');
+    expect(zhUiEnCommit.systemPrompt).toContain('1 to 6 concise `- ` bullet points');
     expect(zhUiEnCommit.systemPrompt).not.toMatch(/keep single-line by default|Use a body only when/i);
+  });
 
-    const revPrompt = buildReviewPrompts({
-      type: 'reviewScope',
-      requestId: 'rev-1',
-      context: { repositoryId: 'repo-1', worktreeId: 'wt-1', sessionId: 'sess-1', scopeVersion: 'v1' },
-      model: { provider: 'anthropic', modelId: 'claude-sonnet-4-20250514', baseUrl: '', apiKey: 'sk-placeholder' },
-      branch: 'main',
-      prompt: 'Check concurrency lock ordering in Order.ts',
-      files: [{ fileId: 'f1', path: 'src/Order.ts', status: 'M', rangeKind: 'unstaged', added: 5, removed: 1, patch: '+lock()' }],
-      skippedPaths: [],
-    });
-    expect(revPrompt.systemPrompt).toContain('strictly within the supplied patches without inventing findings on unselected files');
-    expect(revPrompt.userPrompt).toContain('User review instructions / context:\nCheck concurrency lock ordering in Order.ts');
+  it('guides cohesion-first vertical grouping and prevents horizontal layer or companion-artifact over-splitting', () => {
+    const prompts = buildCPushPlanPrompts(basePlanCommand(0, {
+      files: [
+        { fileId: 'f-proto', path: 'shared/cpush-protocol.ts', status: 'M', rangeKind: 'unstaged', added: 8, removed: 0, patch: '+skipPush?: boolean;' },
+        { fileId: 'f-rust', path: 'src-tauri/src/cpush/plan.rs', status: 'M', rangeKind: 'unstaged', added: 24, removed: 2 },
+        { fileId: 'f-test', path: 'src/features/workbench/testing/browser-checks.ts', status: 'M', rangeKind: 'unstaged', added: 40, removed: 0, patch: '+assert(true);' },
+      ],
+    }));
+    expect(prompts.systemPrompt).toContain('Default to 1 commit');
+    expect(prompts.systemPrompt).toContain('NEVER horizontally by technical layer or directory');
+    expect(prompts.systemPrompt).toContain('Keep companion artifacts with their primary commit');
+    expect(prompts.systemPrompt).toContain('NEVER 1 commit per subdirectory');
+    expect(prompts.systemPrompt).toContain('never to imitate fine-grained commit splitting');
+    expect(prompts.userPrompt).toContain('do NOT imitate their split granularity');
+    expect(prompts.userPrompt).toContain('do NOT start a separate commit group merely because it lives in another directory');
   });
 
   it('emits a bottom Master Checklist with @1..@N aliases, highlights status=D deleted files, and normalizes @index aliases to canonical fileIds', () => {

@@ -52,7 +52,6 @@ describe('Workbench cross-restart v2 persistence projection and hydration', () =
 
     const payTree = hydrated.worktrees.find((tree) => tree.worktreeId === 'pay-tree')!;
     expect(payTree.selectedIds).toEqual(['order']);
-    expect(payTree.tab).toBe('review');
     expect(payTree.prompt.text).toBe('split lockfile separately');
 
     const fixTree = hydrated.worktrees.find((tree) => tree.worktreeId === 'fix-tree')!;

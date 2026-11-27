@@ -1,7 +1,7 @@
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { getMessages } from '../../../i18n/messages';
 import { isCustomActionWorkbenchAction, reduceCustomAction } from './reducerCustomActions';
-import { matchesTarget, receiveEvent, updateWorktreeSelection } from './reducerEvents';
+import { receiveEvent, updateWorktreeSelection } from './reducerEvents';
 import {
   applyCustomActionProgress,
   applyLocalKeepUpdate,
@@ -57,28 +57,6 @@ function reduceWorktreeLocal(worktree: Worktree, action: WorkbenchAction): Workt
       return { ...worktree, prompt: { text: action.text, revision: worktree.prompt.revision + 1 } };
     case 'clearPrompt':
       return { ...worktree, prompt: { text: '', revision: worktree.prompt.revision + 1 } };
-    case 'planGroupEdited': {
-      if (!worktree.plan || !worktree.plan.groups.some((group) => group.id === action.groupId)) return worktree;
-      return {
-        ...worktree,
-        plan: {
-          ...worktree.plan,
-          groups: worktree.plan.groups.map((group) => (group.id === action.groupId ? { ...group, message: action.message } : group)),
-        },
-        planRevision: worktree.planRevision + 1,
-      };
-    }
-    case 'planCleared': {
-      if (!worktree.plan && !worktree.requests.plan) return worktree;
-      return {
-        ...worktree,
-        plan: undefined,
-        planRevision: worktree.planRevision + 1,
-        requests: { ...worktree.requests, plan: undefined },
-      };
-    }
-    case 'tab':
-      return { ...worktree, tab: action.tab, dockExpanded: false };
     case 'dock':
       return { ...worktree, dockExpanded: action.expanded };
     case 'dismissMessage': {
@@ -111,7 +89,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     return receiveCPushProgress(state, action.event.progress);
   }
   if (action.type === 'event' && action.event.type === 'customActionProgress') {
-    return applyCustomActionProgress(state, action.event.progress);
+    return applyCustomActionProgress(state, action.event.progress, Boolean(action.suppressExpand));
   }
   if (isCustomActionWorkbenchAction(action)) return reduceCustomAction(state, action);
 
@@ -120,8 +98,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     return {
       ...state,
       worktrees: state.worktrees.map((tree) => {
-        if (tree.worktreeId !== action.worktreeId || (isActiveSession(tree) && !tree.cPush?.planOnly)) return tree;
-        const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
+        if (tree.worktreeId !== action.worktreeId || isActiveSession(tree)) return tree;
         const progressMsg: Message = {
           id: `progress-${action.runId}`,
           kind: 'progress',
@@ -132,10 +109,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         };
         return {
           ...tree,
-          requests: { ...tree.requests, plan: undefined },
           sessionStatus: 'running',
           dockExpanded: action.expandDock ? true : tree.dockExpanded,
-          messages: [...reviewMessages, progressMsg],
+          messages: [progressMsg],
           customAction: undefined,
           cPush: {
             runId: action.runId,
@@ -150,7 +126,6 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             qaLog: [],
             commits: [],
             canRetryRemaining: false,
-            planOnly: false,
           },
         };
       }),
@@ -168,7 +143,7 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           ...tree,
           sessionStatus: 'idle',
           dockExpanded: false,
-          messages: tree.messages.filter((msg) => msg.kind === 'review'),
+          messages: [],
           cPush: undefined,
         };
       }),
@@ -208,8 +183,6 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         ? {
             ...tree,
             readError: action.error ?? fallbackError,
-            review: { ...tree.review, status: tree.review.status === 'running' ? tree.requests.review?.previousReviewStatus ?? 'idle' : tree.review.status },
-            requests: {},
           }
         : tree),
     };
@@ -381,52 +354,6 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
     worktrees: state.worktrees.map((worktree) => {
       if (action.type === 'event') {
         return receiveEvent(worktree, action.event, new Set(localKeepPathsFor(state, worktree.repositoryId)));
-      }
-      if (action.type === 'request' || action.type === 'requestFailed') {
-        if (!matchesTarget(worktree, action.target)) return worktree;
-        if (action.type === 'requestFailed') {
-          if (worktree.requests[action.kind]?.id !== action.requestId) return worktree;
-          if (action.kind === 'review') {
-            const prevStatus = worktree.requests.review?.previousReviewStatus ?? 'idle';
-            return {
-              ...worktree,
-              requests: { ...worktree.requests, review: undefined },
-              review: {
-                ...worktree.review,
-                status: action.error && prevStatus !== 'done' ? 'failed' : prevStatus,
-                error: action.error,
-              },
-            };
-          }
-          return { ...worktree, requests: { ...worktree.requests, plan: undefined } };
-        }
-        if (action.kind === 'plan') {
-          return {
-            ...worktree,
-            requests: {
-              ...worktree.requests,
-              plan: {
-                id: action.requestId,
-                promptRevision: worktree.prompt.revision,
-                planRevision: worktree.planRevision,
-                fileIds: action.fileIds ?? worktree.selectedIds,
-              },
-            },
-          };
-        }
-        return {
-          ...worktree,
-          requests: {
-            ...worktree.requests,
-            review: {
-              id: action.requestId,
-              promptRevision: worktree.prompt.revision,
-              fileIds: action.fileIds ?? worktree.selectedIds,
-              previousReviewStatus: worktree.requests.review?.previousReviewStatus ?? worktree.review.status,
-            },
-          },
-          review: { ...worktree.review, status: 'running', error: undefined },
-        };
       }
       if (worktree.worktreeId !== action.worktreeId) return worktree;
       return reduceWorktreeLocal(worktree, action);

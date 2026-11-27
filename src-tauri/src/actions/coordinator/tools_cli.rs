@@ -8,7 +8,7 @@ use crate::{
         executor::{exec_controlled_git, exec_controlled_platform_cli},
         policy::{CommandDecision, classify_git_command, classify_platform_cli_command},
         session_store::{self, SubmitSessionLedger},
-        types::{AskUserQuestionRequest, CustomActionMessageProgress, CustomActionUiMessage},
+        types::{CustomActionMessageProgress, CustomActionUiMessage, MessageUserRequest},
     },
     foundation::pi::PiToolExecutionResult,
     i18n,
@@ -121,7 +121,7 @@ pub(super) async fn handle_install_platform_cli(
         .unwrap_or(false);
     if !authorized {
         return PiToolExecutionResult::error(format!(
-            "Installation of `{tool}` is blocked because the user has not explicitly approved it via `ask_user_question` in this session. Ask the user with an option whose id is `install-{tool}` and preview `brew install {tool}` first."
+            "Installation of `{tool}` is blocked because the user has not explicitly approved it via `message_user` (with `questions`) in this session. Ask the user with an option whose id is `install-{tool}` and preview `brew install {tool}` first."
         ));
     }
     let override_dirs = ctx.coordinator.override_cli_dirs();
@@ -141,6 +141,7 @@ pub(super) async fn handle_install_platform_cli(
                 files: None,
                 commits: None,
                 links: None,
+                card: None,
                 questionnaire: None,
                 progress: Some(CustomActionMessageProgress {
                     completed: 2,
@@ -169,29 +170,84 @@ pub(super) async fn handle_install_platform_cli(
     }
 }
 
-pub(super) async fn handle_ask_user_question(
+pub(super) async fn handle_message_user(
     ctx: &ActionToolContext,
     call_id: &str,
     args: Value,
 ) -> PiToolExecutionResult {
-    let req: AskUserQuestionRequest = match serde_json::from_value(args) {
+    let raw_req: MessageUserRequest = match serde_json::from_value(args) {
         Ok(parsed) => parsed,
         Err(err) => {
-            return PiToolExecutionResult::error(format!(
-                "Invalid ask_user_question payload: {err}"
-            ));
+            return PiToolExecutionResult::error(format!("Invalid message_user payload: {err}"));
         }
     };
+    let req = match raw_req.sanitize_and_validate() {
+        Ok(valid) => valid,
+        Err(err) => return PiToolExecutionResult::error(err),
+    };
+
+    let merged_links = req.merged_links();
+    if !merged_links.is_empty()
+        && let Ok(mut st) = ctx.run_state.lock()
+    {
+        append_unique_links(&mut st.links, merged_links.clone());
+    }
+
+    // Non-blocking rich display / live report card (no `questions`, never grants authorizations).
+    if !req.has_questions() {
+        let card = req.to_card(&ctx.action_label);
+        let subtitle = card.subtitle.clone().unwrap_or_default();
+        let all_links = if let Ok(mut st) = ctx.run_state.lock() {
+            st.published_card = Some(card.clone());
+            push_timeline_step(&mut st.timeline, "done", card.title.clone());
+            st.links.clone()
+        } else {
+            merged_links
+        };
+        (ctx.emit)(
+            "running",
+            None,
+            Some(CustomActionUiMessage {
+                id: format!("progress-{}", ctx.run_id),
+                kind: "progress".into(),
+                title: card.title.clone(),
+                description: subtitle,
+                scope: req.context.as_ref().and_then(|c| c.scope.clone()),
+                files: None,
+                commits: None,
+                links: (!all_links.is_empty()).then_some(all_links),
+                card: Some(card.clone()),
+                questionnaire: None,
+                progress: Some(CustomActionMessageProgress {
+                    completed: 2,
+                    total: 3,
+                    label: card.title.clone(),
+                }),
+            }),
+            None,
+        );
+        (ctx.persist)("running", card.title);
+        return PiToolExecutionResult {
+            ok: true,
+            content: "{\"displayed\":true}".into(),
+            details: Some(serde_json::json!({ "displayed": true })),
+            is_error: false,
+        };
+    }
+
+    // Blocking Q&A interaction with optional rich `blocks` rendered right above the choices.
+    let first_q = req.questions_slice().first();
     let title = req
-        .questions
-        .first()
-        .map(|q| q.header.clone())
+        .title
+        .clone()
+        .or_else(|| first_q.map(|q| q.header.clone()))
         .unwrap_or_else(|| ctx.action_label.clone());
     let desc = req
-        .questions
-        .first()
-        .map(|q| q.question.clone())
+        .subtitle
+        .clone()
+        .or_else(|| first_q.map(|q| q.question.clone()))
         .unwrap_or_default();
+    let card = req.card_if_present(&title);
     (ctx.emit)(
         "needsDecision",
         Some(call_id.to_owned()),
@@ -203,7 +259,8 @@ pub(super) async fn handle_ask_user_question(
             scope: req.context.as_ref().and_then(|c| c.scope.clone()),
             files: None,
             commits: None,
-            links: req.context.as_ref().and_then(|c| c.links.clone()),
+            links: (!merged_links.is_empty()).then_some(merged_links),
+            card,
             questionnaire: Some(req.clone()),
             progress: None,
         }),
@@ -218,18 +275,27 @@ pub(super) async fn handle_ask_user_question(
         Ok(response) => {
             (ctx.persist)("running", String::new());
             let resuming_label = i18n::actions::action_resuming_label(ctx.locale).to_owned();
+            let preserved_card = ctx
+                .run_state
+                .lock()
+                .ok()
+                .and_then(|st| st.published_card.clone());
             (ctx.emit)(
                 "running",
                 None,
                 Some(CustomActionUiMessage {
                     id: format!("progress-{}", ctx.run_id),
                     kind: "progress".into(),
-                    title: ctx.action_label.clone(),
+                    title: preserved_card
+                        .as_ref()
+                        .map(|c| c.title.clone())
+                        .unwrap_or_else(|| ctx.action_label.clone()),
                     description: resuming_label.clone(),
                     scope: None,
                     files: None,
                     commits: None,
                     links: None,
+                    card: preserved_card,
                     questionnaire: None,
                     progress: Some(CustomActionMessageProgress {
                         completed: 2,

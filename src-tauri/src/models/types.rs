@@ -1,8 +1,5 @@
 use super::defaults::{model_defaults, resolve_default_token_limits, validate_token_limits};
-use crate::{
-    i18n::{self, LanguageKind, deserialize_language_or_default},
-    repository::types::{CommitSelection, ReadTarget},
-};
+use crate::i18n::{self, LanguageKind, deserialize_language_or_default};
 use serde::{Deserialize, Serialize};
 
 pub const MODEL_PROTOCOL_VERSION: u8 = 2;
@@ -392,65 +389,6 @@ pub struct ConnectionIdRequest {
     pub connection_id: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     pub locale: LanguageKind,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReviewScopeRequest {
-    pub request_id: String,
-    pub target: ReadTarget,
-    pub model_id: String,
-    pub selections: Vec<CommitSelection>,
-    pub prompt: String,
-    #[serde(default)]
-    pub changed_paths: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "deserialize_language_or_default")]
-    pub locale: LanguageKind,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewFindingWire {
-    pub id: String,
-    pub file_id: String,
-    pub path: String,
-    pub line: u32,
-    pub severity: String,
-    pub title: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewScopeReply {
-    pub protocol_version: u8,
-    pub kind: &'static str,
-    pub request_id: String,
-    pub target: ReadTarget,
-    pub model_id: String,
-    pub findings: Vec<ReviewFindingWire>,
-    pub skipped_paths: Vec<String>,
-    pub reviewed_file_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ModelStreamEvent {
-    Started {
-        request_id: String,
-        kind: &'static str,
-        target: ReadTarget,
-    },
-    Delta {
-        request_id: String,
-        kind: &'static str,
-        target: ReadTarget,
-        delta: String,
-    },
 }
 
 pub fn validate_http_base_url(raw: &str, locale: LanguageKind) -> Result<String, String> {

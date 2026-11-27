@@ -1,7 +1,4 @@
-use crate::{
-    i18n::LanguageKind, repository::ai_context::ExtractedDiffFile,
-    skills::RuntimeSkillOverrideCatalog,
-};
+use crate::{i18n::LanguageKind, skills::RuntimeSkillOverrideCatalog};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -93,20 +90,6 @@ pub enum PiCommand {
         model: PiProviderSpec,
         locale: LanguageKind,
     },
-    ReviewScope {
-        request_id: String,
-        context: RequestContext,
-        model: PiProviderSpec,
-        branch: String,
-        prompt: String,
-        files: Vec<ExtractedDiffFile>,
-        skipped_paths: Vec<String>,
-        locale: LanguageKind,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        enable_tools: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        skill_overrides: Option<RuntimeSkillOverrideCatalog>,
-    },
     #[serde(rename = "planCPush")]
     PlanCPush {
         request_id: String,
@@ -190,7 +173,6 @@ impl PiCommand {
         match self {
             Self::TestConnection { locale, .. }
             | Self::ListModels { locale, .. }
-            | Self::ReviewScope { locale, .. }
             | Self::PlanCPush { locale, .. }
             | Self::ResolveConflict { locale, .. }
             | Self::RunCustomAction { locale, .. }
@@ -228,17 +210,6 @@ impl PiToolExecutionResult {
             is_error: true,
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PiReviewFinding {
-    pub file_id: String,
-    pub path: String,
-    pub line: u32,
-    pub severity: String,
-    pub title: String,
-    pub reason: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -373,11 +344,6 @@ pub enum PiEvent {
         context: RequestContext,
         models: Vec<PiRemoteModelOption>,
     },
-    ReviewCompleted {
-        request_id: String,
-        context: RequestContext,
-        findings: Vec<PiReviewFinding>,
-    },
     #[serde(rename = "cPushPlanCompleted")]
     CPushPlanCompleted {
         request_id: String,
@@ -451,11 +417,6 @@ impl PiEvent {
                 context,
                 ..
             }
-            | Self::ReviewCompleted {
-                request_id,
-                context,
-                ..
-            }
             | Self::CPushPlanCompleted {
                 request_id,
                 context,
@@ -497,9 +458,6 @@ pub enum PiTaskOutcome {
     },
     ModelsListed {
         models: Vec<PiRemoteModelOption>,
-    },
-    ReviewCompleted {
-        findings: Vec<PiReviewFinding>,
     },
     CPushPlanCompleted {
         plan: PiCPushPlan,

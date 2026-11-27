@@ -120,7 +120,10 @@ impl EditorKind {
 pub struct OpenFileRequest {
     pub request_id: String,
     pub target: ReadTarget,
-    pub file_id: String,
+    #[serde(default)]
+    pub file_id: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
     pub editor: EditorKind,
     pub line: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
@@ -215,7 +218,8 @@ pub struct PersistedWorktreeState {
     #[serde(default)]
     pub unselected_ids: Vec<String>,
     pub scope_version: String,
-    pub tab: WorkbenchTab,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<WorkbenchTab>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

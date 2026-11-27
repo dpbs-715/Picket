@@ -1,9 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import type {
-  AskUserQuestionAnswer,
-  AskUserQuestionRequest,
-  AskUserQuestionResponse,
-} from '../../../shared/ask-user-protocol';
 import {
   CUSTOM_ACTION_LIMITS,
   isCustomActionWriteTrusted,
@@ -14,8 +9,15 @@ import {
   type GenerateCustomActionProgressEvent,
   type GenerateCustomActionReply,
 } from '../../../shared/custom-action-protocol';
+import type {
+  MessageUserAnswer,
+  MessageUserCard,
+  MessageUserRequest,
+  MessageUserResponse,
+} from '../../../shared/message-user-protocol';
 import { useI18n } from '../../i18n';
 import { Icon, Overlay } from '../../ui/controls';
+import { MessageBlocks } from '../workbench/components/MessageBlocks';
 
 interface Props {
   repositoryName: string;
@@ -42,7 +44,7 @@ interface Props {
   onRespondGenerateQuestion?(
     runId: string,
     callId: string,
-    response: AskUserQuestionResponse,
+    response: MessageUserResponse,
   ): Promise<boolean>;
   onCancelGenerate?(runId: string): void;
   onConfigureModel(): void;
@@ -79,8 +81,10 @@ export function CustomActionModal(props: Props) {
   const [pendingQuestion, setPendingQuestion] = useState<{
     runId: string;
     callId: string;
-    request: AskUserQuestionRequest;
+    request: MessageUserRequest;
+    card?: MessageUserCard;
   } | null>(null);
+  const [liveCard, setLiveCard] = useState<MessageUserCard | null>(null);
   const [activeQuestionIdx, setActiveQuestionIdx] = useState(0);
   const [selectedByQ, setSelectedByQ] = useState<Record<number, string[]>>({});
   const [customByQ, setCustomByQ] = useState<Record<number, string>>({});
@@ -157,17 +161,22 @@ export function CustomActionModal(props: Props) {
     setGenerating(true);
     setError(null);
     setPendingQuestion(null);
+    setLiveCard(null);
     setStatusLabel(t.actions.createInspectingStatus);
 
     try {
       const reply = await props.onGenerateWithPi(requestId, trimmed, (event) => {
         if (activeRunIdRef.current !== requestId) return;
         setStatusLabel(event.statusLabel);
+        if (event.card) {
+          setLiveCard(event.card);
+        }
         if (event.status === 'needsDecision' && event.pendingCallId && event.questionnaire) {
           setPendingQuestion({
             runId: event.runId,
             callId: event.pendingCallId,
             request: event.questionnaire,
+            ...(event.card ? { card: event.card } : {}),
           });
           setActiveQuestionIdx(0);
           setSelectedByQ({});
@@ -182,6 +191,7 @@ export function CustomActionModal(props: Props) {
         setPrompt(reply.draft.prompt);
         setDraftSummary(reply.draft.summary);
         setPendingQuestion(null);
+        setLiveCard(null);
         setMode('manual');
       }
     } catch (err) {
@@ -205,6 +215,7 @@ export function CustomActionModal(props: Props) {
     }
     setGenerating(false);
     setPendingQuestion(null);
+    setLiveCard(null);
     setStatusLabel('');
   }
 
@@ -215,15 +226,16 @@ export function CustomActionModal(props: Props) {
   ) {
     if (!pendingQuestion || !props.onRespondGenerateQuestion) return;
     const { runId, callId, request } = pendingQuestion;
+    const reqQuestions = request.questions ?? [];
     const selMap = overrideSelections ?? selectedByQ;
     const customMap = overrideCustoms ?? customByQ;
-    const answers: AskUserQuestionAnswer[] = [];
+    const answers: MessageUserAnswer[] = [];
     const unanswered: number[] = [];
 
     if (cancelled) {
-      request.questions.forEach((_, idx) => unanswered.push(idx));
+      reqQuestions.forEach((_, idx) => unanswered.push(idx));
     } else {
-      request.questions.forEach((q, idx) => {
+      reqQuestions.forEach((q, idx) => {
         const ids = selMap[idx] ?? [];
         const customText = (customMap[idx] ?? '').trim();
         const labels = ids
@@ -256,21 +268,16 @@ export function CustomActionModal(props: Props) {
     }
   }
 
-  const currentQuestion = pendingQuestion?.request.questions[
-    Math.min(activeQuestionIdx, (pendingQuestion?.request.questions.length ?? 1) - 1)
-  ];
-  const isSingleQuick = Boolean(
-    pendingQuestion
-    && pendingQuestion.request.questions.length === 1
-    && !pendingQuestion.request.questions[0].multiSelect,
-  );
+  const pendingQuestions = pendingQuestion?.request.questions ?? [];
+  const currentQuestion = pendingQuestions.length > 0
+    ? pendingQuestions[Math.min(activeQuestionIdx, pendingQuestions.length - 1)]
+    : undefined;
+  const isSingleQuick = pendingQuestions.length === 1 && !pendingQuestions[0].multiSelect;
   const currentSelectedIds = selectedByQ[activeQuestionIdx] ?? [];
   const currentCustom = customByQ[activeQuestionIdx] ?? '';
-  const hasAnyAnswer = Boolean(
-    pendingQuestion && pendingQuestion.request.questions.some((_, idx) => (
-      (selectedByQ[idx]?.length ?? 0) > 0 || Boolean((customByQ[idx] ?? '').trim())
-    )),
-  );
+  const hasAnyAnswer = pendingQuestions.some((_, idx) => (
+    (selectedByQ[idx]?.length ?? 0) > 0 || Boolean((customByQ[idx] ?? '').trim())
+  ));
 
   const title = isEditing ? t.actions.editModalTitle : t.actions.newModalTitle;
   const handleBackOrClose = () => {
@@ -359,11 +366,21 @@ export function CustomActionModal(props: Props) {
                     </div>
                   )}
 
+                  {!pendingQuestion && liveCard?.blocks && liveCard.blocks.length > 0 && (
+                    <div className="create-pi-question">
+                      {liveCard.title && <p className="create-pi-question-text">{liveCard.title}</p>}
+                      <MessageBlocks blocks={liveCard.blocks} editorShort="IDE" />
+                    </div>
+                  )}
+
                   {pendingQuestion && currentQuestion && (
                     <div className="create-pi-question">
-                      {pendingQuestion.request.questions.length > 1 && (
+                      {pendingQuestion.card?.blocks && pendingQuestion.card.blocks.length > 0 && (
+                        <MessageBlocks blocks={pendingQuestion.card.blocks} editorShort="IDE" />
+                      )}
+                      {pendingQuestions.length > 1 && (
                         <div className="questionnaire-tabs" role="tablist">
-                          {pendingQuestion.request.questions.map((item, idx) => (
+                          {pendingQuestions.map((item, idx) => (
                             <button
                               type="button"
                               role="tab"

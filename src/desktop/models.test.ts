@@ -16,7 +16,6 @@ import {
   decodeModelTestReply,
   decodeProviderRevealKeyReply,
   decodeProviderSaveReply,
-  decodeReviewScopeReply,
   MODEL_PROTOCOL_VERSION,
 } from '../../shared/model-protocol';
 import { decodeWorkbenchRestoreReply } from '../../shared/workbench-persistence-protocol';
@@ -128,47 +127,34 @@ describe('M3 desktop model protocol, provider connections, and security boundari
       apiKey: 'sk-ant-1',
     })).rejects.toThrow('match');
 
-    // Missing per-file commitTokens on planCPush and review is rejected before IPC:
+    // Missing per-file commitTokens on cPush is rejected before IPC:
     const target = { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' };
     await expect(desktopWorkbenchBackend.execute({
-      kind: 'planCPush',
-      requestId: 'plan-no-token',
+      kind: 'cPush',
+      requestId: 'cpush-no-token',
       target,
       fileIds: ['f1'],
       modelId: 'm1',
       prompt: 'split lockfile',
     })).rejects.toThrow('scope tokens');
-    await expect(desktopWorkbenchBackend.execute({
-      kind: 'review',
-      requestId: 'rev-no-token',
-      target,
-      fileIds: ['f1'],
-      modelId: 'm1',
-      prompt: 'check error paths',
-    })).rejects.toThrow('scope tokens');
     expect(invokeMock).toHaveBeenCalledTimes(2);
 
-    // Valid planCPush & review round-trips verify target, modelId, prompt, locale, and commitLanguage:
+    // Valid cPush round-trip verifies target, modelId, prompt, locale, and commitLanguage:
     invokeMock.mockResolvedValueOnce({
       protocolVersion: 1,
       kind: 'cPush',
-      requestId: 'plan-ok',
-      preparedPlan: {
-        summary: 'Prepared 1 commit',
-        groups: [{ id: 'g1', fileIds: ['f1'], message: 'feat(pay): add idempotency check\n\n- guard duplicate callbacks' }],
-        skippedFileIds: [],
-      },
+      requestId: 'cpush-ok',
       session: {
-        runId: 'plan-ok',
+        runId: 'cpush-ok',
         repositoryId: 'r1',
         worktreeId: 'w1',
         sessionId: 's1',
         frozenScopeVersion: 'v1',
         modelId: 'm1',
         frozenFileIds: ['f1'],
-        committedFileIds: [],
+        committedFileIds: ['f1'],
         skippedFileIds: [],
-        sessionStatus: 'idle',
+        sessionStatus: 'done',
         message: null,
         timeline: [],
         qaLog: [],
@@ -176,9 +162,9 @@ describe('M3 desktop model protocol, provider connections, and security boundari
         canRetryRemaining: false,
       },
     });
-    const planReply = await desktopWorkbenchBackend.execute({
-      kind: 'planCPush',
-      requestId: 'plan-ok',
+    const cPushReply = await desktopWorkbenchBackend.execute({
+      kind: 'cPush',
+      requestId: 'cpush-ok',
       target,
       fileIds: ['f1'],
       selections: [{ fileId: 'f1', commitToken: 'tok-1' }],
@@ -187,61 +173,13 @@ describe('M3 desktop model protocol, provider connections, and security boundari
       locale: 'en',
       commitLanguage: 'zh',
     });
-    expect(planReply).toMatchObject({
+    expect(cPushReply).toMatchObject({
       kind: 'cPush',
-      preparedPlan: {
-        summary: 'Prepared 1 commit',
-        groups: [{ id: 'g1', fileIds: ['f1'] }],
-      },
+      requestId: 'cpush-ok',
     });
     expect(invokeMock.mock.calls[2][1]).toMatchObject({
       request: { prompt: 'write detailed bullets', locale: 'en', commitLanguage: 'zh' },
     });
-
-    invokeMock.mockResolvedValueOnce({
-      protocolVersion: MODEL_PROTOCOL_VERSION,
-      kind: 'review',
-      requestId: 'rev-ok',
-      target,
-      modelId: 'm1',
-      findings: [],
-      skippedPaths: [],
-      reviewedFileIds: ['f1'],
-    });
-    await desktopWorkbenchBackend.execute({
-      kind: 'review',
-      requestId: 'rev-ok',
-      target,
-      fileIds: ['f1'],
-      selections: [{ fileId: 'f1', commitToken: 'tok-1' }],
-      modelId: 'm1',
-      prompt: 'focus on concurrency',
-      locale: 'zh',
-    });
-    expect(invokeMock.mock.calls[3][1]).toMatchObject({
-      request: { prompt: 'focus on concurrency', locale: 'zh' },
-    });
-
-    // Wrong target on review reply is rejected:
-    invokeMock.mockResolvedValueOnce({
-      protocolVersion: MODEL_PROTOCOL_VERSION,
-      kind: 'review',
-      requestId: 'rev-bad-target',
-      target: { ...target, worktreeId: 'other-wt' },
-      modelId: 'm1',
-      findings: [],
-      skippedPaths: [],
-      reviewedFileIds: ['f1'],
-    });
-    await expect(desktopWorkbenchBackend.execute({
-      kind: 'review',
-      requestId: 'rev-bad-target',
-      target,
-      fileIds: ['f1'],
-      selections: [{ fileId: 'f1', commitToken: 'tok-1' }],
-      modelId: 'm1',
-      prompt: '',
-    })).rejects.toThrow('mismatch');
 
     expect(decodeModelTestReply({
       protocolVersion: MODEL_PROTOCOL_VERSION,
@@ -250,16 +188,6 @@ describe('M3 desktop model protocol, provider connections, and security boundari
       summary: 'ok',
       latencyMs: 5,
     }).provider).toBe('ollama');
-    expect(() => decodeReviewScopeReply({
-      protocolVersion: MODEL_PROTOCOL_VERSION,
-      kind: 'review',
-      requestId: 'r1',
-      target,
-      modelId: 'm1',
-      findings: [{ id: '1', fileId: 'f1', path: 'a.ts', line: 0, severity: 'high', title: 't', reason: 'r' }],
-      skippedPaths: [],
-      reviewedFileIds: ['f1'],
-    })).toThrow();
   });
 
   it('restores saved connections, models, and activeModelId on startup hydration', () => {

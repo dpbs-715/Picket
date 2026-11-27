@@ -7,9 +7,7 @@ import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
 import { PresenceNotice } from '../../../ui/motion';
 import {
   compactStatusSummary,
-  hasEmptyValidPlanMessage,
   isActiveSession,
-  isPlanOutdated,
   localKeepChanges,
   normalChanges,
   primaryAction,
@@ -93,11 +91,9 @@ export function CompactBar(props: Props) {
 
   const canShowSelectionTrigger = !!worktree
     && !isActiveSession(worktree)
-    && !worktree.requests.plan
     && !worktree.readError
     && !worktree.detached
-    && worktree.files.length > 0
-    && !hasEmptyValidPlanMessage(worktree);
+    && worktree.files.length > 0;
 
   const effectiveDrawer: CompactDrawer =
     (drawer === 'files' && !canShowSelectionTrigger)
@@ -113,7 +109,6 @@ export function CompactBar(props: Props) {
   const allNormalSelected = normalFiles.length > 0 && selectedNormalCount === normalFiles.length;
   const selectAllIndeterminate = selectedNormalCount > 0 && selectedNormalCount < normalFiles.length;
   const totalSelectable = normalFiles.length + selectedKeptFiles.length;
-  const planOutdated = worktree ? isPlanOutdated(worktree) : false;
 
   function toggleSection(section: BranchSection) {
     setExpandedSections((previous) => ({ ...previous, [section]: !previous[section] }));
@@ -417,17 +412,6 @@ export function CompactBar(props: Props) {
               )}
               <RotatingChevron open={effectiveDrawer === 'files'} direction="down-up" className="compact-chevron" />
             </button>
-            {worktree.plan && (
-              <button
-                type="button"
-                className={`compact-plan-pill ${planOutdated ? 'warning' : 'accent'}`}
-                data-expand-target="plan"
-                onClick={() => props.onExpandTarget('plan')}
-                title={status.label}
-              >
-                <span className="truncate">{t.compact.planBadge(worktree.plan.groups.length, planOutdated)}</span>
-              </button>
-            )}
           </div>
         ) : status.expandTarget ? (
           <button

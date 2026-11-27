@@ -120,12 +120,13 @@ fn inspect_working_target(root: &Path, relative_path: &str) -> Result<WorkingTar
             );
         }
     };
+    let canon_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let parent = fs::canonicalize(
         full.parent()
             .ok_or("File path is missing parent directory")?,
     )
     .map_err(|_| "Cannot verify parent directory; current draft and selection were preserved")?;
-    if !parent.starts_with(root) {
+    if !parent.starts_with(&canon_root) {
         return Err("File parent directory escapes worktree boundary; refused to open".into());
     }
     if metadata.file_type().is_symlink() {
@@ -428,21 +429,50 @@ impl RepositoryStore {
             .await?;
         let live_status = parse::status_with_locale(&status_bytes, locale)?;
 
-        let authorized = registered
-            .commit_states
-            .get(&request.target.worktree_id)
-            .and_then(|state| state.files.get(&request.file_id));
-        let live_entry = live_status.entries.iter().find(|entry| {
-            authorized.is_some_and(|item| item.path == entry.path)
-                || format!("file-{}", hash(&entry.path)) == request.file_id
-        });
-        let path = live_entry
-            .map(|entry| entry.path.clone())
-            .or_else(|| authorized.map(|item| item.path.clone()))
-            .ok_or_else(|| i18n::repository::ai_file_missing_error(locale, false))?;
-        let previous_path = live_entry
-            .and_then(|entry| entry.previous.clone())
-            .or_else(|| authorized.and_then(|item| item.previous_path.clone()));
+        let explicit_file_id = request
+            .file_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let explicit_path = request
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        let (path, previous_path, live_entry, direct_path_open) =
+            if let Some(file_id) = explicit_file_id {
+                let authorized = registered
+                    .commit_states
+                    .get(&request.target.worktree_id)
+                    .and_then(|state| state.files.get(file_id));
+                let live_entry = live_status.entries.iter().find(|entry| {
+                    authorized.is_some_and(|item| item.path == entry.path)
+                        || format!("file-{}", hash(&entry.path)) == file_id
+                });
+                let path = live_entry
+                    .map(|entry| entry.path.clone())
+                    .or_else(|| authorized.map(|item| item.path.clone()))
+                    .ok_or_else(|| i18n::repository::ai_file_missing_error(locale, false))?;
+                let previous_path = live_entry
+                    .and_then(|entry| entry.previous.clone())
+                    .or_else(|| authorized.and_then(|item| item.previous_path.clone()));
+                (path, previous_path, live_entry, false)
+            } else if let Some(raw_path) = explicit_path {
+                let mut normalized = raw_path.replace('\\', "/");
+                while let Some(rest) = normalized.strip_prefix("./") {
+                    normalized = rest.to_owned();
+                }
+                ensure_safe_repo_path(&normalized)?;
+                let live_entry = live_status
+                    .entries
+                    .iter()
+                    .find(|entry| entry.path == normalized);
+                let previous_path = live_entry.and_then(|entry| entry.previous.clone());
+                (normalized, previous_path, live_entry, true)
+            } else {
+                return Err(i18n::repository::ai_file_missing_error(locale, false).into());
+            };
         ensure_safe_repo_path(&path)?;
         if let Some(previous) = &previous_path {
             ensure_safe_repo_path(previous)?;
@@ -479,6 +509,39 @@ impl RepositoryStore {
                 file_path: path,
                 action: OpenFileAction::Goto,
                 line: Some(line),
+            });
+        }
+
+        if direct_path_open {
+            let target_file = match working {
+                WorkingTarget::RealFile(real) => real,
+                WorkingTarget::SymlinkTarget(bytes) => {
+                    launcher.write_snapshot("SYMLINK", &path, &bytes)?
+                }
+                WorkingTarget::Missing => {
+                    let head_source = previous_path.as_deref().unwrap_or(&path);
+                    let head_bytes = self
+                        .read_git_blob(&worktree_reader, &root, &format!("HEAD:{head_source}"))
+                        .await?
+                        .ok_or(
+                            "Target file does not exist in working tree or HEAD (draft and selection were preserved)",
+                        )?;
+                    launcher.write_snapshot("HEAD", &path, &head_bytes)?
+                }
+            };
+            launcher
+                .launch(
+                    request.editor,
+                    &executable,
+                    &root,
+                    &[target_file.as_os_str().to_owned()],
+                    locale,
+                )
+                .await?;
+            return Ok(OpenFileOutcome {
+                file_path: path,
+                action: OpenFileAction::Open,
+                line: None,
             });
         }
 

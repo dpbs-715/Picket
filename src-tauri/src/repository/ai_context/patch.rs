@@ -5,19 +5,10 @@ use crate::{
 use std::{collections::HashMap, fs, path::Path};
 
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-pub(super) const MAX_FILE_PATCH_BYTES: usize = 64 * 1024;
-pub(super) const MAX_SCALED_FILE_PATCH_BYTES: usize = 256 * 1024;
-pub(super) const REVIEW_MIN_PATCH_BYTES: usize = 32 * 1024;
-pub(super) const REVIEW_MAX_PATCH_BYTES: usize = 1536 * 1024;
-const REVIEW_PROMPT_RESERVE_TOKENS: usize = 8_000;
-const REVIEW_INLINE_DIFF_SHARE_NUM: usize = 55;
-const REVIEW_INLINE_DIFF_SHARE_DEN: usize = 100;
-const REVIEW_BYTES_PER_TOKEN_CONSERVATIVE: usize = 3;
-pub(super) const MIN_PARTIAL_PATCH_BUDGET: usize = 2 * 1024;
 const SCOPE_DIFF_MAX_LINES: usize = 250;
 const SCOPE_DIFF_MAX_BYTES: usize = 24 * 1024;
-pub(super) const CPUSH_MAX_FILE_PATCH_BYTES: usize = 8 * 1024;
-pub(super) const CPUSH_MAX_TOTAL_PATCH_BYTES: usize = 64 * 1024;
+pub(super) const CPUSH_MAX_FILE_PATCH_BYTES: usize = 12 * 1024;
+pub(super) const CPUSH_MAX_TOTAL_PATCH_BYTES: usize = 128 * 1024;
 pub(super) const CPUSH_MIN_PARTIAL_PATCH_BUDGET: usize = 512;
 pub(super) const MAX_UNTRACKED_READ_BYTES: usize = 256 * 1024;
 pub(super) const MAX_REVIEW_UNTRACKED_READ_BYTES: usize = 512 * 1024;
@@ -27,23 +18,6 @@ pub(super) enum RawPatchOutcome {
     Binary,
     NonUtf8,
     UntrackedTooLarge,
-}
-
-/// Computes the initial inline diff byte budget for code review directly from the
-/// active model's configured `context_window` and `max_output_tokens`:
-/// - Reserves `max_output_tokens` plus ~8k tokens for system prompt, `dcr` skill, and tool schemas.
-/// - Allocates 55% of remaining input tokens to the initial inline diff (leaving ~45% for
-///   multi-turn `read_scope_diff` / `read_repo_file` / `search_repo` tool calls and reasoning).
-/// - Uses a conservative 3 bytes/token estimate (safe for mixed English code and Chinese UTF-8)
-///   and clamps to `[32 KB, 1.5 MB]` to keep desktop stdio IPC responsive.
-pub fn review_patch_budget_for_model(context_window: u32, max_output_tokens: u32) -> usize {
-    let available_input_tokens = (context_window as usize)
-        .saturating_sub(max_output_tokens as usize)
-        .saturating_sub(REVIEW_PROMPT_RESERVE_TOKENS);
-    let diff_tokens = available_input_tokens.saturating_mul(REVIEW_INLINE_DIFF_SHARE_NUM)
-        / REVIEW_INLINE_DIFF_SHARE_DEN;
-    let budget_bytes = diff_tokens.saturating_mul(REVIEW_BYTES_PER_TOKEN_CONSERVATIVE);
-    budget_bytes.clamp(REVIEW_MIN_PATCH_BYTES, REVIEW_MAX_PATCH_BYTES)
 }
 
 fn format_untracked_patch(path: &str, content: &str) -> String {
@@ -308,34 +282,6 @@ pub(crate) fn truncate_patch_head_tail(
     locale: LanguageKind,
 ) -> String {
     truncate_patch_head_tail_with_ranges(raw_patch, max_bytes, locale).0
-}
-
-pub fn ranges_cover_all_lines(total_lines: usize, ranges: &[(usize, usize)]) -> bool {
-    if total_lines == 0 {
-        return true;
-    }
-    let mut valid: Vec<(usize, usize)> = ranges
-        .iter()
-        .copied()
-        .filter(|&(start, end)| start > 0 && end >= start)
-        .map(|(start, end)| (start.min(total_lines), end.min(total_lines)))
-        .collect();
-    if valid.is_empty() {
-        return false;
-    }
-    valid.sort_unstable();
-    let (cur_start, mut cur_end) = valid[0];
-    if cur_start > 1 {
-        return false;
-    }
-    for (start, end) in valid.into_iter().skip(1) {
-        if start <= cur_end.saturating_add(1) {
-            cur_end = cur_end.max(end);
-        } else {
-            return false;
-        }
-    }
-    cur_end >= total_lines
 }
 
 pub fn read_authorized_scope_diff(

@@ -22,7 +22,6 @@ export type CPushMessageKind =
   | 'resolved'
   | 'pushFailed'
   | 'done'
-  | 'review'
   | 'error';
 
 export interface CPushTimelineItem {
@@ -75,43 +74,13 @@ export interface CPushSessionSnapshot {
   autoCollapse?: boolean;
 }
 
-export interface CPushPlanGroup {
-  id: string;
-  fileIds: string[];
-  message: string;
-}
-
-export interface CPushConfirmedPlan {
-  groups: CPushPlanGroup[];
-  skippedFileIds: string[];
-  skipPush?: boolean;
-}
-
-export interface CPushPreparedPlan {
-  summary: string;
-  groups: CPushPlanGroup[];
-  skippedFileIds: string[];
-  skipPush?: boolean;
-}
-
 export interface StartCPushRequest {
   requestId: string;
   target: GitReadTarget;
   modelId: string;
   selections: ModelFileSelection[];
   prompt: string;
-  confirmedPlan?: CPushConfirmedPlan;
   push?: boolean;
-  locale?: AppLocale;
-  commitLanguage?: CommitLanguage;
-}
-
-export interface PlanCPushRequest {
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  selections: ModelFileSelection[];
-  prompt: string;
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
 }
@@ -159,7 +128,6 @@ export interface CPushCommandReply {
   kind: 'cPush';
   requestId: string;
   session: CPushSessionSnapshot;
-  preparedPlan?: CPushPreparedPlan;
   repositorySnapshot?: GitRepositorySnapshot;
 }
 
@@ -180,7 +148,6 @@ const VALID_MESSAGE_KINDS: readonly CPushMessageKind[] = [
   'resolved',
   'pushFailed',
   'done',
-  'review',
   'error',
 ];
 
@@ -366,41 +333,6 @@ export function decodeCPushProgressEvent(value: unknown): CPushProgressEvent {
   };
 }
 
-function decodePreparedPlan(raw: unknown): CPushPreparedPlan | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (!isRecord(raw)
-    || typeof raw.summary !== 'string'
-    || !Array.isArray(raw.groups)
-    || !isStringArray(raw.skippedFileIds)) {
-    throw new Error('Invalid C-Push prepared plan reply.');
-  }
-  const groups: CPushPlanGroup[] = raw.groups.map((item) => {
-    if (!isRecord(item)
-      || typeof item.id !== 'string' || !item.id.trim()
-      || !isStringArray(item.fileIds) || item.fileIds.length === 0
-      || typeof item.message !== 'string' || !item.message.trim()) {
-      throw new Error('Invalid C-Push prepared plan group entry.');
-    }
-    return {
-      id: item.id,
-      fileIds: item.fileIds,
-      message: item.message,
-    };
-  });
-  if (groups.length === 0 && raw.skippedFileIds.length === 0) {
-    throw new Error('C-Push prepared plan cannot be completely empty.');
-  }
-  if (!(raw.skipPush === undefined || raw.skipPush === null || typeof raw.skipPush === 'boolean')) {
-    throw new Error('Invalid C-Push prepared plan skipPush flag.');
-  }
-  return {
-    summary: raw.summary,
-    groups,
-    skippedFileIds: raw.skippedFileIds,
-    ...(raw.skipPush ? { skipPush: true } : {}),
-  };
-}
-
 export function decodeCPushCommandReply(value: unknown): CPushCommandReply {
   if (!isRecord(value)
     || value.protocolVersion !== CPUSH_PROTOCOL_VERSION
@@ -408,14 +340,12 @@ export function decodeCPushCommandReply(value: unknown): CPushCommandReply {
     || typeof value.requestId !== 'string' || !value.requestId) {
     throw new Error('C-Push command reply protocol mismatch.');
   }
-  const preparedPlan = decodePreparedPlan(value.preparedPlan);
   const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
   return {
     protocolVersion: CPUSH_PROTOCOL_VERSION,
     kind: 'cPush',
     requestId: value.requestId,
     session: decodeCPushSessionSnapshot(value.session),
-    ...(preparedPlan ? { preparedPlan } : {}),
     ...(repositorySnapshot ? { repositorySnapshot } : {}),
   };
 }

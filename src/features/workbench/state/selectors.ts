@@ -13,7 +13,6 @@ import { getMessages } from '../../../i18n/messages';
 import type {
   Change,
   CompactStatusSummary,
-  EditableCommitPlan,
   EditorId,
   Message,
   RepositorySettings,
@@ -283,7 +282,7 @@ export function groupFiles(files: Change[], rootDirectoryLabel = getMessages().c
 export const messageLabels: Record<Message['kind'], string> = getMessages().messageLabels;
 
 const priorities: Record<Message['kind'], number> = {
-  conflict: 100, question: 95, waitingManual: 90, resolved: 85, pushFailed: 80, error: 75, progress: 60, review: 20, done: 30,
+  conflict: 100, question: 95, waitingManual: 90, resolved: 85, pushFailed: 80, error: 75, progress: 60, done: 30,
 };
 
 export function orderedMessages(messages: Message[]) {
@@ -296,19 +295,6 @@ export function isProtected(branch: string) {
 
 export function isActiveSession(worktree: Worktree) {
   return worktree.sessionStatus !== 'idle' && worktree.sessionStatus !== 'done';
-}
-
-export function isPlanOutdated(worktree: Pick<Worktree, 'plan' | 'scopeVersion'>): boolean {
-  return !!worktree.plan && worktree.plan.baseScopeVersion !== worktree.scopeVersion;
-}
-
-export function activeValidPlan(worktree: Pick<Worktree, 'plan' | 'scopeVersion'>): EditableCommitPlan | undefined {
-  return worktree.plan && !isPlanOutdated(worktree) ? worktree.plan : undefined;
-}
-
-export function hasEmptyValidPlanMessage(worktree: Pick<Worktree, 'plan' | 'scopeVersion'>): boolean {
-  const plan = activeValidPlan(worktree);
-  return !!plan && plan.groups.some((group) => !group.message.trim());
 }
 
 export function isModelErrorText(message: string): boolean {
@@ -375,9 +361,6 @@ export function compactStatusSummary(
       case 'waitingManual':
         return { tone: 'warning', label: t.waitingManual, expandTarget: 'dock' };
       case 'running': {
-        if (worktree.cPush?.planOnly) {
-          return { tone: 'running', label: t.planning };
-        }
         const progressMsg = orderedMessages(worktree.messages).find((item) => item.kind === 'progress');
         const step = extractCommitStepProgress(progressMsg);
         return {
@@ -387,31 +370,11 @@ export function compactStatusSummary(
       }
     }
   }
-  if (worktree.requests.plan) {
-    return { tone: 'running', label: t.planning, expandTarget: 'plan' };
-  }
   if (worktree.readError) {
     return { tone: 'danger', label: t.readError, expandTarget: 'changes' };
   }
   if (worktree.detached) {
     return { tone: 'warning', label: t.detachedHead, expandTarget: 'changes' };
-  }
-  if (worktree.plan) {
-    if (isPlanOutdated(worktree)) {
-      return {
-        tone: 'warning',
-        label: t.planOutdated(worktree.plan.groups.length),
-        expandTarget: 'plan',
-      };
-    }
-    if (hasEmptyValidPlanMessage(worktree)) {
-      return { tone: 'danger', label: t.emptyPlanMessage, expandTarget: 'plan' };
-    }
-    return {
-      tone: 'ready',
-      label: t.planReady(worktree.plan.groups.length),
-      expandTarget: 'plan',
-    };
   }
   if (worktree.files.length === 0) {
     const doneMsg = worktree.sessionStatus === 'done'
@@ -468,6 +431,6 @@ export function primaryAction(
     label: labels.cPush,
     configureModel: false,
     resume: false,
-    disabled: !worktree || !!worktree.readError || selectedFiles(worktree).length === 0 || hasEmptyValidPlanMessage(worktree),
+    disabled: !worktree || !!worktree.readError || selectedFiles(worktree).length === 0,
   };
 }

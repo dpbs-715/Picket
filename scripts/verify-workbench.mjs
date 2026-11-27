@@ -102,10 +102,8 @@ try {
   if (browserErrors.length) throw new Error(`Browser console errors:\n${browserErrors.join('\n')}`);
   console.log(result.text);
 
-  // Verify 400 x 480 full-mode minimum height and 400 x 140 compact bar viewport geometry:
-  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 480, deviceScaleFactor: 1, mobile: false });
-  await navigate('scenario=changed');
-  const minHeightCheck = await evaluate(`new Promise(resolve => {
+  // Verify 400 x 480 full-mode minimum height (idle & expanded dock) and 400 x 86 compact bar viewport geometry:
+  const readFullLayout = () => evaluate(`new Promise(resolve => {
     const inspect = () => {
       const header = document.querySelector('.context-header');
       const changes = document.querySelector('.changes-panel');
@@ -132,12 +130,24 @@ try {
       observer.observe(document.body, { childList: true, subtree: true });
     }
   })`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 480, deviceScaleFactor: 1, mobile: false });
+  await navigate('scenario=typing');
+  const minHeightIdleCheck = await readFullLayout();
   assert(
-    minHeightCheck.innerHeight === 480
-      && minHeightCheck.changesHeight === 152
-      && minHeightCheck.lowerHeight >= 200
-      && minHeightCheck.ordered,
-    `400x480 full-mode minimum height layout overlapped or clipped: ${JSON.stringify(minHeightCheck)}`,
+    minHeightIdleCheck.innerHeight === 480
+      && minHeightIdleCheck.changesHeight >= 250
+      && minHeightIdleCheck.lowerHeight >= 34
+      && minHeightIdleCheck.ordered,
+    `400x480 full-mode idle minimum height layout overlapped or clipped: ${JSON.stringify(minHeightIdleCheck)}`,
+  );
+  await navigate('scenario=question');
+  const minHeightDockCheck = await readFullLayout();
+  assert(
+    minHeightDockCheck.innerHeight === 480
+      && minHeightDockCheck.changesHeight === 84
+      && minHeightDockCheck.lowerHeight >= 250
+      && minHeightDockCheck.ordered,
+    `400x480 full-mode expanded-dock minimum height layout overlapped or clipped: ${JSON.stringify(minHeightDockCheck)}`,
   );
 
   await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 86, deviceScaleFactor: 1, mobile: false });
@@ -186,7 +196,7 @@ try {
   const screenshotOption = process.argv.find((argument) => argument.startsWith('--screenshots='));
   if (screenshotOption) {
     const destination = resolve(screenshotOption.slice('--screenshots='.length)); mkdirSync(destination, { recursive: true });
-    for (const scenario of ['empty', 'clean', 'running', 'generating', 'question', 'typing', 'done', 'review-during-question', 'push-failed', 'conflict', 'manual', 'resolved', 'no-model', 'single', 'long-paths']) {
+    for (const scenario of ['empty', 'clean', 'running', 'question', 'typing', 'done', 'rich-card', 'push-failed', 'conflict', 'manual', 'resolved', 'no-model', 'single', 'long-paths']) {
       await navigate(`scenario=${scenario}`);
       await evaluate(`new Promise(resolve => {
         const inspect = () => { if (document.querySelector('.workbench')) { requestAnimationFrame(() => requestAnimationFrame(resolve)); return true; } };
@@ -195,13 +205,9 @@ try {
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(join(destination, `${scenario}.png`), Buffer.from(screenshot.data, 'base64'));
     }
-    await navigate('scenario=review-during-question');
-    await evaluate(`document.getElementById('review-tab').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
-    let detail = await send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(join(destination, 'review.png'), Buffer.from(detail.data, 'base64'));
     await navigate('scenario=typing');
     await evaluate(`document.querySelector('button[aria-label="Settings"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
-    detail = await send('Page.captureScreenshot', { format: 'png' });
+    let detail = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(destination, 'settings-models.png'), Buffer.from(detail.data, 'base64'));
     await navigate('scenario=no-model');
     await evaluate(`document.querySelector('button[aria-label="Settings"]').click(); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);

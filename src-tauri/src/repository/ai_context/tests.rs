@@ -1,7 +1,4 @@
-use super::{
-    patch::{CPUSH_MAX_TOTAL_PATCH_BYTES, REVIEW_MAX_PATCH_BYTES, REVIEW_MIN_PATCH_BYTES},
-    *,
-};
+use super::{patch::CPUSH_MAX_TOTAL_PATCH_BYTES, *};
 use crate::{
     i18n::LanguageKind,
     repository::{
@@ -144,22 +141,13 @@ async fn cpush_scope_preserves_patch_context_across_ninety_five_files_within_bud
 }
 
 #[tokio::test]
-async fn review_scope_fair_budget_prevents_alphabetical_starvation_and_tracks_diff_tool_coverage() {
+async fn cpush_scope_retains_patch_context_across_large_refactor_file_set() {
     let fixture = Fixture::new().unwrap();
-    let mut giant = String::from("export const giantStart = true;\n");
-    for idx in 0..900 {
-        giant.push_str(&format!(
-            "export const item_{idx:04} = 'payload-line-with-realistic-content-{idx:04}';\n"
-        ));
-    }
-    giant.push_str("export const giantEnd = true;\n");
-    fs::write(fixture.root.join("a-giant.ts"), giant).unwrap();
-    for idx in 0..5 {
-        fs::write(
-            fixture.root.join(format!("z-small-{idx}.ts")),
-            format!("export const small{idx} = {idx};\n"),
-        )
-        .unwrap();
+    for idx in 0..150 {
+        let content = format!(
+            "export const moduleIndex = {idx};\nexport function refactorPart{idx}() {{\n  return 'module-{idx}';\n}}\n"
+        );
+        fs::write(fixture.root.join(format!("refactor-{idx:03}.ts")), content).unwrap();
     }
 
     let store = RepositoryStore::default();
@@ -168,94 +156,33 @@ async fn review_scope_fair_budget_prevents_alphabetical_starvation_and_tracks_di
     let selections: Vec<CommitSelection> = tree
         .files
         .iter()
-        .filter(|f| f.path == "a-giant.ts" || f.path.starts_with("z-small-"))
+        .filter(|f| f.path.starts_with("refactor-"))
         .map(|f| CommitSelection {
             file_id: f.id.clone(),
             commit_token: f.commit_token.clone(),
         })
         .collect();
-    assert_eq!(selections.len(), 6);
+    assert_eq!(selections.len(), 150);
 
     let target = ReadTarget {
         repository_id: tree.repository_id.clone(),
         worktree_id: tree.worktree_id.clone(),
-        session_id: "sess-review-fair".into(),
+        session_id: "sess-150".into(),
         scope_version: tree.status_version.clone(),
     };
-    let scope = store
-        .extract_ai_scope_with_budget(&target, &selections, LanguageKind::En, 24 * 1024)
+    let extracted = store
+        .extract_cpush_scope(&target, &selections, LanguageKind::En)
         .await
         .unwrap();
-
-    assert_eq!(scope.files.len(), 6);
-    assert!(scope.skipped_paths.is_empty());
-    // Every smaller `z-small-*` file got its 100% full patch without starvation:
-    for idx in 0..5 {
-        let path = format!("z-small-{idx}.ts");
-        let entry = scope.files.iter().find(|f| f.path == path).unwrap();
-        assert!(
-            entry
-                .patch
-                .contains(&format!("export const small{idx} = {idx};"))
-        );
-        assert!(
-            !scope.deferred_notices.iter().any(|n| n.path == path),
-            "Small file {path} should not be truncated or starved by earlier large file"
-        );
-    }
-
-    // Only `a-giant.ts` was truncated inline and carries a `read_scope_diff` hint + deferred notice:
-    assert_eq!(scope.deferred_notices.len(), 1);
-    let notice = &scope.deferred_notices[0];
-    assert_eq!(notice.path, "a-giant.ts");
-    assert!(!notice.deferred_only);
-    assert!(!ranges_cover_all_lines(
-        notice.total_lines,
-        &notice.initial_ranges
-    ));
-    let giant_entry = scope.files.iter().find(|f| f.path == "a-giant.ts").unwrap();
-    assert!(giant_entry.patch.contains("read_scope_diff"));
-
-    // Reading an unauthorized file outside the scope is strictly refused:
+    assert_eq!(extracted.files.len(), 150);
+    let total_bytes: usize = extracted
+        .files
+        .iter()
+        .map(|f| f.patch.as_ref().map_or(0, String::len))
+        .sum();
+    assert!(total_bytes <= CPUSH_MAX_TOTAL_PATCH_BYTES);
     assert!(
-        read_authorized_scope_diff(&scope.authorized_patches, "outside.ts", Some(1), Some(20))
-            .is_err()
-    );
-
-    // Reading remaining diff chunks via `read_authorized_scope_diff` completes 100% line coverage:
-    let mut combined = notice.initial_ranges.clone();
-    let mut cursor = 1usize;
-    while cursor <= notice.total_lines {
-        let (chunk, start, end, total) = read_authorized_scope_diff(
-            &scope.authorized_patches,
-            "a-giant.ts",
-            Some(cursor),
-            Some(cursor + 249),
-        )
-        .unwrap();
-        assert_eq!(total, notice.total_lines);
-        assert!(chunk.contains("Authorized diff: a-giant.ts"));
-        combined.push((start, end));
-        if end >= total {
-            break;
-        }
-        cursor = end + 1;
-    }
-    assert!(ranges_cover_all_lines(notice.total_lines, &combined));
-
-    // Dynamic model-aware budget helper derives inline diff bytes directly from
-    // (context_window - max_output_tokens - 8k reserve) * 55% * 3 bytes/token,
-    // clamped to [32 KB, 1.5 MB]:
-    assert_eq!(review_patch_budget_for_model(32_000, 4_096), 32_841);
-    assert_eq!(review_patch_budget_for_model(128_000, 8_192), 184_482);
-    assert_eq!(review_patch_budget_for_model(256_000, 16_384), 382_164);
-    assert_eq!(
-        review_patch_budget_for_model(1_000_000, 32_768),
-        REVIEW_MAX_PATCH_BYTES
-    );
-    // Tiny/misconfigured windows clamp safely to the 32 KB floor without underflow:
-    assert_eq!(
-        review_patch_budget_for_model(8_000, 8_000),
-        REVIEW_MIN_PATCH_BYTES
+        extracted.files.iter().all(|f| f.patch.is_some()),
+        "Every file in a 150-file refactor scope should retain patch context within the raised budget"
     );
 }

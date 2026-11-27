@@ -3,7 +3,6 @@ import { getMessages } from '../../../i18n';
 import type { WorkbenchBackend, WorkbenchCommand, WorkbenchCommandReply } from '../commands';
 import {
   editors,
-  isActiveSession,
   isModelErrorText,
   splitPath,
   type WorkbenchState,
@@ -16,7 +15,6 @@ export interface CommandReplyContext {
   dispatch: WorkbenchDispatch;
   notify: NotifyFn;
   isEditingCommitInput: () => boolean;
-  cancelledRequests: MutableRefObject<Set<string>>;
   latestLocalKeepRequestByRepo: MutableRefObject<Record<string, string>>;
 }
 
@@ -63,7 +61,6 @@ export function applyCommandReply(
     dispatch,
     notify,
     isEditingCommitInput,
-    cancelledRequests,
     latestLocalKeepRequestByRepo,
   } = ctx;
   const commandLocale = command.locale ?? latestState.current.locale;
@@ -77,74 +74,6 @@ export function applyCommandReply(
         models: reply.models,
         activeModelId: reply.activeModelId,
       });
-    }
-    return true;
-  }
-
-  if (command.kind === 'planCPush') {
-    if (cancelledRequests.current.delete(command.requestId)) return false;
-    if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'cPush') {
-      if (reply.preparedPlan) {
-        dispatch({
-          type: 'event',
-          event: {
-            type: 'planPrepared',
-            target: command.target,
-            requestId: command.requestId,
-            modelId: command.modelId,
-            plan: reply.preparedPlan,
-          },
-        });
-      } else {
-        dispatch({ type: 'requestFailed', target: command.target, kind: 'plan', requestId: command.requestId });
-        const expandDock = !isEditingCommitInput()
-          && !latestState.current.windowPrefs.compactMode
-          && reply.session.sessionStatus !== 'idle'
-          && !reply.session.autoCollapse;
-        dispatch({ type: 'cPushSettled', reply, expandDock });
-      }
-      notify('', targetKey);
-    }
-    return true;
-  }
-
-  if (command.kind === 'review') {
-    if (cancelledRequests.current.delete(command.requestId)) return false;
-    if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'review') {
-      dispatch({
-        type: 'event',
-        event: {
-          type: 'reviewed',
-          target: reply.target,
-          requestId: reply.requestId,
-          findings: reply.findings,
-          skippedPaths: reply.skippedPaths,
-          reviewedFileIds: reply.reviewedFileIds,
-        },
-      });
-      notify('', targetKey);
-      const targetTree = latestState.current.worktrees.find((item) => item.worktreeId === reply.target.worktreeId);
-      if (targetTree && isActiveSession(targetTree)) {
-        const currentMessages = getMessages(latestState.current.locale).workbench;
-        const high = reply.findings.filter((item) => item.severity === 'high').length;
-        const sug = reply.findings.length - high;
-        const summary = reply.findings.length === 0
-          ? currentMessages.reviewNoRisksSummary
-          : currentMessages.reviewFindingsSummary(high, sug);
-        dispatch({
-          type: 'event',
-          event: {
-            type: 'message',
-            target: reply.target,
-            message: {
-              id: 'review-notice',
-              kind: 'review',
-              title: currentMessages.reviewCompleteTitle(summary),
-              description: currentMessages.reviewCompleteDescription,
-            },
-          },
-        });
-      }
     }
     return true;
   }
@@ -187,8 +116,6 @@ export function applyCommandReply(
         } else {
           notify('', targetKey);
         }
-      } else if (reply.preparedPlan) {
-        notify('', targetKey);
       }
     }
     return true;
@@ -275,12 +202,6 @@ export function applyCommandError(
       ? error
       : getMessages(latestState.current.locale).workbench.genericOperationFailed;
 
-  if (command.kind === 'planCPush') {
-    dispatch({ type: 'requestFailed', target: command.target, kind: 'plan', requestId: command.requestId });
-  }
-  if (command.kind === 'review') {
-    dispatch({ type: 'requestFailed', target: command.target, kind: 'review', requestId: command.requestId, error: message });
-  }
   if (command.kind === 'cPush') {
     dispatch({ type: 'cPushStartFailed', worktreeId: command.target.worktreeId, runId: command.requestId });
   }
@@ -309,8 +230,6 @@ export function applyCommandError(
     });
   }
   const modelRelatedCommand = [
-    'planCPush',
-    'review',
     'cPush',
     'runCustomAction',
     'respond',

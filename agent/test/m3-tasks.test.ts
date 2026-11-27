@@ -221,16 +221,7 @@ describe('M3 Pi Core tasks and provider adapters', () => {
         return;
       }
       if (pathname === '/v1/chat/completions' || pathname === '/chat/completions') {
-        if (body.includes('pre-commit code reviewer')) {
-          writeOpenAiCompletionsSse(res, [
-            '```json\n{"findings":[',
-            '{"fileId":"file-pay","path":"src/api/pay.ts","line":19,"severity":"high","title":"Full gateway payload logged","reason":"May expose signing secret in plaintext logs"},',
-            '{"fileId":"hallucinated","path":"src/not-selected.ts","line":3,"severity":"high","title":"Out-of-scope item","reason":"Must be ignored"}',
-            ']}\n```',
-          ]);
-        } else {
-          writeOpenAiCompletionsSse(res, ['OK']);
-        }
+        writeOpenAiCompletionsSse(res, ['OK']);
         return;
       }
       res.writeHead(404).end('not found');
@@ -280,7 +271,7 @@ describe('M3 Pi Core tasks and provider adapters', () => {
     });
     expect(requests[0].headers['x-api-key']).toBe('sk-ant-explicit-key-01');
     expect(requests[0].body).toContain('<commit_skill_spec>');
-    expect(requests[0].body).toContain('1 to 4 concise `- ` bullet points');
+    expect(requests[0].body).toContain('1 to 6 concise `- ` bullet points');
     expect(requests[0].body).not.toContain('Use a body only when');
     expect(requests[0].body).toContain('flag `-en`');
     expect(requests[0].body).toContain('User extra instructions (supplemental grouping/message guidance ONLY');
@@ -335,51 +326,23 @@ describe('M3 Pi Core tasks and provider adapters', () => {
     expect(await ollamaSidecar.waitFor((e) => e.type === 'completed')).toMatchObject({ type: 'completed', text: 'OK' });
     await ollamaSidecar.close();
 
-    // 6. DeepSeek reviewScope forwards user prompt as review instructions, filters hallucinated out-of-scope file, and switches output language by locale:
-    const reviewSidecar = spawnSidecar();
-    await reviewSidecar.waitFor((e) => e.type === 'ready');
-    reviewSidecar.send({
-      type: 'reviewScope',
-      requestId: 'rev-en-1',
-      context: { repositoryId: 'repo-1', worktreeId: 'wt-1', sessionId: 'sess-1', scopeVersion: 'scope-1' },
+    // 6. DeepSeek testConnection (/chat/completions):
+    const deepseekSidecar = spawnSidecar();
+    await deepseekSidecar.waitFor((e) => e.type === 'ready');
+    deepseekSidecar.send({
+      type: 'testConnection',
+      requestId: 'test-deepseek',
+      context: { repositoryId: 'settings', worktreeId: 'settings', sessionId: 'test-deepseek', scopeVersion: 'v1' },
       model: { provider: 'deepseek', modelId: 'deepseek-chat', baseUrl: server.url, apiKey: 'ds-secret-03' },
-      branch: 'feat/pay',
-      prompt: 'Focus on payment signature and secret logging',
-      files: [{ fileId: 'file-pay', path: 'src/api/pay.ts', status: 'M', rangeKind: 'unstaged', added: 5, removed: 0, patch: '@@ -15,0 +16,5 @@\n+console.log(rawBody);' }],
-      skippedPaths: ['pnpm-lock.yaml (lockfile ignored for review by default)'],
     });
-    const revDone = await reviewSidecar.waitFor((e) => e.type === 'reviewCompleted');
-    expect(revDone).toMatchObject({
-      type: 'reviewCompleted',
-      requestId: 'rev-en-1',
-      findings: [{ fileId: 'file-pay', path: 'src/api/pay.ts', line: 19, severity: 'high', title: 'Full gateway payload logged' }],
-    });
-    expect(requests[4].body).toContain('Write every finding `title` and `reason` in clear, concise English.');
-    expect(requests[4].body).toContain('User review instructions / context:\\nFocus on payment signature and secret logging');
-    await reviewSidecar.close();
-
-    const reviewZhSidecar = spawnSidecar();
-    await reviewZhSidecar.waitFor((e) => e.type === 'ready');
-    reviewZhSidecar.send({
-      type: 'reviewScope',
-      requestId: 'rev-zh-1',
-      context: { repositoryId: 'repo-1', worktreeId: 'wt-1', sessionId: 'sess-zh', scopeVersion: 'scope-1' },
-      model: { provider: 'deepseek', modelId: 'deepseek-chat', baseUrl: server.url, apiKey: 'ds-secret-03' },
-      branch: 'feat/pay',
-      prompt: '',
-      files: [{ fileId: 'file-pay', path: 'src/api/pay.ts', status: 'M', rangeKind: 'unstaged', added: 5, removed: 0, patch: '@@ -15,0 +16,5 @@\n+console.log(rawBody);' }],
-      skippedPaths: [],
-      locale: 'zh',
-    });
-    await reviewZhSidecar.waitFor((e) => e.type === 'reviewCompleted');
-    expect(requests[5].body).toContain('Write every finding `title` and `reason` in clear, concise Chinese');
-    await reviewZhSidecar.close();
+    expect(await deepseekSidecar.waitFor((e) => e.type === 'completed')).toMatchObject({ type: 'completed', text: 'OK' });
+    await deepseekSidecar.close();
   });
 
-  it('redacts echoed API keys on provider HTTP errors, localizes en and zh messages (including 402/429 quota), rejects non-JSON review output, and cancels slow streams', async () => {
+  it('redacts echoed API keys on provider HTTP errors, localizes en and zh messages (including 402/429 quota), rejects non-JSON C-Push plan output, and cancels slow streams', async () => {
     const secret = 'custom-secret-token-never-log-998877';
     let holdStream = false;
-    let mode: 'authError' | 'badReview' | 'slow' = 'authError';
+    let mode: 'authError' | 'badPlan' | 'slow' = 'authError';
 
     const server = await startServer((_req, _body, res) => {
       if (mode === 'authError') {
@@ -387,7 +350,7 @@ describe('M3 Pi Core tasks and provider adapters', () => {
         res.end(JSON.stringify({ error: { message: `Invalid key provided: ${secret} (Bearer ${secret})`, code: 'invalid_api_key' } }));
         return;
       }
-      if (mode === 'badReview') {
+      if (mode === 'badPlan') {
         writeOpenAiCompletionsSse(res, ['Sorry, I cannot output JSON today.']);
         return;
       }
@@ -442,23 +405,25 @@ describe('M3 Pi Core tasks and provider adapters', () => {
     expect(sanitizeProviderError(new Error('Request timed out'), spec)).toContain('Model request timed out');
     expect(sanitizeProviderError(new Error(`502 Bad Gateway (${secret})`), spec)).not.toContain(secret);
 
-    // 2. Non-JSON review output fails explicitly instead of faking 0 findings:
-    mode = 'badReview';
-    const badReviewSidecar = spawnSidecar();
-    await badReviewSidecar.waitFor((e) => e.type === 'ready');
-    badReviewSidecar.send({
-      type: 'reviewScope',
-      requestId: 'bad-rev',
+    // 2. Non-JSON C-Push plan output fails explicitly:
+    mode = 'badPlan';
+    const badPlanSidecar = spawnSidecar();
+    await badPlanSidecar.waitFor((e) => e.type === 'ready');
+    badPlanSidecar.send({
+      type: 'planCPush',
+      requestId: 'bad-plan',
       context: { repositoryId: 'r', worktreeId: 'w', sessionId: 's', scopeVersion: 'v' },
       model: { provider: 'custom', modelId: 'custom-v1', baseUrl: `${server.url}/v1`, apiKey: secret },
       branch: 'feat/test',
+      recentCommits: [],
       prompt: '',
       files: [{ fileId: 'f1', path: 'a.ts', status: 'M', rangeKind: 'unstaged', added: 1, removed: 0, patch: '+x' }],
-      skippedPaths: [],
+      unselectedPaths: [],
+      qaHistory: [],
     });
-    const badRevEvent = await badReviewSidecar.waitFor((e) => e.type === 'failed');
-    expect(badRevEvent.type === 'failed' && badRevEvent.message).toContain(getSidecarMessages('en').invalidReviewJson);
-    await badReviewSidecar.close();
+    const badPlanEvent = await badPlanSidecar.waitFor((e) => e.type === 'failed');
+    expect(badPlanEvent.type === 'failed' && badPlanEvent.message).toContain(getSidecarMessages('en').invalidCPushPlanJson);
+    await badPlanSidecar.close();
 
     // 3. Cancellation aborts slow HTTP stream cleanly:
     mode = 'slow';

@@ -14,7 +14,6 @@ export function applyCPushSnapshot(
   session: CPushSessionSnapshot,
   repositorySnapshot?: GitRepositorySnapshot,
   expandDockOnSettle?: boolean,
-  planOnly?: boolean,
 ): WorkbenchState {
   const previousTree = state.worktrees.find(
     (tree) => tree.repositoryId === session.repositoryId && tree.worktreeId === session.worktreeId,
@@ -22,7 +21,6 @@ export function applyCPushSnapshot(
   if (!previousTree) return state;
   if (
     previousTree.cPush
-    && !previousTree.cPush.planOnly
     && previousTree.cPush.runId !== session.runId
     && previousTree.sessionStatus !== 'idle'
     && previousTree.sessionStatus !== 'done'
@@ -36,7 +34,6 @@ export function applyCPushSnapshot(
     && !session.message?.id.startsWith('done-merge-pull-')
     && !session.message?.id.startsWith('done-manual-rebase-')
     && (session.commits.length > 0 || session.skippedFileIds.length > 0);
-  const hasCommittedOrFinished = session.committedFileIds.length > 0 || isCPushCompleted;
 
   let nextState = repositorySnapshot
     ? mergeSnapshot(
@@ -60,10 +57,7 @@ export function applyCPushSnapshot(
       if (tree.repositoryId !== session.repositoryId || tree.worktreeId !== session.worktreeId) {
         return tree;
       }
-      const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
-      const nextMessages: Message[] = session.message
-        ? [...reviewMessages, session.message]
-        : reviewMessages;
+      const nextMessages: Message[] = session.message ? [session.message] : [];
       const nextPrompt = isCPushCompleted && !repositorySnapshot && tree.prompt.revision === promptRevAtStart
         ? { text: '', revision: tree.prompt.revision + 1 }
         : tree.prompt;
@@ -72,16 +66,12 @@ export function applyCPushSnapshot(
         : expandDockOnSettle
           ? true
           : tree.dockExpanded;
-      const nextPlan = hasCommittedOrFinished ? undefined : tree.plan;
-      const nextPlanRevision = hasCommittedOrFinished && tree.plan ? tree.planRevision + 1 : tree.planRevision;
       return {
         ...tree,
         sessionStatus: session.sessionStatus,
         dockExpanded: nextDockExpanded,
         messages: nextMessages,
         prompt: nextPrompt,
-        plan: nextPlan,
-        planRevision: nextPlanRevision,
         customAction: undefined,
         cPush: session.sessionStatus === 'idle'
           ? undefined
@@ -100,7 +90,6 @@ export function applyCPushSnapshot(
               qaLog: session.qaLog,
               commits: session.commits,
               canRetryRemaining: session.canRetryRemaining,
-              ...(planOnly ?? tree.cPush?.planOnly ? { planOnly: true } : {}),
             },
       };
     }),
@@ -113,31 +102,7 @@ export function finishCPushCommand(
   reply: CPushCommandReply,
   expandDockOnSettle?: boolean,
 ): WorkbenchState {
-  const settled = applyCPushSnapshot(state, reply.session, reply.repositorySnapshot, expandDockOnSettle);
-  if (!reply.preparedPlan) return settled;
-  const prepared = reply.preparedPlan;
-  return {
-    ...settled,
-    worktrees: settled.worktrees.map((tree) => {
-      if (tree.repositoryId !== reply.session.repositoryId || tree.worktreeId !== reply.session.worktreeId) {
-        return tree;
-      }
-      return {
-        ...tree,
-        requests: { ...tree.requests, plan: undefined },
-        plan: {
-          id: reply.session.runId,
-          baseScopeVersion: reply.session.frozenScopeVersion,
-          modelId: reply.session.modelId,
-          summary: prepared.summary,
-          groups: prepared.groups.map((group) => ({ ...group, fileIds: [...group.fileIds] })),
-          skippedFileIds: [...prepared.skippedFileIds],
-          ...(prepared.skipPush ? { skipPush: true } : {}),
-        },
-        planRevision: tree.planRevision + 1,
-      };
-    }),
-  };
+  return applyCPushSnapshot(state, reply.session, reply.repositorySnapshot, expandDockOnSettle);
 }
 
 export function receiveCPushProgress(state: WorkbenchState, progress: CPushProgressEvent): WorkbenchState {
@@ -177,6 +142,7 @@ function applyTrustedUpdate(state: WorkbenchState, update?: TrustedActionUpdate)
 export function applyCustomActionProgress(
   state: WorkbenchState,
   progress: CustomActionProgressEvent,
+  suppressExpand = false,
 ): WorkbenchState {
   let nextState = progress.repositorySnapshot
     ? mergeSnapshot(state, progress.repositorySnapshot, false)
@@ -196,13 +162,10 @@ export function applyCustomActionProgress(
       if (tree.repositoryId !== progress.repositoryId || tree.worktreeId !== progress.worktreeId) {
         return tree;
       }
-      const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
-      const nextMessages: Message[] = progress.message
-        ? [...reviewMessages, progress.message]
-        : reviewMessages;
+      const nextMessages: Message[] = progress.message ? [progress.message] : [];
       const shouldExpand = progress.status === 'needsDecision'
-        ? true
-        : progress.status === 'done' || progress.status === 'cancelled'
+        ? (suppressExpand ? tree.dockExpanded : true)
+        : progress.status === 'cancelled'
           ? false
           : tree.dockExpanded;
       return {
@@ -243,10 +206,7 @@ export function finishCustomActionCommand(
       if (tree.repositoryId !== reply.repositoryId || tree.worktreeId !== reply.worktreeId) {
         return tree;
       }
-      const reviewMessages = tree.messages.filter((msg) => msg.kind === 'review');
-      const nextMessages: Message[] = reply.message
-        ? [...reviewMessages, reply.message]
-        : reviewMessages;
+      const nextMessages: Message[] = reply.message ? [reply.message] : [];
       const nextDockExpanded = reply.status === 'cancelled'
         ? false
         : reply.status === 'done'

@@ -2,11 +2,16 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { I18nProvider } from '../../../i18n';
+import {
+  DOCK_MIN_HEIGHT_PX,
+  computeDraggedDockPreference,
+  resolveDockSplit,
+} from '../components/dockResize';
 import { MessageDock } from '../components/MessageDock';
 import { fixture } from '../testing/fixtures';
 import { workbenchReducer, type Message } from './workbench';
 
-describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
+describe('Direction 2 MessageDock dismiss, rich message_user blocks, and interactive Q&A rendering', () => {
   it('dismissMessage truly removes completed done message and returns session to idle while keeping history', () => {
     const state = fixture('done');
     const tree = state.worktrees[0];
@@ -25,7 +30,7 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
     expect(nextTree.sessionStatus).toBe('idle');
   });
 
-  it('renders inline dismiss button on collapsed done bar and ask_user_question multi-question UI', () => {
+  it('renders inline dismiss button on collapsed done bar, Direction 2 rich card blocks, and multi-question UI', () => {
     const doneState = fixture('done');
     doneState.worktrees[0].dockExpanded = false;
     const collapsedHtml = renderToStaticMarkup(
@@ -35,17 +40,52 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
           worktree: doneState.worktrees[0],
           busy: false,
           editorShort: 'IDEA',
+          fullHeight: false,
           onExpanded: () => {},
           onDismiss: () => {},
           onReply: () => {},
           onRespond: () => {},
           onOpenFile: () => {},
-          onReview: () => {},
+          onOpenRepoPath: () => {},
         }),
       }),
     );
     expect(collapsedHtml).toContain('message-collapsed-dismiss');
     expect(collapsedHtml).toContain('关闭已完成提示');
+
+    // Direction 2 rich card renders facts, findings with IDE jump, checklist, auto-collapsed long code, files, and header dismiss ×:
+    const richState = fixture('rich-card');
+    const richHtml = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: 'zh',
+        children: createElement(MessageDock, {
+          worktree: richState.worktrees[0],
+          busy: false,
+          editorShort: 'IDEA',
+          fullHeight: false,
+          onExpanded: () => {},
+          onDismiss: () => {},
+          onReply: () => {},
+          onRespond: () => {},
+          onOpenFile: () => {},
+          onOpenRepoPath: () => {},
+          onFollowUpCustomAction: () => {},
+        }),
+      }),
+    );
+    expect(richHtml).toContain('d2-sheet');
+    expect(richHtml).toContain('d2-grab-zone');
+    expect(richHtml).toContain('role="separator"');
+    expect(richHtml).not.toContain('撑满阅读');
+    expect(richHtml).toContain('d2-facts-bar');
+    expect(richHtml).toContain('Signature failure log prints full request body');
+    expect(richHtml).toContain('在 IDEA 打开');
+    expect(richHtml).toContain('d2-checklist-row');
+    expect(richHtml).toContain('d2-code-well');
+    expect(richHtml).toContain('10 行');
+    expect(richHtml).toContain('关闭已完成提示');
+    expect(richHtml).toContain('继续追问或补充下一步指令');
+    expect(richHtml).not.toContain('知道了');
 
     const askState = fixture('question');
     const questionnaireMsg: Message = {
@@ -92,12 +132,13 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
           worktree: askState.worktrees[0],
           busy: false,
           editorShort: 'IDEA',
+          fullHeight: false,
           onExpanded: () => {},
           onDismiss: () => {},
           onReply: () => {},
           onRespond: () => {},
           onOpenFile: () => {},
-          onReview: () => {},
+          onOpenRepoPath: () => {},
         }),
       }),
     );
@@ -111,7 +152,7 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
     expect(askHtml).toContain('取消');
   });
 
-  it('omits redundant local dismiss button on error cards that provide session options', () => {
+  it('omits header dismiss button on error cards with options and shows header dismiss on standalone errors', () => {
     const withOptions = fixture('question');
     withOptions.worktrees[0].sessionStatus = 'needsDecision';
     withOptions.worktrees[0].dockExpanded = true;
@@ -131,17 +172,18 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
           worktree: withOptions.worktrees[0],
           busy: false,
           editorShort: 'IDEA',
+          fullHeight: false,
           onExpanded: () => {},
           onDismiss: () => {},
           onReply: () => {},
           onRespond: () => {},
           onOpenFile: () => {},
-          onReview: () => {},
+          onOpenRepoPath: () => {},
         }),
       }),
     );
     expect(expandedWithOpts).toContain('关闭本次会话');
-    expect(expandedWithOpts).not.toContain('知道了');
+    expect(expandedWithOpts).not.toContain('关闭已完成提示');
 
     withOptions.worktrees[0].dockExpanded = false;
     const collapsedWithOpts = renderToStaticMarkup(
@@ -151,12 +193,13 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
           worktree: withOptions.worktrees[0],
           busy: false,
           editorShort: 'IDEA',
+          fullHeight: false,
           onExpanded: () => {},
           onDismiss: () => {},
           onReply: () => {},
           onRespond: () => {},
           onOpenFile: () => {},
-          onReview: () => {},
+          onOpenRepoPath: () => {},
         }),
       }),
     );
@@ -179,15 +222,42 @@ describe('Phase 1 MessageDock dismiss and ask_user_question rendering', () => {
           worktree: standaloneError.worktrees[0],
           busy: false,
           editorShort: 'IDEA',
+          fullHeight: false,
           onExpanded: () => {},
           onDismiss: () => {},
           onReply: () => {},
           onRespond: () => {},
           onOpenFile: () => {},
-          onReview: () => {},
+          onOpenRepoPath: () => {},
         }),
       }),
     );
-    expect(expandedStandalone).toContain('知道了');
+    expect(expandedStandalone).toContain('关闭已完成提示');
+  });
+
+  it('computes and clamps draggable MessageDock split heights and full-height snapping cleanly', () => {
+    expect(resolveDockSplit(null, 580)).toEqual({
+      fullHeight: false,
+      changesHeightPx: null,
+      dockHeightPx: null,
+    });
+    expect(resolveDockSplit('full', 580)).toEqual({
+      fullHeight: true,
+      changesHeightPx: 0,
+      dockHeightPx: 580,
+    });
+    expect(resolveDockSplit(300, 580)).toEqual({
+      fullHeight: false,
+      changesHeightPx: 280,
+      dockHeightPx: 300,
+    });
+    expect(resolveDockSplit(90, 580)).toEqual({
+      fullHeight: false,
+      changesHeightPx: 580 - DOCK_MIN_HEIGHT_PX,
+      dockHeightPx: DOCK_MIN_HEIGHT_PX,
+    });
+    expect(computeDraggedDockPreference(550, 580)).toBe('full');
+    expect(computeDraggedDockPreference(260, 580)).toBe(260);
+    expect(computeDraggedDockPreference(60, 580)).toBe(DOCK_MIN_HEIGHT_PX);
   });
 });

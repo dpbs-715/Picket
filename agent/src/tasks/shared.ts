@@ -1,24 +1,6 @@
 import type { AppLocale } from '../../../shared/language-protocol';
-import type { PiDiffFile, PiPlanFileEntry } from '../../../shared/pi-protocol';
+import type { PiPlanFileEntry } from '../../../shared/pi-protocol';
 import { LocalizedSidecarError, getSidecarMessages } from '../i18n';
-
-export function formatDiffPromptBlock(files: PiDiffFile[], skippedPaths: string[]): string {
-  const blocks = files.map((file) => {
-    const rename = file.previousPath ? ` (renamed from ${file.previousPath})` : '';
-    return [
-      `### File: ${file.path}${rename}`,
-      `- fileId: ${file.fileId}`,
-      `- status: ${file.status} (${file.rangeKind}, +${file.added} -${file.removed})`,
-      '```diff',
-      file.patch.trimEnd(),
-      '```',
-    ].join('\n');
-  });
-  if (skippedPaths.length > 0) {
-    blocks.push(`### Additional selected entries not expanded inline:\n${skippedPaths.map((item) => `- ${item}`).join('\n')}`);
-  }
-  return blocks.join('\n\n');
-}
 
 export function formatPlanFilesPromptBlock(files: PiPlanFileEntry[]): string {
   return files.map((file, index) => {
@@ -39,7 +21,7 @@ export function formatPlanFilesPromptBlock(files: PiPlanFileEntry[]): string {
     if (file.patch && file.patch.trim()) {
       header.push('```diff', file.patch.trimEnd(), '```');
     } else {
-      header.push(`(Patch body omitted; assign ${alias} / ${file.fileId} to its logical commit group based on path/status.)`);
+      header.push(`(Patch body omitted; keep ${alias} / ${file.fileId} with the cohesive commit group it belongs to based on path/status—do NOT start a separate commit group merely because it lives in another directory.)`);
     }
     return header.join('\n');
   }).join('\n\n');

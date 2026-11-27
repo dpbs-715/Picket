@@ -1,12 +1,11 @@
 import { useRef, useState, type MutableRefObject } from 'react';
-import type { AskUserQuestionResponse } from '../../../../shared/ask-user-protocol';
 import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
 import type { CommitLanguage } from '../../../../shared/language-protocol';
+import type { MessageUserResponse } from '../../../../shared/message-user-protocol';
 import { getMessages } from '../../../i18n';
 import type { ModelConfiguration } from '../../settings/modelProviders';
 import type { WorkbenchBackend, WorkbenchCommand } from '../commands';
 import {
-  activeValidPlan,
   computeSyncCustomActionAcrossRepos,
   isActiveSession,
   targetOf,
@@ -29,8 +28,6 @@ interface UseWorkbenchCommandsParams {
   activeCustomAction: CustomActionConfig | undefined;
   selected: Change[];
   promptText: string;
-  canPlan: boolean;
-  canUseModel: boolean;
   compactMode: boolean;
   viewKey: string;
   backend: WorkbenchBackend;
@@ -52,8 +49,6 @@ export function useWorkbenchCommands({
   activeCustomAction,
   selected,
   promptText,
-  canPlan,
-  canUseModel,
   compactMode,
   viewKey,
   backend,
@@ -66,7 +61,6 @@ export function useWorkbenchCommands({
 }: UseWorkbenchCommandsParams) {
   const [pending, setPending] = useState<string[]>([]);
   const inFlight = useRef(new Set<string>());
-  const cancelledRequests = useRef(new Set<string>());
   const latestLocalKeepRequestByRepo = useRef<Record<string, string>>({});
   const t = getMessages(state.locale);
 
@@ -93,13 +87,9 @@ export function useWorkbenchCommands({
         dispatch,
         notify,
         isEditingCommitInput,
-        cancelledRequests,
         latestLocalKeepRequestByRepo,
       });
     } catch (error) {
-      if ('requestId' in command && cancelledRequests.current.delete(command.requestId)) {
-        return false;
-      }
       applyCommandError(command, error, targetKey, {
         latestState,
         backend,
@@ -116,79 +106,6 @@ export function useWorkbenchCommands({
     }
   }
 
-  async function runPlan() {
-    if (!worktree || !model || !canPlan || worktree.requests.plan) return;
-    if (worktree.detached) {
-      notify(t.workbench.detachedPrimaryBlocked, viewKey, { tone: 'warning' });
-      return;
-    }
-    const target = targetOf(worktree);
-    const requestId = crypto.randomUUID();
-    const fileIds = selected.map((file) => file.id);
-    const selections = selected.every((file) => !!file.commitToken)
-      ? selected.map((file) => ({ fileId: file.id, commitToken: file.commitToken! }))
-      : undefined;
-    dispatch({ type: 'request', target, kind: 'plan', requestId, fileIds });
-    await execute({
-      kind: 'planCPush',
-      target,
-      requestId,
-      fileIds,
-      selections,
-      modelId: model.id,
-      prompt: promptText,
-      locale: state.locale,
-      commitLanguage: activeCommitLanguage,
-    });
-  }
-
-  async function runReview(changedOnly = false) {
-    if (!worktree || !model || !canUseModel || worktree.requests.review) return;
-    const target = targetOf(worktree);
-    const requestId = crypto.randomUUID();
-    const targetFiles = selected.filter((file) => !changedOnly || worktree.review.changedPaths.includes(file.path));
-    const fileIds = targetFiles.map((file) => file.id);
-    if (!fileIds.length) {
-      notify(t.workbench.noChangedFilesToReReview, viewKey, { tone: 'info' });
-      return;
-    }
-    const selections = targetFiles.every((file) => !!file.commitToken)
-      ? targetFiles.map((file) => ({ fileId: file.id, commitToken: file.commitToken! }))
-      : undefined;
-    dispatch({ type: 'request', target, kind: 'review', requestId, fileIds });
-    await execute({
-      kind: 'review',
-      target,
-      requestId,
-      fileIds,
-      selections,
-      modelId: model.id,
-      prompt: promptText,
-      locale: state.locale,
-      ...(changedOnly ? { changedPaths: worktree.review.changedPaths } : {}),
-    });
-  }
-
-  function cancelModel(kind: 'plan' | 'review') {
-    const active = worktree?.requests[kind];
-    if (!worktree || !active) return;
-    cancelledRequests.current.add(active.id);
-    dispatch({ type: 'requestFailed', target: targetOf(worktree), kind, requestId: active.id });
-    void backend.cancelRequest?.(active.id).catch(() => {});
-    notify(kind === 'plan' ? t.workbench.cancelledPlan : t.workbench.cancelledReview, viewKey, { tone: 'info' });
-  }
-
-  function cancelActiveModelRequests(tree: Worktree | undefined) {
-    if (!tree) return;
-    for (const kind of ['plan', 'review'] as const) {
-      const active = tree.requests[kind];
-      if (active) {
-        cancelledRequests.current.add(active.id);
-        void backend.cancelRequest?.(active.id).catch(() => {});
-      }
-    }
-  }
-
   function switchWorktree(worktreeId: string, expand?: boolean) {
     dispatch({ type: 'switch', worktreeId, expand });
     const next = state.worktrees.find((tree) => tree.worktreeId === worktreeId);
@@ -199,7 +116,6 @@ export function useWorkbenchCommands({
 
   function setLocalKeep(paths: string[], keep: boolean) {
     if (!worktree || !paths.length) return;
-    cancelActiveModelRequests(worktree);
     const target = targetOf(worktree);
     dispatch({ type: 'localKeepUpdated', repositoryId: worktree.repositoryId, paths, keep });
     if (backend.repositoryReadsAvailable) {
@@ -231,6 +147,20 @@ export function useWorkbenchCommands({
         locale: state.locale,
       });
     }
+  }
+
+  function openRepoPath(path: string, line?: number) {
+    if (!worktree || !path.trim()) return;
+    const matchedFile = worktree.files.find((file) => file.path === path);
+    void execute({
+      kind: 'openFile',
+      target: targetOf(worktree),
+      requestId: crypto.randomUUID(),
+      ...(matchedFile && line === undefined ? { fileId: matchedFile.id } : { path }),
+      editor: activeEditor,
+      line,
+      locale: state.locale,
+    });
   }
 
   function launchCustomAction(
@@ -326,20 +256,6 @@ export function useWorkbenchCommands({
       return;
     }
     if (model && selected.length && !worktree.readError) {
-      const validPlan = activeValidPlan(worktree);
-      if (validPlan && validPlan.groups.some((group) => !group.message.trim())) {
-        notify(t.commit.emptyPlanMessageError, viewKey, { tone: 'warning' });
-        return;
-      }
-      if (worktree.plan && !validPlan) {
-        // Outdated plan is discarded before starting a fresh C-Push plan:
-        dispatch({ type: 'planCleared', worktreeId: worktree.worktreeId });
-      }
-      const activePlanReq = worktree.requests.plan;
-      if (activePlanReq) {
-        cancelledRequests.current.add(activePlanReq.id);
-        void backend.cancelRequest?.(activePlanReq.id).catch(() => {});
-      }
       const requestId = crypto.randomUUID();
       const target = targetOf(worktree);
       const fileIds = selected.map((file) => file.id);
@@ -364,15 +280,6 @@ export function useWorkbenchCommands({
         selections,
         modelId: model.id,
         prompt: promptText,
-        ...(validPlan
-          ? {
-              confirmedPlan: {
-                groups: validPlan.groups.map((group) => ({ ...group, fileIds: [...group.fileIds] })),
-                skippedFileIds: [...validPlan.skippedFileIds],
-                ...(validPlan.skipPush ? { skipPush: true } : {}),
-              },
-            }
-          : {}),
         locale: state.locale,
         commitLanguage: activeCommitLanguage,
       });
@@ -381,7 +288,7 @@ export function useWorkbenchCommands({
 
   async function respond(
     message: Message,
-    answer: { optionId?: string; text?: string; questionnaireResponse?: AskUserQuestionResponse },
+    answer: { optionId?: string; text?: string; questionnaireResponse?: MessageUserResponse },
   ) {
     if (!worktree) return;
     const id = worktree.worktreeId;
@@ -468,13 +375,10 @@ export function useWorkbenchCommands({
     pending,
     inFlight,
     execute,
-    runPlan,
-    runReview,
-    cancelModel,
-    cancelActiveModelRequests,
     switchWorktree,
     setLocalKeep,
     openFile,
+    openRepoPath,
     primary,
     followUpCustomAction,
     respond,

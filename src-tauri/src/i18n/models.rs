@@ -226,14 +226,6 @@ pub const fn model_test_cancelled_error(locale: LanguageKind) -> &'static str {
     )
 }
 
-pub const fn model_review_cancelled_error(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Code review cancelled; current prompt and selection were preserved.",
-        "已取消代码审查；当前提示词与选择已保留。",
-    )
-}
-
 pub fn model_reveal_auth_reason(locale: LanguageKind, connection_name: &str) -> String {
     match locale {
         LanguageKind::En => format!("reveal the saved API key for \"{connection_name}\" in Picket"),

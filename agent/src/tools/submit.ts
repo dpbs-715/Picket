@@ -105,7 +105,7 @@ export function createCleanupSubmitDuplicatesTool(bridge: ToolBridge): AgentTool
   return {
     name: 'cleanup_submit_duplicates',
     label: 'Backup & Clean Submitted Duplicates',
-    description: 'Execute `submit` Step 5 verified local duplicate backup & cleanup on the original checkout ONLY AFTER the user explicitly approved cleanup via `ask_user_question`. Verifies every group has a pushed remote tip + PR/MR URL, retains partial-staged or edited files, writes a verified backup under `<git-dir>/submit-backup/<UTC-timestamp>/` before any write, and cleans only verified literal paths.',
+    description: 'Execute `submit` Step 5 verified local duplicate backup & cleanup on the original checkout ONLY AFTER the user explicitly approved cleanup via `message_user` (with `questions`). Verifies every group has a pushed remote tip + PR/MR URL, retains partial-staged or edited files, writes a verified backup under `<git-dir>/submit-backup/<UTC-timestamp>/` before any write, and cleans only verified literal paths.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -113,7 +113,7 @@ export function createCleanupSubmitDuplicatesTool(bridge: ToolBridge): AgentTool
       properties: {
         userConfirmed: {
           type: 'boolean',
-          description: 'Must be `true` only after the user explicitly approved Step 5 duplicate cleanup via `ask_user_question`.',
+          description: 'Must be `true` only after the user explicitly approved Step 5 duplicate cleanup via `message_user`.',
         },
         groupIds: {
           type: 'array',

@@ -1,4 +1,4 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import type { AppLocale } from '../../shared/language-protocol';
 import {
   decodeModelListReply,
@@ -8,31 +8,19 @@ import {
   decodeProviderRevealKeyReply,
   decodeProviderSaveReply,
   decodeProviderUpdateReply,
-  decodeReviewScopeReply,
   type CreateProviderConnectionInput,
   type ListModelsInput,
-  type ModelFileSelection,
   type ModelMutateReply,
   type ModelSaveReply,
-  type ModelStreamEvent,
   type ProviderRevealKeyReply,
   type ProviderSaveReply,
   type ProviderUpdateReply,
   type RemoteModelOption,
-  type ReviewScopeReply,
   type SaveModelInput,
   type TestConnectionInput,
   type UpdateProviderConnectionInput,
 } from '../../shared/model-protocol';
-import type { GitReadTarget } from '../../shared/git-read-protocol';
 import { getMessages } from '../i18n/messages';
-
-function sameTarget(a: GitReadTarget, b: GitReadTarget): boolean {
-  return a.repositoryId === b.repositoryId
-    && a.worktreeId === b.worktreeId
-    && a.sessionId === b.sessionId
-    && a.scopeVersion === b.scopeVersion;
-}
 
 export async function testDesktopModelConnection(input: TestConnectionInput): Promise<string> {
   const reply = decodeModelTestReply(await invoke('test_model_connection', { input }));
@@ -135,36 +123,4 @@ export async function revealDesktopProviderApiKey(
 
 export async function cancelDesktopModelRequest(requestId: string): Promise<void> {
   await invoke('cancel_model_request', { requestId });
-}
-
-export async function reviewDesktopScope(params: {
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  selections: ModelFileSelection[];
-  prompt: string;
-  changedPaths?: string[];
-  locale?: AppLocale;
-  onStream?: (event: ModelStreamEvent) => void;
-}): Promise<ReviewScopeReply> {
-  const onEvent = new Channel<ModelStreamEvent>();
-  if (params.onStream) {
-    onEvent.onmessage = params.onStream;
-  }
-  const reply = decodeReviewScopeReply(await invoke('review_selected_scope', {
-    request: {
-      requestId: params.requestId,
-      target: params.target,
-      modelId: params.modelId,
-      selections: params.selections,
-      prompt: params.prompt,
-      ...(params.changedPaths ? { changedPaths: params.changedPaths } : {}),
-      ...(params.locale ? { locale: params.locale } : {}),
-    },
-    onEvent,
-  }));
-  if (reply.requestId !== params.requestId || reply.modelId !== params.modelId || !sameTarget(reply.target, params.target)) {
-    throw new Error(getMessages(params.locale).desktop.reviewMismatch);
-  }
-  return reply;
 }

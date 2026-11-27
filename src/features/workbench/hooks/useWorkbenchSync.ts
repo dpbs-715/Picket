@@ -37,6 +37,7 @@ interface UseWorkbenchSyncParams {
   pinInFlight: MutableRefObject<boolean>;
   desiredCompactHeightRef: MutableRefObject<number>;
   activeSurfaceRef: MutableRefObject<WorkbenchSurface>;
+  isEditingCommitInput: () => boolean;
   execute: (command: WorkbenchCommand, preserveFeedback?: boolean) => Promise<boolean>;
   openSettingsFromWorkbench: (focusModels?: boolean) => void;
   openSettingsFromCompact: (options?: { focusModels?: boolean; drawerWasOpen?: boolean }) => Promise<void>;
@@ -62,6 +63,7 @@ export function useWorkbenchSync({
   pinInFlight,
   desiredCompactHeightRef,
   activeSurfaceRef,
+  isEditingCommitInput,
   execute,
   openSettingsFromWorkbench,
   openSettingsFromCompact,
@@ -79,7 +81,17 @@ export function useWorkbenchSync({
   const trayActionHandlerRef = useRef<(action: TrayMainWindowAction) => void>(() => {});
   const trayRefreshHandlerRef = useRef<() => void>(() => {});
 
-  useEffect(() => backend.subscribe?.((event) => dispatch({ type: 'event', event })), [backend, dispatch]);
+  const isEditingRef = useRef(isEditingCommitInput);
+  isEditingRef.current = isEditingCommitInput;
+
+  useEffect(
+    () => backend.subscribe?.((event) => {
+      const suppressExpand = event.type === 'customActionProgress'
+        && (isEditingRef.current() || latestState.current.windowPrefs.compactMode);
+      dispatch({ type: 'event', event, ...(suppressExpand ? { suppressExpand: true } : {}) });
+    }),
+    [backend, dispatch, latestState],
+  );
 
   useEffect(() => {
     if (initialState || !backend.loadWorkbenchState) return;
@@ -193,7 +205,7 @@ export function useWorkbenchSync({
     state.windowPrefs.compactMode,
     state.windowPrefs.pinnedExpanded,
     state.activeWorktreeId,
-    state.worktrees.map((tree) => [tree.worktreeId, tree.selectedIds, tree.scopeVersion, tree.tab]),
+    state.worktrees.map((tree) => [tree.worktreeId, tree.selectedIds, tree.scopeVersion]),
   ]);
 
   useEffect(() => {

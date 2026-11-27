@@ -30,17 +30,6 @@ export interface PiProviderSpec {
   maxOutputTokens?: number;
 }
 
-export interface PiDiffFile {
-  fileId: string;
-  path: string;
-  previousPath?: string;
-  status: string;
-  rangeKind: 'partial' | 'staged' | 'unstaged';
-  added: number;
-  removed: number;
-  patch: string;
-}
-
 export interface PiPlanFileEntry {
   fileId: string;
   path: string;
@@ -145,20 +134,6 @@ export interface RuntimeSkillOverrideCatalog {
   skills: RuntimeSkillOverrideEntry[];
 }
 
-export interface ReviewScopeCommand {
-  type: 'reviewScope';
-  requestId: string;
-  context: RequestContext;
-  model: PiProviderSpec;
-  branch: string;
-  prompt: string;
-  files: PiDiffFile[];
-  skippedPaths: string[];
-  locale?: AppLocale;
-  enableTools?: boolean;
-  skillOverrides?: RuntimeSkillOverrideCatalog;
-}
-
 export interface PlanCPushCommand {
   type: 'planCPush';
   requestId: string;
@@ -226,7 +201,6 @@ export type PiTaskRequest =
   | ProbeRequest
   | TestConnectionRequest
   | ListModelsRequest
-  | ReviewScopeCommand
   | PlanCPushCommand
   | ResolveConflictCommand
   | RunCustomActionCommand
@@ -246,15 +220,6 @@ export type PiCommand = PiTaskRequest
   | PiToolResultCommand
   | { type: 'cancel'; requestId: string }
   | { type: 'shutdown' };
-
-export interface PiReviewFinding {
-  fileId: string;
-  path: string;
-  line: number;
-  severity: 'high' | 'suggestion';
-  title: string;
-  reason: string;
-}
 
 export interface PiActionLink {
   label: string;
@@ -278,7 +243,6 @@ export type ProbeEvent = {
   | { type: 'toolProgress'; callId: string; toolName: string; status: string }
   | { type: 'completed'; text: string }
   | { type: 'modelsListed'; models: RemoteModelOption[] }
-  | { type: 'reviewCompleted'; findings: PiReviewFinding[] }
   | { type: 'cPushPlanCompleted'; plan: PiCPushPlan }
   | { type: 'conflictResolved'; resolution: PiConflictResolution }
   | { type: 'customActionCompleted'; summary: string; links: PiActionLink[] }
@@ -327,32 +291,6 @@ function decodeProviderSpec(value: unknown, allowEmptyModelId = false): PiProvid
     ...(typeof value.contextWindow === 'number' ? { contextWindow: value.contextWindow } : {}),
     ...(typeof value.maxOutputTokens === 'number' ? { maxOutputTokens: value.maxOutputTokens } : {}),
   };
-}
-
-function decodeDiffFiles(value: unknown): PiDiffFile[] {
-  if (!Array.isArray(value)) throw new Error('Expected files array');
-  return value.map((item) => {
-    if (!isRecord(item)
-      || typeof item.fileId !== 'string' || !item.fileId
-      || typeof item.path !== 'string' || !item.path
-      || !(item.previousPath === undefined || item.previousPath === null || typeof item.previousPath === 'string')
-      || typeof item.status !== 'string' || !item.status
-      || (item.rangeKind !== 'partial' && item.rangeKind !== 'staged' && item.rangeKind !== 'unstaged')
-      || typeof item.added !== 'number' || typeof item.removed !== 'number'
-      || typeof item.patch !== 'string') {
-      throw new Error('Invalid diff file entry');
-    }
-    return {
-      fileId: item.fileId,
-      path: item.path,
-      ...(typeof item.previousPath === 'string' && item.previousPath ? { previousPath: item.previousPath } : {}),
-      status: item.status,
-      rangeKind: item.rangeKind,
-      added: item.added,
-      removed: item.removed,
-      patch: item.patch,
-    };
-  });
 }
 
 function decodeStringList(value: unknown, field: string): string[] {
@@ -529,28 +467,6 @@ export function decodeCommand(line: string): PiCommand {
       context: decodeRequestContext(command.context),
       model: decodeProviderSpec(command.model, true),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
-    };
-  }
-  if (command.type === 'reviewScope') {
-    if (typeof command.branch !== 'string'
-      || typeof command.prompt !== 'string'
-      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
-      || !(command.enableTools === undefined || command.enableTools === null || typeof command.enableTools === 'boolean')) {
-      throw new Error('Invalid reviewScope fields');
-    }
-    const skillOverrides = decodeSkillOverrides(command.skillOverrides);
-    return {
-      type: 'reviewScope',
-      requestId: command.requestId,
-      context: decodeRequestContext(command.context),
-      model: decodeProviderSpec(command.model),
-      branch: command.branch,
-      prompt: command.prompt,
-      files: decodeDiffFiles(command.files),
-      skippedPaths: decodeStringList(command.skippedPaths, 'skippedPaths'),
-      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
-      ...(typeof command.enableTools === 'boolean' ? { enableTools: command.enableTools } : {}),
-      ...(skillOverrides ? { skillOverrides } : {}),
     };
   }
   if (command.type === 'planCPush') {

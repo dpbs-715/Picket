@@ -2,7 +2,7 @@
 //! (`clone_a` and `clone_b`) + bundled Pi Core, verifying R02–R06, C04, and W04.
 use super::{CPushCoordinator, types::*};
 use crate::{
-    foundation::pi::{PiCPushCommitGroup, PiPaths, PiSupervisor},
+    foundation::pi::{PiPaths, PiSupervisor},
     i18n::LanguageKind,
     models::{
         smoke::LocalModelSseServer,
@@ -115,13 +115,14 @@ fn make_models(_dir: &Path) -> ModelStore {
 async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_without_recommit() {
     let temp = tempfile::tempdir().unwrap();
     let models = make_models(temp.path());
+    let server = LocalModelSseServer::start().unwrap();
     let saved = models
         .create_provider_connection(
             temp.path(),
             &CreateProviderConnectionInput {
                 provider: ProviderKind::Ollama,
                 connection_name: "Local Ollama".into(),
-                base_url: "http://127.0.0.1:11434/v1".into(),
+                base_url: format!("{}/v1", server.base_url),
                 api_key: String::new(),
                 model_name: "Local Planner".into(),
                 model_id: "qwen2.5-coder:14b".into(),
@@ -168,15 +169,6 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
                     commit_token: part.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: Some(CPushConfirmedPlan {
-                    groups: vec![PiCPushCommitGroup {
-                        id: "g1".into(),
-                        file_ids: vec![part.id.clone()],
-                        message: "feat(part): update first key\n\n- set first=2".into(),
-                    }],
-                    skipped_file_ids: vec![],
-                    skip_push: false,
-                }),
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -271,15 +263,6 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
                     commit_token: part2.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: Some(CPushConfirmedPlan {
-                    groups: vec![PiCPushCommitGroup {
-                        id: "g1".into(),
-                        file_ids: vec![part2.id.clone()],
-                        message: "feat(part): bump first to 3\n\n- set first=3".into(),
-                    }],
-                    skipped_file_ids: vec![],
-                    skip_push: false,
-                }),
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -573,7 +556,6 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                     commit_token: order_file.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
@@ -713,7 +695,6 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
                     commit_token: order2.commit_token.clone(),
                 }],
                 prompt: String::new(),
-                confirmed_plan: None,
                 push: None,
                 locale: LanguageKind::En,
                 commit_language: LanguageKind::En,
