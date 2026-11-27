@@ -1,14 +1,28 @@
+import type {
+  ActionSessionSnapshot,
+  CustomActionDraft,
+  TrustedActionUpdate,
+} from './generated';
 import {
   decodeMessageUserCard,
   type MessageUserCard,
   type MessageUserRequest,
   type MessageUserResponse,
 } from './message-user-protocol';
-import type { CPushLandedCommit, CPushMessageKind } from './cpush-protocol';
+import type { CPushLandedCommit } from './cpush-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
 import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
 import type { AppLocale, CommitLanguage } from './language-protocol';
 import type { ModelFileSelection } from './model-protocol';
+import {
+  decodeWorkflowCommits,
+  decodeWorkflowLinks,
+  decodeWorkflowTimeline,
+  decodeWorkflowUiMessage,
+  type WorkflowLink,
+  type WorkflowTimelineItem,
+  type WorkflowUiMessage,
+} from './workflow-message-protocol';
 
 export const CUSTOM_ACTION_PROTOCOL_VERSION = 1;
 
@@ -29,35 +43,11 @@ export interface CustomActionConfig {
   trustedPromptHash?: string;
 }
 
-export interface CustomActionLink {
-  label: string;
-  url: string;
-}
+export type CustomActionLink = WorkflowLink;
+export type CustomActionTimelineItem = WorkflowTimelineItem;
+export type CustomActionUiMessage = WorkflowUiMessage;
 
-export interface CustomActionTimelineItem {
-  state: 'done' | 'active' | 'failed';
-  label: string;
-}
-
-export interface CustomActionUiMessage {
-  id: string;
-  kind: CPushMessageKind;
-  title: string;
-  description: string;
-  scope?: string;
-  files?: { id: string; label: string; badge?: string }[];
-  commits?: { hash: string; title: string }[];
-  links?: CustomActionLink[];
-  card?: MessageUserCard;
-  questionnaire?: MessageUserRequest;
-  progress?: { completed: number; total: number; label: string };
-}
-
-export interface TrustedActionUpdate {
-  repositoryId: string;
-  actionId: string;
-  trustedPromptHash: string;
-}
+export type { ActionSessionSnapshot, CustomActionDraft, TrustedActionUpdate };
 
 export interface StartCustomActionRequest {
   requestId: string;
@@ -86,20 +76,6 @@ export interface DismissSessionDoneRequest {
   runId?: string;
   messageId: string;
   locale?: AppLocale;
-}
-
-export interface ActionSessionSnapshot {
-  runId: string;
-  repositoryId: string;
-  worktreeId: string;
-  actionId: string;
-  actionLabel: string;
-  status: 'interrupted' | 'done' | 'cancelled' | 'failed';
-  summary: string;
-  message: CustomActionUiMessage | null;
-  timeline: CustomActionTimelineItem[];
-  commits: CPushLandedCommit[];
-  links: CustomActionLink[];
 }
 
 export interface CustomActionProgressEvent {
@@ -147,12 +123,6 @@ export interface GenerateCustomActionRequest {
   userRequest: string;
   existingLabels: string[];
   locale?: AppLocale;
-}
-
-export interface CustomActionDraft {
-  label: string;
-  prompt: string;
-  summary: string;
 }
 
 export interface GenerateCustomActionProgressEvent {
@@ -333,54 +303,6 @@ function decodeOptionalSnapshot(raw: unknown): GitRepositorySnapshot | undefined
   return decoded.snapshot;
 }
 
-function decodeLinks(raw: unknown): CustomActionLink[] {
-  if (!Array.isArray(raw)) return [];
-  const links: CustomActionLink[] = [];
-  for (const item of raw) {
-    if (!isRecord(item) || typeof item.label !== 'string' || typeof item.url !== 'string') continue;
-    const label = item.label.trim();
-    const url = item.url.trim();
-    if (label && /^https?:\/\//i.test(url)) {
-      links.push({ label, url });
-    }
-  }
-  return links;
-}
-
-function decodeTimeline(raw: unknown): CustomActionTimelineItem[] {
-  if (!Array.isArray(raw)) throw new Error('Invalid custom action timeline.');
-  return raw.map((item) => {
-    if (!isRecord(item)
-      || (item.state !== 'done' && item.state !== 'active' && item.state !== 'failed')
-      || typeof item.label !== 'string') {
-      throw new Error('Invalid custom action timeline item.');
-    }
-    return { state: item.state, label: item.label };
-  });
-}
-
-function decodeCommits(raw: unknown): CPushLandedCommit[] {
-  if (!Array.isArray(raw)) throw new Error('Invalid custom action commits list.');
-  return raw.map((item) => {
-    if (!isRecord(item)
-      || typeof item.oid !== 'string'
-      || typeof item.shortOid !== 'string'
-      || typeof item.title !== 'string'
-      || typeof item.branch !== 'string'
-      || !Array.isArray(item.fileIds)
-      || !item.fileIds.every((id) => typeof id === 'string')) {
-      throw new Error('Invalid custom action commit item.');
-    }
-    return {
-      oid: item.oid,
-      shortOid: item.shortOid,
-      title: item.title,
-      branch: item.branch,
-      fileIds: item.fileIds as string[],
-    };
-  });
-}
-
 function decodeTrustedActionUpdate(raw: unknown): TrustedActionUpdate | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (!isRecord(raw)
@@ -396,21 +318,9 @@ function decodeTrustedActionUpdate(raw: unknown): TrustedActionUpdate | undefine
   };
 }
 
-function decodeUiMessage(raw: unknown): CustomActionUiMessage | null {
+function decodeOptionalUiMessage(raw: unknown): CustomActionUiMessage | null {
   if (raw === undefined || raw === null) return null;
-  if (!isRecord(raw)
-    || typeof raw.id !== 'string' || !raw.id
-    || typeof raw.kind !== 'string'
-    || typeof raw.title !== 'string'
-    || typeof raw.description !== 'string') {
-    throw new Error('Invalid custom action message payload.');
-  }
-  const base = raw as unknown as CustomActionUiMessage;
-  const card = decodeMessageUserCard(raw.card);
-  return {
-    ...base,
-    ...(card ? { card } : { card: undefined }),
-  };
+  return decodeWorkflowUiMessage(raw, 'custom action');
 }
 
 export function decodeCustomActionProgressEvent(value: unknown): CustomActionProgressEvent {
@@ -437,10 +347,10 @@ export function decodeCustomActionProgressEvent(value: unknown): CustomActionPro
     actionLabel: value.actionLabel,
     status: value.status as CustomActionProgressEvent['status'],
     ...(typeof value.pendingCallId === 'string' && value.pendingCallId ? { pendingCallId: value.pendingCallId } : {}),
-    message: decodeUiMessage(value.message),
-    timeline: decodeTimeline(value.timeline),
-    commits: decodeCommits(value.commits),
-    links: decodeLinks(value.links),
+    message: decodeOptionalUiMessage(value.message),
+    timeline: decodeWorkflowTimeline(value.timeline, 'custom action'),
+    commits: decodeWorkflowCommits(value.commits, 'custom action'),
+    links: decodeWorkflowLinks(value.links),
     ...(trustedActionUpdate ? { trustedActionUpdate } : {}),
     ...(repositorySnapshot ? { repositorySnapshot } : {}),
   };
@@ -475,10 +385,10 @@ export function decodeCustomActionCommandReply(value: unknown): CustomActionComm
     actionLabel: value.actionLabel,
     status: value.status as CustomActionCommandReply['status'],
     summary: value.summary,
-    message: decodeUiMessage(value.message),
-    timeline: decodeTimeline(value.timeline),
-    commits: decodeCommits(value.commits),
-    links: decodeLinks(value.links),
+    message: decodeOptionalUiMessage(value.message),
+    timeline: decodeWorkflowTimeline(value.timeline, 'custom action'),
+    commits: decodeWorkflowCommits(value.commits, 'custom action'),
+    links: decodeWorkflowLinks(value.links),
     ...(trustedActionUpdate ? { trustedActionUpdate } : {}),
     ...(repositorySnapshot ? { repositorySnapshot } : {}),
   };
@@ -556,9 +466,9 @@ export function decodeActionSessionSnapshot(value: unknown): ActionSessionSnapsh
     actionLabel: value.actionLabel,
     status: value.status as ActionSessionSnapshot['status'],
     summary: value.summary,
-    message: decodeUiMessage(value.message),
-    timeline: decodeTimeline(value.timeline),
-    commits: decodeCommits(value.commits),
-    links: decodeLinks(value.links),
+    message: decodeOptionalUiMessage(value.message),
+    timeline: decodeWorkflowTimeline(value.timeline, 'custom action'),
+    commits: decodeWorkflowCommits(value.commits, 'custom action'),
+    links: decodeWorkflowLinks(value.links),
   };
 }

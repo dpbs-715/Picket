@@ -3,7 +3,6 @@ import { normalizeAppLocale } from '../../../shared/language-protocol';
 import { MODEL_GLOBAL_DEFAULTS } from '../../../shared/model-defaults';
 import type {
   GenerateCustomActionCommand,
-  ListModelsRequest,
   PiTaskRequest,
   PiToolResultCommand,
   ProbeEvent,
@@ -12,7 +11,7 @@ import type {
 } from '../../../shared/pi-protocol';
 import { LocalizedSidecarError, getSidecarMessages } from '../i18n';
 import { createProbe } from '../probe';
-import { createIsolatedModelRuntime, fetchProviderModels, sanitizeProviderError } from '../providers';
+import { classifyProviderError, createIsolatedModelRuntime } from '../providers';
 import { SkillRegistry } from '../skills';
 import {
   ToolBridge,
@@ -336,50 +335,10 @@ function runAgentTask(
           emit({ ...envelope, type: 'cancelled' });
           return;
         }
-        emit({ ...envelope, type: 'failed', message: sanitizeProviderError(error, command.model, locale) });
+        const classified = classifyProviderError(error, command.model, locale);
+        emit({ ...envelope, type: 'failed', message: classified.message, errorCode: classified.errorCode });
       } finally {
         unsubscribe?.();
-      }
-    },
-  };
-}
-
-function runListModelsTask(
-  command: ListModelsRequest,
-  emit: (event: ProbeEvent) => void,
-): TaskRunnerHandle {
-  const envelope = { requestId: command.requestId, context: command.context };
-  const locale = normalizeAppLocale(command.locale, 'en');
-  const controller = new AbortController();
-  let cancelled = false;
-
-  return {
-    cancel: () => {
-      cancelled = true;
-      controller.abort();
-    },
-    async run() {
-      emit({ ...envelope, type: 'started' });
-      const timer = setTimeout(() => controller.abort(), 30_000);
-      try {
-        if (cancelled) {
-          emit({ ...envelope, type: 'cancelled' });
-          return;
-        }
-        const models = await fetchProviderModels(command.model, controller.signal, locale);
-        if (cancelled) {
-          emit({ ...envelope, type: 'cancelled' });
-          return;
-        }
-        emit({ ...envelope, type: 'modelsListed', models });
-      } catch (error) {
-        if (cancelled) {
-          emit({ ...envelope, type: 'cancelled' });
-          return;
-        }
-        emit({ ...envelope, type: 'failed', message: sanitizeProviderError(error, command.model, locale) });
-      } finally {
-        clearTimeout(timer);
       }
     },
   };
@@ -388,9 +347,6 @@ function runListModelsTask(
 export function createTaskRunner(command: PiTaskRequest, emit: (event: ProbeEvent) => void): TaskRunnerHandle {
   if (command.type === 'probe') {
     return createProbe(command, emit);
-  }
-  if (command.type === 'listModels') {
-    return runListModelsTask(command, emit);
   }
   return runAgentTask(command, emit);
 }

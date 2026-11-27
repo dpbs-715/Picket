@@ -533,7 +533,8 @@ impl UpdateManager {
         let external_busy = repositories.has_active_write() || actions.has_active_operation();
         let _drain_guard = match repo_writes.try_begin_update_drain(external_busy, locale) {
             Ok(guard) => guard,
-            Err(message) => {
+            Err(err) => {
+                let message = err.message;
                 let mut guard = self
                     .inner
                     .lock()

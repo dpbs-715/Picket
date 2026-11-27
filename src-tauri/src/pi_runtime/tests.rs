@@ -315,8 +315,11 @@ async fn activity_heartbeats_extend_idle_timeout_while_silent_hang_times_out() {
         )
         .await
         .unwrap_err();
+    assert_eq!(err.code, crate::error::AppErrorCode::ModelTimeout);
+    assert_eq!(err.category, crate::error::ErrorCategory::Model);
+    assert_eq!(err.retryable, Some(true));
     assert_eq!(
-        err,
+        err.message,
         "Model request timed out; current draft and selection were preserved"
     );
 }
@@ -556,8 +559,9 @@ async fn tool_human_wait_pauses_total_timeout_large_frames_pass_and_explicit_err
         )
         .await
         .unwrap_err();
+    assert_eq!(err.category, crate::error::ErrorCategory::Model);
     assert!(
-        err.contains("Quota exceeded (429)"),
+        err.message.contains("Quota exceeded (429)"),
         "expected business error to be preserved over exit code, got: {err}"
     );
 }

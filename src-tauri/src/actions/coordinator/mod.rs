@@ -6,10 +6,16 @@
 
 mod conflict_flow;
 mod context;
+mod cpush_commit_exec;
+mod cpush_commit_tool;
 mod cpush_flow;
 pub(super) mod cpush_helpers;
+mod cpush_push_retry;
+mod cpush_response;
+mod cpush_sensitive;
+mod cpush_tools;
 mod generator;
-mod git_sync;
+mod pull_rebase;
 mod reconcile;
 mod runner;
 mod tools_cli;
@@ -26,6 +32,7 @@ use super::{
 };
 use crate::{
     bounded_cache::BoundedMap,
+    error::AppError,
     i18n::{self, LanguageKind},
     repo_lock::{RepoWriteCoordinator, RepoWriteKind, RepoWriteLease},
     repository::{
@@ -505,7 +512,7 @@ impl CustomActionCoordinator {
         &self,
         repository_id: &str,
         locale: LanguageKind,
-    ) -> Result<ActiveWriteRepoGuard, String> {
+    ) -> Result<ActiveWriteRepoGuard, AppError> {
         let lease = self.inner.write_coordinator.try_acquire(
             repository_id,
             RepoWriteKind::CustomAction,

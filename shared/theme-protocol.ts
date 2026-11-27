@@ -1,6 +1,8 @@
-export const APP_THEMES = ['system', 'dark', 'light'] as const;
+import type { ThemeKind } from './generated';
 
-export type AppTheme = typeof APP_THEMES[number];
+export const APP_THEMES = ['system', 'dark', 'light'] as const satisfies readonly ThemeKind[];
+
+export type AppTheme = ThemeKind;
 export type ResolvedTheme = 'dark' | 'light';
 
 export const DEFAULT_APP_THEME: AppTheme = 'system';

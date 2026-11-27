@@ -1,39 +1,14 @@
+import type {
+  UpdateInstallBlocker,
+  UpdatePhase,
+  UpdateStateSnapshot,
+} from './generated';
 import type { AppLocale } from './language-protocol';
 
 export const UPDATE_PROTOCOL_VERSION = 1 as const;
 export const PICKET_RELEASES_URL = 'https://github.com/dpbs-715/Picket/releases';
 
-export type UpdatePhase =
-  | 'idle'
-  | 'checking'
-  | 'upToDate'
-  | 'available'
-  | 'downloading'
-  | 'installing'
-  | 'error';
-
-export type UpdateInstallBlocker =
-  | 'none'
-  | 'devBuild'
-  | 'readOnlyVolume'
-  | 'appTranslocation'
-  | 'signingKeyUnconfigured';
-
-export interface UpdateStateSnapshot {
-  protocolVersion: typeof UPDATE_PROTOCOL_VERSION;
-  currentVersion: string;
-  phase: UpdatePhase;
-  releasePageUrl: string;
-  availableVersion?: string;
-  releaseNotes?: string;
-  publishedAt?: string;
-  downloadedBytes?: number;
-  totalBytes?: number;
-  installBlocker: UpdateInstallBlocker;
-  canInstall: boolean;
-  error?: string;
-  checkedAt?: string;
-}
+export type { UpdateInstallBlocker, UpdatePhase, UpdateStateSnapshot };
 
 export interface CheckUpdateRequest {
   manual: boolean;

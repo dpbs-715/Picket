@@ -146,7 +146,10 @@ impl RepositoryStore {
         resolved: &[ResolvedConflictFile],
         locale: LanguageKind,
     ) -> Result<RebaseContinueOutcome> {
-        self.inner.write_coordinator.ensure_not_draining(locale)?;
+        self.inner
+            .write_coordinator
+            .ensure_not_draining(locale)
+            .map_err(|err| err.message)?;
         let (_, root) = self.registered_worktree_root(target, locale).await?;
         let _guard = self
             .repository_gate(&target.repository_id)?

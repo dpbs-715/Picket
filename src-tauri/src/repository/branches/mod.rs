@@ -57,13 +57,16 @@ impl RepositoryStore {
         &self,
         root: &Path,
         locale: LanguageKind,
-    ) -> Result<BranchState> {
+    ) -> std::result::Result<BranchState, crate::error::AppError> {
+        let map_git =
+            |msg: String| crate::error::AppError::git(crate::error::AppErrorCode::GitFailed, msg);
         let reader = self
             .inner
             .reader
             .with_locale(locale)
             .for_worktree(root)
-            .await?;
+            .await
+            .map_err(map_git)?;
         let args = [
             "status",
             "--porcelain=v2",
@@ -71,12 +74,18 @@ impl RepositoryStore {
             "-z",
             "--untracked-files=all",
         ];
-        let status = reader.bytes(root, &args).await?;
-        let parsed = parse::status_with_locale(&status, locale)?;
+        let status = reader.bytes(root, &args).await.map_err(map_git)?;
+        let parsed = parse::status_with_locale(&status, locale).map_err(map_git)?;
         if parsed.entries.iter().any(|entry| entry.mode == "160000") {
-            return Err(i18n::repository::commit_submodule_error(locale).into());
+            return Err(crate::error::CommitGuardError::SubmoduleUnsupported(
+                i18n::repository::commit_submodule_error(locale).into(),
+            )
+            .into());
         }
-        let index = reader.bytes(root, &["ls-files", "--stage", "-z"]).await?;
+        let index = reader
+            .bytes(root, &["ls-files", "--stage", "-z"])
+            .await
+            .map_err(map_git)?;
         let paths: BTreeSet<_> = parsed
             .entries
             .iter()
@@ -84,10 +93,17 @@ impl RepositoryStore {
             .collect();
         let mut working = Vec::new();
         for path in paths {
-            working.push((path.clone(), self.working_file(root, &path)?));
+            working.push((
+                path.clone(),
+                self.working_file(root, &path).map_err(map_git)?,
+            ));
         }
-        if reader.bytes(root, &args).await? != status {
-            return Err(i18n::repository::repo_changed_during_read_error(locale).into());
+        if reader.bytes(root, &args).await.map_err(map_git)? != status {
+            return Err(crate::error::AppError::repository(
+                crate::error::AppErrorCode::RepoChangedDuringRead,
+                i18n::repository::repo_changed_during_read_error(locale),
+            )
+            .with_retryable(true));
         }
         Ok(BranchState {
             status,
@@ -165,11 +181,15 @@ impl RepositoryStore {
     pub async fn change_branch(&self, request: &BranchRequest) -> Result<RepositorySnapshot> {
         let locale = request.locale;
         validate_request_id_with_locale(&request.request_id, locale)?;
-        let _repo_lease = self.inner.write_coordinator.try_acquire(
-            &request.target.repository_id,
-            crate::repo_lock::RepoWriteKind::BranchSwitch,
-            locale,
-        )?;
+        let _repo_lease = self
+            .inner
+            .write_coordinator
+            .try_acquire(
+                &request.target.repository_id,
+                crate::repo_lock::RepoWriteKind::BranchSwitch,
+                locale,
+            )
+            .map_err(|err| err.message)?;
         if !self
             .inner
             .branch_requests
@@ -186,7 +206,10 @@ impl RepositoryStore {
         let _write_guard = self.track_write();
         let root = self.registered_branch_path(request).await?;
         self.ensure_branch_base_write_allowed(&root, locale).await?;
-        let before = self.branch_state(&root, locale).await?;
+        let before = self
+            .branch_state(&root, locale)
+            .await
+            .map_err(|e| e.to_string())?;
         if before.token()? != request.branch_token {
             return Err(i18n::repository::branch_token_stale_error(locale).into());
         }
@@ -331,7 +354,13 @@ impl RepositoryStore {
         self.ensure_branch_base_write_allowed(&root, locale).await?;
         self.ensure_branch_target_write_allowed(&root, head, &checkout_head, &before, locale)
             .await?;
-        if self.branch_state(&root, locale).await?.token()? != request.branch_token {
+        if self
+            .branch_state(&root, locale)
+            .await
+            .map_err(|e| e.to_string())?
+            .token()?
+            != request.branch_token
+        {
             return Err(i18n::repository::branch_token_stale_error(locale).into());
         }
         let writer = reader.for_checkout(&root).await?;
@@ -346,7 +375,10 @@ impl RepositoryStore {
                 String::from_utf8_lossy(&output.stderr).trim(),
             ));
         }
-        let after = self.branch_state(&root, locale).await?;
+        let after = self
+            .branch_state(&root, locale)
+            .await
+            .map_err(|e| e.to_string())?;
         if !before.working.is_empty() && !before.preserves_changes(&after) {
             return Err(
                 "Staging area or working draft after Git branch operation did not match expectation; stopped without automatic rollback. Refresh and verify in Git / IDE"

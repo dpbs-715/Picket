@@ -1,9 +1,10 @@
+import type { EditorKind } from './generated';
 import type { GitReadTarget } from './git-read-protocol';
 import type { AppLocale } from './language-protocol';
 
 export const IDE_PROTOCOL_VERSION = 1;
 
-export type GitEditorId = 'idea' | 'rustrover' | 'webstorm' | 'vscode' | 'cursor';
+export type GitEditorId = EditorKind;
 export type GitOpenFileAction = 'open' | 'goto' | 'diff' | 'stagedDiff' | 'merge';
 
 export interface GitOpenFileRequest {

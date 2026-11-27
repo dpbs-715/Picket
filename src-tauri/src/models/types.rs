@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const MODEL_PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "kebab-case")]
 pub enum ApiFormatKind {
     OpenaiCompletions,
@@ -23,6 +24,7 @@ impl ApiFormatKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderKind {
     Anthropic,
@@ -85,6 +87,7 @@ impl ProviderKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedProviderConnection {
     pub id: String,
@@ -97,6 +100,7 @@ pub struct SavedProviderConnection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedModelConfiguration {
     pub id: String,

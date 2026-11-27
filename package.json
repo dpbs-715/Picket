@@ -15,11 +15,13 @@
     "sidecar:prepare": "node scripts/prepare-sidecar.mjs",
     "skills:sync": "node scripts/sync-skills.mjs",
     "desktop": "node scripts/desktop.mjs",
+    "protocol:sync": "node scripts/protocol-codegen.mjs --sync",
+    "protocol:check": "node scripts/protocol-codegen.mjs --check",
     "package:verify": "node scripts/verify-package.mjs",
     "ui:verify": "node scripts/verify-workbench.mjs",
     "release:check-version": "node scripts/package-dmg.mjs --check-version-only",
     "release:dmg": "node scripts/package-dmg.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm desktop check"
+    "check": "pnpm protocol:check && pnpm typecheck && pnpm test && pnpm desktop check"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.6.0",

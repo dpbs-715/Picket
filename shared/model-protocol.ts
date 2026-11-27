@@ -1,32 +1,20 @@
+import type {
+  ApiFormatKind,
+  ProviderKind,
+  SavedModelConfiguration,
+  SavedProviderConnection,
+} from './generated';
 import type { AppLocale } from './language-protocol';
 
 export const MODEL_PROTOCOL_VERSION = 2;
 
-export const MODEL_PROVIDER_IDS = ['anthropic', 'openai', 'deepseek', 'ollama', 'custom'] as const;
-export type ModelProviderId = typeof MODEL_PROVIDER_IDS[number];
+export type ModelProviderId = ProviderKind;
+export const MODEL_PROVIDER_IDS = ['anthropic', 'openai', 'deepseek', 'ollama', 'custom'] as const satisfies readonly ModelProviderId[];
 
-export const MODEL_API_FORMATS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
-export type ModelApiFormat = typeof MODEL_API_FORMATS[number];
+export type ModelApiFormat = ApiFormatKind;
+export const MODEL_API_FORMATS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const satisfies readonly ModelApiFormat[];
 
-export interface SavedProviderConnection {
-  id: string;
-  name: string;
-  provider: ModelProviderId;
-  baseUrl?: string;
-  keyHint?: string;
-}
-
-export interface SavedModelConfiguration {
-  id: string;
-  connectionId: string;
-  name: string;
-  provider: ModelProviderId;
-  apiFormat?: ModelApiFormat;
-  modelId: string;
-  baseUrl?: string;
-  contextWindow?: number;
-  maxOutputTokens?: number;
-}
+export type { SavedModelConfiguration, SavedProviderConnection };
 
 export interface CreateProviderConnectionInput {
   provider: ModelProviderId;

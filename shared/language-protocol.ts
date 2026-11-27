@@ -1,6 +1,8 @@
-export const APP_LOCALES = ['en', 'zh'] as const;
+import type { LanguageKind } from './generated';
 
-export type AppLocale = typeof APP_LOCALES[number];
+export const APP_LOCALES = ['en', 'zh'] as const satisfies readonly LanguageKind[];
+
+export type AppLocale = LanguageKind;
 export type CommitLanguage = AppLocale;
 
 export const DEFAULT_APP_LOCALE: AppLocale = 'en';

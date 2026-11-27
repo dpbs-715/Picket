@@ -227,6 +227,7 @@ impl ActionToolContext {
                 scope: Some(self.action_label.clone()),
                 files: None,
                 commits: None,
+                options: None,
                 links: None,
                 card: Some(card),
                 questionnaire: Some(q.clone()),

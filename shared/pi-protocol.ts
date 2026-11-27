@@ -1,14 +1,14 @@
+import pkg from '../package.json';
 import { isAppLocale, type AppLocale, type CommitLanguage } from './language-protocol';
 import {
   isModelApiFormat,
   isModelProviderId,
   type ModelApiFormat,
   type ModelProviderId,
-  type RemoteModelOption,
 } from './model-protocol';
 
 export const PI_PROTOCOL_VERSION = 1;
-export const PI_CORE_VERSION = '1.6.0';
+export const PI_CORE_VERSION: string = pkg.dependencies['@earendil-works/pi-agent-core'];
 export const FOUNDATION_SCOPE_VERSION = 'foundation-v1';
 export const MAX_PROTOCOL_LINE_BYTES = 2 * 1024 * 1024;
 export const MAX_COMMAND_LINE_BYTES = 2 * 1024 * 1024;
@@ -61,14 +61,6 @@ export interface ProbeRequest {
 
 export interface TestConnectionRequest {
   type: 'testConnection';
-  requestId: string;
-  context: RequestContext;
-  model: PiProviderSpec;
-  locale?: AppLocale;
-}
-
-export interface ListModelsRequest {
-  type: 'listModels';
   requestId: string;
   context: RequestContext;
   model: PiProviderSpec;
@@ -130,7 +122,6 @@ export interface GenerateCustomActionCommand {
 export type PiTaskRequest =
   | ProbeRequest
   | TestConnectionRequest
-  | ListModelsRequest
   | RunCustomActionCommand
   | GenerateCustomActionCommand;
 
@@ -160,6 +151,18 @@ export interface PiCustomActionDraft {
   summary: string;
 }
 
+export type PiErrorCode =
+  | 'modelAuthFailed'
+  | 'modelEndpointNotFound'
+  | 'modelRateLimited'
+  | 'modelServiceError'
+  | 'modelConnectionFailed'
+  | 'modelTimeout'
+  | 'modelToolsUnsupported'
+  | 'modelInvalidConfig'
+  | 'modelRequestFailed'
+  | 'piRuntimeError';
+
 export type ProbeEvent = {
   requestId: string;
   context: RequestContext;
@@ -170,11 +173,10 @@ export type ProbeEvent = {
   | { type: 'toolCall'; callId: string; toolName: string; args: Record<string, unknown> }
   | { type: 'toolProgress'; callId: string; toolName: string; status: string }
   | { type: 'completed'; text: string }
-  | { type: 'modelsListed'; models: RemoteModelOption[] }
   | { type: 'customActionCompleted'; summary: string; links: PiActionLink[] }
   | { type: 'customActionDrafted'; draft: PiCustomActionDraft }
   | { type: 'cancelled' }
-  | { type: 'failed'; message: string }
+  | { type: 'failed'; message: string; errorCode?: PiErrorCode }
 );
 
 export type PiEvent = ProbeEvent
@@ -197,11 +199,11 @@ function decodeRequestContext(value: unknown): RequestContext {
   };
 }
 
-function decodeProviderSpec(value: unknown, allowEmptyModelId = false): PiProviderSpec {
+function decodeProviderSpec(value: unknown): PiProviderSpec {
   if (!isRecord(value)
     || !isModelProviderId(value.provider)
     || !(value.apiFormat === undefined || value.apiFormat === null || isModelApiFormat(value.apiFormat))
-    || typeof value.modelId !== 'string' || (!allowEmptyModelId && !value.modelId.trim())
+    || typeof value.modelId !== 'string' || !value.modelId.trim()
     || typeof value.baseUrl !== 'string'
     || typeof value.apiKey !== 'string'
     || !(value.contextWindow === undefined || value.contextWindow === null || (typeof value.contextWindow === 'number' && Number.isSafeInteger(value.contextWindow) && value.contextWindow > 0))
@@ -369,18 +371,6 @@ export function decodeCommand(line: string): PiCommand {
       requestId: command.requestId,
       context: decodeRequestContext(command.context),
       model: decodeProviderSpec(command.model),
-      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
-    };
-  }
-  if (command.type === 'listModels') {
-    if (!(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
-      throw new Error('Invalid locale');
-    }
-    return {
-      type: 'listModels',
-      requestId: command.requestId,
-      context: decodeRequestContext(command.context),
-      model: decodeProviderSpec(command.model, true),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }

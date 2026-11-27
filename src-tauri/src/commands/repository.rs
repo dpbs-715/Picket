@@ -5,6 +5,7 @@ use super::{RepositoryPicker, picket_data_dir};
 use crate::lifecycle::DesktopLifecycle;
 use crate::{
     actions::CustomActionCoordinator,
+    error::{AppError, AppErrorCode},
     i18n,
     models::store::ModelStore,
     repository::{
@@ -27,27 +28,42 @@ pub async fn open_repository(
     store: State<'_, RepositoryStore>,
     picker: State<'_, RepositoryPicker>,
     request: OpenRequest,
-) -> Result<ReadReply, String> {
-    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
-    let _selection = picker
-        .0
-        .try_lock()
-        .map_err(|_| i18n::desktop::picker_busy(request.locale))?;
+) -> Result<ReadReply, AppError> {
+    let map_repo = |msg: String| AppError::repository(AppErrorCode::RepoInvalidTarget, msg);
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)
+        .map_err(map_repo)?;
+    let _selection = picker.0.try_lock().map_err(|_| {
+        AppError::repository(
+            AppErrorCode::RepoBusy,
+            i18n::desktop::picker_busy(request.locale),
+        )
+    })?;
     #[cfg(feature = "smoke-harness")]
     let path = if app.state::<DesktopLifecycle>().ui_smoke {
         let (root, editor_bin) = app
             .state::<repository::smoke::SmokeState>()
-            .path_and_editor_bin()?;
+            .path_and_editor_bin()
+            .map_err(map_repo)?;
         app.state::<EditorLauncher>()
-            .set_search_dirs(Some(vec![editor_bin]))?;
+            .set_search_dirs(Some(vec![editor_bin]))
+            .map_err(map_repo)?;
         Some(root)
     } else {
-        pick_repository_folder(&app, request.locale).await?
+        pick_repository_folder(&app, request.locale)
+            .await
+            .map_err(map_repo)?
     };
     #[cfg(not(feature = "smoke-harness"))]
-    let path = pick_repository_folder(&app, request.locale).await?;
+    let path = pick_repository_folder(&app, request.locale)
+        .await
+        .map_err(map_repo)?;
     let snapshot = match path {
-        Some(path) => Some(store.open_with_locale(&path, request.locale).await?),
+        Some(path) => Some(
+            store
+                .open_with_locale(&path, request.locale)
+                .await
+                .map_err(|msg| AppError::repository(AppErrorCode::GitFailed, msg))?,
+        ),
         None => None,
     };
     if snapshot.is_some() {
@@ -93,11 +109,13 @@ pub async fn refresh_repository(
     app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     request: RefreshRequest,
-) -> Result<ReadReply, String> {
-    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
+) -> Result<ReadReply, AppError> {
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)
+        .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
     let snapshot = store
         .refresh_with_locale(&request.target, request.locale)
-        .await?;
+        .await
+        .map_err(|msg| AppError::repository(AppErrorCode::GitFailed, msg))?;
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     Ok(ReadReply {
@@ -114,8 +132,9 @@ pub async fn set_repository_local_keep(
     store: State<'_, RepositoryStore>,
     persistence: State<'_, WorkbenchPersistence>,
     request: LocalKeepRequest,
-) -> Result<LocalKeepReply, String> {
-    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
+) -> Result<LocalKeepReply, AppError> {
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)
+        .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
     let snapshot = store
         .set_local_keep(
             &request.target,
@@ -123,8 +142,9 @@ pub async fn set_repository_local_keep(
             request.keep,
             request.locale,
         )
-        .await?;
-    let data_dir = picket_data_dir()?;
+        .await
+        .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     let removed_selection_paths = if request.keep {
         request.paths.as_slice()
     } else {
@@ -138,7 +158,8 @@ pub async fn set_repository_local_keep(
             removed_selection_paths,
             request.locale,
         )
-        .await?;
+        .await
+        .map_err(AppError::storage)?;
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     Ok(LocalKeepReply {
@@ -155,9 +176,13 @@ pub async fn change_repository_branch(
     app: tauri::AppHandle,
     store: State<'_, RepositoryStore>,
     request: BranchRequest,
-) -> Result<BranchReply, String> {
-    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
-    let snapshot = store.change_branch(&request).await?;
+) -> Result<BranchReply, AppError> {
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)
+        .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
+    let snapshot = store
+        .change_branch(&request)
+        .await
+        .map_err(|msg| AppError::git(AppErrorCode::BranchSwitchFailed, msg))?;
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     Ok(BranchReply {
@@ -176,9 +201,13 @@ pub async fn open_in_editor(
     store: State<'_, RepositoryStore>,
     launcher: State<'_, EditorLauncher>,
     request: OpenFileRequest,
-) -> Result<OpenFileReply, String> {
-    repository::validate_request_id_with_locale(&request.request_id, request.locale)?;
-    let outcome = store.open_in_editor(&launcher, &request).await?;
+) -> Result<OpenFileReply, AppError> {
+    repository::validate_request_id_with_locale(&request.request_id, request.locale)
+        .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
+    let outcome = store
+        .open_in_editor(&launcher, &request)
+        .await
+        .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
     Ok(OpenFileReply {
         protocol_version: 1,
         kind: "openFile",
@@ -199,19 +228,25 @@ pub async fn load_workbench_state(
     persistence: State<'_, WorkbenchPersistence>,
     models: State<'_, ModelStore>,
     actions: State<'_, CustomActionCoordinator>,
-) -> Result<WorkbenchRestoreReply, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<WorkbenchRestoreReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     #[cfg(feature = "smoke-harness")]
     {
         let lifecycle = app.state::<DesktopLifecycle>();
         if lifecycle.ui_smoke && !lifecycle.restart_smoke {
             let (_, editor_bin) = app
                 .state::<repository::smoke::SmokeState>()
-                .path_and_editor_bin()?;
-            launcher.set_search_dirs(Some(vec![editor_bin]))?;
+                .path_and_editor_bin()
+                .map_err(AppError::storage)?;
+            launcher
+                .set_search_dirs(Some(vec![editor_bin]))
+                .map_err(AppError::storage)?;
         }
     }
-    let mut restored = persistence.restore(&data_dir, &store).await?;
+    let mut restored = persistence
+        .restore(&data_dir, &store)
+        .await
+        .map_err(AppError::storage)?;
     #[cfg(feature = "smoke-harness")]
     {
         let lifecycle = app.state::<DesktopLifecycle>();
@@ -220,7 +255,9 @@ pub async fn load_workbench_state(
             && let Some(first_wt) = first_snap.worktrees.first()
             && let Some(parent) = std::path::Path::new(&first_wt.path).parent()
         {
-            launcher.set_search_dirs(Some(vec![parent.join("editor-bin")]))?;
+            launcher
+                .set_search_dirs(Some(vec![parent.join("editor-bin")]))
+                .map_err(AppError::storage)?;
         }
     }
     let installed = launcher.detect_installed_editors();
@@ -238,7 +275,8 @@ pub async fn load_workbench_state(
 
     let catalog = models
         .restore_with_locale(&data_dir, restored.locale)
-        .await?;
+        .await
+        .map_err(AppError::storage)?;
     restored.connections = Some(catalog.connections);
     restored.models = Some(catalog.models);
     restored.active_model_id = Some(catalog.active_model_id);
@@ -250,7 +288,8 @@ pub async fn load_workbench_state(
     }
     let (action_sessions, cpush_sessions, session_warning) = actions
         .restore_all_sessions_async(&data_dir, &restored.snapshots, restored.locale)
-        .await?;
+        .await
+        .map_err(AppError::storage)?;
     restored.c_push_sessions = Some(cpush_sessions);
     restored.action_sessions = Some(action_sessions);
     if let Some(s_warn) = session_warning {
@@ -274,12 +313,15 @@ pub async fn save_workbench_state(
     store: State<'_, RepositoryStore>,
     persistence: State<'_, WorkbenchPersistence>,
     request: WorkbenchSaveRequest,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let locale = request.locale;
     let theme = request.theme;
     let active_wt = request.active_worktree_id.clone();
-    let data_dir = picket_data_dir()?;
-    persistence.save(&data_dir, &store, request).await?;
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    persistence
+        .save(&data_dir, &store, request)
+        .await
+        .map_err(AppError::storage)?;
     app.state::<crate::tray::TrayCoordinator>().set_ui_context(
         &app,
         Some(locale),

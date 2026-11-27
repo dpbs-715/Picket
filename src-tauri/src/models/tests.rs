@@ -891,7 +891,9 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
         )
         .await
         .unwrap_err();
-    assert!(!auth_err.contains(leaked_key), "{auth_err}");
+    assert_eq!(auth_err.category, crate::error::ErrorCategory::Model);
+    assert_eq!(auth_err.code, crate::error::AppErrorCode::ModelAuthFailed);
+    assert!(!auth_err.message.contains(leaked_key), "{auth_err}");
     server.set_failure(None);
 
     // 3. Save provider connection and test ConnectionModel + ExistingConnection + review_scope on real temporary Git:
@@ -955,13 +957,12 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
         Some("Bearer sk-candidate-rotated-key")
     );
 
-    // Fetching provider models works for both NewConnection and ExistingConnection (using stored credentials):
+    // Fetching provider models works directly in Rust (without Pi sidecar) for both
+    // NewConnection and ExistingConnection (using stored credentials):
     server.set_slow_delay_ms(0);
     let new_conn_models = model_store
         .list_provider_models(
             temp.path(),
-            &paths,
-            &supervisor,
             &ListModelsInput::NewConnection {
                 provider: ProviderKind::Custom,
                 base_url: format!("{}/v1", server.base_url),
@@ -982,8 +983,6 @@ async fn runs_connection_tests_exact_partial_generation_review_filtering_and_can
     let existing_conn_models = model_store
         .list_provider_models(
             temp.path(),
-            &paths,
-            &supervisor,
             &ListModelsInput::ExistingConnection {
                 connection_id: saved.connection.id.clone(),
                 api_format: Some(ApiFormatKind::OpenaiCompletions),

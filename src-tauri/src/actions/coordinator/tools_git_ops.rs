@@ -299,7 +299,7 @@ pub(super) async fn handle_commit_exact_scope(
             ctx.persist("running", String::new()).await;
             PiToolExecutionResult::success(response_json.to_string())
         }
-        Err(err) => PiToolExecutionResult::error(err),
+        Err(err) => PiToolExecutionResult::error(err.message),
     }
 }
 

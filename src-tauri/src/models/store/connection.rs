@@ -5,11 +5,34 @@ use super::{
     },
 };
 use crate::{
+    error::{AppError, AppErrorCode},
     i18n,
-    models::types::*,
-    pi_runtime::{PiCommand, PiPaths, PiProviderSpec, PiSupervisor, PiTaskOutcome, RequestContext},
+    models::{
+        remote_list::{RemoteListSpec, fetch_provider_models},
+        types::*,
+    },
+    pi_runtime::{PiCommand, PiPaths, PiSupervisor, PiTaskOutcome, RequestContext},
 };
-use std::{path::Path, sync::atomic::Ordering, time::Instant};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex, atomic::Ordering},
+    time::Instant,
+};
+use tokio::sync::oneshot;
+
+struct ListCancelRegistration {
+    map: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    request_id: String,
+}
+
+impl Drop for ListCancelRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.map.lock() {
+            guard.remove(&self.request_id);
+        }
+    }
+}
 
 impl ModelStore {
     pub async fn test_connection_with_storage(
@@ -18,7 +41,8 @@ impl ModelStore {
         paths: &PiPaths,
         supervisor: &PiSupervisor,
         input: &TestConnectionInput,
-    ) -> Result<ModelTestReply, String> {
+    ) -> Result<ModelTestReply, AppError> {
+        let map_invalid = |msg: String| AppError::model(AppErrorCode::ModelInvalidConfig, msg);
         let (locale, spec) = match input {
             TestConnectionInput::NewConnection {
                 provider,
@@ -31,11 +55,12 @@ impl ModelStore {
                 locale,
             } => {
                 let valid_url = if provider.needs_url() {
-                    Some(validate_http_base_url(base_url, *locale)?)
+                    Some(validate_http_base_url(base_url, *locale).map_err(map_invalid)?)
                 } else {
                     None
                 };
-                let valid_key = validate_api_key(api_key, provider.needs_key(), false, *locale)?;
+                let valid_key = validate_api_key(api_key, provider.needs_key(), false, *locale)
+                    .map_err(map_invalid)?;
                 let model = validate_model_fields(
                     *provider,
                     "",
@@ -44,7 +69,8 @@ impl ModelStore {
                     *context_window,
                     *max_output_tokens,
                     *locale,
-                )?;
+                )
+                .map_err(map_invalid)?;
                 let effective_url = self.effective_base_url(*provider, valid_url.as_deref());
                 (
                     *locale,
@@ -67,19 +93,31 @@ impl ModelStore {
                 max_output_tokens,
                 locale,
             } => {
-                let conn_id = validate_record_id(connection_id, *locale)?;
+                let conn_id = validate_record_id(connection_id, *locale).map_err(map_invalid)?;
                 let (conn, api_key) = {
                     let _guard = self.gate.lock().await;
-                    let (stored, _) = read_models_file_async(storage_dir, *locale).await?;
-                    let conn = stored
-                        .connection(&conn_id)
-                        .cloned()
-                        .ok_or_else(|| i18n::models::provider_not_found_error(*locale))?;
+                    let (stored, _) = read_models_file_async(storage_dir, *locale)
+                        .await
+                        .map_err(map_invalid)?;
+                    let conn = stored.connection(&conn_id).cloned().ok_or_else(|| {
+                        AppError::model(
+                            AppErrorCode::ModelNotFound,
+                            i18n::models::provider_not_found_error(*locale),
+                        )
+                    })?;
                     let key = if conn.provider.needs_key() {
                         self.credentials
                             .get_async(storage_dir, &conn.id)
-                            .await?
-                            .ok_or_else(|| i18n::models::model_missing_stored_key_error(*locale))?
+                            .await
+                            .map_err(|msg| {
+                                AppError::model(AppErrorCode::ModelMissingCredential, msg)
+                            })?
+                            .ok_or_else(|| {
+                                AppError::model(
+                                    AppErrorCode::ModelMissingCredential,
+                                    i18n::models::model_missing_stored_key_error(*locale),
+                                )
+                            })?
                     } else {
                         String::new()
                     };
@@ -93,7 +131,8 @@ impl ModelStore {
                     *context_window,
                     *max_output_tokens,
                     *locale,
-                )?;
+                )
+                .map_err(map_invalid)?;
                 let effective_url =
                     self.effective_base_url(conn.provider, conn.base_url.as_deref());
                 (
@@ -115,16 +154,21 @@ impl ModelStore {
                 model_id,
                 locale,
             } => {
-                let conn_id = validate_record_id(connection_id, *locale)?;
+                let conn_id = validate_record_id(connection_id, *locale).map_err(map_invalid)?;
                 let (conn, chosen_model, effective_key) = {
                     let _guard = self.gate.lock().await;
-                    let (stored, _) = read_models_file_async(storage_dir, *locale).await?;
-                    let conn = stored
-                        .connection(&conn_id)
-                        .cloned()
-                        .ok_or_else(|| i18n::models::provider_not_found_error(*locale))?;
+                    let (stored, _) = read_models_file_async(storage_dir, *locale)
+                        .await
+                        .map_err(map_invalid)?;
+                    let conn = stored.connection(&conn_id).cloned().ok_or_else(|| {
+                        AppError::model(
+                            AppErrorCode::ModelNotFound,
+                            i18n::models::provider_not_found_error(*locale),
+                        )
+                    })?;
                     let candidate_key =
-                        validate_api_key(api_key, conn.provider.needs_key(), true, *locale)?;
+                        validate_api_key(api_key, conn.provider.needs_key(), true, *locale)
+                            .map_err(map_invalid)?;
                     let effective_key = if !conn.provider.needs_key() {
                         String::new()
                     } else if !candidate_key.is_empty() {
@@ -132,8 +176,16 @@ impl ModelStore {
                     } else {
                         self.credentials
                             .get_async(storage_dir, &conn.id)
-                            .await?
-                            .ok_or_else(|| i18n::models::model_missing_stored_key_error(*locale))?
+                            .await
+                            .map_err(|msg| {
+                                AppError::model(AppErrorCode::ModelMissingCredential, msg)
+                            })?
+                            .ok_or_else(|| {
+                                AppError::model(
+                                    AppErrorCode::ModelMissingCredential,
+                                    i18n::models::model_missing_stored_key_error(*locale),
+                                )
+                            })?
                     };
                     let child = if let Some(requested_id) =
                         model_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
@@ -175,7 +227,8 @@ impl ModelStore {
                             None,
                             None,
                             *locale,
-                        )?;
+                        )
+                        .map_err(map_invalid)?;
                         (
                             normalized.model_id,
                             normalized.api_format,
@@ -183,7 +236,10 @@ impl ModelStore {
                             normalized.max_output_tokens,
                         )
                     } else {
-                        return Err(i18n::models::provider_test_needs_model_error(*locale).into());
+                        return Err(AppError::model(
+                            AppErrorCode::ModelInvalidConfig,
+                            i18n::models::provider_test_needs_model_error(*locale),
+                        ));
                     };
                 let effective_url =
                     self.effective_base_url(conn.provider, conn.base_url.as_deref());
@@ -245,24 +301,24 @@ impl ModelStore {
                     latency_ms,
                 })
             }
-            PiTaskOutcome::Cancelled => {
-                Err(i18n::models::model_test_cancelled_error(locale).into())
-            }
-            PiTaskOutcome::ModelsListed { .. }
-            | PiTaskOutcome::CustomActionCompleted { .. }
-            | PiTaskOutcome::CustomActionDrafted { .. } => {
-                Err("Connection test returned an unexpected event type".into())
-            }
+            PiTaskOutcome::Cancelled => Err(AppError::model(
+                AppErrorCode::ModelCancelled,
+                i18n::models::model_test_cancelled_error(locale),
+            )),
+            PiTaskOutcome::CustomActionCompleted { .. }
+            | PiTaskOutcome::CustomActionDrafted { .. } => Err(AppError::model(
+                AppErrorCode::PiRuntimeError,
+                "Connection test returned an unexpected event type",
+            )),
         }
     }
 
     pub async fn list_provider_models(
         &self,
         storage_dir: &Path,
-        paths: &PiPaths,
-        supervisor: &PiSupervisor,
         input: &ListModelsInput,
-    ) -> Result<ModelListReply, String> {
+    ) -> Result<ModelListReply, AppError> {
+        let map_invalid = |msg: String| AppError::model(AppErrorCode::ModelInvalidConfig, msg);
         let (locale, provider, api_format, base_url, api_key) = match input {
             ListModelsInput::NewConnection {
                 provider,
@@ -273,12 +329,12 @@ impl ModelStore {
             } => {
                 let effective_format = api_format.unwrap_or_else(|| provider.default_api_format());
                 let resolved_url = if provider.needs_url() {
-                    Some(validate_http_base_url(base_url, *locale)?)
+                    Some(validate_http_base_url(base_url, *locale).map_err(map_invalid)?)
                 } else {
                     None
                 };
-                let effective_key =
-                    validate_api_key(api_key, provider.needs_key(), false, *locale)?;
+                let effective_key = validate_api_key(api_key, provider.needs_key(), false, *locale)
+                    .map_err(map_invalid)?;
                 let effective_url = self.effective_base_url(*provider, resolved_url.as_deref());
                 (
                     *locale,
@@ -293,19 +349,31 @@ impl ModelStore {
                 api_format,
                 locale,
             } => {
-                let conn_id = validate_record_id(connection_id, *locale)?;
+                let conn_id = validate_record_id(connection_id, *locale).map_err(map_invalid)?;
                 let (conn, effective_key) = {
                     let _guard = self.gate.lock().await;
-                    let (stored, _) = read_models_file_async(storage_dir, *locale).await?;
-                    let conn = stored
-                        .connection(&conn_id)
-                        .cloned()
-                        .ok_or_else(|| i18n::models::provider_not_found_error(*locale))?;
+                    let (stored, _) = read_models_file_async(storage_dir, *locale)
+                        .await
+                        .map_err(map_invalid)?;
+                    let conn = stored.connection(&conn_id).cloned().ok_or_else(|| {
+                        AppError::model(
+                            AppErrorCode::ModelNotFound,
+                            i18n::models::provider_not_found_error(*locale),
+                        )
+                    })?;
                     let key = if conn.provider.needs_key() {
                         self.credentials
                             .get_async(storage_dir, &conn.id)
-                            .await?
-                            .ok_or_else(|| i18n::models::model_missing_stored_key_error(*locale))?
+                            .await
+                            .map_err(|msg| {
+                                AppError::model(AppErrorCode::ModelMissingCredential, msg)
+                            })?
+                            .ok_or_else(|| {
+                                AppError::model(
+                                    AppErrorCode::ModelMissingCredential,
+                                    i18n::models::model_missing_stored_key_error(*locale),
+                                )
+                            })?
                     } else {
                         String::new()
                     };
@@ -327,59 +395,31 @@ impl ModelStore {
 
         let seq = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let request_id = short_token("listmodels", seq, provider.as_id());
-        let context = RequestContext {
-            repository_id: "settings".into(),
-            worktree_id: "settings".into(),
-            session_id: request_id.clone(),
-            scope_version: "model-list-v1".into(),
-        };
-        let command = PiCommand::ListModels {
-            request_id: request_id.clone(),
-            context: context.clone(),
-            model: PiProviderSpec {
-                provider: provider.as_id(),
-                api_format: Some(api_format.as_id()),
-                model_id: String::new(),
-                base_url,
-                api_key: api_key.clone(),
-                context_window: None,
-                max_output_tokens: None,
-            },
-            locale,
-        };
-        let outcome = supervisor
-            .run_task(
-                paths,
-                request_id,
-                context,
-                &command,
-                TEST_CONNECTION_IDLE_TIMEOUT,
-                Some(&api_key),
-                |_| Ok(()),
-            )
-            .await?;
-        match outcome {
-            PiTaskOutcome::ModelsListed { models } => Ok(ModelListReply {
-                protocol_version: MODEL_PROTOCOL_VERSION,
-                provider,
-                models: models
-                    .into_iter()
-                    .map(|item| RemoteModelOption {
-                        id: item.id,
-                        display_name: item.display_name,
-                        context_window: item.context_window,
-                        max_output_tokens: item.max_output_tokens,
-                    })
-                    .collect(),
-            }),
-            PiTaskOutcome::Cancelled => {
-                Err(i18n::models::model_test_cancelled_error(locale).into())
-            }
-            PiTaskOutcome::Completed { .. }
-            | PiTaskOutcome::CustomActionCompleted { .. }
-            | PiTaskOutcome::CustomActionDrafted { .. } => {
-                Err("Model list request returned an unexpected event type".into())
-            }
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        if let Ok(mut cancels) = self.active_list_cancels.lock() {
+            cancels.insert(request_id.clone(), cancel_tx);
         }
+        let _registration = ListCancelRegistration {
+            map: Arc::clone(&self.active_list_cancels),
+            request_id,
+        };
+
+        let models = fetch_provider_models(
+            &RemoteListSpec {
+                provider,
+                api_format,
+                base_url,
+                api_key,
+                locale,
+            },
+            cancel_rx,
+        )
+        .await?;
+
+        Ok(ModelListReply {
+            protocol_version: MODEL_PROTOCOL_VERSION,
+            provider,
+            models,
+        })
     }
 }

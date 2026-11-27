@@ -14,6 +14,7 @@ use std::collections::HashMap;
 pub const MAX_TRAY_REPOSITORIES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum TraySessionStatus {
     #[default]
@@ -44,6 +45,7 @@ impl TraySessionStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrayRepositorySummary {
     pub repository_id: String,
@@ -67,8 +69,10 @@ pub struct TrayRepositorySummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrayStateSnapshot {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
     #[serde(default)]
     pub locale: LanguageKind,
@@ -93,17 +97,22 @@ impl Default for TrayStateSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrayUiContextUpdate {
     #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
     pub locale: Option<LanguageKind>,
     #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
     pub theme: Option<ThemeKind>,
     #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
     pub active_worktree_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TrayMainWindowAction {
     Show,

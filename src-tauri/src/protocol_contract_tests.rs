@@ -151,6 +151,7 @@ fn action_session_matches_shared_golden_contract() {
                 hash: "a1b2c3d".into(),
                 title: "feat(order): validate retry window".into(),
             }]),
+            options: None,
             links: Some(vec![
                 CustomActionLink {
                     label: "Issue #42".into(),

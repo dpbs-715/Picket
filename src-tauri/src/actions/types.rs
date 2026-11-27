@@ -25,6 +25,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum CPushSessionStatus {
     Idle,
@@ -45,6 +46,7 @@ pub struct CPushCommitGroup {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct CPushQaItem {
     pub question_id: String,
@@ -55,6 +57,7 @@ pub struct CPushQaItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CPushLandedCommit {
     pub oid: String,
@@ -65,13 +68,16 @@ pub struct CPushLandedCommit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
-pub struct CPushMessageOption {
+pub struct WorkflowMessageOption {
     pub id: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended: Option<bool>,
 }
+
+pub type CPushMessageOption = WorkflowMessageOption;
 
 pub fn compute_prompt_hash(prompt: &str) -> String {
     let normalized = prompt.replace("\r\n", "\n");
@@ -79,22 +85,26 @@ pub fn compute_prompt_hash(prompt: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CustomActionLink {
+pub struct WorkflowLink {
     pub label: String,
     pub url: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CustomActionTimelineItem {
+pub struct WorkflowTimelineItem {
+    #[cfg_attr(test, ts(type = "'done' | 'active' | 'failed'"))]
     pub state: String,
     pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CustomActionMessageFileChip {
+pub struct WorkflowMessageFileChip {
     pub id: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,44 +112,68 @@ pub struct CustomActionMessageFileChip {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CustomActionMessageCommitSummary {
+pub struct WorkflowMessageCommitSummary {
     pub hash: String,
     pub title: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CustomActionMessageProgress {
+pub struct WorkflowMessageProgress {
     pub completed: u32,
     pub total: u32,
     pub label: String,
 }
 
+/// Unified UI message model shared by both C-Push and Custom Action workflows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CustomActionUiMessage {
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowUiMessage {
     pub id: String,
+    #[cfg_attr(
+        test,
+        ts(
+            type = "'progress' | 'question' | 'conflict' | 'waitingManual' | 'resolved' | 'pushFailed' | 'done' | 'error'"
+        )
+    )]
     pub kind: String,
     pub title: String,
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub files: Option<Vec<CustomActionMessageFileChip>>,
+    pub files: Option<Vec<WorkflowMessageFileChip>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commits: Option<Vec<CustomActionMessageCommitSummary>>,
+    pub commits: Option<Vec<WorkflowMessageCommitSummary>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub links: Option<Vec<CustomActionLink>>,
+    pub options: Option<Vec<WorkflowMessageOption>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<WorkflowLink>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<MessageUserCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questionnaire: Option<MessageUserRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<CustomActionMessageProgress>,
+    pub progress: Option<WorkflowMessageProgress>,
 }
 
+pub type CustomActionLink = WorkflowLink;
+pub type CustomActionTimelineItem = WorkflowTimelineItem;
+pub type CustomActionMessageCommitSummary = WorkflowMessageCommitSummary;
+pub type CustomActionMessageProgress = WorkflowMessageProgress;
+pub type CustomActionUiMessage = WorkflowUiMessage;
+pub type CPushTimelineItem = WorkflowTimelineItem;
+pub type CPushMessageFileChip = WorkflowMessageFileChip;
+pub type CPushMessageCommitSummary = WorkflowMessageCommitSummary;
+pub type CPushMessageProgress = WorkflowMessageProgress;
+pub type CPushUiMessage = WorkflowUiMessage;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrustedActionUpdate {
     pub repository_id: String,
@@ -240,6 +274,7 @@ pub struct GenerateCustomActionRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomActionDraft {
     pub label: String,
@@ -273,37 +308,8 @@ pub struct GenerateCustomActionReply {
     pub draft: Option<CustomActionDraft>,
 }
 
-pub type CPushTimelineItem = CustomActionTimelineItem;
-pub type CPushMessageFileChip = CustomActionMessageFileChip;
-pub type CPushMessageCommitSummary = CustomActionMessageCommitSummary;
-pub type CPushMessageProgress = CustomActionMessageProgress;
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CPushUiMessage {
-    pub id: String,
-    pub kind: String,
-    pub title: String,
-    pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub files: Option<Vec<CPushMessageFileChip>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commits: Option<Vec<CPushMessageCommitSummary>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<CPushMessageOption>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub links: Option<Vec<CustomActionLink>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card: Option<MessageUserCard>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub questionnaire: Option<MessageUserRequest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<CPushMessageProgress>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CPushSessionSnapshot {
     pub run_id: String,
@@ -317,6 +323,7 @@ pub struct CPushSessionSnapshot {
     pub skipped_file_ids: Vec<String>,
     pub session_status: CPushSessionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub pending_call_id: Option<String>,
     pub message: Option<CPushUiMessage>,
     pub timeline: Vec<CPushTimelineItem>,
@@ -324,6 +331,7 @@ pub struct CPushSessionSnapshot {
     pub commits: Vec<CPushLandedCommit>,
     pub can_retry_remaining: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub auto_collapse: Option<bool>,
 }
 

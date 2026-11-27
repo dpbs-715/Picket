@@ -7,7 +7,10 @@ use super::{
     },
     protocol::{PiCommand, PiEvent, PiTaskOutcome, PiToolExecutionResult, RequestContext},
 };
-use crate::i18n::{self, LanguageKind};
+use crate::{
+    error::{AppError, AppErrorCode},
+    i18n::{self, LanguageKind},
+};
 #[cfg(any(test, feature = "smoke-harness"))]
 use serde::Serialize;
 use serde_json::Value;
@@ -207,7 +210,7 @@ impl PiSupervisor {
             };
             if *protocol_version != PROTOCOL_VERSION
                 || *reported_pid != pid
-                || pi_core_version != "1.6.0"
+                || pi_core_version != env!("PICKET_PI_CORE_VERSION")
             {
                 return Err("Incompatible Pi runtime handshake".into());
             }
@@ -299,7 +302,7 @@ impl PiSupervisor {
         idle_timeout: Duration,
         secret_to_redact: Option<&str>,
         on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
-    ) -> Result<PiTaskOutcome, String> {
+    ) -> Result<PiTaskOutcome, AppError> {
         self.run_task_with_tools(
             paths,
             request_id,
@@ -328,7 +331,7 @@ impl PiSupervisor {
         secret_to_redact: Option<&str>,
         mut on_event: impl FnMut(&PiEvent) -> Result<(), String> + Send,
         mut on_tool_call: F,
-    ) -> Result<PiTaskOutcome, String>
+    ) -> Result<PiTaskOutcome, AppError>
     where
         F: FnMut(String, String, Value) -> Fut + Send,
         Fut: Future<Output = PiToolExecutionResult> + Send,
@@ -340,8 +343,11 @@ impl PiSupervisor {
             };
             raw.replace(secret, "[REDACTED]")
         };
-        let (_registration, mut cancelled) = self.register_request(&request_id, Some(locale))?;
-        let mut proc = SpawnedPiProcess::spawn(paths, Some(locale), &scrub)?;
+        let (_registration, mut cancelled) = self
+            .register_request(&request_id, Some(locale))
+            .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
+        let mut proc = SpawnedPiProcess::spawn(paths, Some(locale), &scrub)
+            .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
         let pid = proc.pid;
         let total_ceiling = if idle_timeout < Duration::from_secs(5) {
             idle_timeout.saturating_mul(8)
@@ -350,7 +356,7 @@ impl PiSupervisor {
         };
         let mut remaining_budget = total_ceiling;
         let mut explicit_error = false;
-        let exchange: Result<PiTaskOutcome, String> = async {
+        let exchange: Result<PiTaskOutcome, AppError> = async {
             let handshake_started = Instant::now();
             let ready = match timeout(
                 START_TIMEOUT.min(remaining_budget),
@@ -358,10 +364,15 @@ impl PiSupervisor {
             )
             .await
             {
-                Ok(result) => result?,
+                Ok(result) => {
+                    result.map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?
+                }
                 Err(_) => {
                     explicit_error = true;
-                    return Err(i18n::pi::pi_handshake_timeout(locale).to_string());
+                    return Err(AppError::model(
+                        AppErrorCode::ModelTimeout,
+                        i18n::pi::pi_handshake_timeout(locale),
+                    ));
                 }
             };
             remaining_budget = remaining_budget.saturating_sub(handshake_started.elapsed());
@@ -373,26 +384,37 @@ impl PiSupervisor {
             } = &ready
             else {
                 explicit_error = true;
-                return Err(i18n::pi::pi_invalid_handshake(locale).into());
+                return Err(AppError::model(
+                    AppErrorCode::PiRuntimeError,
+                    i18n::pi::pi_invalid_handshake(locale),
+                ));
             };
             if *protocol_version != PROTOCOL_VERSION
                 || *reported_pid != pid
-                || pi_core_version != "1.6.0"
+                || pi_core_version != env!("PICKET_PI_CORE_VERSION")
             {
                 explicit_error = true;
-                return Err(i18n::pi::pi_incompatible_version(locale).into());
+                return Err(AppError::model(
+                    AppErrorCode::PiRuntimeError,
+                    i18n::pi::pi_incompatible_version(locale),
+                ));
             }
-            on_event(&ready)?;
+            on_event(&ready)
+                .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
             write_command(&mut proc.stdin, command)
                 .await
-                .inspect_err(|_| {
+                .map_err(|msg| {
                     explicit_error = true;
+                    AppError::model(AppErrorCode::PiRuntimeError, msg)
                 })?;
             let mut cancel_sent = false;
             loop {
                 if remaining_budget.is_zero() {
                     explicit_error = true;
-                    return Err(i18n::pi::pi_request_timed_out(locale).to_string());
+                    return Err(AppError::model(
+                        AppErrorCode::ModelTimeout,
+                        i18n::pi::pi_request_timed_out(locale),
+                    ));
                 }
                 let step_timeout = if cancel_sent {
                     CANCEL_SETTLE_TIMEOUT.min(idle_timeout)
@@ -404,35 +426,57 @@ impl PiSupervisor {
                 let event = tokio::select! {
                     biased;
                     change = cancelled.changed(), if !cancel_sent => {
-                        change.map_err(|_| i18n::pi::pi_cancel_channel_closed(locale).to_string())?;
-                        write_command(&mut proc.stdin, &PiCommand::Cancel { request_id: request_id.clone() }).await?;
+                        change.map_err(|_| {
+                            AppError::model(
+                                AppErrorCode::PiRuntimeError,
+                                i18n::pi::pi_cancel_channel_closed(locale),
+                            )
+                        })?;
+                        write_command(&mut proc.stdin, &PiCommand::Cancel { request_id: request_id.clone() })
+                            .await
+                            .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
                         cancel_sent = true;
                         continue;
                     }
                     step = timeout(step_timeout, next_event(&mut proc.lines)) => {
                         remaining_budget = remaining_budget.saturating_sub(step_started.elapsed());
                         match step {
-                            Ok(result) => result?,
+                            Ok(result) => {
+                                result.map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?
+                            }
                             Err(_) => {
                                 explicit_error = true;
-                                return Err(i18n::pi::pi_request_timed_out(locale).to_string());
+                                return Err(AppError::model(
+                                    AppErrorCode::ModelTimeout,
+                                    i18n::pi::pi_request_timed_out(locale),
+                                ));
                             }
                         }
                     }
                 };
                 if let PiEvent::ProtocolError { message } = event {
                     explicit_error = true;
-                    return Err(i18n::pi::pi_protocol_rejected(locale, &message));
+                    return Err(AppError::model(
+                        AppErrorCode::PiRuntimeError,
+                        i18n::pi::pi_protocol_rejected(locale, &message),
+                    ));
                 }
                 let Some((id, event_context)) = event.envelope() else {
                     explicit_error = true;
-                    return Err(i18n::pi::pi_unexpected_control_event(locale).into());
+                    return Err(AppError::model(
+                        AppErrorCode::PiRuntimeError,
+                        i18n::pi::pi_unexpected_control_event(locale),
+                    ));
                 };
                 if id != request_id || event_context != &expected_context {
                     explicit_error = true;
-                    return Err(i18n::pi::pi_mismatched_target(locale).into());
+                    return Err(AppError::model(
+                        AppErrorCode::PiRuntimeError,
+                        i18n::pi::pi_mismatched_target(locale),
+                    ));
                 }
-                on_event(&event)?;
+                on_event(&event)
+                    .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
                 match event {
                     PiEvent::ToolCall {
                         call_id,
@@ -449,8 +493,15 @@ impl PiSupervisor {
                         let outcome = tokio::select! {
                             biased;
                             change = cancelled.changed(), if !cancel_sent => {
-                                change.map_err(|_| i18n::pi::pi_cancel_channel_closed(locale).to_string())?;
-                                write_command(&mut proc.stdin, &PiCommand::Cancel { request_id: request_id.clone() }).await?;
+                                change.map_err(|_| {
+                                    AppError::model(
+                                        AppErrorCode::PiRuntimeError,
+                                        i18n::pi::pi_cancel_channel_closed(locale),
+                                    )
+                                })?;
+                                write_command(&mut proc.stdin, &PiCommand::Cancel { request_id: request_id.clone() })
+                                    .await
+                                    .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
                                 cancel_sent = true;
                                 continue;
                             }
@@ -468,14 +519,12 @@ impl PiSupervisor {
                             },
                         )
                         .await
-                        .inspect_err(|_| {
+                        .map_err(|msg| {
                             explicit_error = true;
+                            AppError::model(AppErrorCode::PiRuntimeError, msg)
                         })?;
                     }
                     PiEvent::Completed { text, .. } => return Ok(PiTaskOutcome::Completed { text }),
-                    PiEvent::ModelsListed { models, .. } => {
-                        return Ok(PiTaskOutcome::ModelsListed { models });
-                    }
                     PiEvent::CustomActionCompleted { summary, links, .. } => {
                         return Ok(PiTaskOutcome::CustomActionCompleted { summary, links });
                     }
@@ -483,9 +532,13 @@ impl PiSupervisor {
                         return Ok(PiTaskOutcome::CustomActionDrafted { draft });
                     }
                     PiEvent::Cancelled { .. } => return Ok(PiTaskOutcome::Cancelled),
-                    PiEvent::Failed { message, .. } => {
+                    PiEvent::Failed {
+                        message,
+                        error_code,
+                        ..
+                    } => {
                         explicit_error = true;
-                        return Err(message);
+                        return Err(AppError::from_pi_error_code(error_code.as_deref(), message));
                     }
                     _ => {}
                 }
@@ -493,25 +546,32 @@ impl PiSupervisor {
         }
         .await;
 
-        let (exit, raw_diagnostic) = proc.shutdown_and_reap(Some(locale)).await?;
+        let (exit, raw_diagnostic) = proc
+            .shutdown_and_reap(Some(locale))
+            .await
+            .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, scrub(msg)))?;
         let diagnostic = scrub(raw_diagnostic);
         if explicit_error {
-            return exchange.map_err(|e| {
-                let sanitized = scrub(e);
-                i18n::pi::pi_append_diagnostic(locale, &sanitized, &diagnostic)
+            return exchange.map_err(|err| {
+                err.map_message(|m| {
+                    let sanitized = scrub(m);
+                    i18n::pi::pi_append_diagnostic(locale, &sanitized, &diagnostic)
+                })
             });
         }
-        let status = exit.map_err(&scrub)?;
+        let status =
+            exit.map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, scrub(msg)))?;
         if !status.success() {
-            return Err(scrub(i18n::pi::pi_exited_abnormally(
-                locale,
-                &status,
-                &diagnostic,
-            )));
+            return Err(AppError::model(
+                AppErrorCode::PiRuntimeError,
+                scrub(i18n::pi::pi_exited_abnormally(locale, &status, &diagnostic)),
+            ));
         }
-        exchange.map_err(|e| {
-            let sanitized = scrub(e);
-            i18n::pi::pi_append_diagnostic(locale, &sanitized, &diagnostic)
+        exchange.map_err(|err| {
+            err.map_message(|m| {
+                let sanitized = scrub(m);
+                i18n::pi::pi_append_diagnostic(locale, &sanitized, &diagnostic)
+            })
         })
     }
 }

@@ -7,6 +7,7 @@ use super::{
     },
 };
 use crate::{
+    error::{AppError, AppErrorCode},
     i18n::{self, LanguageKind},
     models::{local_auth::LocalAuthOutcome, types::*},
 };
@@ -443,7 +444,7 @@ impl ModelStore {
         &self,
         storage_dir: &Path,
         model_id: &str,
-    ) -> Result<ResolvedRuntimeSpec, String> {
+    ) -> Result<ResolvedRuntimeSpec, AppError> {
         self.resolve_runtime_spec_with_locale(storage_dir, model_id, LanguageKind::En)
             .await
     }
@@ -453,22 +454,38 @@ impl ModelStore {
         storage_dir: &Path,
         model_id: &str,
         locale: LanguageKind,
-    ) -> Result<ResolvedRuntimeSpec, String> {
+    ) -> Result<ResolvedRuntimeSpec, AppError> {
         let _guard = self.gate.lock().await;
-        let (stored, _) = read_models_file_async(storage_dir, locale).await?;
+        let (stored, _) = read_models_file_async(storage_dir, locale)
+            .await
+            .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))?;
         let record = stored
             .models
             .iter()
             .find(|model| model.id == model_id)
-            .ok_or_else(|| i18n::models::model_active_missing_runtime_error(locale))?;
-        let conn = stored
-            .connection(&record.connection_id)
-            .ok_or_else(|| i18n::models::provider_not_found_error(locale))?;
+            .ok_or_else(|| {
+                AppError::model(
+                    AppErrorCode::ModelNotFound,
+                    i18n::models::model_active_missing_runtime_error(locale),
+                )
+            })?;
+        let conn = stored.connection(&record.connection_id).ok_or_else(|| {
+            AppError::model(
+                AppErrorCode::ModelNotFound,
+                i18n::models::provider_not_found_error(locale),
+            )
+        })?;
         let api_key = if conn.provider.needs_key() {
             self.credentials
                 .get_async(storage_dir, &conn.id)
-                .await?
-                .ok_or_else(|| i18n::models::model_missing_stored_key_error(locale))?
+                .await
+                .map_err(|msg| AppError::model(AppErrorCode::ModelMissingCredential, msg))?
+                .ok_or_else(|| {
+                    AppError::model(
+                        AppErrorCode::ModelMissingCredential,
+                        i18n::models::model_missing_stored_key_error(locale),
+                    )
+                })?
         } else {
             String::new()
         };

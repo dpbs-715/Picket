@@ -1,3 +1,8 @@
+import type {
+  PersistedWindowPreferences,
+  WindowPosition,
+  WindowSize,
+} from './generated';
 import { decodeCPushSessionSnapshot } from './cpush-protocol';
 import type { CPushSessionSnapshot } from './cpush-protocol';
 import {
@@ -33,24 +38,7 @@ export const WINDOW_DIMENSIONS = {
   maxStoredCoordinateAbs: 65_536,
 } as const;
 
-export interface WindowSize {
-  width: number;
-  height: number;
-}
-
-export interface WindowPosition {
-  x: number;
-  y: number;
-}
-
-export interface PersistedWindowPreferences {
-  pinned: boolean;
-  compactMode: boolean;
-  pinnedExpanded: boolean;
-  fullSize?: WindowSize;
-  fullPosition?: WindowPosition;
-  compactPosition?: WindowPosition;
-}
+export type { PersistedWindowPreferences, WindowPosition, WindowSize };
 
 export interface PersistedRepositorySettings {
   repositoryId: string;

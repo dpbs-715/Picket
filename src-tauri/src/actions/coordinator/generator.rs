@@ -11,6 +11,7 @@ use crate::{
         policy::{CommandDecision, classify_git_command},
         types::*,
     },
+    error::{AppError, AppErrorCode},
     i18n,
     models::store::ModelStore,
     pi_runtime::{
@@ -36,27 +37,40 @@ impl CustomActionCoordinator {
         store: &RepositoryStore,
         request: &GenerateCustomActionRequest,
         on_progress: F,
-    ) -> Result<GenerateCustomActionReply, String>
+    ) -> Result<GenerateCustomActionReply, AppError>
     where
         F: Fn(GenerateCustomActionProgressEvent) + Send + Sync + 'static,
     {
         let locale = request.locale;
-        repository::validate_request_id_with_locale(&request.request_id, locale)?;
+        repository::validate_request_id_with_locale(&request.request_id, locale)
+            .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))?;
         let user_request = request.user_request.trim().to_owned();
         if user_request.is_empty() || user_request.chars().count() > 2_000 {
-            return Err(i18n::actions::action_create_empty_request_error(locale).into());
+            return Err(AppError::action(
+                AppErrorCode::ActionInvalidInput,
+                i18n::actions::action_create_empty_request_error(locale),
+            ));
         }
 
         let run_id = request.request_id.clone();
         let worktree_root = store
             .worktree_root_for_target(&request.target, locale)
-            .await?;
-        let live_snapshot = store.refresh_with_locale(&request.target, locale).await?;
+            .await
+            .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
+        let live_snapshot = store
+            .refresh_with_locale(&request.target, locale)
+            .await
+            .map_err(|msg| AppError::repository(AppErrorCode::GitFailed, msg))?;
         let active_tree = live_snapshot
             .worktrees
             .iter()
             .find(|wt| wt.worktree_id == request.target.worktree_id)
-            .ok_or_else(|| "Target worktree not found in live repository snapshot".to_string())?;
+            .ok_or_else(|| {
+                AppError::repository(
+                    AppErrorCode::RepoInvalidTarget,
+                    "Target worktree not found in live repository snapshot",
+                )
+            })?;
         let spec = models
             .resolve_runtime_spec_with_locale(storage_dir, &request.model_id, locale)
             .await?;
@@ -306,8 +320,9 @@ impl CustomActionCoordinator {
                 status: "cancelled",
                 draft: None,
             }),
-            Ok(other) => Err(format!(
-                "Unexpected Pi outcome for generate_custom_action: {other:?}"
+            Ok(other) => Err(AppError::model(
+                AppErrorCode::PiRuntimeError,
+                format!("Unexpected Pi outcome for generate_custom_action: {other:?}"),
             )),
             Err(err) => Err(err),
         }

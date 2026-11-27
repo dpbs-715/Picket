@@ -10,6 +10,7 @@ use super::{
 };
 use crate::{
     actions::{cli_env::detect_repo_remotes, session_store, types::*},
+    error::{AppError, AppErrorCode},
     i18n,
     models::store::ModelStore,
     pi_runtime::{
@@ -54,6 +55,7 @@ async fn dispatch_action_tool(
                 scope: None,
                 files: None,
                 commits: None,
+                options: None,
                 links: None,
                 card: preserved_card,
                 questionnaire: None,
@@ -127,12 +129,13 @@ impl CustomActionCoordinator {
         store: &RepositoryStore,
         request: &StartCustomActionRequest,
         on_progress: F,
-    ) -> Result<CustomActionCommandReply, String>
+    ) -> Result<CustomActionCommandReply, AppError>
     where
         F: Fn(CustomActionProgressEvent) + Send + Sync + 'static,
     {
         let locale = request.locale;
-        repository::validate_request_id_with_locale(&request.request_id, locale)?;
+        repository::validate_request_id_with_locale(&request.request_id, locale)
+            .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))?;
         let action_label = request.action.label.trim().to_owned();
         let action_prompt = request
             .action
@@ -141,20 +144,32 @@ impl CustomActionCoordinator {
             .trim()
             .to_owned();
         if action_label.is_empty() || action_prompt.is_empty() {
-            return Err(i18n::actions::action_empty_fields_error(locale).into());
+            return Err(AppError::action(
+                AppErrorCode::ActionInvalidInput,
+                i18n::actions::action_empty_fields_error(locale),
+            ));
         }
         let _repo_guard = self.acquire_repo_write(&request.target.repository_id, locale)?;
 
         let run_id = request.request_id.clone();
         let worktree_root = store
             .worktree_root_for_target(&request.target, locale)
-            .await?;
-        let live_snapshot = store.refresh_with_locale(&request.target, locale).await?;
+            .await
+            .map_err(|msg| AppError::repository(AppErrorCode::RepoInvalidTarget, msg))?;
+        let live_snapshot = store
+            .refresh_with_locale(&request.target, locale)
+            .await
+            .map_err(|msg| AppError::repository(AppErrorCode::GitFailed, msg))?;
         let active_tree = live_snapshot
             .worktrees
             .iter()
             .find(|wt| wt.worktree_id == request.target.worktree_id)
-            .ok_or_else(|| "Target worktree not found in live repository snapshot".to_string())?;
+            .ok_or_else(|| {
+                AppError::repository(
+                    AppErrorCode::RepoInvalidTarget,
+                    "Target worktree not found in live repository snapshot",
+                )
+            })?;
 
         // Build optional authorized selected file context without requiring any selection.
         let mut selected_files: Vec<PiPlanFileEntry> = Vec::new();
@@ -371,6 +386,7 @@ impl CustomActionCoordinator {
                 scope: None,
                 files: None,
                 commits: None,
+                options: None,
                 links: None,
                 card: None,
                 questionnaire: None,
@@ -470,7 +486,7 @@ impl CustomActionCoordinator {
                 let (timeline, commits, merged_links, trusted, published_card) = {
                     let mut st = run_state
                         .lock()
-                        .map_err(|_| "Action run state lock is unavailable".to_string())?;
+                        .map_err(|_| AppError::internal("Action run state lock is unavailable"))?;
                     append_unique_links(
                         &mut st.links,
                         links
@@ -520,6 +536,7 @@ impl CustomActionCoordinator {
                     scope: None,
                     files: None,
                     commits: (!commit_summaries.is_empty()).then_some(commit_summaries),
+                    options: None,
                     links: (!merged_links.is_empty()).then_some(merged_links.clone()),
                     card: published_card,
                     questionnaire: None,
@@ -604,7 +621,7 @@ impl CustomActionCoordinator {
                 if let Some(record) = persist_snapshot("failed", msg.clone()) {
                     let _ = session_store::upsert_session_async(storage_dir, record).await;
                 }
-                Err(msg)
+                Err(AppError::model(AppErrorCode::PiRuntimeError, msg))
             }
             Err(err) => {
                 self.set_action_tray_status(
@@ -612,7 +629,7 @@ impl CustomActionCoordinator {
                     crate::tray::TraySessionStatus::Idle,
                     None,
                 );
-                if let Some(record) = persist_snapshot("failed", err.clone()) {
+                if let Some(record) = persist_snapshot("failed", err.message.clone()) {
                     let _ = session_store::upsert_session_async(storage_dir, record).await;
                 }
                 Err(err)

@@ -2,6 +2,7 @@
 mod actions;
 mod bounded_cache;
 mod commands;
+mod error;
 #[cfg(any(test, feature = "smoke-harness"))]
 mod foundation;
 mod git_env;
@@ -11,6 +12,8 @@ mod models;
 mod pi_runtime;
 #[cfg(test)]
 mod protocol_contract_tests;
+#[cfg(test)]
+mod protocol_export;
 mod repo_lock;
 mod repository;
 mod skills;
@@ -109,65 +112,73 @@ fn main() {
         Ok(())
     });
 
+    macro_rules! picket_invoke_handler {
+        ($($extra:path),* $(,)?) => {
+            tauri::generate_handler![
+                startup_splash::splash_ready,
+                startup_splash::notify_workbench_ready,
+                startup_splash::run_splash_jump,
+                startup_splash::complete_splash,
+                window_motion::set_window_pinned,
+                window_motion::set_window_theme,
+                window_motion::animate_window_frame,
+                tray::read_tray_state,
+                tray::sync_tray_context,
+                tray::request_tray_refresh,
+                tray::resize_tray_popover,
+                tray::hide_tray_popover,
+                tray::tray_open_main_window,
+                tray::tray_quit_app,
+                commands::updater::get_update_status,
+                commands::updater::check_for_update,
+                commands::updater::install_update,
+                commands::updater::cancel_update,
+                commands::updater::open_release_page,
+                commands::repository::open_repository,
+                commands::repository::refresh_repository,
+                commands::repository::set_repository_local_keep,
+                commands::repository::change_repository_branch,
+                commands::repository::open_in_editor,
+                commands::repository::load_workbench_state,
+                commands::repository::save_workbench_state,
+                commands::models::test_model_connection,
+                commands::models::list_provider_models,
+                commands::models::create_provider_connection,
+                commands::models::update_provider_connection,
+                commands::models::delete_provider_connection,
+                commands::models::save_model,
+                commands::models::select_model,
+                commands::models::delete_model,
+                commands::models::reveal_provider_api_key,
+                commands::models::cancel_model_request,
+                commands::cpush::start_cpush,
+                commands::cpush::respond_cpush,
+                commands::cpush::pull_rebase_repository,
+                commands::cpush::reconcile_cpush_session,
+                commands::actions::start_custom_action,
+                commands::actions::respond_custom_action,
+                commands::actions::generate_custom_action,
+                commands::actions::cancel_custom_action,
+                commands::actions::dismiss_session_done,
+                commands::skills::get_skills_state,
+                commands::skills::sync_skills,
+                commands::skills::set_enabled_skills,
+                commands::skills::reset_skills_to_bundled,
+                $($extra),*
+            ]
+        };
+    }
+
     #[cfg(feature = "smoke-harness")]
     let builder = builder
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(picket_invoke_handler![
             commands::smoke::run_pi_probe,
             commands::smoke::cancel_pi_probe,
             commands::smoke::run_git_probe,
             commands::smoke::close_smoke_window,
             commands::smoke::read_smoke_window_spaces_state,
             commands::smoke::fail_ui_smoke,
-            startup_splash::splash_ready,
-            startup_splash::notify_workbench_ready,
-            startup_splash::run_splash_jump,
-            startup_splash::complete_splash,
-            window_motion::set_window_pinned,
-            window_motion::set_window_theme,
-            window_motion::animate_window_frame,
-            tray::read_tray_state,
-            tray::sync_tray_context,
-            tray::request_tray_refresh,
-            tray::resize_tray_popover,
-            tray::hide_tray_popover,
-            tray::tray_open_main_window,
-            tray::tray_quit_app,
             tray::verify_tray_smoke,
-            commands::updater::get_update_status,
-            commands::updater::check_for_update,
-            commands::updater::install_update,
-            commands::updater::cancel_update,
-            commands::updater::open_release_page,
-            commands::repository::open_repository,
-            commands::repository::refresh_repository,
-            commands::repository::set_repository_local_keep,
-            commands::repository::change_repository_branch,
-            commands::repository::open_in_editor,
-            commands::repository::load_workbench_state,
-            commands::repository::save_workbench_state,
-            commands::models::test_model_connection,
-            commands::models::list_provider_models,
-            commands::models::create_provider_connection,
-            commands::models::update_provider_connection,
-            commands::models::delete_provider_connection,
-            commands::models::save_model,
-            commands::models::select_model,
-            commands::models::delete_model,
-            commands::models::reveal_provider_api_key,
-            commands::models::cancel_model_request,
-            commands::cpush::start_cpush,
-            commands::cpush::respond_cpush,
-            commands::cpush::pull_rebase_repository,
-            commands::cpush::reconcile_cpush_session,
-            commands::actions::start_custom_action,
-            commands::actions::respond_custom_action,
-            commands::actions::generate_custom_action,
-            commands::actions::cancel_custom_action,
-            commands::actions::dismiss_session_done,
-            commands::skills::get_skills_state,
-            commands::skills::sync_skills,
-            commands::skills::set_enabled_skills,
-            commands::skills::reset_skills_to_bundled,
             commands::smoke::start_model_smoke_server,
             commands::smoke::set_smoke_local_auth,
             commands::smoke::verify_model_m3_smoke,
@@ -180,7 +191,7 @@ fn main() {
             commands::smoke::verify_repository_branch_smoke,
             commands::smoke::verify_repository_commit_smoke,
             commands::smoke::verify_repository_ide_smoke,
-            commands::smoke::verify_repository_persistence_smoke
+            commands::smoke::verify_repository_persistence_smoke,
         ])
         .on_page_load(|window, payload| {
             if window.label() == "main"
@@ -203,57 +214,7 @@ fn main() {
         });
 
     #[cfg(not(feature = "smoke-harness"))]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        startup_splash::splash_ready,
-        startup_splash::notify_workbench_ready,
-        startup_splash::run_splash_jump,
-        startup_splash::complete_splash,
-        window_motion::set_window_pinned,
-        window_motion::set_window_theme,
-        window_motion::animate_window_frame,
-        tray::read_tray_state,
-        tray::sync_tray_context,
-        tray::request_tray_refresh,
-        tray::resize_tray_popover,
-        tray::hide_tray_popover,
-        tray::tray_open_main_window,
-        tray::tray_quit_app,
-        commands::updater::get_update_status,
-        commands::updater::check_for_update,
-        commands::updater::install_update,
-        commands::updater::cancel_update,
-        commands::updater::open_release_page,
-        commands::repository::open_repository,
-        commands::repository::refresh_repository,
-        commands::repository::set_repository_local_keep,
-        commands::repository::change_repository_branch,
-        commands::repository::open_in_editor,
-        commands::repository::load_workbench_state,
-        commands::repository::save_workbench_state,
-        commands::models::test_model_connection,
-        commands::models::list_provider_models,
-        commands::models::create_provider_connection,
-        commands::models::update_provider_connection,
-        commands::models::delete_provider_connection,
-        commands::models::save_model,
-        commands::models::select_model,
-        commands::models::delete_model,
-        commands::models::reveal_provider_api_key,
-        commands::models::cancel_model_request,
-        commands::cpush::start_cpush,
-        commands::cpush::respond_cpush,
-        commands::cpush::pull_rebase_repository,
-        commands::cpush::reconcile_cpush_session,
-        commands::actions::start_custom_action,
-        commands::actions::respond_custom_action,
-        commands::actions::generate_custom_action,
-        commands::actions::cancel_custom_action,
-        commands::actions::dismiss_session_done,
-        commands::skills::get_skills_state,
-        commands::skills::sync_skills,
-        commands::skills::set_enabled_skills,
-        commands::skills::reset_skills_to_bundled
-    ]);
+    let builder = builder.invoke_handler(picket_invoke_handler![]);
 
     let app = builder
         .on_window_event(|window, event| match (window.label(), event) {

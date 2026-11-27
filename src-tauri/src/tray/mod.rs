@@ -383,13 +383,13 @@ impl TrayCoordinator {
 pub fn read_tray_state(
     app: AppHandle,
     coordinator: State<'_, TrayCoordinator>,
-) -> Result<TrayStateSnapshot, String> {
+) -> Result<TrayStateSnapshot, crate::error::AppError> {
     coordinator.refresh_from_app(&app);
     coordinator
         .state
         .lock()
         .map(|s| s.snapshot.clone())
-        .map_err(|_| "Tray state lock poisoned".to_string())
+        .map_err(|_| crate::error::AppError::window("Tray state lock poisoned"))
 }
 
 #[tauri::command]
@@ -397,7 +397,7 @@ pub fn sync_tray_context(
     app: AppHandle,
     coordinator: State<'_, TrayCoordinator>,
     context: TrayUiContextUpdate,
-) -> Result<(), String> {
+) -> Result<(), crate::error::AppError> {
     coordinator.set_ui_context(
         &app,
         context.locale,
@@ -411,7 +411,7 @@ pub fn sync_tray_context(
 pub fn request_tray_refresh(
     app: AppHandle,
     coordinator: State<'_, TrayCoordinator>,
-) -> Result<(), String> {
+) -> Result<(), crate::error::AppError> {
     coordinator.trigger_background_refresh(app);
     Ok(())
 }
@@ -421,44 +421,46 @@ pub async fn resize_tray_popover(
     app: AppHandle,
     coordinator: State<'_, TrayCoordinator>,
     height: f64,
-) -> Result<(), String> {
-    let clamped = clamp_popover_height(height)?;
+) -> Result<(), crate::error::AppError> {
+    let clamped = clamp_popover_height(height).map_err(crate::error::AppError::window)?;
     if let Ok(mut guard) = coordinator.state.lock() {
         guard.popover_height = clamped;
     }
     if let Some(popover) = app.get_webview_window(TRAY_POPOVER_LABEL) {
-        window_motion::resize_tray_popover_height(popover, TRAY_POPOVER_WIDTH, clamped).await?;
+        window_motion::resize_tray_popover_height(popover, TRAY_POPOVER_WIDTH, clamped)
+            .await
+            .map_err(crate::error::AppError::window)?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn hide_tray_popover(app: AppHandle) -> Result<(), String> {
+pub fn hide_tray_popover(app: AppHandle) -> Result<(), crate::error::AppError> {
     let app_for_main = app.clone();
     app.run_on_main_thread(move || {
         app_for_main
             .state::<TrayCoordinator>()
             .hide_popover_on_main(&app_for_main);
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| crate::error::AppError::window(e.to_string()))
 }
 
 #[tauri::command]
 pub fn tray_open_main_window(
     app: AppHandle,
     action: Option<TrayMainWindowAction>,
-) -> Result<(), String> {
+) -> Result<(), crate::error::AppError> {
     let app_for_main = app.clone();
     app.run_on_main_thread(move || {
         app_for_main
             .state::<TrayCoordinator>()
             .restore_main_from_tray_on_main(&app_for_main, action);
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| crate::error::AppError::window(e.to_string()))
 }
 
 #[tauri::command]
-pub fn tray_quit_app(app: AppHandle) -> Result<(), String> {
+pub fn tray_quit_app(app: AppHandle) -> Result<(), crate::error::AppError> {
     app.state::<TrayCoordinator>().teardown(&app);
     exit_after_cleanup(&app);
     Ok(())

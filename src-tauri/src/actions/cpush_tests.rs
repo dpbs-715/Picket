@@ -415,7 +415,10 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
         )
         .await
         .unwrap_err();
-    assert!(second_err.contains("active C-Push session"), "{second_err}");
+    assert!(
+        second_err.message.contains("active C-Push session"),
+        "{second_err}"
+    );
 
     let first_commit_oid = paused.session.commits[0].oid.clone();
     let err_msg_id = paused.session.message.as_ref().unwrap().id.clone();
@@ -725,9 +728,9 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
         .await
         .unwrap_err();
     assert!(
-        stale_err.contains("changed")
-            || stale_err.contains("expired")
-            || stale_err.contains("Refresh"),
+        stale_err.message.contains("changed")
+            || stale_err.message.contains("expired")
+            || stale_err.message.contains("Refresh"),
         "expected stale scope rejection, got: {stale_err}"
     );
 
@@ -1136,7 +1139,7 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
         )
         .await
         .unwrap_err();
-    assert!(lock_err.contains("index.lock"), "{lock_err}");
+    assert!(lock_err.message.contains("index.lock"), "{lock_err}");
     assert_eq!(server.requests().len(), requests_before);
 
     // 2. Repo containing an untouched tracked 160000 submodule succeeds end-to-end:
@@ -1526,6 +1529,7 @@ async fn cpush_supports_local_only_commit_on_demand_diff_and_legacy_cpush_sessio
         "legacy cpush-sessions.json should be removed after successful migration"
     );
     let unified_raw = fs::read_to_string(legacy_dir.path().join("action-sessions.json")).unwrap();
-    assert!(unified_raw.contains("\"version\": 2"));
+    assert!(unified_raw.contains("\"version\": 3"));
+    assert!(unified_raw.contains("\"kind\": \"cpush\""));
     assert!(unified_raw.contains("legacy-run-1"));
 }

@@ -1,88 +1,30 @@
+import type {
+  CPushQaItem,
+  CPushSessionSnapshot,
+  CPushSessionStatus,
+} from './generated';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
 import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
 import type { AppLocale, CommitLanguage } from './language-protocol';
-import {
-  decodeMessageUserCard,
-  type MessageUserCard,
-  type MessageUserRequest,
-} from './message-user-protocol';
 import type { ModelFileSelection } from './model-protocol';
-import type { CustomActionLink } from './custom-action-protocol';
+import {
+  decodeWorkflowCommits,
+  decodeWorkflowTimeline,
+  decodeWorkflowUiMessage,
+  type WorkflowLandedCommit,
+  type WorkflowMessageKind,
+  type WorkflowTimelineItem,
+  type WorkflowUiMessage,
+} from './workflow-message-protocol';
 
 export const CPUSH_PROTOCOL_VERSION = 1;
 
-export type CPushSessionStatus =
-  | 'idle'
-  | 'running'
-  | 'needsDecision'
-  | 'conflict'
-  | 'waitingManual'
-  | 'pushFailed'
-  | 'done';
+export type { CPushQaItem, CPushSessionSnapshot, CPushSessionStatus };
 
-export type CPushMessageKind =
-  | 'progress'
-  | 'question'
-  | 'conflict'
-  | 'waitingManual'
-  | 'resolved'
-  | 'pushFailed'
-  | 'done'
-  | 'error';
-
-export interface CPushTimelineItem {
-  state: 'done' | 'active' | 'failed';
-  label: string;
-}
-
-export interface CPushQaItem {
-  questionId: string;
-  question: string;
-  answer: string;
-}
-
-export interface CPushLandedCommit {
-  oid: string;
-  shortOid: string;
-  title: string;
-  branch: string;
-  fileIds: string[];
-}
-
-export interface CPushUiMessage {
-  id: string;
-  kind: CPushMessageKind;
-  title: string;
-  description: string;
-  scope?: string;
-  files?: { id: string; label: string; badge?: string }[];
-  commits?: { hash: string; title: string }[];
-  links?: CustomActionLink[];
-  options?: { id: string; label: string; recommended?: boolean }[];
-  card?: MessageUserCard;
-  questionnaire?: MessageUserRequest;
-  progress?: { completed: number; total: number; label: string };
-}
-
-export interface CPushSessionSnapshot {
-  runId: string;
-  repositoryId: string;
-  worktreeId: string;
-  sessionId: string;
-  frozenScopeVersion: string;
-  modelId: string;
-  frozenFileIds: string[];
-  committedFileIds: string[];
-  skippedFileIds: string[];
-  sessionStatus: CPushSessionStatus;
-  pendingCallId?: string;
-  message: CPushUiMessage | null;
-  timeline: CPushTimelineItem[];
-  qaLog: CPushQaItem[];
-  commits: CPushLandedCommit[];
-  canRetryRemaining: boolean;
-  autoCollapse?: boolean;
-}
+export type CPushMessageKind = WorkflowMessageKind;
+export type CPushTimelineItem = WorkflowTimelineItem;
+export type CPushLandedCommit = WorkflowLandedCommit;
+export type CPushUiMessage = WorkflowUiMessage;
 
 export interface StartCPushRequest {
   requestId: string;
@@ -142,16 +84,6 @@ const VALID_SESSION_STATUSES: readonly CPushSessionStatus[] = [
   'pushFailed',
   'done',
 ];
-const VALID_MESSAGE_KINDS: readonly CPushMessageKind[] = [
-  'progress',
-  'question',
-  'conflict',
-  'waitingManual',
-  'resolved',
-  'pushFailed',
-  'done',
-  'error',
-];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -159,102 +91,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function decodeUiMessage(value: unknown): CPushUiMessage {
-  if (!isRecord(value)
-    || typeof value.id !== 'string' || !value.id
-    || !VALID_MESSAGE_KINDS.includes(value.kind as CPushMessageKind)
-    || typeof value.title !== 'string'
-    || typeof value.description !== 'string'
-    || !(value.scope === undefined || value.scope === null || typeof value.scope === 'string')) {
-    throw new Error('Desktop returned an invalid C-Push session message structure.');
-  }
-  const files = value.files === undefined || value.files === null ? undefined : (() => {
-    if (!Array.isArray(value.files)) throw new Error('Invalid C-Push file reference list.');
-    return value.files.map((file) => {
-      if (!isRecord(file)
-        || typeof file.id !== 'string' || !file.id
-        || typeof file.label !== 'string'
-        || !(file.badge === undefined || file.badge === null || typeof file.badge === 'string')) {
-        throw new Error('Invalid C-Push file reference item.');
-      }
-      return {
-        id: file.id,
-        label: file.label,
-        ...(typeof file.badge === 'string' && file.badge ? { badge: file.badge } : {}),
-      };
-    });
-  })();
-  const commits = value.commits === undefined || value.commits === null ? undefined : (() => {
-    if (!Array.isArray(value.commits)) throw new Error('Invalid C-Push commit summary list.');
-    return value.commits.map((item) => {
-      if (!isRecord(item) || typeof item.hash !== 'string' || typeof item.title !== 'string') {
-        throw new Error('Invalid C-Push commit summary item.');
-      }
-      return { hash: item.hash, title: item.title };
-    });
-  })();
-  const options = value.options === undefined || value.options === null ? undefined : (() => {
-    if (!Array.isArray(value.options)) throw new Error('Invalid C-Push option list.');
-    return value.options.map((opt) => {
-      if (!isRecord(opt)
-        || typeof opt.id !== 'string' || !opt.id
-        || typeof opt.label !== 'string' || !opt.label
-        || !(opt.recommended === undefined || typeof opt.recommended === 'boolean')) {
-        throw new Error('Invalid C-Push option item.');
-      }
-      return {
-        id: opt.id,
-        label: opt.label,
-        ...(typeof opt.recommended === 'boolean' ? { recommended: opt.recommended } : {}),
-      };
-    });
-  })();
-  const progress = value.progress === undefined || value.progress === null ? undefined : (() => {
-    if (!isRecord(value.progress)
-      || typeof value.progress.completed !== 'number'
-      || typeof value.progress.total !== 'number'
-      || typeof value.progress.label !== 'string') {
-      throw new Error('Invalid C-Push progress field.');
-    }
-    return {
-      completed: value.progress.completed,
-      total: value.progress.total,
-      label: value.progress.label,
-    };
-  })();
-  const links = value.links === undefined || value.links === null ? undefined : (() => {
-    if (!Array.isArray(value.links)) return undefined;
-    const out: CustomActionLink[] = [];
-    for (const item of value.links) {
-      if (!isRecord(item) || typeof item.label !== 'string' || typeof item.url !== 'string') continue;
-      const label = item.label.trim();
-      const url = item.url.trim();
-      if (label && /^https?:\/\//i.test(url)) {
-        out.push({ label, url });
-      }
-    }
-    return out.length > 0 ? out : undefined;
-  })();
-  const card = decodeMessageUserCard(value.card);
-  const questionnaire = value.questionnaire !== undefined && value.questionnaire !== null
-    ? (value.questionnaire as MessageUserRequest)
-    : undefined;
-  return {
-    id: value.id,
-    kind: value.kind as CPushMessageKind,
-    title: value.title,
-    description: value.description,
-    ...(typeof value.scope === 'string' && value.scope ? { scope: value.scope } : {}),
-    ...(files ? { files } : {}),
-    ...(commits ? { commits } : {}),
-    ...(links ? { links } : {}),
-    ...(options ? { options } : {}),
-    ...(card ? { card } : {}),
-    ...(questionnaire ? { questionnaire } : {}),
-    ...(progress ? { progress } : {}),
-  };
 }
 
 export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot {
@@ -278,15 +114,10 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
     || !Array.isArray(value.commits)) {
     throw new Error('Desktop returned an invalid or unexpected C-Push session snapshot.');
   }
-  const message = value.message === null || value.message === undefined ? null : decodeUiMessage(value.message);
-  const timeline: CPushTimelineItem[] = value.timeline.map((entry) => {
-    if (!isRecord(entry)
-      || (entry.state !== 'done' && entry.state !== 'active' && entry.state !== 'failed')
-      || typeof entry.label !== 'string') {
-      throw new Error('Invalid C-Push timeline entry.');
-    }
-    return { state: entry.state, label: entry.label };
-  });
+  const message = value.message === null || value.message === undefined
+    ? null
+    : decodeWorkflowUiMessage(value.message, 'C-Push session');
+  const timeline = decodeWorkflowTimeline(value.timeline, 'C-Push');
   const qaLog: CPushQaItem[] = value.qaLog.map((entry) => {
     if (!isRecord(entry)
       || typeof entry.questionId !== 'string'
@@ -296,23 +127,7 @@ export function decodeCPushSessionSnapshot(value: unknown): CPushSessionSnapshot
     }
     return { questionId: entry.questionId, question: entry.question, answer: entry.answer };
   });
-  const commits: CPushLandedCommit[] = value.commits.map((entry) => {
-    if (!isRecord(entry)
-      || typeof entry.oid !== 'string' || !entry.oid
-      || typeof entry.shortOid !== 'string' || !entry.shortOid
-      || typeof entry.title !== 'string'
-      || typeof entry.branch !== 'string'
-      || !isStringArray(entry.fileIds)) {
-      throw new Error('Invalid C-Push landed commit entry.');
-    }
-    return {
-      oid: entry.oid,
-      shortOid: entry.shortOid,
-      title: entry.title,
-      branch: entry.branch,
-      fileIds: entry.fileIds,
-    };
-  });
+  const commits = decodeWorkflowCommits(value.commits, 'C-Push');
   return {
     runId: value.runId,
     repositoryId: value.repositoryId,

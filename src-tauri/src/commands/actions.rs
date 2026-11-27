@@ -10,6 +10,7 @@ use crate::{
             GenerateCustomActionRequest, RespondCustomActionRequest, StartCustomActionRequest,
         },
     },
+    error::{AppError, AppErrorCode},
     models::store::ModelStore,
     pi_runtime::PiSupervisor,
     repository::RepositoryStore,
@@ -26,9 +27,10 @@ pub async fn start_custom_action(
     actions: State<'_, CustomActionCoordinator>,
     request: StartCustomActionRequest,
     on_event: Channel<CustomActionProgressEvent>,
-) -> Result<CustomActionCommandReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
+) -> Result<CustomActionCommandReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    let paths =
+        runtime_paths(&app).map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
     let app_cb = app.clone();
     let result = actions
         .start_custom_action(
@@ -55,8 +57,10 @@ pub async fn start_custom_action(
 pub fn respond_custom_action(
     actions: State<'_, CustomActionCoordinator>,
     request: RespondCustomActionRequest,
-) -> Result<bool, String> {
-    actions.respond_question(&request)
+) -> Result<bool, AppError> {
+    actions
+        .respond_question(&request)
+        .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))
 }
 
 #[tauri::command]
@@ -69,9 +73,10 @@ pub async fn generate_custom_action(
     actions: State<'_, CustomActionCoordinator>,
     request: GenerateCustomActionRequest,
     on_event: Channel<GenerateCustomActionProgressEvent>,
-) -> Result<GenerateCustomActionReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
+) -> Result<GenerateCustomActionReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    let paths =
+        runtime_paths(&app).map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
     actions
         .generate_custom_action(
             &data_dir,
@@ -91,8 +96,10 @@ pub async fn generate_custom_action(
 pub fn cancel_custom_action(
     supervisor: State<'_, PiSupervisor>,
     request_id: String,
-) -> Result<(), String> {
-    supervisor.cancel(&request_id)
+) -> Result<(), AppError> {
+    supervisor
+        .cancel(&request_id)
+        .map_err(|msg| AppError::action(AppErrorCode::ActionFailed, msg))
 }
 
 #[tauri::command]
@@ -100,9 +107,12 @@ pub async fn dismiss_session_done(
     app: tauri::AppHandle,
     actions: State<'_, CustomActionCoordinator>,
     request: DismissSessionDoneRequest,
-) -> Result<bool, String> {
-    let data_dir = picket_data_dir()?;
-    let result = actions.dismiss_done_notice_async(&data_dir, &request).await;
+) -> Result<bool, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    let result = actions
+        .dismiss_done_notice_async(&data_dir, &request)
+        .await
+        .map_err(|msg| AppError::action(AppErrorCode::ActionFailed, msg));
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     result

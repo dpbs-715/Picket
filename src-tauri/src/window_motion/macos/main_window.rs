@@ -3,11 +3,10 @@
 #[cfg(feature = "smoke-harness")]
 use super::ffi::is_window_visible_on_all_spaces;
 use super::ffi::{
-    _NSConcreteStackBlock, AutoreleasePoolGuard, BLOCK_HAS_COPY_DISPOSE, ObjcBool,
-    activate_app_macos, apply_pinned_on_main, make_window_key_and_order_front, objc_getClass,
-    objc_msgSend, objc_release, objc_retain, prefers_reduced_motion_macos, primary_screen_height,
-    sel_registerName, set_window_alpha, set_window_content_min_size, set_window_frame_instant,
-    window_content_rect, window_frame,
+    activate_app_macos, apply_pinned_on_main, configure_current_animation_context,
+    make_window_key_and_order_front, ns_window_ref, prefers_reduced_motion_macos,
+    primary_screen_height, set_window_alpha, set_window_content_min_size, set_window_frame_instant,
+    to_foundation_rect, window_content_rect, window_frame,
 };
 use crate::{
     repository::types::WindowPosition,
@@ -17,11 +16,16 @@ use crate::{
         content_size_to_extent, frames_within_epsilon, resolve_visible_window_position,
     },
 };
+use block2::RcBlock;
+use objc2::{
+    Message, msg_send,
+    rc::{Retained, autoreleasepool},
+    runtime::{AnyObject, Bool},
+};
+use objc2_app_kit::NSAnimationContext;
 use std::{
-    ffi::c_void,
-    mem, ptr,
     sync::{
-        Arc, Mutex,
+        Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -29,101 +33,6 @@ use std::{
 use tokio::sync::oneshot;
 
 static ANIMATION_GENERATION: AtomicU64 = AtomicU64::new(0);
-
-struct CompletionPayload {
-    ns_window: usize,
-    generation: u64,
-    target_frame: NSRect,
-    final_min_size: NSSize,
-    primary_height: f64,
-    pinned: bool,
-    previous_position: LogicalPoint,
-    previous_size: LogicalExtent,
-    tx: Mutex<Option<oneshot::Sender<AnimateWindowFrameReply>>>,
-}
-
-impl Drop for CompletionPayload {
-    fn drop(&mut self) {
-        let win = self.ns_window as *mut c_void;
-        if !win.is_null() {
-            unsafe { objc_release(win) };
-        }
-    }
-}
-
-#[repr(C)]
-struct VoidBlockDescriptor {
-    reserved: usize,
-    size: usize,
-    copy_helper: unsafe extern "C" fn(*mut VoidCompletionBlock, *const VoidCompletionBlock),
-    dispose_helper: unsafe extern "C" fn(*mut VoidCompletionBlock),
-}
-
-#[repr(C)]
-struct VoidCompletionBlock {
-    isa: *const c_void,
-    flags: i32,
-    reserved: i32,
-    invoke: unsafe extern "C" fn(*mut VoidCompletionBlock),
-    descriptor: *const VoidBlockDescriptor,
-    payload: *const CompletionPayload,
-}
-
-static VOID_BLOCK_DESCRIPTOR: VoidBlockDescriptor = VoidBlockDescriptor {
-    reserved: 0,
-    size: mem::size_of::<VoidCompletionBlock>(),
-    copy_helper: void_block_copy,
-    dispose_helper: void_block_dispose,
-};
-
-unsafe extern "C" fn void_block_copy(
-    _dst: *mut VoidCompletionBlock,
-    src: *const VoidCompletionBlock,
-) {
-    let ptr = unsafe { (*src).payload };
-    if !ptr.is_null() {
-        unsafe { Arc::increment_strong_count(ptr) };
-    }
-}
-
-unsafe extern "C" fn void_block_dispose(block: *mut VoidCompletionBlock) {
-    let ptr = unsafe { (*block).payload };
-    if !ptr.is_null() {
-        unsafe { drop(Arc::from_raw(ptr)) };
-    }
-}
-
-unsafe extern "C" fn void_block_invoke(block: *mut VoidCompletionBlock) {
-    let payload_ptr = unsafe { (*block).payload };
-    if payload_ptr.is_null() {
-        return;
-    }
-    let _pool = AutoreleasePoolGuard::new();
-    let payload = unsafe { &*payload_ptr };
-    let ns_window = payload.ns_window as *mut c_void;
-    if !ns_window.is_null() && ANIMATION_GENERATION.load(Ordering::SeqCst) == payload.generation {
-        let current = unsafe { window_frame(ns_window) };
-        if !frames_within_epsilon(current, payload.target_frame) {
-            unsafe { set_window_frame_instant(ns_window, payload.target_frame) };
-        }
-        unsafe { set_window_content_min_size(ns_window, payload.final_min_size) };
-    }
-    let after_frame = unsafe { window_frame(ns_window) };
-    let after_content = unsafe { window_content_rect(ns_window, after_frame) };
-    let reply = AnimateWindowFrameReply {
-        pinned: payload.pinned,
-        previous_position: payload.previous_position,
-        previous_size: payload.previous_size,
-        position: appkit_frame_to_top_left(after_frame, payload.primary_height),
-        size: content_size_to_extent(after_content.size),
-        animated: true,
-    };
-    if let Ok(mut slot) = payload.tx.lock()
-        && let Some(tx) = slot.take()
-    {
-        let _ = tx.send(reply);
-    }
-}
 
 struct FallbackSnapTarget {
     generation: u64,
@@ -145,210 +54,143 @@ pub(crate) async fn animate_main_window(
 
     window
         .run_on_main_thread(move || {
-            let _pool = AutoreleasePoolGuard::new();
-            let result = (|| -> Result<Option<FallbackSnapTarget>, String> {
-                let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
-                if ns_window.is_null() {
-                    return Err("Native NSWindow pointer is unavailable".into());
-                }
-                let effective_pinned = match req.pinned {
-                    Some(pinned) => apply_pinned_on_main(&win_for_main, ns_window, pinned)?,
-                    None => win_for_main.is_always_on_top().map_err(|e| e.to_string())?,
-                };
+            autoreleasepool(|_| {
+                let result = (|| -> Result<Option<FallbackSnapTarget>, String> {
+                    let ns_window = unsafe {
+                        ns_window_ref(&win_for_main, "Native NSWindow pointer is unavailable")
+                    }?;
+                    let effective_pinned = match req.pinned {
+                        Some(pinned) => apply_pinned_on_main(&win_for_main, ns_window, pinned)?,
+                        None => win_for_main.is_always_on_top().map_err(|e| e.to_string())?,
+                    };
 
-                let before_frame = unsafe { window_frame(ns_window) };
-                let before_content = unsafe { window_content_rect(ns_window, before_frame) };
-                let primary_height = unsafe { primary_screen_height(ns_window) };
-                let previous_position = appkit_frame_to_top_left(before_frame, primary_height);
-                let previous_size = content_size_to_extent(before_content.size);
-                let target_content_w = req.width.unwrap_or(before_content.size.width);
-                let clamped_req = if req.placement == WindowFramePlacement::RestorePosition
-                    && let (Some(tx), Some(ty)) = (req.target_x, req.target_y)
-                {
-                    let (monitors, primary, _) =
-                        super::displays::read_monitors_on_main(&win_for_main);
-                    let (cx, cy, _) = resolve_visible_window_position(
-                        Some(WindowPosition {
-                            x: tx.round() as i32,
-                            y: ty.round() as i32,
-                        }),
-                        target_content_w,
-                        req.height,
-                        &monitors,
-                        primary,
+                    let before_frame = window_frame(ns_window);
+                    let before_content = window_content_rect(ns_window, before_frame);
+                    let primary_height = primary_screen_height(ns_window);
+                    let previous_position = appkit_frame_to_top_left(before_frame, primary_height);
+                    let previous_size = content_size_to_extent(before_content.size);
+                    let target_content_w = req.width.unwrap_or(before_content.size.width);
+                    let clamped_req = if req.placement == WindowFramePlacement::RestorePosition
+                        && let (Some(tx_pos), Some(ty_pos)) = (req.target_x, req.target_y)
+                    {
+                        let (monitors, primary, _) =
+                            super::displays::read_monitors_on_main(&win_for_main);
+                        let (cx, cy, _) = resolve_visible_window_position(
+                            Some(WindowPosition {
+                                x: tx_pos.round() as i32,
+                                y: ty_pos.round() as i32,
+                            }),
+                            target_content_w,
+                            req.height,
+                            &monitors,
+                            primary,
+                        );
+                        ValidatedRequest {
+                            target_x: Some(cx),
+                            target_y: Some(cy),
+                            ..req
+                        }
+                    } else {
+                        req
+                    };
+
+                    let target_frame = compute_target_frame(
+                        before_frame,
+                        before_content.size,
+                        primary_height,
+                        clamped_req,
                     );
-                    ValidatedRequest {
-                        target_x: Some(cx),
-                        target_y: Some(cy),
-                        ..req
-                    }
-                } else {
-                    req
-                };
+                    let final_min_size = NSSize {
+                        width: req.min_width.min(target_content_w),
+                        height: req.min_height.min(req.height),
+                    };
+                    let pre_min_size = NSSize {
+                        width: final_min_size.width.min(before_content.size.width),
+                        height: final_min_size.height.min(before_content.size.height),
+                    };
 
-                let target_frame = compute_target_frame(
-                    before_frame,
-                    before_content.size,
-                    primary_height,
-                    clamped_req,
-                );
-                let final_min_size = NSSize {
-                    width: req.min_width.min(target_content_w),
-                    height: req.min_height.min(req.height),
-                };
-                let pre_min_size = NSSize {
-                    width: final_min_size.width.min(before_content.size.width),
-                    height: final_min_size.height.min(before_content.size.height),
-                };
+                    let generation = ANIMATION_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+                    let should_animate = req.duration_ms > 0
+                        && !frames_within_epsilon(before_frame, target_frame)
+                        && !prefers_reduced_motion_macos();
 
-                let generation = ANIMATION_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-                let should_animate = req.duration_ms > 0
-                    && !frames_within_epsilon(before_frame, target_frame)
-                    && !unsafe { prefers_reduced_motion_macos() };
-
-                if !should_animate {
-                    unsafe {
+                    if !should_animate {
                         set_window_content_min_size(ns_window, pre_min_size);
                         if !frames_within_epsilon(before_frame, target_frame) {
                             set_window_frame_instant(ns_window, target_frame);
                         }
                         set_window_content_min_size(ns_window, final_min_size);
+                        let after_frame = window_frame(ns_window);
+                        let after_content = window_content_rect(ns_window, after_frame);
+                        let _ = tx.send(AnimateWindowFrameReply {
+                            pinned: effective_pinned,
+                            previous_position,
+                            previous_size,
+                            position: appkit_frame_to_top_left(after_frame, primary_height),
+                            size: content_size_to_extent(after_content.size),
+                            animated: false,
+                        });
+                        return Ok(None);
                     }
-                    let after_frame = unsafe { window_frame(ns_window) };
-                    let after_content = unsafe { window_content_rect(ns_window, after_frame) };
-                    let _ = tx.send(AnimateWindowFrameReply {
-                        pinned: effective_pinned,
-                        previous_position,
-                        previous_size,
-                        position: appkit_frame_to_top_left(after_frame, primary_height),
-                        size: content_size_to_extent(after_content.size),
-                        animated: false,
-                    });
-                    return Ok(None);
-                }
 
-                let anim_ctx_cls = unsafe { objc_getClass(c"NSAnimationContext".as_ptr()) };
-                if anim_ctx_cls.is_null() {
-                    unsafe {
-                        set_window_content_min_size(ns_window, pre_min_size);
-                        set_window_frame_instant(ns_window, target_frame);
-                        set_window_content_min_size(ns_window, final_min_size);
-                    }
-                    let after_frame = unsafe { window_frame(ns_window) };
-                    let after_content = unsafe { window_content_rect(ns_window, after_frame) };
-                    let _ = tx.send(AnimateWindowFrameReply {
-                        pinned: effective_pinned,
-                        previous_position,
-                        previous_size,
-                        position: appkit_frame_to_top_left(after_frame, primary_height),
-                        size: content_size_to_extent(after_content.size),
-                        animated: false,
-                    });
-                    return Ok(None);
-                }
-
-                unsafe {
                     set_window_content_min_size(ns_window, pre_min_size);
-                    objc_retain(ns_window);
-                }
-                let payload = Arc::new(CompletionPayload {
-                    ns_window: ns_window as usize,
-                    generation,
-                    target_frame,
-                    final_min_size,
-                    primary_height,
-                    pinned: effective_pinned,
-                    previous_position,
-                    previous_size,
-                    tx: Mutex::new(Some(tx)),
-                });
-                let raw_payload = Arc::into_raw(payload);
-                let completion_block = VoidCompletionBlock {
-                    isa: unsafe { _NSConcreteStackBlock },
-                    flags: BLOCK_HAS_COPY_DISPOSE,
-                    reserved: 0,
-                    invoke: void_block_invoke,
-                    descriptor: &VOID_BLOCK_DESCRIPTOR,
-                    payload: raw_payload,
-                };
-
-                unsafe {
-                    let begin_sel = sel_registerName(c"beginGrouping".as_ptr());
-                    let end_sel = sel_registerName(c"endGrouping".as_ptr());
-                    let current_sel = sel_registerName(c"currentContext".as_ptr());
-                    let set_duration_sel = sel_registerName(c"setDuration:".as_ptr());
-                    let set_timing_sel = sel_registerName(c"setTimingFunction:".as_ptr());
-                    let set_completion_sel = sel_registerName(c"setCompletionHandler:".as_ptr());
-                    let animator_sel = sel_registerName(c"animator".as_ptr());
-                    let set_frame_sel = sel_registerName(c"setFrame:display:".as_ptr());
-
-                    let send_void: unsafe extern "C" fn(*mut c_void, *const c_void) =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_f64: unsafe extern "C" fn(*mut c_void, *const c_void, f64) =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_ptr: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_set_frame: unsafe extern "C" fn(
-                        *mut c_void,
-                        *const c_void,
-                        NSRect,
-                        ObjcBool,
-                    ) = mem::transmute(objc_msgSend as *const ());
-
-                    send_void(anim_ctx_cls, begin_sel);
-                    let ctx = send_obj(anim_ctx_cls, current_sel);
-                    if !ctx.is_null() {
-                        send_f64(ctx, set_duration_sel, f64::from(req.duration_ms) / 1000.0);
-                        let timing_cls = objc_getClass(c"CAMediaTimingFunction".as_ptr());
-                        if !timing_cls.is_null() {
-                            let timing_sel =
-                                sel_registerName(c"functionWithControlPoints::::".as_ptr());
-                            let send_timing: unsafe extern "C" fn(
-                                *mut c_void,
-                                *const c_void,
-                                f32,
-                                f32,
-                                f32,
-                                f32,
-                            )
-                                -> *mut c_void = mem::transmute(objc_msgSend as *const ());
-                            // Matches CSS `--ease-out: cubic-bezier(0.22, 1, 0.36, 1)`.
-                            let timing_fn =
-                                send_timing(timing_cls, timing_sel, 0.22, 1.0, 0.36, 1.0);
-                            if !timing_fn.is_null() {
-                                send_ptr(ctx, set_timing_sel, timing_fn as *const c_void);
+                    let retained_win = ns_window.retain();
+                    let tx_slot = Mutex::new(Some(tx));
+                    let completion_block = RcBlock::new(move || {
+                        autoreleasepool(|_| {
+                            if ANIMATION_GENERATION.load(Ordering::SeqCst) == generation {
+                                let current = window_frame(&retained_win);
+                                if !frames_within_epsilon(current, target_frame) {
+                                    set_window_frame_instant(&retained_win, target_frame);
+                                }
+                                set_window_content_min_size(&retained_win, final_min_size);
                             }
+                            let after_frame = window_frame(&retained_win);
+                            let after_content = window_content_rect(&retained_win, after_frame);
+                            let reply = AnimateWindowFrameReply {
+                                pinned: effective_pinned,
+                                previous_position,
+                                previous_size,
+                                position: appkit_frame_to_top_left(after_frame, primary_height),
+                                size: content_size_to_extent(after_content.size),
+                                animated: true,
+                            };
+                            if let Ok(mut slot) = tx_slot.lock()
+                                && let Some(sender) = slot.take()
+                            {
+                                let _ = sender.send(reply);
+                            }
+                        });
+                    });
+
+                    NSAnimationContext::beginGrouping();
+                    configure_current_animation_context(req.duration_ms);
+                    NSAnimationContext::currentContext()
+                        .setCompletionHandler(Some(&completion_block));
+                    let animator: Option<Retained<AnyObject>> =
+                        unsafe { msg_send![ns_window, animator] };
+                    if let Some(animator) = animator {
+                        let rect = to_foundation_rect(target_frame);
+                        unsafe {
+                            let _: () = msg_send![&*animator, setFrame: rect, display: Bool::YES];
                         }
-                        send_ptr(
-                            ctx,
-                            set_completion_sel,
-                            ptr::from_ref(&completion_block).cast::<c_void>(),
-                        );
-                    }
-                    let animator = send_obj(ns_window, animator_sel);
-                    if !animator.is_null() {
-                        send_set_frame(animator, set_frame_sel, target_frame, 1);
                     } else {
                         set_window_frame_instant(ns_window, target_frame);
                     }
-                    send_void(anim_ctx_cls, end_sel);
-                    // Balance our stack ownership; NSAnimationContext copied the block on heap.
-                    drop(Arc::from_raw(raw_payload));
-                }
+                    NSAnimationContext::endGrouping();
 
-                Ok(Some(FallbackSnapTarget {
-                    generation,
-                    target_frame,
-                    final_min_size,
-                    primary_height,
-                    pinned: effective_pinned,
-                    previous_position,
-                    previous_size,
-                }))
-            })();
-            let _ = err_tx.send(result);
+                    Ok(Some(FallbackSnapTarget {
+                        generation,
+                        target_frame,
+                        final_min_size,
+                        primary_height,
+                        pinned: effective_pinned,
+                        previous_position,
+                        previous_size,
+                    }))
+                })();
+                let _ = err_tx.send(result);
+            });
         })
         .map_err(|e| e.to_string())?;
 
@@ -375,29 +217,29 @@ pub(crate) async fn animate_main_window(
                 let win_snap = window.clone();
                 if window
                     .run_on_main_thread(move || {
-                        let _pool = AutoreleasePoolGuard::new();
-                        if let Ok(ns_window) = win_snap.ns_window()
-                            && !ns_window.is_null()
-                        {
-                            if ANIMATION_GENERATION.load(Ordering::SeqCst) == generation {
-                                let current = unsafe { window_frame(ns_window) };
-                                if !frames_within_epsilon(current, target_frame) {
-                                    unsafe { set_window_frame_instant(ns_window, target_frame) };
+                        autoreleasepool(|_| {
+                            if let Ok(ns_window) =
+                                unsafe { ns_window_ref(&win_snap, "NSWindow unavailable") }
+                            {
+                                if ANIMATION_GENERATION.load(Ordering::SeqCst) == generation {
+                                    let current = window_frame(ns_window);
+                                    if !frames_within_epsilon(current, target_frame) {
+                                        set_window_frame_instant(ns_window, target_frame);
+                                    }
+                                    set_window_content_min_size(ns_window, final_min_size);
                                 }
-                                unsafe { set_window_content_min_size(ns_window, final_min_size) };
+                                let after_frame = window_frame(ns_window);
+                                let after_content = window_content_rect(ns_window, after_frame);
+                                let _ = snap_tx.send(AnimateWindowFrameReply {
+                                    pinned,
+                                    previous_position,
+                                    previous_size,
+                                    position: appkit_frame_to_top_left(after_frame, primary_height),
+                                    size: content_size_to_extent(after_content.size),
+                                    animated: false,
+                                });
                             }
-                            let after_frame = unsafe { window_frame(ns_window) };
-                            let after_content =
-                                unsafe { window_content_rect(ns_window, after_frame) };
-                            let _ = snap_tx.send(AnimateWindowFrameReply {
-                                pinned,
-                                previous_position,
-                                previous_size,
-                                position: appkit_frame_to_top_left(after_frame, primary_height),
-                                size: content_size_to_extent(after_content.size),
-                                animated: false,
-                            });
-                        }
+                        });
                     })
                     .is_ok()
                     && let Ok(reply) = snap_rx.await
@@ -445,15 +287,15 @@ pub(crate) async fn set_main_window_pinned(
     let win_for_main = window.clone();
     window
         .run_on_main_thread(move || {
-            let _pool = AutoreleasePoolGuard::new();
-            let result = (|| -> Result<bool, String> {
-                let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
-                if ns_window.is_null() {
-                    return Err("Native NSWindow pointer is unavailable".into());
-                }
-                apply_pinned_on_main(&win_for_main, ns_window, pinned)
-            })();
-            let _ = tx.send(result);
+            autoreleasepool(|_| {
+                let result = (|| -> Result<bool, String> {
+                    let ns_window = unsafe {
+                        ns_window_ref(&win_for_main, "Native NSWindow pointer is unavailable")
+                    }?;
+                    apply_pinned_on_main(&win_for_main, ns_window, pinned)
+                })();
+                let _ = tx.send(result);
+            });
         })
         .map_err(|e| e.to_string())?;
     rx.await
@@ -468,15 +310,15 @@ pub(crate) async fn read_main_window_visible_on_all_spaces(
     let win_for_main = window.clone();
     window
         .run_on_main_thread(move || {
-            let _pool = AutoreleasePoolGuard::new();
-            let result = (|| -> Result<bool, String> {
-                let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
-                if ns_window.is_null() {
-                    return Err("Native NSWindow pointer is unavailable".into());
-                }
-                Ok(unsafe { is_window_visible_on_all_spaces(ns_window) })
-            })();
-            let _ = tx.send(result);
+            autoreleasepool(|_| {
+                let result = (|| -> Result<bool, String> {
+                    let ns_window = unsafe {
+                        ns_window_ref(&win_for_main, "Native NSWindow pointer is unavailable")
+                    }?;
+                    Ok(is_window_visible_on_all_spaces(ns_window))
+                })();
+                let _ = tx.send(result);
+            });
         })
         .map_err(|e| e.to_string())?;
     rx.await
@@ -494,41 +336,38 @@ pub fn configure_main_window_startup_on_main(
     min_height: f64,
     pinned: bool,
 ) -> Result<(), String> {
-    let _pool = AutoreleasePoolGuard::new();
-    let ns_window = window.ns_window().map_err(|e| e.to_string())?;
-    if ns_window.is_null() {
-        return Err("Native NSWindow pointer is unavailable".into());
-    }
-    let _ = apply_pinned_on_main(window, ns_window, pinned)?;
-    let before_frame = unsafe { window_frame(ns_window) };
-    let before_content = unsafe { window_content_rect(ns_window, before_frame) };
-    let primary_height = unsafe { primary_screen_height(ns_window) };
-    let req = ValidatedRequest {
-        width: Some(width),
-        height,
-        min_width,
-        min_height,
-        placement: WindowFramePlacement::RestorePosition,
-        target_x: Some(target_x),
-        target_y: Some(target_y),
-        duration_ms: 0,
-        pinned: Some(pinned),
-    };
-    let target_frame = compute_target_frame(before_frame, before_content.size, primary_height, req);
-    let final_min = NSSize {
-        width: min_width.min(width),
-        height: min_height.min(height),
-    };
-    let pre_min = NSSize {
-        width: final_min.width.min(before_content.size.width),
-        height: final_min.height.min(before_content.size.height),
-    };
-    unsafe {
+    autoreleasepool(|_| {
+        let ns_window = unsafe { ns_window_ref(window, "Native NSWindow pointer is unavailable") }?;
+        let _ = apply_pinned_on_main(window, ns_window, pinned)?;
+        let before_frame = window_frame(ns_window);
+        let before_content = window_content_rect(ns_window, before_frame);
+        let primary_height = primary_screen_height(ns_window);
+        let req = ValidatedRequest {
+            width: Some(width),
+            height,
+            min_width,
+            min_height,
+            placement: WindowFramePlacement::RestorePosition,
+            target_x: Some(target_x),
+            target_y: Some(target_y),
+            duration_ms: 0,
+            pinned: Some(pinned),
+        };
+        let target_frame =
+            compute_target_frame(before_frame, before_content.size, primary_height, req);
+        let final_min = NSSize {
+            width: min_width.min(width),
+            height: min_height.min(height),
+        };
+        let pre_min = NSSize {
+            width: final_min.width.min(before_content.size.width),
+            height: final_min.height.min(before_content.size.height),
+        };
         set_window_content_min_size(ns_window, pre_min);
         set_window_frame_instant(ns_window, target_frame);
         set_window_content_min_size(ns_window, final_min);
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub async fn reveal_main_window_smoothly(
@@ -539,80 +378,37 @@ pub async fn reveal_main_window_smoothly(
     let win_for_main = window.clone();
     window
         .run_on_main_thread(move || {
-            let _pool = AutoreleasePoolGuard::new();
-            let res = (|| -> Result<(), String> {
-                let ns_window = win_for_main.ns_window().map_err(|e| e.to_string())?;
-                if ns_window.is_null() {
-                    return Err("Main NSWindow pointer is unavailable".into());
-                }
-                let animate = duration_ms > 0 && !unsafe { prefers_reduced_motion_macos() };
-                if !animate {
-                    unsafe { set_window_alpha(ns_window, 1.0) };
-                    win_for_main.show().map_err(|e| e.to_string())?;
-                    let _ = win_for_main.set_focus();
-                    return Ok(());
-                }
-                unsafe { set_window_alpha(ns_window, 0.0) };
-                win_for_main.show().map_err(|e| e.to_string())?;
-                let _ = win_for_main.set_focus();
-                unsafe {
-                    let anim_ctx_cls = objc_getClass(c"NSAnimationContext".as_ptr());
-                    if anim_ctx_cls.is_null() {
+            autoreleasepool(|_| {
+                let res = (|| -> Result<(), String> {
+                    let ns_window = unsafe {
+                        ns_window_ref(&win_for_main, "Main NSWindow pointer is unavailable")
+                    }?;
+                    let animate = duration_ms > 0 && !prefers_reduced_motion_macos();
+                    if !animate {
                         set_window_alpha(ns_window, 1.0);
+                        win_for_main.show().map_err(|e| e.to_string())?;
+                        let _ = win_for_main.set_focus();
                         return Ok(());
                     }
-                    let begin_sel = sel_registerName(c"beginGrouping".as_ptr());
-                    let end_sel = sel_registerName(c"endGrouping".as_ptr());
-                    let current_sel = sel_registerName(c"currentContext".as_ptr());
-                    let set_duration_sel = sel_registerName(c"setDuration:".as_ptr());
-                    let set_timing_sel = sel_registerName(c"setTimingFunction:".as_ptr());
-                    let animator_sel = sel_registerName(c"animator".as_ptr());
-                    let set_alpha_sel = sel_registerName(c"setAlphaValue:".as_ptr());
-
-                    let send_void: unsafe extern "C" fn(*mut c_void, *const c_void) =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_f64: unsafe extern "C" fn(*mut c_void, *const c_void, f64) =
-                        mem::transmute(objc_msgSend as *const ());
-                    let send_ptr: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) =
-                        mem::transmute(objc_msgSend as *const ());
-
-                    send_void(anim_ctx_cls, begin_sel);
-                    let ctx = send_obj(anim_ctx_cls, current_sel);
-                    if !ctx.is_null() {
-                        send_f64(ctx, set_duration_sel, f64::from(duration_ms) / 1000.0);
-                        let timing_cls = objc_getClass(c"CAMediaTimingFunction".as_ptr());
-                        if !timing_cls.is_null() {
-                            let timing_sel =
-                                sel_registerName(c"functionWithControlPoints::::".as_ptr());
-                            let send_timing: unsafe extern "C" fn(
-                                *mut c_void,
-                                *const c_void,
-                                f32,
-                                f32,
-                                f32,
-                                f32,
-                            )
-                                -> *mut c_void = mem::transmute(objc_msgSend as *const ());
-                            let timing_fn =
-                                send_timing(timing_cls, timing_sel, 0.22, 1.0, 0.36, 1.0);
-                            if !timing_fn.is_null() {
-                                send_ptr(ctx, set_timing_sel, timing_fn as *const c_void);
-                            }
+                    set_window_alpha(ns_window, 0.0);
+                    win_for_main.show().map_err(|e| e.to_string())?;
+                    let _ = win_for_main.set_focus();
+                    NSAnimationContext::beginGrouping();
+                    configure_current_animation_context(duration_ms);
+                    let animator: Option<Retained<AnyObject>> =
+                        unsafe { msg_send![ns_window, animator] };
+                    if let Some(animator) = animator {
+                        unsafe {
+                            let _: () = msg_send![&*animator, setAlphaValue: 1.0_f64];
                         }
-                    }
-                    let animator = send_obj(ns_window, animator_sel);
-                    if !animator.is_null() {
-                        send_f64(animator, set_alpha_sel, 1.0);
                     } else {
                         set_window_alpha(ns_window, 1.0);
                     }
-                    send_void(anim_ctx_cls, end_sel);
-                }
-                Ok(())
-            })();
-            let _ = tx.send(res);
+                    NSAnimationContext::endGrouping();
+                    Ok(())
+                })();
+                let _ = tx.send(res);
+            });
         })
         .map_err(|e| e.to_string())?;
     rx.await
@@ -622,31 +418,25 @@ pub async fn reveal_main_window_smoothly(
 pub async fn ensure_main_window_opaque(window: tauri::WebviewWindow) {
     let win_for_main = window.clone();
     let _ = window.run_on_main_thread(move || {
-        let _pool = AutoreleasePoolGuard::new();
-        if let Ok(ns_window) = win_for_main.ns_window()
-            && !ns_window.is_null()
-        {
-            unsafe { set_window_alpha(ns_window, 1.0) };
-        }
+        autoreleasepool(|_| {
+            if let Ok(ns_window) = unsafe { ns_window_ref(&win_for_main, "NSWindow unavailable") } {
+                set_window_alpha(ns_window, 1.0);
+            }
+        });
     });
 }
 
 pub fn activate_and_focus_main_on_main(window: &tauri::WebviewWindow) {
-    let _pool = AutoreleasePoolGuard::new();
-    if let Ok(ns_window) = window.ns_window()
-        && !ns_window.is_null()
-    {
-        unsafe { set_window_alpha(ns_window, 1.0) };
-    }
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
-    unsafe {
+    autoreleasepool(|_| {
+        if let Ok(ns_window) = unsafe { ns_window_ref(window, "NSWindow unavailable") } {
+            set_window_alpha(ns_window, 1.0);
+        }
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
         activate_app_macos();
-        if let Ok(ns_window) = window.ns_window()
-            && !ns_window.is_null()
-        {
+        if let Ok(ns_window) = unsafe { ns_window_ref(window, "NSWindow unavailable") } {
             make_window_key_and_order_front(ns_window);
         }
-    }
+    });
 }

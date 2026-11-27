@@ -139,7 +139,10 @@ impl RepositoryStore {
             .map_err(|_| "Cannot update temporary commit message file")?;
 
         let post_hook_tree = write_tree(worktree_reader, root, selected_index).await?;
-        let post_hook_state = self.branch_state(root, locale).await?;
+        let post_hook_state = self
+            .branch_state(root, locale)
+            .await
+            .map_err(|e| e.to_string())?;
         if post_hook_tree != tree
             || post_hook_state.status != pre_hook_state.status
             || post_hook_state.index != pre_hook_state.index

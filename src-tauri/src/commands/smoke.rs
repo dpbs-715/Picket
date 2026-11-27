@@ -139,7 +139,8 @@ pub async fn verify_model_m3_smoke(app: tauri::AppHandle, secret: String) -> Res
     for item in &restored.models {
         let resolved = cold_models
             .resolve_runtime_spec(&data_dir, &item.id)
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         if resolved.api_key != secret {
             return Err("Cold credentials.json lookup did not recover connection API key".into());
         }
@@ -397,12 +398,18 @@ pub async fn verify_restart_smoke(
     {
         return Err("Restart smoke failed to restore saved provider & model catalog".into());
     }
-    let resolved = models.resolve_runtime_spec(&data_dir, &active_id).await?;
+    let resolved = models
+        .resolve_runtime_spec(&data_dir, &active_id)
+        .await
+        .map_err(|e| e.to_string())?;
     if !resolved.api_key.starts_with("smoke-token-") {
         return Err("Restart smoke credentials lookup did not recover expected secret".into());
     }
     for item in &restored.models {
-        let peer_resolved = models.resolve_runtime_spec(&data_dir, &item.id).await?;
+        let peer_resolved = models
+            .resolve_runtime_spec(&data_dir, &item.id)
+            .await
+            .map_err(|e| e.to_string())?;
         if peer_resolved.api_key != resolved.api_key {
             return Err("Restart smoke lost connection credential across child models".into());
         }

@@ -367,12 +367,12 @@ async fn finish_splash_and_reveal(app: &AppHandle, force_show_main: bool) {
 pub async fn splash_ready(
     app: AppHandle,
     coordinator: State<'_, StartupSplashCoordinator>,
-) -> Result<SplashLaunchPlan, String> {
+) -> Result<SplashLaunchPlan, crate::error::AppError> {
     let launch_plan = {
         let mut phase = coordinator
             .phase
             .lock()
-            .map_err(|_| "Startup splash lock poisoned".to_string())?;
+            .map_err(|_| crate::error::AppError::window("Startup splash lock poisoned"))?;
         match &mut *phase {
             StartupPhase::Splashing {
                 plan,
@@ -394,13 +394,17 @@ pub async fn splash_ready(
                 }
             }
             _ => {
-                return Err("Splash session is no longer active".into());
+                return Err(crate::error::AppError::window(
+                    "Splash session is no longer active",
+                ));
             }
         }
     };
 
     if let Some(splash) = app.get_webview_window(SPLASH_WINDOW_LABEL) {
-        window_motion::show_splash_window(splash).await?;
+        window_motion::show_splash_window(splash)
+            .await
+            .map_err(crate::error::AppError::window)?;
     }
 
     Ok(launch_plan)
@@ -410,12 +414,12 @@ pub async fn splash_ready(
 pub async fn notify_workbench_ready(
     app: AppHandle,
     coordinator: State<'_, StartupSplashCoordinator>,
-) -> Result<(), String> {
+) -> Result<(), crate::error::AppError> {
     let should_emit_to_splash = {
         let mut phase = coordinator
             .phase
             .lock()
-            .map_err(|_| "Startup splash lock poisoned".to_string())?;
+            .map_err(|_| crate::error::AppError::window("Startup splash lock poisoned"))?;
         match &mut *phase {
             StartupPhase::Splashing {
                 splash_ready,
@@ -440,12 +444,12 @@ pub async fn notify_workbench_ready(
 pub async fn run_splash_jump(
     app: AppHandle,
     coordinator: State<'_, StartupSplashCoordinator>,
-) -> Result<(), String> {
+) -> Result<(), crate::error::AppError> {
     let plan = {
         let mut phase = coordinator
             .phase
             .lock()
-            .map_err(|_| "Startup splash lock poisoned".to_string())?;
+            .map_err(|_| crate::error::AppError::window("Startup splash lock poisoned"))?;
         match &mut *phase {
             StartupPhase::Splashing {
                 plan, jump_started, ..
@@ -520,7 +524,7 @@ pub async fn run_splash_jump(
 }
 
 #[tauri::command]
-pub async fn complete_splash(app: AppHandle) -> Result<(), String> {
+pub async fn complete_splash(app: AppHandle) -> Result<(), crate::error::AppError> {
     finish_splash_and_reveal(&app, false).await;
     Ok(())
 }

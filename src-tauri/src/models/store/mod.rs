@@ -17,6 +17,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex, atomic::AtomicU64},
 };
+use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub struct ModelStore {
@@ -25,6 +26,7 @@ pub struct ModelStore {
     pub(super) gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) counter: Arc<AtomicU64>,
     pub(super) endpoint_overrides: Arc<Mutex<HashMap<ProviderKind, String>>>,
+    pub(super) active_list_cancels: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
 }
 
 impl Default for ModelStore {
@@ -47,6 +49,32 @@ impl ModelStore {
             gate: Arc::new(tokio::sync::Mutex::new(())),
             counter: Arc::new(AtomicU64::new(0)),
             endpoint_overrides: Arc::new(Mutex::new(HashMap::new())),
+            active_list_cancels: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn cancel_list_request(&self, request_id: &str) -> bool {
+        let sender = self
+            .active_list_cancels
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(request_id));
+        if let Some(tx) = sender {
+            let _ = tx.send(());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel_all_list_requests(&self) {
+        let senders: Vec<oneshot::Sender<()>> = self
+            .active_list_cancels
+            .lock()
+            .map(|mut map| map.drain().map(|(_, tx)| tx).collect())
+            .unwrap_or_default();
+        for tx in senders {
+            let _ = tx.send(());
         }
     }
 

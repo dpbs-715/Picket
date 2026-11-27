@@ -6,6 +6,7 @@ pub const RELEASE_PAGE_URL: &str = "https://github.com/dpbs-715/Picket/releases"
 pub const UPDATE_STATE_EVENT: &str = "picket:update-state";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum UpdatePhase {
     Idle,
@@ -18,6 +19,7 @@ pub enum UpdatePhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateInstallBlocker {
     None,
@@ -28,8 +30,10 @@ pub enum UpdateInstallBlocker {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStateSnapshot {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
     pub current_version: String,
     pub phase: UpdatePhase,
@@ -41,8 +45,10 @@ pub struct UpdateStateSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional, type = "number"))]
     pub downloaded_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional, type = "number"))]
     pub total_bytes: Option<u64>,
     pub install_blocker: UpdateInstallBlocker,
     pub can_install: bool,

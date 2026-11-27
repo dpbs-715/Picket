@@ -295,7 +295,8 @@ async fn allows_direct_commit_on_main_and_master_while_refusing_detached_head_un
         .commit(&commit_request(&snapshot, &["part.txt"], "feat: detached"))
         .await
         .unwrap_err();
-    assert!(error.contains("detached HEAD"), "{error}");
+    assert_eq!(error.code, crate::error::AppErrorCode::CommitDetachedHead);
+    assert!(error.message.contains("detached HEAD"), "{error}");
     assert_eq!(
         text(&detached_fixture.root, &["rev-list", "--count", "HEAD"]),
         "1"
@@ -406,7 +407,7 @@ async fn unrelated_changes_and_partial_draft_edits_succeed_while_stale_selected_
         let expected_commits = text(&fixture.root, &["rev-list", "--count", "HEAD"]);
         let error = store.commit(&operation).await.unwrap_err();
         assert!(
-            error.contains("changed") || error.contains("paused"),
+            error.message.contains("changed") || error.message.contains("paused"),
             "{stale_case}: {error}"
         );
         assert_eq!(
@@ -527,7 +528,7 @@ async fn executes_real_hooks_including_custom_hooks_path_and_aborts_on_rejection
         .await
         .unwrap_err();
     assert!(
-        error.contains("commit-msg") && error.contains("missing ticket id"),
+        error.message.contains("commit-msg") && error.message.contains("missing ticket id"),
         "{error}"
     );
     assert_eq!(
@@ -563,7 +564,7 @@ async fn executes_real_hooks_including_custom_hooks_path_and_aborts_on_rejection
             .await
             .unwrap_err();
         assert!(
-            error.contains("hook") && error.contains("modified"),
+            error.message.contains("hook") && error.message.contains("modified"),
             "{exit_code}: {error}"
         );
         assert_eq!(
@@ -595,7 +596,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
             .commit(&commit_request(&snapshot, &["part.txt"], "feat: blocked"))
             .await
             .unwrap_err();
-        assert!(error.contains(marker), "{marker}: {error}");
+        assert!(error.message.contains(marker), "{marker}: {error}");
         assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "1");
     }
 
@@ -632,7 +633,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .await
         .unwrap_err();
     assert!(
-        conflict_err.contains("conflict") || conflict_err.contains("MERGE_HEAD"),
+        conflict_err.message.contains("conflict") || conflict_err.message.contains("MERGE_HEAD"),
         "{conflict_err}"
     );
 
@@ -658,7 +659,7 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         ))
         .await
         .unwrap_err();
-    assert!(slot_err.contains("rename"), "{slot_err}");
+    assert!(slot_err.message.contains("rename"), "{slot_err}");
 
     // Unused global-like filter config is allowed, but selected unstaged file needing clean filter is refused:
     let filter_fixture = Fixture::new().unwrap();
@@ -678,7 +679,15 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         ))
         .await
         .unwrap_err();
-    assert!(filter_err.contains("external Git filter"), "{filter_err}");
+    assert_eq!(
+        filter_err.code,
+        crate::error::AppErrorCode::CommitExternalFilterBlocked
+    );
+    assert!(filter_err.is_unsupported_commit_guard());
+    assert!(
+        filter_err.message.contains("external Git filter"),
+        "{filter_err}"
+    );
 
     // Repository sparse-checkout and selected skip-worktree flag are refused:
     let sparse_fixture = Fixture::new().unwrap();
@@ -693,7 +702,12 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .commit(&commit_request(&sparse_snap, &["part.txt"], "feat: sparse"))
         .await
         .unwrap_err();
-    assert!(sparse_err.contains("skip-worktree"), "{sparse_err}");
+    assert_eq!(
+        sparse_err.code,
+        crate::error::AppErrorCode::CommitSparseOrHiddenFlag
+    );
+    assert!(sparse_err.is_unsupported_commit_guard());
+    assert!(sparse_err.message.contains("skip-worktree"), "{sparse_err}");
 
     let hidden_sel_fixture = Fixture::new().unwrap();
     let hidden_sel_store = RepositoryStore::default();
@@ -714,7 +728,15 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         ))
         .await
         .unwrap_err();
-    assert!(hidden_sel_err.contains("skip-worktree"), "{hidden_sel_err}");
+    assert_eq!(
+        hidden_sel_err.code,
+        crate::error::AppErrorCode::CommitSparseOrHiddenFlag
+    );
+    assert!(hidden_sel_err.is_unsupported_commit_guard());
+    assert!(
+        hidden_sel_err.message.contains("skip-worktree"),
+        "{hidden_sel_err}"
+    );
 
     // Staged/dirty submodule change is still refused:
     let sub_fixture = Fixture::new().unwrap();
@@ -735,7 +757,12 @@ async fn refuses_locks_ongoing_operations_conflicts_submodules_sparse_flags_and_
         .commit(&commit_request(&sub_snap, &["part.txt"], "feat: submodule"))
         .await
         .unwrap_err();
-    assert!(sub_err.contains("submodule"), "{sub_err}");
+    assert_eq!(
+        sub_err.code,
+        crate::error::AppErrorCode::CommitSubmoduleUnsupported
+    );
+    assert!(sub_err.is_unsupported_commit_guard());
+    assert!(sub_err.message.contains("submodule"), "{sub_err}");
 }
 
 #[tokio::test]
@@ -761,6 +788,7 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
             .commit(&reused)
             .await
             .unwrap_err()
+            .message
             .contains("already bound")
     );
 
@@ -791,7 +819,10 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
     )
     .unwrap();
     let interrupted_err = store.commit(&interrupted).await.unwrap_err();
-    assert!(interrupted_err.contains("interrupted"), "{interrupted_err}");
+    assert!(
+        interrupted_err.message.contains("interrupted"),
+        "{interrupted_err}"
+    );
     assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "2");
 
     // Forged tokens, branchToken, UI scopeVersion, empty message, and push=true on local-only endpoint are rejected:
@@ -806,6 +837,7 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
             .commit(&bad_token)
             .await
             .unwrap_err()
+            .message
             .contains("scope token")
     );
 
@@ -820,6 +852,7 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
             .commit(&push_req)
             .await
             .unwrap_err()
+            .message
             .contains("Local-only commit endpoint")
     );
 
@@ -830,6 +863,7 @@ async fn deduplicates_identical_requests_rejects_mismatched_or_interrupted_recor
             .commit(&empty_msg)
             .await
             .unwrap_err()
+            .message
             .contains("commit message")
     );
 
@@ -880,7 +914,7 @@ async fn supports_unborn_branch_initial_commit_linked_worktrees_and_missing_git_
         .await
         .unwrap_err();
     assert!(
-        missing_ident_err.contains("user.name"),
+        missing_ident_err.message.contains("user.name"),
         "{missing_ident_err}"
     );
     assert!(git(temp.path(), &["rev-parse", "--verify", "HEAD"]).is_err());
@@ -976,7 +1010,9 @@ async fn local_keep_invalidates_stale_tokens_excludes_by_default_preserves_stage
     // 1. Stale commitToken minted BEFORE `set_local_keep` must be rejected by Rust:
     let stale_err = store.commit(&stale_part_req).await.unwrap_err();
     assert!(
-        stale_err.contains("expired") || stale_err.contains("token") || stale_err.contains("scope"),
+        stale_err.message.contains("expired")
+            || stale_err.message.contains("token")
+            || stale_err.message.contains("scope"),
         "expected token invalidation error, got: {stale_err}"
     );
     assert_eq!(text(&fixture.root, &["rev-list", "--count", "HEAD"]), "1");
@@ -1163,7 +1199,14 @@ async fn allows_normal_commits_with_untouched_submodules_and_unrelated_hidden_fl
         ))
         .await
         .unwrap_err();
-    assert!(dirty_sub_err.contains("submodule"), "{dirty_sub_err}");
+    assert_eq!(
+        dirty_sub_err.code,
+        crate::error::AppErrorCode::CommitSubmoduleUnsupported
+    );
+    assert!(
+        dirty_sub_err.message.contains("submodule"),
+        "{dirty_sub_err}"
+    );
 
     // Staged deletion of the submodule must also be detected and refused:
     git(&sub_dir, &["checkout", &sub_v1]).unwrap();
@@ -1177,5 +1220,9 @@ async fn allows_normal_commits_with_untouched_submodules_and_unrelated_hidden_fl
         ))
         .await
         .unwrap_err();
-    assert!(rm_sub_err.contains("submodule"), "{rm_sub_err}");
+    assert_eq!(
+        rm_sub_err.code,
+        crate::error::AppErrorCode::CommitSubmoduleUnsupported
+    );
+    assert!(rm_sub_err.message.contains("submodule"), "{rm_sub_err}");
 }

@@ -262,3 +262,66 @@ pub const fn model_reveal_no_key_error(locale: LanguageKind) -> &'static str {
         "该供应商连接不需要保存 API Key。",
     )
 }
+
+pub fn model_auth_failed_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => {
+            format!(
+                "Authentication failed (401/403). Verify your API key and permissions ({detail})"
+            )
+        }
+        LanguageKind::Zh => format!("鉴权失败，请检查 API Key 或服务权限（{detail}）"),
+    }
+}
+
+pub fn model_endpoint_not_found_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => {
+            format!(
+                "Endpoint or model not found (404). Verify the model ID and Base URL ({detail})"
+            )
+        }
+        LanguageKind::Zh => format!("未找到对应接口或模型，请检查模型 ID 与接口地址（{detail}）"),
+    }
+}
+
+pub fn model_rate_limited_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => format!(
+            "Rate limit or quota exceeded (402/429). Check your account quota or retry shortly ({detail})"
+        ),
+        LanguageKind::Zh => format!("请求过于频繁或账户额度不足，请稍后重试（{detail}）"),
+    }
+}
+
+pub fn model_service_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => {
+            format!("Model provider service error (5xx). Please retry shortly ({detail})")
+        }
+        LanguageKind::Zh => format!("模型服务异常（5xx），请稍后重试（{detail}）"),
+    }
+}
+
+pub fn model_connection_failed_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => format!(
+            "Unable to connect to model service. Check your network or local server ({detail})"
+        ),
+        LanguageKind::Zh => format!("无法连接到模型服务，请确认网络或本地服务已启动（{detail}）"),
+    }
+}
+
+pub fn model_request_timed_out_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("Model request timed out. Please retry shortly ({detail})"),
+        LanguageKind::Zh => format!("连接模型服务超时，请稍后重试（{detail}）"),
+    }
+}
+
+pub fn model_request_failed_error(locale: LanguageKind, detail: &str) -> String {
+    match locale {
+        LanguageKind::En => format!("Model request failed: {detail}"),
+        LanguageKind::Zh => format!("模型请求未完成：{detail}"),
+    }
+}

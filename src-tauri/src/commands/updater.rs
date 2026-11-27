@@ -2,6 +2,7 @@
 
 use crate::{
     actions::CustomActionCoordinator,
+    error::{AppError, AppErrorCode},
     repo_lock::RepoWriteCoordinator,
     repository::RepositoryStore,
     updater::{
@@ -18,8 +19,10 @@ use tauri::State;
 pub fn get_update_status(
     app: tauri::AppHandle,
     updater: State<'_, UpdateManager>,
-) -> Result<UpdateStateSnapshot, String> {
-    updater.get_status(&app)
+) -> Result<UpdateStateSnapshot, AppError> {
+    updater
+        .get_status(&app)
+        .map_err(|msg| AppError::updater(AppErrorCode::UpdaterFailed, msg))
 }
 
 #[tauri::command]
@@ -27,8 +30,11 @@ pub async fn check_for_update(
     app: tauri::AppHandle,
     updater: State<'_, UpdateManager>,
     request: CheckUpdateRequest,
-) -> Result<UpdateStateSnapshot, String> {
-    updater.check(&app, request.manual, request.locale).await
+) -> Result<UpdateStateSnapshot, AppError> {
+    updater
+        .check(&app, request.manual, request.locale)
+        .await
+        .map_err(|msg| AppError::updater(AppErrorCode::UpdaterFailed, msg))
 }
 
 #[tauri::command]
@@ -40,7 +46,7 @@ pub async fn install_update(
     repositories: State<'_, RepositoryStore>,
     actions: State<'_, CustomActionCoordinator>,
     request: InstallUpdateRequest,
-) -> Result<UpdateStateSnapshot, String> {
+) -> Result<UpdateStateSnapshot, AppError> {
     updater
         .install(
             &app,
@@ -51,6 +57,7 @@ pub async fn install_update(
             &actions,
         )
         .await
+        .map_err(|msg| AppError::updater(AppErrorCode::UpdaterFailed, msg))
 }
 
 #[tauri::command]
@@ -58,11 +65,14 @@ pub fn cancel_update(
     app: tauri::AppHandle,
     updater: State<'_, UpdateManager>,
     request: CancelUpdateRequest,
-) -> Result<UpdateStateSnapshot, String> {
-    updater.cancel(&app, request.locale)
+) -> Result<UpdateStateSnapshot, AppError> {
+    updater
+        .cancel(&app, request.locale)
+        .map_err(|msg| AppError::updater(AppErrorCode::UpdaterFailed, msg))
 }
 
 #[tauri::command]
-pub fn open_release_page(request: OpenReleasePageRequest) -> Result<(), String> {
+pub fn open_release_page(request: OpenReleasePageRequest) -> Result<(), AppError> {
     UpdateManager::open_release_page(request.locale)
+        .map_err(|msg| AppError::updater(AppErrorCode::UpdaterFailed, msg))
 }

@@ -204,3 +204,125 @@ async fn missing_partial_clone_objects_are_not_downloaded_on_read() {
     );
     assert_eq!(list_missing(), before);
 }
+
+#[tokio::test]
+async fn untracked_rust_stats_match_git_diff_across_text_binary_attributes_and_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new().unwrap();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        "forced-bin.txt binary\nforced-text.bin diff\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("no-eof-nl.txt"), "one\ntwo").unwrap();
+    fs::write(fixture.root.join("with-eof-nl.txt"), "one\ntwo\n").unwrap();
+    fs::write(fixture.root.join("crlf.txt"), "a\r\nb\r\nc\r\n").unwrap();
+    fs::write(fixture.root.join("forced-bin.txt"), "plain text\nline 2\n").unwrap();
+    fs::write(
+        fixture.root.join("forced-text.bin"),
+        b"line1\0still-line1\nline2",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("nul-early.bin"), b"abc\0def\nline2\n").unwrap();
+
+    // NUL byte after Git's 8,000-byte binary sniff threshold is treated as text by Git.
+    let mut nul_late = vec![b'a'; 8_050];
+    nul_late.push(b'\n');
+    nul_late.push(0);
+    nul_late.extend_from_slice(b"tail");
+    fs::write(fixture.root.join("nul-late.txt"), &nul_late).unwrap();
+    symlink("with-eof-nl.txt", fixture.root.join("untracked-link")).unwrap();
+
+    let snapshot = RepositoryStore::default()
+        .open(&fixture.root)
+        .await
+        .unwrap();
+    let files = &active(&snapshot).files;
+
+    let reader = super::runner::GitReader::default();
+    for path in [
+        "no-eof-nl.txt",
+        "with-eof-nl.txt",
+        "crlf.txt",
+        "forced-bin.txt",
+        "forced-text.bin",
+        "nul-early.bin",
+        "nul-late.txt",
+        "untracked-link",
+    ] {
+        let actual = files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("missing {path}"));
+        let git_out = reader
+            .run(
+                &fixture.root,
+                &[
+                    "diff",
+                    "--no-index",
+                    "--numstat",
+                    "-z",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--",
+                    "/dev/null",
+                    path,
+                ],
+            )
+            .await
+            .unwrap();
+        let expected = super::parse::untracked_numstat(&git_out.bytes, path).unwrap();
+        assert_eq!(
+            (actual.binary, actual.range.added, actual.range.removed),
+            (expected.binary, expected.added, expected.removed),
+            "stats mismatch for {path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn external_filter_blocks_untracked_file_when_configured_via_gitattributes() {
+    let fixture = Fixture::new().unwrap();
+    git(&fixture.root, &["config", "filter.proof.clean", "cat"]).unwrap();
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        "filtered-new.txt filter=proof\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("filtered-new.txt"), "hello\n").unwrap();
+    let error = RepositoryStore::default()
+        .open(&fixture.root)
+        .await
+        .unwrap_err();
+    assert!(error.contains("external Git filter"), "{error}");
+}
+
+#[tokio::test]
+async fn batch_untracked_files_read_cleanly_without_per_file_git_spawns() {
+    let fixture = Fixture::new().unwrap();
+    let dir = fixture.root.join("generated-batch");
+    fs::create_dir_all(&dir).unwrap();
+    for idx in 0..320 {
+        fs::write(
+            dir.join(format!("item-{idx:03}.txt")),
+            format!("line 1 of {idx}\nline 2 of {idx}\n"),
+        )
+        .unwrap();
+    }
+    let snapshot = RepositoryStore::default()
+        .open(&fixture.root)
+        .await
+        .unwrap();
+    let batch_files: Vec<_> = active(&snapshot)
+        .files
+        .iter()
+        .filter(|f| f.path.starts_with("generated-batch/item-"))
+        .collect();
+    assert_eq!(batch_files.len(), 320);
+    assert!(
+        batch_files
+            .iter()
+            .all(|f| !f.binary && f.range.added == 2 && !f.commit_token.is_empty())
+    );
+}

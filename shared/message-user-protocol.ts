@@ -52,163 +52,57 @@ const RESERVED_OPTION_LABELS = new Set([
   '\u63d0\u4ea4',
 ]);
 
-export type MessageTone = 'info' | 'success' | 'warning' | 'error';
-export type MessageCalloutTone = 'info' | 'success' | 'warning' | 'danger';
-export type MessageFactTone = 'default' | 'success' | 'warning' | 'danger';
-export type MessageFindingSeverity = 'high' | 'medium' | 'low' | 'info';
-export type MessageChecklistStatus = 'pass' | 'fail' | 'warn' | 'skip' | 'running';
+import type {
+  MessageBlock,
+  MessageCalloutTone,
+  MessageChecklistItem,
+  MessageChecklistStatus,
+  MessageFactItem,
+  MessageFactTone,
+  MessageFileChipItem,
+  MessageFindingItem,
+  MessageFindingSeverity,
+  MessageQuestionContext,
+  MessageQuestionItem,
+  MessageQuestionOption,
+  MessageSkippedFileItem,
+  MessageTone,
+  MessageUserAnswer,
+  MessageUserCard,
+  MessageUserRequest,
+  MessageUserResponse,
+  WorkflowLink as MessageLink,
+} from './generated';
 
-export interface MessageLink {
-  label: string;
-  url: string;
-}
+export type {
+  MessageBlock,
+  MessageCalloutTone,
+  MessageChecklistItem,
+  MessageChecklistStatus,
+  MessageFactItem,
+  MessageFactTone,
+  MessageFileChipItem,
+  MessageFindingItem,
+  MessageFindingSeverity,
+  MessageLink,
+  MessageQuestionContext,
+  MessageQuestionItem,
+  MessageQuestionOption,
+  MessageSkippedFileItem,
+  MessageTone,
+  MessageUserAnswer,
+  MessageUserCard,
+  MessageUserRequest,
+  MessageUserResponse,
+};
 
-export interface MessageMarkdownBlock {
-  type: 'markdown';
-  content: string;
-}
-
-export interface MessageCalloutBlock {
-  type: 'callout';
-  tone?: MessageCalloutTone;
-  title?: string;
-  content: string;
-}
-
-export interface MessageFactItem {
-  label: string;
-  value: string;
-  tone?: MessageFactTone;
-  mono?: boolean;
-}
-
-export interface MessageFactsBlock {
-  type: 'facts';
-  heading?: string;
-  items: MessageFactItem[];
-}
-
-export interface MessageFindingItem {
-  severity: MessageFindingSeverity;
-  tag?: string;
-  title: string;
-  detail: string;
-  path?: string;
-  line?: number;
-}
-
-export interface MessageSkippedFileItem {
-  path: string;
-  reason: string;
-}
-
-export interface MessageFindingsBlock {
-  type: 'findings';
-  heading?: string;
-  items: MessageFindingItem[];
-  emptyText?: string;
-  skipped?: MessageSkippedFileItem[];
-}
-
-export interface MessageChecklistItem {
-  status: MessageChecklistStatus;
-  label: string;
-  detail?: string;
-}
-
-export interface MessageChecklistBlock {
-  type: 'checklist';
-  heading?: string;
-  items: MessageChecklistItem[];
-}
-
-export interface MessageCodeBlock {
-  type: 'code';
-  title?: string;
-  language?: string;
-  content: string;
-  collapsed?: boolean;
-}
-
-export interface MessageFileChipItem {
-  path: string;
-  line?: number;
-  badge?: string;
-}
-
-export interface MessageFilesBlock {
-  type: 'files';
-  heading?: string;
-  items: MessageFileChipItem[];
-}
-
-export type MessageBlock =
-  | MessageMarkdownBlock
-  | MessageCalloutBlock
-  | MessageFactsBlock
-  | MessageFindingsBlock
-  | MessageChecklistBlock
-  | MessageCodeBlock
-  | MessageFilesBlock;
-
-export interface MessageUserCard {
-  title: string;
-  subtitle?: string;
-  tone?: MessageTone;
-  blocks?: MessageBlock[];
-  links?: MessageLink[];
-}
-
-export interface MessageQuestionOption {
-  id: string;
-  label: string;
-  description: string;
-  recommended?: boolean;
-  preview?: string;
-}
-
-export interface MessageQuestionItem {
-  id: string;
-  header: string;
-  question: string;
-  options: MessageQuestionOption[];
-  multiSelect?: boolean;
-}
-
-export interface MessageQuestionContext {
-  scope?: string;
-  affectedFileIds?: string[];
-  links?: MessageLink[];
-  allowDontAskAgain?: boolean;
-  dontAskAgainLabel?: string;
-}
-
-export interface MessageUserRequest {
-  title?: string;
-  subtitle?: string;
-  tone?: MessageTone;
-  blocks?: MessageBlock[];
-  links?: MessageLink[];
-  questions?: MessageQuestionItem[];
-  context?: MessageQuestionContext;
-}
-
-export interface MessageUserAnswer {
-  questionIndex: number;
-  questionId: string;
-  header: string;
-  selectedOptionIds: string[];
-  selectedLabels: string[];
-  customText?: string;
-}
-
-export interface MessageUserResponse {
-  cancelled: boolean;
-  answers: MessageUserAnswer[];
-  unanswered: number[];
-  globalNote?: string;
-  dontAskAgain?: boolean;
-}
+export type MessageMarkdownBlock = Extract<MessageBlock, { type: 'markdown' }>;
+export type MessageCalloutBlock = Extract<MessageBlock, { type: 'callout' }>;
+export type MessageFactsBlock = Extract<MessageBlock, { type: 'facts' }>;
+export type MessageFindingsBlock = Extract<MessageBlock, { type: 'findings' }>;
+export type MessageChecklistBlock = Extract<MessageBlock, { type: 'checklist' }>;
+export type MessageCodeBlock = Extract<MessageBlock, { type: 'code' }>;
+export type MessageFilesBlock = Extract<MessageBlock, { type: 'files' }>;
 
 export type MessageUserValidationResult =
   | { ok: true; request: MessageUserRequest }

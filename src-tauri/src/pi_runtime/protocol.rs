@@ -80,12 +80,6 @@ pub enum PiCommand {
         model: PiProviderSpec,
         locale: LanguageKind,
     },
-    ListModels {
-        request_id: String,
-        context: RequestContext,
-        model: PiProviderSpec,
-        locale: LanguageKind,
-    },
     RunCustomAction {
         #[serde(skip_serializing_if = "Option::is_none")]
         mode: Option<CustomActionRunMode>,
@@ -151,7 +145,6 @@ impl PiCommand {
     pub const fn locale(&self) -> LanguageKind {
         match self {
             Self::TestConnection { locale, .. }
-            | Self::ListModels { locale, .. }
             | Self::RunCustomAction { locale, .. }
             | Self::GenerateCustomAction { locale, .. } => *locale,
             Self::ToolResult { .. } | Self::Cancel { .. } | Self::Shutdown => LanguageKind::En,
@@ -187,18 +180,6 @@ impl PiToolExecutionResult {
             is_error: true,
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PiRemoteModelOption {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,11 +242,6 @@ pub enum PiEvent {
         context: RequestContext,
         text: String,
     },
-    ModelsListed {
-        request_id: String,
-        context: RequestContext,
-        models: Vec<PiRemoteModelOption>,
-    },
     CustomActionCompleted {
         request_id: String,
         context: RequestContext,
@@ -286,6 +262,8 @@ pub enum PiEvent {
         request_id: String,
         context: RequestContext,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
     },
     ProtocolError {
         message: String,
@@ -323,11 +301,6 @@ impl PiEvent {
                 context,
                 ..
             }
-            | Self::ModelsListed {
-                request_id,
-                context,
-                ..
-            }
             | Self::CustomActionCompleted {
                 request_id,
                 context,
@@ -356,9 +329,6 @@ impl PiEvent {
 pub enum PiTaskOutcome {
     Completed {
         text: String,
-    },
-    ModelsListed {
-        models: Vec<PiRemoteModelOption>,
     },
     CustomActionCompleted {
         summary: String,

@@ -6,6 +6,7 @@ use super::{
     },
 };
 use crate::{
+    error::{AppError, AppErrorCode, CommitGuardError},
     i18n::{self, LanguageKind},
     repository::{
         Registration, RepositoryStore, Result,
@@ -67,28 +68,47 @@ pub(super) fn resolve_authorized_selections<'a>(
     target: &ReadTarget,
     selections: &[CommitSelection],
     locale: LanguageKind,
-) -> Result<(&'a CommitRegistration, Vec<AuthorizedFile>)> {
+) -> std::result::Result<(&'a CommitRegistration, Vec<AuthorizedFile>), AppError> {
     let commit_state = registered
         .commit_states
         .get(&target.worktree_id)
-        .ok_or_else(|| i18n::repository::commit_token_invalid_error(locale))?;
+        .ok_or_else(|| {
+            AppError::git(
+                AppErrorCode::CommitTokenInvalid,
+                i18n::repository::commit_token_invalid_error(locale),
+            )
+        })?;
     if commit_state.detached {
-        return Err(i18n::repository::commit_detached_head_error(locale).into());
+        return Err(AppError::git(
+            AppErrorCode::CommitDetachedHead,
+            i18n::repository::commit_detached_head_error(locale),
+        ));
     }
     let mut selected_files = Vec::with_capacity(selections.len());
     for selection in selections {
         let Some(authorized) = commit_state.files.get(&selection.file_id) else {
-            return Err(i18n::repository::commit_scope_changed_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitScopeChanged,
+                i18n::repository::commit_scope_changed_error(locale),
+            ));
         };
         if authorized.token != selection.commit_token {
-            return Err(i18n::repository::commit_token_invalid_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitTokenInvalid,
+                i18n::repository::commit_token_invalid_error(locale),
+            ));
         }
         if authorized.conflicted {
-            return Err(i18n::repository::commit_unresolved_conflict_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitConflictUnresolved,
+                i18n::repository::commit_unresolved_conflict_error(locale),
+            ));
         }
-        ensure_safe_repo_path(&authorized.path)?;
+        ensure_safe_repo_path(&authorized.path)
+            .map_err(|msg| AppError::git(AppErrorCode::CommitFailed, msg))?;
         if let Some(previous) = &authorized.previous_path {
-            ensure_safe_repo_path(previous)?;
+            ensure_safe_repo_path(previous)
+                .map_err(|msg| AppError::git(AppErrorCode::CommitFailed, msg))?;
         }
         selected_files.push(authorized.clone());
     }
@@ -155,7 +175,8 @@ impl RepositoryStore {
         root: &Path,
         selected_unit_paths: &BTreeSet<String>,
         locale: LanguageKind,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), AppError> {
+        let map_git = |msg: String| AppError::git(AppErrorCode::CommitFailed, msg);
         let reader = self.inner.reader.with_locale(locale);
         for lock in ["index.lock", "HEAD.lock"] {
             let path = reader
@@ -163,9 +184,14 @@ impl RepositoryStore {
                     root,
                     &["rev-parse", "--path-format=absolute", "--git-path", lock],
                 )
-                .await?;
+                .await
+                .map_err(map_git)?;
             if fs::symlink_metadata(&path).is_ok() {
-                return Err(i18n::repository::commit_lock_file_error(locale, lock));
+                return Err(AppError::git(
+                    AppErrorCode::CommitLockFilePresent,
+                    i18n::repository::commit_lock_file_error(locale, lock),
+                )
+                .with_retryable(true));
             }
         }
         for marker in [
@@ -182,37 +208,62 @@ impl RepositoryStore {
                     root,
                     &["rev-parse", "--path-format=absolute", "--git-path", marker],
                 )
-                .await?;
+                .await
+                .map_err(map_git)?;
             if fs::symlink_metadata(&path).is_ok() {
-                return Err(i18n::repository::commit_ongoing_op_error(locale, marker));
+                return Err(AppError::git(
+                    AppErrorCode::CommitFailed,
+                    i18n::repository::commit_ongoing_op_error(locale, marker),
+                ));
             }
         }
         if !reader
             .bytes(root, &["ls-files", "--unmerged", "-z"])
-            .await?
+            .await
+            .map_err(map_git)?
             .is_empty()
         {
-            return Err(i18n::repository::commit_unresolved_conflict_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitConflictUnresolved,
+                i18n::repository::commit_unresolved_conflict_error(locale),
+            ));
         }
-        if is_sparse_checkout_enabled(&reader, root, locale).await? {
-            return Err(i18n::repository::commit_sparse_or_hidden_flag_error(locale).into());
+        if is_sparse_checkout_enabled(&reader, root, locale)
+            .await
+            .map_err(CommitGuardError::SparseOrHiddenFlag)?
+        {
+            return Err(CommitGuardError::SparseOrHiddenFlag(
+                i18n::repository::commit_sparse_or_hidden_flag_error(locale).into(),
+            )
+            .into());
         }
-        let hidden_paths = hidden_index_flag_paths(&reader, root, locale).await?;
+        let hidden_paths = hidden_index_flag_paths(&reader, root, locale)
+            .await
+            .map_err(CommitGuardError::SparseOrHiddenFlag)?;
         if hidden_paths.iter().any(|path| path.ends_with('/'))
             || selected_unit_paths
                 .iter()
                 .any(|path| hidden_paths.contains(path))
         {
-            return Err(i18n::repository::commit_sparse_or_hidden_flag_error(locale).into());
+            return Err(CommitGuardError::SparseOrHiddenFlag(
+                i18n::repository::commit_sparse_or_hidden_flag_error(locale).into(),
+            )
+            .into());
         }
-        let stage_bytes = reader.bytes(root, &["ls-files", "--stage", "-z"]).await?;
-        let gitlinks = gitlink_entries_from_stage(&stage_bytes)?;
+        let stage_bytes = reader
+            .bytes(root, &["ls-files", "--stage", "-z"])
+            .await
+            .map_err(map_git)?;
+        let gitlinks = gitlink_entries_from_stage(&stage_bytes).map_err(map_git)?;
         if selected_unit_paths.iter().any(|path| {
             gitlinks
                 .keys()
                 .any(|sub| path_conflicts_with_submodule(path, sub))
         }) {
-            return Err(i18n::repository::commit_submodule_error(locale).into());
+            return Err(CommitGuardError::SubmoduleUnsupported(
+                i18n::repository::commit_submodule_error(locale).into(),
+            )
+            .into());
         }
         Ok(())
     }
@@ -224,15 +275,23 @@ impl RepositoryStore {
         target: &ReadTarget,
         selections: &[CommitSelection],
         locale: LanguageKind,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), AppError> {
+        let map_git = |msg: String| AppError::git(AppErrorCode::CommitFailed, msg);
         if selections.is_empty() {
-            return Err(i18n::repository::commit_selection_required_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitFailed,
+                i18n::repository::commit_selection_required_error(locale),
+            ));
         }
         let _guard = self
-            .repository_gate(&target.repository_id)?
+            .repository_gate(&target.repository_id)
+            .map_err(map_git)?
             .lock_owned()
             .await;
-        let (registered, root) = self.registered_worktree_root(target, locale).await?;
+        let (registered, root) = self
+            .registered_worktree_root(target, locale)
+            .await
+            .map_err(map_git)?;
         let (commit_state, selected_files) =
             resolve_authorized_selections(&registered, target, selections, locale)?;
         let selected_unit_paths: BTreeSet<String> = selected_files
@@ -260,7 +319,8 @@ impl RepositoryStore {
         root: &Path,
         unstaged_paths: &[String],
         locale: LanguageKind,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), AppError> {
+        let map_git = |msg: String| AppError::git(AppErrorCode::CommitFailed, msg);
         if unstaged_paths.is_empty() {
             return Ok(());
         }
@@ -277,15 +337,16 @@ impl RepositoryStore {
                     ".+",
                 ],
             )
-            .await?;
+            .await
+            .map_err(map_git)?;
         if filters.code == Some(1) {
             return Ok(());
         }
         if !filters.success {
-            return Err(
-                "Cannot inspect Git file filter configuration; no commit was created (draft and selection were preserved)"
-                    .into(),
-            );
+            return Err(AppError::git(
+                AppErrorCode::CommitFailed,
+                "Cannot inspect Git file filter configuration; no commit was created (draft and selection were preserved)",
+            ));
         }
         let mut drivers = BTreeSet::new();
         for key in filters
@@ -293,22 +354,35 @@ impl RepositoryStore {
             .split(|byte| *byte == 0)
             .filter(|key| !key.is_empty())
         {
-            let key = parse::utf8_with_locale(key, locale)?;
+            let key = parse::utf8_with_locale(key, locale).map_err(map_git)?;
             let (driver, _) = key
                 .strip_prefix("filter.")
-                .ok_or("Cannot parse Git filter driver name")?
+                .ok_or_else(|| {
+                    AppError::git(
+                        AppErrorCode::CommitFailed,
+                        "Cannot parse Git filter driver name",
+                    )
+                })?
                 .rsplit_once('.')
-                .ok_or("Cannot parse Git filter driver name")?;
+                .ok_or_else(|| {
+                    AppError::git(
+                        AppErrorCode::CommitFailed,
+                        "Cannot parse Git filter driver name",
+                    )
+                })?;
             drivers.insert(driver.to_owned());
         }
         for batch in unstaged_paths.chunks(128) {
             let mut args = vec!["check-attr", "-z", "filter", "--"];
             args.extend(batch.iter().map(String::as_str));
-            let attributes = reader.bytes(root, &args).await?;
+            let attributes = reader.bytes(root, &args).await.map_err(map_git)?;
             let fields: Vec<_> = attributes.split(|byte| *byte == 0).collect();
             for record in fields.chunks(3).filter(|record| record.len() == 3) {
-                if drivers.contains(&parse::utf8_with_locale(record[2], locale)?) {
-                    return Err(i18n::repository::runner_external_filter_write_error(locale).into());
+                if drivers.contains(&parse::utf8_with_locale(record[2], locale).map_err(map_git)?) {
+                    return Err(CommitGuardError::ExternalFilterBlocked(
+                        i18n::repository::runner_external_filter_write_error(locale).into(),
+                    )
+                    .into());
                 }
             }
         }
@@ -321,25 +395,38 @@ impl RepositoryStore {
         selected_files: &[AuthorizedFile],
         live_state: &BranchState,
         locale: LanguageKind,
-    ) -> Result<BTreeMap<String, Vec<u8>>> {
-        let live_status = parse::status_with_locale(&live_state.status, locale)?;
+    ) -> std::result::Result<BTreeMap<String, Vec<u8>>, AppError> {
+        let map_git = |msg: String| AppError::git(AppErrorCode::CommitFailed, msg);
+        let live_status = parse::status_with_locale(&live_state.status, locale).map_err(map_git)?;
         if live_status.branch == "(detached)" {
-            return Err(i18n::repository::commit_detached_head_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitDetachedHead,
+                i18n::repository::commit_detached_head_error(locale),
+            ));
         }
         if live_status.branch != commit_state.branch || live_status.head != commit_state.head {
-            return Err(i18n::repository::commit_scope_changed_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitScopeChanged,
+                i18n::repository::commit_scope_changed_error(locale),
+            ));
         }
         if live_status.entries.iter().any(|entry| entry.conflicted) {
-            return Err(i18n::repository::commit_unresolved_conflict_error(locale).into());
+            return Err(AppError::git(
+                AppErrorCode::CommitConflictUnresolved,
+                i18n::repository::commit_unresolved_conflict_error(locale),
+            ));
         }
         if live_status
             .entries
             .iter()
             .any(|entry| entry.mode == "160000")
         {
-            return Err(i18n::repository::commit_submodule_error(locale).into());
+            return Err(CommitGuardError::SubmoduleUnsupported(
+                i18n::repository::commit_submodule_error(locale).into(),
+            )
+            .into());
         }
-        let live_stage_map = stage_entries_by_path(&live_state.index)?;
+        let live_stage_map = stage_entries_by_path(&live_state.index).map_err(map_git)?;
         let selected_paths: HashSet<&str> = selected_files
             .iter()
             .map(|file| file.path.as_str())
@@ -351,7 +438,10 @@ impl RepositoryStore {
                 && let Some(previous) = entry.previous.as_deref()
                 && selected_paths.contains(previous)
             {
-                return Err(i18n::repository::commit_rename_slot_collision_error(locale).into());
+                return Err(AppError::git(
+                    AppErrorCode::CommitScopeChanged,
+                    i18n::repository::commit_rename_slot_collision_error(locale),
+                ));
             }
         }
         let working_map: HashMap<&str, &str> = live_state
@@ -365,7 +455,10 @@ impl RepositoryStore {
                 .iter()
                 .find(|entry| entry.path == authorized.path)
             else {
-                return Err(i18n::repository::commit_scope_changed_error(locale).into());
+                return Err(AppError::git(
+                    AppErrorCode::CommitScopeChanged,
+                    i18n::repository::commit_scope_changed_error(locale),
+                ));
             };
             let live_staged = staged(live_entry);
             let live_kind = if live_staged {
@@ -392,13 +485,19 @@ impl RepositoryStore {
                 || live_previous != authorized.previous_path
                 || live_stage_entries != authorized.stage_entries
             {
-                return Err(i18n::repository::commit_scope_changed_error(locale).into());
+                return Err(AppError::git(
+                    AppErrorCode::CommitScopeChanged,
+                    i18n::repository::commit_scope_changed_error(locale),
+                ));
             }
             if !authorized.staged
                 && working_map.get(authorized.path.as_str()).copied()
                     != authorized.working_hash.as_deref()
             {
-                return Err(i18n::repository::commit_scope_changed_error(locale).into());
+                return Err(AppError::git(
+                    AppErrorCode::CommitScopeChanged,
+                    i18n::repository::commit_scope_changed_error(locale),
+                ));
             }
         }
         Ok(live_stage_map)

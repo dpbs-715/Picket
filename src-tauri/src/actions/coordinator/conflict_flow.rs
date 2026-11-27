@@ -8,6 +8,7 @@ use super::{
 };
 use crate::{
     actions::types::*,
+    error::{AppError, AppErrorCode},
     i18n::{self, LanguageKind},
     models::store::{ModelStore, ResolvedRuntimeSpec},
     pi_runtime::{
@@ -92,10 +93,14 @@ impl CustomActionCoordinator {
         previous_msg: &CPushUiMessage,
         instruction: &str,
         on_progress: &mut (impl FnMut(CPushProgressEvent) -> Result<(), String> + Send),
-    ) -> Result<CPushCommandReply, String> {
+    ) -> Result<CPushCommandReply, AppError> {
+        let map_action = |msg: String| AppError::action(AppErrorCode::ActionFailed, msg);
         let locale = session.locale;
         if session.model_id.trim().is_empty() {
-            return Err(i18n::cpush::cpush_agent_merge_no_model_error(locale).into());
+            return Err(AppError::model(
+                AppErrorCode::ModelNotFound,
+                i18n::cpush::cpush_agent_merge_no_model_error(locale),
+            ));
         }
         let spec = models
             .resolve_runtime_spec_with_locale(storage_dir, &session.model_id, locale)
@@ -103,7 +108,8 @@ impl CustomActionCoordinator {
         let read_target = self.session_read_target(session);
         let batch = repo_store
             .extract_conflict_batch(&read_target, locale)
-            .await?;
+            .await
+            .map_err(|msg| AppError::git(AppErrorCode::GitFailed, msg))?;
 
         let answer_text = if instruction.is_empty() {
             i18n::cpush::cpush_option_agent_merge(locale).to_owned()
@@ -149,7 +155,7 @@ impl CustomActionCoordinator {
                 label: i18n::cpush::cpush_progress_merging_steps(locale).into(),
             }),
         });
-        self.save_cpush_in_memory(session)?;
+        self.save_cpush_in_memory(session).map_err(map_action)?;
         let _ = on_progress(CPushProgressEvent {
             protocol_version: CPUSH_PROTOCOL_VERSION,
             session: session.to_public(),
@@ -177,9 +183,9 @@ impl CustomActionCoordinator {
                 session.timeline = prev_timeline;
                 let mut restored_msg = prev_msg;
                 restored_msg.description =
-                    i18n::cpush::cpush_merge_resolver_failed_desc(locale, &err);
+                    i18n::cpush::cpush_merge_resolver_failed_desc(locale, &err.message);
                 session.message = Some(restored_msg);
-                self.save_cpush_in_memory(session)?;
+                self.save_cpush_in_memory(session).map_err(map_action)?;
                 let _ = self.persist_cpush_sessions(storage_dir).await;
                 let public = session.to_public();
                 let _ = on_progress(CPushProgressEvent {
@@ -217,8 +223,10 @@ impl CustomActionCoordinator {
                 let mut restored_msg = prev_msg;
                 restored_msg.description = i18n::cpush::cpush_merge_apply_failed_desc(locale, &err);
                 session.message = Some(restored_msg);
-                self.save_cpush_in_memory(session)?;
-                self.persist_cpush_sessions(storage_dir).await?;
+                self.save_cpush_in_memory(session).map_err(map_action)?;
+                self.persist_cpush_sessions(storage_dir)
+                    .await
+                    .map_err(AppError::storage)?;
                 let public = session.to_public();
                 let _ = on_progress(CPushProgressEvent {
                     protocol_version: CPUSH_PROTOCOL_VERSION,
@@ -245,8 +253,10 @@ impl CustomActionCoordinator {
                     true,
                     Some(i18n::cpush::cpush_next_commit_conflict_reason(locale)),
                 );
-                self.save_cpush_in_memory(session)?;
-                self.persist_cpush_sessions(storage_dir).await?;
+                self.save_cpush_in_memory(session).map_err(map_action)?;
+                self.persist_cpush_sessions(storage_dir)
+                    .await
+                    .map_err(AppError::storage)?;
                 let public = session.to_public();
                 let _ = on_progress(CPushProgressEvent {
                     protocol_version: CPUSH_PROTOCOL_VERSION,
@@ -279,6 +289,7 @@ impl CustomActionCoordinator {
                         on_progress,
                     )
                     .await
+                    .map_err(map_action)
                 } else {
                     session.session_status = CPushSessionStatus::Done;
                     session.can_retry_remaining = false;
@@ -315,8 +326,10 @@ impl CustomActionCoordinator {
                         questionnaire: None,
                         progress: None,
                     });
-                    self.save_cpush_in_memory(session)?;
-                    self.persist_cpush_sessions(storage_dir).await?;
+                    self.save_cpush_in_memory(session).map_err(map_action)?;
+                    self.persist_cpush_sessions(storage_dir)
+                        .await
+                        .map_err(AppError::storage)?;
                     let public = session.to_public();
                     let _ = on_progress(CPushProgressEvent {
                         protocol_version: CPUSH_PROTOCOL_VERSION,
@@ -347,7 +360,7 @@ impl CustomActionCoordinator {
         upstream: &str,
         instruction: &str,
         files: &[ExtractedConflictFile],
-    ) -> Result<(String, Vec<ResolvedConflictFile>), String> {
+    ) -> Result<(String, Vec<ResolvedConflictFile>), AppError> {
         let context = RequestContext {
             repository_id: session.repository_id.clone(),
             worktree_id: session.worktree_id.clone(),
@@ -583,16 +596,22 @@ impl CustomActionCoordinator {
             PiTaskOutcome::CustomActionCompleted { summary, .. } => {
                 let st = merge_state
                     .lock()
-                    .map_err(|_| "Conflict merge state lock is unavailable".to_string())?;
+                    .map_err(|_| AppError::internal("Conflict merge state lock is unavailable"))?;
                 let mut ordered = Vec::with_capacity(files.len());
                 for orig in files {
                     let Some(resolved) = st.resolved.get(&orig.file_id) else {
                         if let Some(ref validation_err) = st.last_validation_error {
-                            return Err(validation_err.clone());
+                            return Err(AppError::action(
+                                AppErrorCode::ActionFailed,
+                                validation_err.clone(),
+                            ));
                         }
-                        return Err(format!(
-                            "Model did not submit a verified resolution for conflicted file `{}`.",
-                            orig.path
+                        return Err(AppError::action(
+                            AppErrorCode::ActionFailed,
+                            format!(
+                                "Model did not submit a verified resolution for conflicted file `{}`.",
+                                orig.path
+                            ),
                         ));
                     };
                     ordered.push(resolved.clone());
@@ -604,10 +623,14 @@ impl CustomActionCoordinator {
                     .unwrap_or(summary);
                 Ok((effective_summary, ordered))
             }
-            PiTaskOutcome::Cancelled => {
-                Err(i18n::cpush::cpush_conflict_cancelled_error(session.locale).into())
-            }
-            _ => Err("Conflict merge returned an unexpected event type".into()),
+            PiTaskOutcome::Cancelled => Err(AppError::action(
+                AppErrorCode::ActionCancelled,
+                i18n::cpush::cpush_conflict_cancelled_error(session.locale),
+            )),
+            _ => Err(AppError::model(
+                AppErrorCode::PiRuntimeError,
+                "Conflict merge returned an unexpected event type",
+            )),
         }
     }
 }

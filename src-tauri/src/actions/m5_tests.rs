@@ -432,7 +432,7 @@ async fn dirty_worktree_pull_rebase_preserves_partial_staging_pauses_on_overlap_
         )
         .await
         .unwrap_err();
-    assert!(overlap_err.contains("part.txt"), "{overlap_err}");
+    assert!(overlap_err.message.contains("part.txt"), "{overlap_err}");
     assert_eq!(
         text_git(&pair.clone_a, &["show", ":part.txt"]),
         "first=staged\nsecond=1"
@@ -772,7 +772,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         &fs::read_to_string(temp.path().join("action-sessions.json")).unwrap(),
     )
     .unwrap();
-    raw_file["cPushSessions"][0]["sessionStatus"] = serde_json::json!("waitingManual");
+    raw_file["sessions"][0]["sessionStatus"] = serde_json::json!("waitingManual");
     fs::write(
         temp.path().join("action-sessions.json"),
         serde_json::to_vec_pretty(&raw_file).unwrap(),
@@ -811,8 +811,8 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     );
 
     // 3. W04: Simulated app crash during `Running` push phase restores as `PushFailed`, NEVER auto-pushing!
-    raw_file["cPushSessions"][0]["sessionStatus"] = serde_json::json!("running");
-    raw_file["cPushSessions"][0]["pushAuthorized"] = serde_json::json!(true);
+    raw_file["sessions"][0]["sessionStatus"] = serde_json::json!("running");
+    raw_file["sessions"][0]["pushAuthorized"] = serde_json::json!(true);
     fs::write(
         temp.path().join("action-sessions.json"),
         serde_json::to_vec_pretty(&raw_file).unwrap(),

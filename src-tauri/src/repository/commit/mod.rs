@@ -14,6 +14,7 @@ pub(in crate::repository) use registration::{
 };
 
 use crate::{
+    error::{AppError, AppErrorCode},
     i18n::{self, LanguageKind},
     repository::{
         RepositoryStore, Result, parse,
@@ -89,62 +90,74 @@ impl RepositoryStore {
     pub(crate) async fn commit(
         &self,
         request: &CommitRequest,
-    ) -> Result<(RepositorySnapshot, CommitResult)> {
+    ) -> std::result::Result<(RepositorySnapshot, CommitResult), AppError> {
+        let map_commit = |msg: String| AppError::git(AppErrorCode::CommitFailed, msg);
         let locale = request.locale;
-        validate_commit_request(request, locale)?;
+        validate_commit_request(request, locale).map_err(map_commit)?;
         self.inner.write_coordinator.ensure_not_draining(locale)?;
 
         let _guard = self
-            .repository_gate(&request.target.repository_id)?
+            .repository_gate(&request.target.repository_id)
+            .map_err(map_commit)?
             .lock_owned()
             .await;
         let _write_guard = self.track_write();
         let (registered, root) = self
             .registered_worktree_root(&request.target, locale)
-            .await?;
+            .await
+            .map_err(map_commit)?;
         let reader = self.inner.reader.with_locale(locale);
         let git_dir = fs::canonicalize(
             reader
                 .text(&root, &["rev-parse", "--path-format=absolute", "--git-dir"])
-                .await?,
+                .await
+                .map_err(map_commit)?,
         )
-        .map_err(|_| "Cannot access worktree Git metadata directory")?;
+        .map_err(|_| map_commit("Cannot access worktree Git metadata directory".into()))?;
         let journal_dir = git_dir.join("picket").join("commits");
         let record_path = journal_dir.join(format!("{}.json", request.request_id));
         if record_path.exists() {
             let previous: ExecutionRecord = serde_json::from_slice(
-                &fs::read(&record_path).map_err(|_| "Cannot read commit execution record")?,
+                &fs::read(&record_path)
+                    .map_err(|_| map_commit("Cannot read commit execution record".into()))?,
             )
-            .map_err(
-                |_| "Commit execution record is corrupted; inspect actual Git history first",
-            )?;
+            .map_err(|_| {
+                map_commit(
+                    "Commit execution record is corrupted; inspect actual Git history first".into(),
+                )
+            })?;
             if previous.repository_id != request.target.repository_id
                 || previous.worktree_id != request.target.worktree_id
                 || previous.selections != request.selections
                 || previous.raw_message != request.message
             {
-                return Err(i18n::repository::commit_request_id_reused_error(locale).into());
+                return Err(map_commit(
+                    i18n::repository::commit_request_id_reused_error(locale).into(),
+                ));
             }
-            let commit = previous
-                .commit
-                .clone()
-                .ok_or_else(|| i18n::repository::commit_interrupted_record_error(locale))?;
+            let commit = previous.commit.clone().ok_or_else(|| {
+                map_commit(i18n::repository::commit_interrupted_record_error(locale).into())
+            })?;
             self.verify_recorded_commit(&root, &previous, &commit)
-                .await?;
-            let snapshot = self.read_repository_locked(&root, locale).await?;
+                .await
+                .map_err(map_commit)?;
+            let snapshot = self
+                .read_repository_locked(&root, locale)
+                .await
+                .map_err(map_commit)?;
             return Ok((snapshot, commit));
         }
         if !self
             .inner
             .commit_requests
             .lock()
-            .map_err(|_| "Commit request registry is unavailable")?
+            .map_err(|_| map_commit("Commit request registry is unavailable".into()))?
             .insert(request.request_id.clone())
         {
-            return Err(
+            return Err(map_commit(
                 "This commit request was already accepted and has not finished; refresh to verify live status instead of repeating"
                     .into(),
-            );
+            ));
         }
 
         let (commit_state, selected_files) = resolve_authorized_selections(
@@ -178,9 +191,9 @@ impl RepositoryStore {
             locale,
         )?;
 
-        let worktree_reader = reader.for_worktree(&root).await?;
-        let temp =
-            tempfile::tempdir().map_err(|_| "Cannot create temporary directory for commit")?;
+        let worktree_reader = reader.for_worktree(&root).await.map_err(map_commit)?;
+        let temp = tempfile::tempdir()
+            .map_err(|_| map_commit("Cannot create temporary directory for commit".into()))?;
         let selected_index = temp.path().join("selected.index");
         let tree = build_isolated_commit_tree(
             &reader,
@@ -201,11 +214,14 @@ impl RepositoryStore {
                     &root,
                     &["rev-parse", "--path-format=absolute", "--git-path", "index"],
                 )
-                .await?,
+                .await
+                .map_err(map_commit)?,
         );
         self.ensure_commit_write_allowed(&root, &all_unit_paths_set, locale)
             .await?;
-        let mut index_lock = IndexLock::acquire(&index_path, locale)?;
+        let mut index_lock = IndexLock::acquire(&index_path, locale).map_err(|msg| {
+            AppError::git(AppErrorCode::CommitLockFilePresent, msg).with_retryable(true)
+        })?;
         let pre_hook_state = self.branch_state(&root, locale).await?;
         let pre_stage_map = self.verify_live_selected_scope(
             commit_state,
@@ -227,11 +243,13 @@ impl RepositoryStore {
                 &pre_hook_state,
                 locale,
             )
-            .await?;
+            .await
+            .map_err(map_commit)?;
 
         let all_unit_paths: Vec<String> = all_unit_paths_set.iter().cloned().collect();
-        fs::create_dir_all(&journal_dir)
-            .map_err(|_| "Cannot initialize commit coordination journal directory")?;
+        fs::create_dir_all(&journal_dir).map_err(|_| {
+            map_commit("Cannot initialize commit coordination journal directory".into())
+        })?;
         let mut record = ExecutionRecord {
             repository_id: request.target.repository_id.clone(),
             worktree_id: request.target.worktree_id.clone(),
@@ -248,21 +266,28 @@ impl RepositoryStore {
             .create_new(true)
             .open(&record_path)
             .map_err(|_| {
-                "Commit execution record already exists and will not repeat; refresh to verify live status"
+                map_commit(
+                    "Commit execution record already exists and will not repeat; refresh to verify live status"
+                        .into(),
+                )
             })?;
         record_file
-            .write_all(&serde_json::to_vec(&record).map_err(|error| error.to_string())?)
-            .map_err(|_| "Cannot write commit execution record")?;
+            .write_all(&serde_json::to_vec(&record).map_err(|error| map_commit(error.to_string()))?)
+            .map_err(|_| map_commit("Cannot write commit execution record".into()))?;
         record_file
             .sync_all()
-            .map_err(|_| "Cannot sync commit execution record")?;
+            .map_err(|_| map_commit("Cannot sync commit execution record".into()))?;
         drop(record_file);
 
         let sign_config = reader
             .write(&root, &["config", "--type=bool", "--get", "commit.gpgSign"])
-            .await?;
+            .await
+            .map_err(map_commit)?;
         let gpg_sign = sign_config.success
-            && parse::utf8_with_locale(&sign_config.bytes, locale)?.trim() == "true";
+            && parse::utf8_with_locale(&sign_config.bytes, locale)
+                .map_err(map_commit)?
+                .trim()
+                == "true";
         let mut commit_args = vec!["commit-tree", tree.as_str()];
         if let Some(parent) = commit_state.head.as_deref() {
             commit_args.extend(["-p", parent]);
@@ -275,7 +300,7 @@ impl RepositoryStore {
             Ok(output) => output,
             Err(error) => {
                 let _ = fs::remove_file(&record_path);
-                return Err(error);
+                return Err(map_commit(error));
             }
         };
         if !created.success {
@@ -287,35 +312,39 @@ impl RepositoryStore {
                 || lower.contains("user.email")
                 || lower.contains("email address")
             {
-                return Err(i18n::repository::commit_missing_identity_error(
+                return Err(map_commit(i18n::repository::commit_missing_identity_error(
                     locale, &detail,
-                ));
+                )));
             }
-            return Err(i18n::repository::commit_object_failed_error(
+            return Err(map_commit(i18n::repository::commit_object_failed_error(
                 locale, &detail,
-            ));
+            )));
         }
-        let commit_oid = parse::utf8_with_locale(&created.bytes, locale)?
+        let commit_oid = parse::utf8_with_locale(&created.bytes, locale)
+            .map_err(map_commit)?
             .trim()
             .to_owned();
         if commit_oid.is_empty()
             || reader
                 .text(&root, &["rev-parse", &format!("{commit_oid}^{{tree}}")])
-                .await?
+                .await
+                .map_err(map_commit)?
                 != tree
         {
             let _ = fs::remove_file(&record_path);
-            return Err(
+            return Err(map_commit(
                 "Created commit object tree did not match authorized scope; aborted updating branch ref (draft and selection were preserved)"
                     .into(),
-            );
+            ));
         }
         let short_oid = reader
             .text(&root, &["rev-parse", "--short", &commit_oid])
-            .await?;
+            .await
+            .map_err(map_commit)?;
         let title = reader
             .text(&root, &["show", "-s", "--format=%s", &commit_oid])
-            .await?;
+            .await
+            .map_err(map_commit)?;
         let reflog = if commit_state.head.is_some() {
             format!("commit: {title}")
         } else {
@@ -334,22 +363,28 @@ impl RepositoryStore {
                     expected_old,
                 ],
             )
-            .await?;
+            .await
+            .map_err(map_commit)?;
         if !updated.success {
             let current_head = reader
                 .run(&root, &["rev-parse", "--verify", "--quiet", "HEAD"])
-                .await?
+                .await
+                .map_err(map_commit)?
                 .bytes;
             let unchanged = match commit_state.head.as_deref() {
-                Some(parent) => parse::utf8_with_locale(&current_head, locale)?.trim() == parent,
+                Some(parent) => {
+                    parse::utf8_with_locale(&current_head, locale)
+                        .map_err(map_commit)?
+                        .trim()
+                        == parent
+                }
                 None => current_head.is_empty(),
             };
             if unchanged {
                 let _ = fs::remove_file(&record_path);
             }
-            return Err(i18n::repository::commit_update_ref_failed_error(
-                locale,
-                &output_detail(&updated),
+            return Err(map_commit(
+                i18n::repository::commit_update_ref_failed_error(locale, &output_detail(&updated)),
             ));
         }
 
@@ -388,27 +423,40 @@ impl RepositoryStore {
         }
         .await;
         if let Err(error) = reconcile {
-            return Err(i18n::repository::commit_reconcile_failed_error(
+            return Err(map_commit(i18n::repository::commit_reconcile_failed_error(
                 locale, &short_oid, &error,
-            ));
+            )));
         }
 
-        if reader.text(&root, &["rev-parse", "HEAD"]).await? != commit_oid
-            || reader.text(&root, &["rev-parse", "HEAD^{tree}"]).await? != tree
+        if reader
+            .text(&root, &["rev-parse", "HEAD"])
+            .await
+            .map_err(map_commit)?
+            != commit_oid
+            || reader
+                .text(&root, &["rev-parse", "HEAD^{tree}"])
+                .await
+                .map_err(map_commit)?
+                != tree
         {
-            return Err(i18n::repository::commit_post_verify_tree_error(
+            return Err(map_commit(i18n::repository::commit_post_verify_tree_error(
                 locale, &short_oid,
-            ));
+            )));
         }
         for (path, expected_hash) in &pre_hook_state.working {
-            if &self.working_file(&root, path)? != expected_hash {
-                return Err(i18n::repository::commit_post_verify_working_error(
-                    locale, &short_oid, path,
+            if &self.working_file(&root, path).map_err(map_commit)? != expected_hash {
+                return Err(map_commit(
+                    i18n::repository::commit_post_verify_working_error(locale, &short_oid, path),
                 ));
             }
         }
-        let after_stage_map =
-            stage_entries_by_path(&reader.bytes(&root, &["ls-files", "--stage", "-z"]).await?)?;
+        let after_stage_map = stage_entries_by_path(
+            &reader
+                .bytes(&root, &["ls-files", "--stage", "-z"])
+                .await
+                .map_err(map_commit)?,
+        )
+        .map_err(map_commit)?;
         let pre_unselected: BTreeMap<_, _> = pre_stage_map
             .iter()
             .filter(|(path, _)| !all_unit_paths_set.contains(*path))
@@ -418,8 +466,8 @@ impl RepositoryStore {
             .filter(|(path, _)| !all_unit_paths_set.contains(*path))
             .collect();
         if pre_unselected != after_unselected {
-            return Err(i18n::repository::commit_post_verify_unselected_error(
-                locale, &short_oid,
+            return Err(map_commit(
+                i18n::repository::commit_post_verify_unselected_error(locale, &short_oid),
             ));
         }
 
@@ -435,7 +483,9 @@ impl RepositoryStore {
             .read_repository_locked(&root, locale)
             .await
             .map_err(|error| {
-                i18n::repository::commit_post_read_failed_error(locale, &short_oid, &error)
+                map_commit(i18n::repository::commit_post_read_failed_error(
+                    locale, &short_oid, &error,
+                ))
             })?;
         Ok((snapshot, commit_result))
     }

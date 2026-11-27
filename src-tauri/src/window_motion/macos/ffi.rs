@@ -1,259 +1,144 @@
-//! Low-level Apple AppKit / QuartzCore / Objective-C runtime FFI helpers (zero third-party dylibs).
+//! Safe, typed AppKit / QuartzCore / Foundation helpers built on `objc2` and `block2`.
 
 #[cfg(feature = "smoke-harness")]
 use crate::window_motion::geometry::NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES;
 use crate::window_motion::geometry::{NSPoint, NSRect, NSSize, next_collection_behavior};
-use std::{
-    ffi::{c_char, c_void},
-    mem, ptr,
+use objc2::{msg_send, runtime::Bool, sel};
+use objc2_app_kit::{
+    NSAnimationContext, NSApplication, NSColor, NSScreen, NSWindow, NSWindowCollectionBehavior,
+    NSWorkspace,
 };
+use objc2_foundation::{
+    MainThreadMarker, NSPoint as FNSPoint, NSRect as FNSRect, NSSize as FNSSize,
+};
+use objc2_quartz_core::CAMediaTimingFunction;
+use std::ffi::c_void;
 
-pub(super) type ObjcBool = u8;
-pub(super) const BLOCK_HAS_COPY_DISPOSE: i32 = 1 << 25;
-
-#[link(name = "AppKit", kind = "framework")]
-unsafe extern "C" {}
-
-#[link(name = "QuartzCore", kind = "framework")]
-unsafe extern "C" {}
-
-#[link(name = "objc", kind = "dylib")]
-unsafe extern "C" {
-    pub(super) fn objc_getClass(name: *const c_char) -> *mut c_void;
-    pub(super) fn sel_registerName(name: *const c_char) -> *const c_void;
-    pub(super) fn objc_msgSend();
-    #[cfg(target_arch = "x86_64")]
-    pub(super) fn objc_msgSend_stret();
-    pub(super) fn objc_retain(obj: *mut c_void) -> *mut c_void;
-    pub(super) fn objc_release(obj: *mut c_void);
-    fn objc_autoreleasePoolPush() -> *mut c_void;
-    fn objc_autoreleasePoolPop(pool: *mut c_void);
+pub(super) fn to_foundation_point(p: NSPoint) -> FNSPoint {
+    FNSPoint::new(p.x, p.y)
 }
 
-#[link(name = "System", kind = "dylib")]
-unsafe extern "C" {
-    pub(super) static _NSConcreteStackBlock: *const c_void;
+pub(super) fn to_foundation_size(s: NSSize) -> FNSSize {
+    FNSSize::new(s.width, s.height)
 }
 
-pub(super) struct AutoreleasePoolGuard(*mut c_void);
+pub(super) fn to_foundation_rect(r: NSRect) -> FNSRect {
+    FNSRect::new(to_foundation_point(r.origin), to_foundation_size(r.size))
+}
 
-impl AutoreleasePoolGuard {
-    pub(super) fn new() -> Self {
-        Self(unsafe { objc_autoreleasePoolPush() })
+pub(super) fn from_foundation_rect(r: FNSRect) -> NSRect {
+    NSRect {
+        origin: NSPoint {
+            x: r.origin.x,
+            y: r.origin.y,
+        },
+        size: NSSize {
+            width: r.size.width,
+            height: r.size.height,
+        },
     }
 }
 
-impl Drop for AutoreleasePoolGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { objc_autoreleasePoolPop(self.0) };
-        }
-    }
+/// Converts a Tauri `ns_window()` raw pointer into a typed `&NSWindow` on the main thread.
+///
+/// # Safety
+/// Caller must run on the AppKit main thread and ensure `window` remains alive for the lifetime
+/// of the returned reference.
+pub(super) unsafe fn ns_window_ref<'a>(
+    window: &'a tauri::WebviewWindow,
+    unavailable_msg: &str,
+) -> Result<&'a NSWindow, String> {
+    let raw: *mut c_void = window.ns_window().map_err(|e| e.to_string())?;
+    unsafe { raw.cast::<NSWindow>().as_ref() }.ok_or_else(|| unavailable_msg.to_owned())
 }
 
-pub(super) unsafe fn msg_send_rect(receiver: *mut c_void, sel: *const c_void) -> NSRect {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let f: unsafe extern "C" fn(*mut c_void, *const c_void) -> NSRect =
-            unsafe { mem::transmute(objc_msgSend as *const ()) };
-        unsafe { f(receiver, sel) }
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        let mut out = NSRect {
-            origin: NSPoint { x: 0.0, y: 0.0 },
-            size: NSSize {
-                width: 0.0,
-                height: 0.0,
-            },
-        };
-        let f: unsafe extern "C" fn(*mut NSRect, *mut c_void, *const c_void) =
-            unsafe { mem::transmute(objc_msgSend_stret as *const ()) };
-        unsafe { f(&mut out, receiver, sel) };
-        out
-    }
+/// Obtains a `MainThreadMarker` inside callbacks dispatched via `WebviewWindow::run_on_main_thread`
+/// or functions documented as `_on_main`.
+pub(super) fn main_thread_marker() -> MainThreadMarker {
+    // SAFETY: All callers execute on the macOS AppKit main thread (verified at runtime in debug).
+    MainThreadMarker::new().unwrap_or_else(|| unsafe { MainThreadMarker::new_unchecked() })
 }
 
-pub(super) unsafe fn msg_send_rect_with_rect(
-    receiver: *mut c_void,
-    sel: *const c_void,
-    arg: NSRect,
-) -> NSRect {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let f: unsafe extern "C" fn(*mut c_void, *const c_void, NSRect) -> NSRect =
-            unsafe { mem::transmute(objc_msgSend as *const ()) };
-        unsafe { f(receiver, sel, arg) }
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        let mut out = NSRect {
-            origin: NSPoint { x: 0.0, y: 0.0 },
-            size: NSSize {
-                width: 0.0,
-                height: 0.0,
-            },
-        };
-        let f: unsafe extern "C" fn(*mut NSRect, *mut c_void, *const c_void, NSRect) =
-            unsafe { mem::transmute(objc_msgSend_stret as *const ()) };
-        unsafe { f(&mut out, receiver, sel, arg) };
-        out
-    }
+pub(super) fn window_frame(win: &NSWindow) -> NSRect {
+    from_foundation_rect(win.frame())
 }
 
-pub(super) unsafe fn msg_send_point(receiver: *mut c_void, sel: *const c_void) -> NSPoint {
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void) -> NSPoint =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(receiver, sel) }
+pub(super) fn window_content_rect(win: &NSWindow, frame: NSRect) -> NSRect {
+    from_foundation_rect(win.contentRectForFrameRect(to_foundation_rect(frame)))
 }
 
-pub(super) unsafe fn window_frame(ns_window: *mut c_void) -> NSRect {
-    let sel = unsafe { sel_registerName(c"frame".as_ptr()) };
-    unsafe { msg_send_rect(ns_window, sel) }
+pub(super) fn set_window_content_min_size(win: &NSWindow, size: NSSize) {
+    win.setContentMinSize(to_foundation_size(size));
 }
 
-pub(super) unsafe fn window_content_rect(ns_window: *mut c_void, frame: NSRect) -> NSRect {
-    let sel = unsafe { sel_registerName(c"contentRectForFrameRect:".as_ptr()) };
-    unsafe { msg_send_rect_with_rect(ns_window, sel, frame) }
+pub(super) fn set_window_frame_instant(win: &NSWindow, frame: NSRect) {
+    win.setFrame_display_animate(to_foundation_rect(frame), true, false);
 }
 
-pub(super) unsafe fn set_window_content_min_size(ns_window: *mut c_void, size: NSSize) {
-    let sel = unsafe { sel_registerName(c"setContentMinSize:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, NSSize) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, size) };
+pub(super) fn set_window_frame_origin(win: &NSWindow, origin: NSPoint) {
+    win.setFrameOrigin(to_foundation_point(origin));
 }
 
-pub(super) unsafe fn set_window_frame_instant(ns_window: *mut c_void, frame: NSRect) {
-    let sel = unsafe { sel_registerName(c"setFrame:display:animate:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, NSRect, ObjcBool, ObjcBool) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, frame, 1, 0) };
+pub(super) fn set_window_alpha(win: &NSWindow, alpha: f64) {
+    win.setAlphaValue(alpha);
 }
 
-pub(super) unsafe fn set_window_frame_origin(ns_window: *mut c_void, origin: NSPoint) {
-    let sel = unsafe { sel_registerName(c"setFrameOrigin:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, NSPoint) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, origin) };
+pub(super) fn set_window_opaque(win: &NSWindow, opaque: bool) {
+    win.setOpaque(opaque);
 }
 
-pub(super) unsafe fn set_window_alpha(ns_window: *mut c_void, alpha: f64) {
-    let sel = unsafe { sel_registerName(c"setAlphaValue:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, f64) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, alpha) };
+pub(super) fn set_window_clear_background(win: &NSWindow) {
+    let clear = NSColor::clearColor();
+    win.setBackgroundColor(Some(&clear));
 }
 
-pub(super) unsafe fn set_window_opaque(ns_window: *mut c_void, opaque: bool) {
-    let sel = unsafe { sel_registerName(c"setOpaque:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, u8::from(opaque)) };
+pub(super) fn set_window_has_shadow(win: &NSWindow, has_shadow: bool) {
+    win.setHasShadow(has_shadow);
 }
 
-pub(super) unsafe fn set_window_clear_background(ns_window: *mut c_void) {
-    let color_cls = unsafe { objc_getClass(c"NSColor".as_ptr()) };
-    if color_cls.is_null() {
-        return;
-    }
-    let clear_sel = unsafe { sel_registerName(c"clearColor".as_ptr()) };
-    let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    let clear = unsafe { send_obj(color_cls, clear_sel) };
-    if !clear.is_null() {
-        let bg_sel = unsafe { sel_registerName(c"setBackgroundColor:".as_ptr()) };
-        let send_bg: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) =
-            unsafe { mem::transmute(objc_msgSend as *const ()) };
-        unsafe { send_bg(ns_window, bg_sel, clear) };
-    }
+pub(super) fn set_window_ignores_mouse_events(win: &NSWindow, ignores: bool) {
+    win.setIgnoresMouseEvents(ignores);
 }
 
-pub(super) unsafe fn set_window_has_shadow(ns_window: *mut c_void, has_shadow: bool) {
-    let sel = unsafe { sel_registerName(c"setHasShadow:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, u8::from(has_shadow)) };
+pub(super) fn set_window_level(win: &NSWindow, level: isize) {
+    win.setLevel(level);
 }
 
-pub(super) unsafe fn set_window_ignores_mouse_events(ns_window: *mut c_void, ignores: bool) {
-    let sel = unsafe { sel_registerName(c"setIgnoresMouseEvents:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, u8::from(ignores)) };
+pub(super) fn set_window_collection_behavior_raw(win: &NSWindow, behavior: usize) {
+    win.setCollectionBehavior(NSWindowCollectionBehavior::from_bits_retain(behavior));
 }
 
-pub(super) unsafe fn set_window_level(ns_window: *mut c_void, level: isize) {
-    let sel = unsafe { sel_registerName(c"setLevel:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, isize) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, level) };
+pub(super) fn order_window_front_regardless(win: &NSWindow) {
+    win.orderFrontRegardless();
 }
 
-pub(super) unsafe fn set_window_collection_behavior_raw(ns_window: *mut c_void, behavior: usize) {
-    let sel = unsafe { sel_registerName(c"setCollectionBehavior:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, usize) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, behavior) };
+pub(super) fn make_window_key_and_order_front(win: &NSWindow) {
+    win.makeKeyAndOrderFront(None);
 }
 
-pub(super) unsafe fn order_window_front_regardless(ns_window: *mut c_void) {
-    let sel = unsafe { sel_registerName(c"orderFrontRegardless".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel) };
+pub(super) fn activate_app_macos() {
+    let mtm = main_thread_marker();
+    let app = NSApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
 }
 
-pub(super) unsafe fn make_window_key_and_order_front(ns_window: *mut c_void) {
-    let sel = unsafe { sel_registerName(c"makeKeyAndOrderFront:".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void, *mut c_void) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel, ptr::null_mut()) };
-}
-
-pub(super) unsafe fn activate_app_macos() {
-    let app_cls = unsafe { objc_getClass(c"NSApplication".as_ptr()) };
-    if app_cls.is_null() {
-        return;
-    }
-    let shared_sel = unsafe { sel_registerName(c"sharedApplication".as_ptr()) };
-    let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    let shared = unsafe { send_obj(app_cls, shared_sel) };
-    if shared.is_null() {
-        return;
-    }
-    let activate_sel = unsafe { sel_registerName(c"activateIgnoringOtherApps:".as_ptr()) };
-    let send_bool: unsafe extern "C" fn(*mut c_void, *const c_void, ObjcBool) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send_bool(shared, activate_sel, 1) };
-}
-
-unsafe fn window_collection_behavior(ns_window: *mut c_void) -> usize {
-    let sel = unsafe { sel_registerName(c"collectionBehavior".as_ptr()) };
-    let f: unsafe extern "C" fn(*mut c_void, *const c_void) -> usize =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { f(ns_window, sel) }
-}
-
-pub(super) unsafe fn set_window_visible_on_all_spaces(ns_window: *mut c_void, visible: bool) {
-    let current = unsafe { window_collection_behavior(ns_window) };
+pub(super) fn set_window_visible_on_all_spaces(win: &NSWindow, visible: bool) {
+    let current = win.collectionBehavior().bits();
     let next = next_collection_behavior(current, visible);
     if next != current {
-        unsafe { set_window_collection_behavior_raw(ns_window, next) };
+        set_window_collection_behavior_raw(win, next);
     }
 }
 
 #[cfg(feature = "smoke-harness")]
-pub(super) unsafe fn is_window_visible_on_all_spaces(ns_window: *mut c_void) -> bool {
-    (unsafe { window_collection_behavior(ns_window) }
-        & NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES)
-        != 0
+pub(super) fn is_window_visible_on_all_spaces(win: &NSWindow) -> bool {
+    (win.collectionBehavior().bits() & NS_WINDOW_COLLECTION_BEHAVIOR_CAN_JOIN_ALL_SPACES) != 0
 }
 
 pub(super) fn apply_pinned_on_main(
     window: &tauri::WebviewWindow,
-    ns_window: *mut c_void,
+    win: &NSWindow,
     pinned: bool,
 ) -> Result<bool, String> {
     if window.is_always_on_top().map_err(|e| e.to_string())? != pinned {
@@ -261,75 +146,46 @@ pub(super) fn apply_pinned_on_main(
             .set_always_on_top(pinned)
             .map_err(|e| e.to_string())?;
     }
-    unsafe { set_window_visible_on_all_spaces(ns_window, pinned) };
+    set_window_visible_on_all_spaces(win, pinned);
     window.is_always_on_top().map_err(|e| e.to_string())
 }
 
-pub(super) unsafe fn primary_screen_height(ns_window: *mut c_void) -> f64 {
-    let ns_screen_cls = unsafe { objc_getClass(c"NSScreen".as_ptr()) };
-    if !ns_screen_cls.is_null() {
-        let screens_sel = unsafe { sel_registerName(c"screens".as_ptr()) };
-        let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-            unsafe { mem::transmute(objc_msgSend as *const ()) };
-        let screens = unsafe { send_obj(ns_screen_cls, screens_sel) };
-        if !screens.is_null() {
-            let count_sel = unsafe { sel_registerName(c"count".as_ptr()) };
-            let send_usize: unsafe extern "C" fn(*mut c_void, *const c_void) -> usize =
-                unsafe { mem::transmute(objc_msgSend as *const ()) };
-            if unsafe { send_usize(screens, count_sel) } > 0 {
-                let obj_at_sel = unsafe { sel_registerName(c"objectAtIndex:".as_ptr()) };
-                let send_at: unsafe extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    usize,
-                ) -> *mut c_void = unsafe { mem::transmute(objc_msgSend as *const ()) };
-                let primary = unsafe { send_at(screens, obj_at_sel, 0) };
-                if !primary.is_null() {
-                    let frame_sel = unsafe { sel_registerName(c"frame".as_ptr()) };
-                    let rect = unsafe { msg_send_rect(primary, frame_sel) };
-                    if rect.size.height > 0.0 {
-                        return rect.size.height;
-                    }
-                }
-            }
+pub(super) fn primary_screen_height(win: &NSWindow) -> f64 {
+    let mtm = main_thread_marker();
+    let screens = NSScreen::screens(mtm);
+    if let Some(primary) = screens.firstObject() {
+        let height = primary.frame().size.height;
+        if height > 0.0 {
+            return height;
         }
     }
     // Fallback to window's screen if NSScreen.screens is empty (headless edge case).
-    let screen_sel = unsafe { sel_registerName(c"screen".as_ptr()) };
-    let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    let screen = unsafe { send_obj(ns_window, screen_sel) };
-    if !screen.is_null() {
-        let frame_sel = unsafe { sel_registerName(c"frame".as_ptr()) };
-        let rect = unsafe { msg_send_rect(screen, frame_sel) };
-        if rect.size.height > 0.0 {
-            return rect.size.height;
+    if let Some(screen) = win.screen() {
+        let height = screen.frame().size.height;
+        if height > 0.0 {
+            return height;
         }
     }
     900.0
 }
 
-pub(super) unsafe fn prefers_reduced_motion_macos() -> bool {
-    let workspace_cls = unsafe { objc_getClass(c"NSWorkspace".as_ptr()) };
-    if workspace_cls.is_null() {
+pub(super) fn prefers_reduced_motion_macos() -> bool {
+    let workspace = NSWorkspace::sharedWorkspace();
+    let sel = sel!(accessibilityDisplayShouldReduceMotion);
+    let responds: Bool = unsafe { msg_send![&*workspace, respondsToSelector: sel] };
+    if !responds.as_bool() {
         return false;
     }
-    let shared_sel = unsafe { sel_registerName(c"sharedWorkspace".as_ptr()) };
-    let send_obj: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    let workspace = unsafe { send_obj(workspace_cls, shared_sel) };
-    if workspace.is_null() {
-        return false;
-    }
-    let reduce_sel =
-        unsafe { sel_registerName(c"accessibilityDisplayShouldReduceMotion".as_ptr()) };
-    let responds_sel = unsafe { sel_registerName(c"respondsToSelector:".as_ptr()) };
-    let send_responds: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> ObjcBool =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    if unsafe { send_responds(workspace, responds_sel, reduce_sel) } == 0 {
-        return false;
-    }
-    let send_bool: unsafe extern "C" fn(*mut c_void, *const c_void) -> ObjcBool =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send_bool(workspace, reduce_sel) != 0 }
+    let reduce: Bool = unsafe { msg_send![&*workspace, accessibilityDisplayShouldReduceMotion] };
+    reduce.as_bool()
+}
+
+/// Applies Picket's shared easing curve (`cubic-bezier(0.22, 1, 0.36, 1)`) and duration
+/// to the active `NSAnimationContext`.
+pub(super) fn configure_current_animation_context(duration_ms: u32) {
+    let ctx = NSAnimationContext::currentContext();
+    ctx.setDuration(f64::from(duration_ms) / 1000.0);
+    let timing_fn =
+        CAMediaTimingFunction::functionWithControlPoints(0.22_f32, 1.0_f32, 0.36_f32, 1.0_f32);
+    ctx.setTimingFunction(Some(&timing_fn));
 }

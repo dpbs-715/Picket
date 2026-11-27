@@ -61,10 +61,13 @@ pub fn apply_window_theme(
 }
 
 #[tauri::command]
-pub async fn set_window_theme(app: tauri::AppHandle, theme: ThemeKind) -> Result<String, String> {
+pub async fn set_window_theme(
+    app: tauri::AppHandle,
+    theme: ThemeKind,
+) -> Result<String, crate::error::AppError> {
     let main = app
         .get_webview_window("main")
-        .ok_or_else(|| "Main window is unavailable".to_string())?;
+        .ok_or_else(|| crate::error::AppError::window("Main window is unavailable"))?;
     let tray = app.get_webview_window(crate::tray::TRAY_POPOVER_LABEL);
     let (tx, rx) = oneshot::channel::<&'static str>();
     let main_for_thread = main.clone();
@@ -75,21 +78,26 @@ pub async fn set_window_theme(app: tauri::AppHandle, theme: ThemeKind) -> Result
         }
         let _ = tx.send(resolved);
     })
-    .map_err(|e| e.to_string())?;
-    let resolved = rx
-        .await
-        .map_err(|_| "Window theme task did not run on main thread".to_string())?;
+    .map_err(|e| crate::error::AppError::window(e.to_string()))?;
+    let resolved = rx.await.map_err(|_| {
+        crate::error::AppError::window("Window theme task did not run on main thread")
+    })?;
     app.state::<crate::tray::TrayCoordinator>()
         .set_ui_context(&app, None, Some(theme), None);
     Ok(resolved.to_string())
 }
 
 #[tauri::command]
-pub async fn set_window_pinned(app: tauri::AppHandle, pinned: bool) -> Result<bool, String> {
+pub async fn set_window_pinned(
+    app: tauri::AppHandle,
+    pinned: bool,
+) -> Result<bool, crate::error::AppError> {
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "Main window is unavailable".to_string())?;
-    platform::set_main_window_pinned(window, pinned).await
+        .ok_or_else(|| crate::error::AppError::window("Main window is unavailable"))?;
+    platform::set_main_window_pinned(window, pinned)
+        .await
+        .map_err(crate::error::AppError::window)
 }
 
 #[cfg(feature = "smoke-harness")]
@@ -106,10 +114,12 @@ pub async fn read_main_window_visible_on_all_spaces(
 pub async fn animate_window_frame(
     app: tauri::AppHandle,
     request: AnimateWindowFrameRequest,
-) -> Result<AnimateWindowFrameReply, String> {
-    let validated = geometry::validate_request(&request)?;
+) -> Result<AnimateWindowFrameReply, crate::error::AppError> {
+    let validated = geometry::validate_request(&request).map_err(crate::error::AppError::window)?;
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "Main window is unavailable".to_string())?;
-    platform::animate_main_window(window, validated).await
+        .ok_or_else(|| crate::error::AppError::window("Main window is unavailable"))?;
+    platform::animate_main_window(window, validated)
+        .await
+        .map_err(crate::error::AppError::window)
 }

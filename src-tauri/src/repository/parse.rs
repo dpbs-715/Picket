@@ -151,11 +151,60 @@ pub fn status_with_locale(bytes: &[u8], locale: LanguageKind) -> Result<Status, 
     parsed.entries = unique.into_values().collect();
     Ok(parsed)
 }
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct Stats {
     pub added: u64,
     pub removed: u64,
     pub binary: bool,
+}
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum DiffAttr {
+    #[default]
+    Auto,
+    ForceText,
+    ForceBinary,
+}
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct FileAttrs {
+    pub diff: DiffAttr,
+    pub has_filter: bool,
+}
+pub fn check_attrs(bytes: &[u8]) -> Result<BTreeMap<String, FileAttrs>, String> {
+    let mut parsed = BTreeMap::<String, FileAttrs>::new();
+    let mut parts = bytes.split(|byte| *byte == 0);
+    while let Some(path_bytes) = parts.next() {
+        if path_bytes.is_empty() {
+            if parts.next().is_none() {
+                break;
+            }
+            return Err("Git check-attr output contains an unexpected empty path".into());
+        }
+        let attr_bytes = parts
+            .next()
+            .ok_or("Git check-attr output is missing attribute name")?;
+        let value_bytes = parts
+            .next()
+            .ok_or("Git check-attr output is missing attribute value")?;
+        let path = utf8(path_bytes)?;
+        relative(&path)?;
+        let attr = utf8(attr_bytes)?;
+        let value = utf8(value_bytes)?;
+        let entry = parsed.entry(path).or_default();
+        match attr.as_str() {
+            "diff" => {
+                entry.diff = match value.as_str() {
+                    "unset" => DiffAttr::ForceBinary,
+                    "set" => DiffAttr::ForceText,
+                    _ => DiffAttr::Auto,
+                };
+            }
+            "filter" => {
+                entry.has_filter = !matches!(value.as_str(), "unspecified" | "unset");
+            }
+            _ => {}
+        }
+    }
+    Ok(parsed)
 }
 pub fn numstat(bytes: &[u8]) -> Result<BTreeMap<String, Stats>, String> {
     let mut parsed = BTreeMap::new();

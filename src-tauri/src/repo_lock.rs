@@ -4,7 +4,10 @@
 //! and `UpdateManager` so all repository mutations synchronize through one atomic mutex instead
 //! of fragmented per-coordinator checks and locks.
 
-use crate::i18n::{self, LanguageKind};
+use crate::{
+    error::{AppError, AppErrorCode},
+    i18n::{self, LanguageKind},
+};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -112,16 +115,28 @@ impl RepoWriteCoordinator {
         repository_id: &str,
         kind: RepoWriteKind,
         locale: LanguageKind,
-    ) -> Result<RepoWriteLease, String> {
+    ) -> Result<RepoWriteLease, AppError> {
         let mut state = self
             .inner
             .lock()
-            .map_err(|_| "Repository write coordinator lock is unavailable".to_string())?;
+            .map_err(|_| AppError::internal("Repository write coordinator lock is unavailable"))?;
         if state.draining_for_update {
-            return Err(update_draining_error(locale));
+            return Err(AppError::updater(
+                AppErrorCode::UpdaterDraining,
+                update_draining_error(locale),
+            ));
         }
         if let Some(&existing) = state.active_repos.get(repository_id) {
-            return Err(busy_error_message(existing, kind, locale));
+            let code = match kind {
+                RepoWriteKind::CustomAction | RepoWriteKind::CPush | RepoWriteKind::PullRebase => {
+                    AppErrorCode::ActionBusy
+                }
+                _ => AppErrorCode::RepoBusy,
+            };
+            return Err(
+                AppError::action(code, busy_error_message(existing, kind, locale))
+                    .with_retryable(true),
+            );
         }
         state.active_repos.insert(repository_id.to_owned(), kind);
         Ok(RepoWriteLease {
@@ -148,13 +163,16 @@ impl RepoWriteCoordinator {
     }
 
     /// Rejects new low-level writes while an in-app update installation is draining.
-    pub fn ensure_not_draining(&self, locale: LanguageKind) -> Result<(), String> {
+    pub fn ensure_not_draining(&self, locale: LanguageKind) -> Result<(), AppError> {
         let state = self
             .inner
             .lock()
-            .map_err(|_| "Repository write coordinator lock is unavailable".to_string())?;
+            .map_err(|_| AppError::internal("Repository write coordinator lock is unavailable"))?;
         if state.draining_for_update {
-            return Err(update_draining_error(locale));
+            return Err(AppError::updater(
+                AppErrorCode::UpdaterDraining,
+                update_draining_error(locale),
+            ));
         }
         Ok(())
     }
@@ -173,13 +191,16 @@ impl RepoWriteCoordinator {
         &self,
         external_git_busy: bool,
         locale: LanguageKind,
-    ) -> Result<UpdateDrainGuard, String> {
+    ) -> Result<UpdateDrainGuard, AppError> {
         let mut state = self
             .inner
             .lock()
-            .map_err(|_| "Repository write coordinator lock is unavailable".to_string())?;
+            .map_err(|_| AppError::internal("Repository write coordinator lock is unavailable"))?;
         if external_git_busy || !state.active_repos.is_empty() || state.draining_for_update {
-            return Err(i18n::updater::updater_git_busy_error(locale).to_owned());
+            return Err(AppError::updater(
+                AppErrorCode::UpdaterDraining,
+                i18n::updater::updater_git_busy_error(locale),
+            ));
         }
         state.draining_for_update = true;
         Ok(UpdateDrainGuard {

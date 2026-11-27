@@ -3,6 +3,7 @@ use super::registration::{
     stage_entries_by_path,
 };
 use crate::{
+    error::{AppError, AppErrorCode, CommitGuardError},
     i18n::{self, LanguageKind},
     repository::{Result, parse, runner::GitReader},
 };
@@ -102,7 +103,8 @@ pub(super) async fn build_isolated_commit_tree(
     initial_live_index: &[u8],
     selected_index: &Path,
     locale: LanguageKind,
-) -> Result<String> {
+) -> std::result::Result<String, AppError> {
+    let map_commit_err = |msg: String| AppError::git(AppErrorCode::CommitFailed, msg);
     let baseline_gitlinks = if let Some(parent) = commit_state.head.as_deref() {
         run_index_checked(
             worktree_reader,
@@ -112,7 +114,8 @@ pub(super) async fn build_isolated_commit_tree(
             None,
             "Failed to initialize temporary commit index",
         )
-        .await?;
+        .await
+        .map_err(map_commit_err)?;
         let base_stage = run_index_checked(
             worktree_reader,
             root,
@@ -121,8 +124,9 @@ pub(super) async fn build_isolated_commit_tree(
             None,
             "Failed to inspect baseline commit index",
         )
-        .await?;
-        gitlink_entries_from_stage(&base_stage)?
+        .await
+        .map_err(map_commit_err)?;
+        gitlink_entries_from_stage(&base_stage).map_err(map_commit_err)?
     } else {
         run_index_checked(
             worktree_reader,
@@ -132,7 +136,8 @@ pub(super) async fn build_isolated_commit_tree(
             None,
             "Failed to initialize initial commit index",
         )
-        .await?;
+        .await
+        .map_err(map_commit_err)?;
         BTreeMap::new()
     };
     for batch in unstaged_paths.chunks(128) {
@@ -146,12 +151,13 @@ pub(super) async fn build_isolated_commit_tree(
             None,
             "Failed to stage selected unstaged paths in temporary index",
         )
-        .await?;
+        .await
+        .map_err(map_commit_err)?;
     }
     let mut staged_unit_paths = BTreeSet::new();
     let mut staged_index_info = Vec::new();
     let mut staged_by_unit_path = BTreeMap::<String, Vec<u8>>::new();
-    let initial_stage_map = stage_entries_by_path(initial_live_index)?;
+    let initial_stage_map = stage_entries_by_path(initial_live_index).map_err(map_commit_err)?;
     for file in selected_files.iter().filter(|file| file.staged) {
         for path in file.unit_paths() {
             if let Some(records) = initial_stage_map.get(&path) {
@@ -174,7 +180,8 @@ pub(super) async fn build_isolated_commit_tree(
             Some(&remove_stdin),
             "Failed to clear old paths in temporary index",
         )
-        .await?;
+        .await
+        .map_err(map_commit_err)?;
         for records in staged_by_unit_path.values() {
             staged_index_info.extend_from_slice(records);
         }
@@ -187,7 +194,8 @@ pub(super) async fn build_isolated_commit_tree(
                 Some(&staged_index_info),
                 "Failed to apply selected staged entries",
             )
-            .await?;
+            .await
+            .map_err(map_commit_err)?;
         }
     }
     let selected_stage = run_index_checked(
@@ -198,27 +206,34 @@ pub(super) async fn build_isolated_commit_tree(
         None,
         "Failed to inspect temporary commit index",
     )
-    .await?;
-    let selected_gitlinks = gitlink_entries_from_stage(&selected_stage)?;
+    .await
+    .map_err(map_commit_err)?;
+    let selected_gitlinks = gitlink_entries_from_stage(&selected_stage).map_err(map_commit_err)?;
     if selected_gitlinks != baseline_gitlinks {
-        return Err(i18n::repository::commit_submodule_error(locale).into());
+        return Err(CommitGuardError::SubmoduleUnsupported(
+            i18n::repository::commit_submodule_error(locale).into(),
+        )
+        .into());
     }
-    let tree = write_tree(worktree_reader, root, selected_index).await?;
+    let tree = write_tree(worktree_reader, root, selected_index)
+        .await
+        .map_err(map_commit_err)?;
     if let Some(parent) = commit_state.head.as_deref() {
         let base_tree = reader
             .text(root, &["rev-parse", &format!("{parent}^{{tree}}")])
-            .await?;
+            .await
+            .map_err(map_commit_err)?;
         if tree == base_tree {
-            return Err(
-                "Selected scope has no effective changes relative to current branch; skipped empty commit (draft and selection were preserved)"
-                    .into(),
-            );
+            return Err(AppError::git(
+                AppErrorCode::CommitFailed,
+                "Selected scope has no effective changes relative to current branch; skipped empty commit (draft and selection were preserved)",
+            ));
         }
     } else if selected_stage.is_empty() {
-        return Err(
-            "Selected scope has no files for initial commit; skipped empty commit (draft and selection were preserved)"
-                .into(),
-        );
+        return Err(AppError::git(
+            AppErrorCode::CommitFailed,
+            "Selected scope has no files for initial commit; skipped empty commit (draft and selection were preserved)",
+        ));
     }
     Ok(tree)
 }

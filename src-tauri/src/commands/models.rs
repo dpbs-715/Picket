@@ -2,6 +2,7 @@
 
 use super::{picket_data_dir, runtime_paths};
 use crate::{
+    error::{AppError, AppErrorCode},
     models::{
         store::ModelStore,
         types::{
@@ -21,9 +22,10 @@ pub async fn test_model_connection(
     models: State<'_, ModelStore>,
     supervisor: State<'_, PiSupervisor>,
     input: TestConnectionInput,
-) -> Result<ModelTestReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
+) -> Result<ModelTestReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    let paths =
+        runtime_paths(&app).map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
     models
         .test_connection_with_storage(&data_dir, &paths, &supervisor, &input)
         .await
@@ -31,93 +33,107 @@ pub async fn test_model_connection(
 
 #[tauri::command]
 pub async fn list_provider_models(
-    app: tauri::AppHandle,
     models: State<'_, ModelStore>,
-    supervisor: State<'_, PiSupervisor>,
     input: ListModelsInput,
-) -> Result<ModelListReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
-    models
-        .list_provider_models(&data_dir, &paths, &supervisor, &input)
-        .await
+) -> Result<ModelListReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    models.list_provider_models(&data_dir, &input).await
 }
 
 #[tauri::command]
 pub async fn create_provider_connection(
     models: State<'_, ModelStore>,
     input: CreateProviderConnectionInput,
-) -> Result<ProviderSaveReply, String> {
-    let data_dir = picket_data_dir()?;
-    models.create_provider_connection(&data_dir, &input).await
+) -> Result<ProviderSaveReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    models
+        .create_provider_connection(&data_dir, &input)
+        .await
+        .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))
 }
 
 #[tauri::command]
 pub async fn update_provider_connection(
     models: State<'_, ModelStore>,
     input: UpdateProviderConnectionInput,
-) -> Result<ProviderUpdateReply, String> {
-    let data_dir = picket_data_dir()?;
-    models.update_provider_connection(&data_dir, &input).await
+) -> Result<ProviderUpdateReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    models
+        .update_provider_connection(&data_dir, &input)
+        .await
+        .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))
 }
 
 #[tauri::command]
 pub async fn delete_provider_connection(
     models: State<'_, ModelStore>,
     request: ConnectionIdRequest,
-) -> Result<ModelMutateReply, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<ModelMutateReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     models
         .delete_provider_connection_with_locale(&data_dir, &request.connection_id, request.locale)
         .await
+        .map_err(|msg| AppError::model(AppErrorCode::ModelNotFound, msg))
 }
 
 #[tauri::command]
 pub async fn save_model(
     models: State<'_, ModelStore>,
     input: SaveModelInput,
-) -> Result<ModelSaveReply, String> {
-    let data_dir = picket_data_dir()?;
-    models.save_model(&data_dir, &input).await
+) -> Result<ModelSaveReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    models
+        .save_model(&data_dir, &input)
+        .await
+        .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))
 }
 
 #[tauri::command]
 pub async fn select_model(
     models: State<'_, ModelStore>,
     request: ModelIdRequest,
-) -> Result<ModelMutateReply, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<ModelMutateReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     models
         .select_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
+        .map_err(|msg| AppError::model(AppErrorCode::ModelNotFound, msg))
 }
 
 #[tauri::command]
 pub async fn delete_model(
     models: State<'_, ModelStore>,
     request: ModelIdRequest,
-) -> Result<ModelMutateReply, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<ModelMutateReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     models
         .delete_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
+        .map_err(|msg| AppError::model(AppErrorCode::ModelNotFound, msg))
 }
 
 #[tauri::command]
 pub async fn reveal_provider_api_key(
     models: State<'_, ModelStore>,
     request: ConnectionIdRequest,
-) -> Result<ProviderRevealKeyReply, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<ProviderRevealKeyReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     models
         .reveal_provider_api_key(&data_dir, &request.connection_id, request.locale)
         .await
+        .map_err(|msg| AppError::auth(AppErrorCode::LocalAuthFailed, msg))
 }
 
 #[tauri::command]
 pub fn cancel_model_request(
+    models: State<'_, ModelStore>,
     supervisor: State<'_, PiSupervisor>,
     request_id: String,
-) -> Result<(), String> {
-    supervisor.cancel(&request_id)
+) -> Result<(), AppError> {
+    if models.cancel_list_request(&request_id) {
+        return Ok(());
+    }
+    supervisor
+        .cancel(&request_id)
+        .map_err(|msg| AppError::model(AppErrorCode::ModelRequestFailed, msg))
 }

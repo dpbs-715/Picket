@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const expectedPiCoreVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies['@earendil-works/pi-agent-core'];
 // macOS /var is a symlink to /private/var. Tauri intentionally rejects a
 // symlinked starting-binary path, so resolve it rather than disabling that guard.
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'picket-package-')));
@@ -106,7 +107,7 @@ function verifyReleaseBundleNoSmokeBackdoors(bundleDir, distDir) {
   }
   const firstLine = handshakeRun.stdout.trim().split('\n')[0] ?? '';
   const handshake = JSON.parse(firstLine);
-  if (handshake?.type !== 'ready' || handshake.protocolVersion !== 1 || handshake.piCoreVersion !== '1.6.0') {
+  if (handshake?.type !== 'ready' || handshake.protocolVersion !== 1 || handshake.piCoreVersion !== expectedPiCoreVersion) {
     throw new Error(`Unexpected production sidecar handshake: ${firstLine}`);
   }
 }
@@ -199,7 +200,7 @@ try {
   const report = JSON.parse(launch('--foundation-smoke').stdout);
   for (const [phase, expected] of [['complete', 'completed'], ['cancelled', 'cancelled'], ['shutdown', 'cancelled']]) {
     const probe = report[phase];
-    if (probe.status !== expected || probe.childExitCode !== 0 || probe.piCoreVersion !== '1.6.0') {
+    if (probe.status !== expected || probe.childExitCode !== 0 || probe.piCoreVersion !== expectedPiCoreVersion) {
       throw new Error(`Incorrect packaged Pi result: ${phase}`);
     }
     assertGone(probe.childPid);

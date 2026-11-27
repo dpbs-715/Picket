@@ -34,6 +34,7 @@ pub const MAX_LINK_LABEL_CHARS: usize = 80;
 pub const MAX_QUESTIONS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MessageTone {
     Info,
@@ -43,6 +44,7 @@ pub enum MessageTone {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MessageCalloutTone {
     Info,
@@ -52,6 +54,7 @@ pub enum MessageCalloutTone {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MessageFactTone {
     Default,
@@ -61,6 +64,7 @@ pub enum MessageFactTone {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MessageFindingSeverity {
     High,
@@ -70,6 +74,7 @@ pub enum MessageFindingSeverity {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MessageChecklistStatus {
     Pass,
@@ -80,6 +85,7 @@ pub enum MessageChecklistStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageFactItem {
     pub label: String,
@@ -91,6 +97,7 @@ pub struct MessageFactItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageFindingItem {
     pub severity: MessageFindingSeverity,
@@ -105,6 +112,7 @@ pub struct MessageFindingItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageSkippedFileItem {
     pub path: String,
@@ -112,6 +120,7 @@ pub struct MessageSkippedFileItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageChecklistItem {
     pub status: MessageChecklistStatus,
@@ -121,6 +130,7 @@ pub struct MessageChecklistItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageFileChipItem {
     pub path: String,
@@ -131,6 +141,7 @@ pub struct MessageFileChipItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -183,6 +194,7 @@ pub enum MessageBlock {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct MessageUserCard {
     pub title: String,
@@ -197,6 +209,7 @@ pub struct MessageUserCard {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageQuestionOption {
     pub id: String,
@@ -209,6 +222,7 @@ pub struct MessageQuestionOption {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageQuestionItem {
     pub id: String,
@@ -220,6 +234,7 @@ pub struct MessageQuestionItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageQuestionContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,6 +250,7 @@ pub struct MessageQuestionContext {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageUserRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,6 +270,7 @@ pub struct MessageUserRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageUserAnswer {
     pub question_index: usize,
@@ -268,6 +285,7 @@ pub struct MessageUserAnswer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageUserResponse {
     pub cancelled: bool,

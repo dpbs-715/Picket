@@ -68,6 +68,9 @@ impl GitReader {
     pub fn cancelled(&self) -> bool {
         *self.inner.cancelled.borrow()
     }
+    pub fn has_blocked_filters(&self) -> bool {
+        !self.filter_settings.is_empty()
+    }
     pub async fn shutdown(&self) {
         self.inner.cancelled.send_replace(true);
         loop {
@@ -143,6 +146,15 @@ impl GitReader {
     }
     pub async fn run(&self, root: &Path, args: &[&str]) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Read, None, None)
+            .await
+    }
+    pub async fn run_with_input(
+        &self,
+        root: &Path,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<GitOutput, String> {
+        self.execute(root, args, ExecutionMode::Read, None, Some(input))
             .await
     }
     pub async fn run_with_index(

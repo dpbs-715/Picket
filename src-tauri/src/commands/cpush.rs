@@ -10,6 +10,7 @@ use crate::{
             RespondCPushRequest, StartCPushRequest,
         },
     },
+    error::{AppError, AppErrorCode},
     models::store::ModelStore,
     pi_runtime::PiSupervisor,
     repository::RepositoryStore,
@@ -26,9 +27,10 @@ pub async fn start_cpush(
     actions: State<'_, CustomActionCoordinator>,
     request: StartCPushRequest,
     on_event: Channel<CPushProgressEvent>,
-) -> Result<CPushCommandReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
+) -> Result<CPushCommandReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    let paths =
+        runtime_paths(&app).map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
     let app_cb = app.clone();
     let result = actions
         .start_cpush(
@@ -61,9 +63,10 @@ pub async fn respond_cpush(
     actions: State<'_, CustomActionCoordinator>,
     request: RespondCPushRequest,
     on_event: Channel<CPushProgressEvent>,
-) -> Result<CPushCommandReply, String> {
-    let data_dir = picket_data_dir()?;
-    let paths = runtime_paths(&app)?;
+) -> Result<CPushCommandReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
+    let paths =
+        runtime_paths(&app).map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
     let app_cb = app.clone();
     let result = actions
         .respond_cpush(
@@ -94,8 +97,8 @@ pub async fn pull_rebase_repository(
     actions: State<'_, CustomActionCoordinator>,
     request: PullRebaseRequest,
     on_event: Channel<CPushProgressEvent>,
-) -> Result<CPushCommandReply, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<CPushCommandReply, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     let app_cb = app.clone();
     let result = actions
         .pull_rebase(&data_dir, &store, &request, move |event| {
@@ -117,11 +120,12 @@ pub async fn reconcile_cpush_session(
     store: State<'_, RepositoryStore>,
     actions: State<'_, CustomActionCoordinator>,
     request: ReconcileCPushRequest,
-) -> Result<Option<CPushProgressEvent>, String> {
-    let data_dir = picket_data_dir()?;
+) -> Result<Option<CPushProgressEvent>, AppError> {
+    let data_dir = picket_data_dir().map_err(AppError::storage)?;
     let result = actions
         .reconcile_worktree(&data_dir, &store, &request)
-        .await;
+        .await
+        .map_err(|msg| AppError::action(AppErrorCode::ActionFailed, msg));
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     result
