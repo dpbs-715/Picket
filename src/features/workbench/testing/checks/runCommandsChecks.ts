@@ -1,6 +1,9 @@
-import { act, createElement } from 'react';
-import type { RunEnvEntry, RunProcessSnapshot } from '../../../../../shared/run-protocol';
+import { StrictMode, act, createElement } from 'react';
+import type { DiscoverRunCommandsReply, RunEnvEntry, RunProcessSnapshot } from '../../../../../shared/run-protocol';
 import type { TrayStateSnapshot } from '../../../../../shared/tray-protocol';
+import { I18nProvider } from '../../../../i18n';
+import { MotionRoot } from '../../../../ui/motion';
+import { DiscoverRunCommandsModal } from '../../../runner/DiscoverRunCommandsModal';
 import { TrayPopover } from '../../../tray/TrayPopover';
 import { disconnectedBackend, type WorkbenchBackend } from '../../commands';
 import { fixture } from '../fixtures';
@@ -612,5 +615,131 @@ export async function runRunCommandsChecks(harness: BrowserCheckHarness) {
     );
   }
 
-  checks.push('Local Run commands: Git|Run dual view switch, multi-module grouping/filter/Running Now/Shared Env, independent MessageDock over Run, running-delete confirmation, Discover error retry, Compact IDEA quick-run, and Tray controls');
+  // StrictMode regression: simulated unmount cancels Mount #1's early discovery request;
+  // Mount #2 must launch a fresh request instead of freezing on "Scanning project manifests...".
+  {
+    let startedIds: string[] = [];
+    const cancelledIds = new Set<string>();
+    const pendingResolvers = new Map<string, (reply: DiscoverRunCommandsReply) => void>();
+
+    const onDiscover = (requestId: string) => {
+      startedIds.push(requestId);
+      return new Promise<DiscoverRunCommandsReply>((resolve) => {
+        if (cancelledIds.has(requestId)) {
+          resolve({
+            protocolVersion: 1,
+            kind: 'discoverRunCommands',
+            requestId,
+            status: 'cancelled',
+            summary: '',
+            commands: [],
+          });
+          return;
+        }
+        pendingResolvers.set(requestId, resolve);
+      });
+    };
+    const onCancelDiscover = (requestId: string) => {
+      cancelledIds.add(requestId);
+      const pending = pendingResolvers.get(requestId);
+      if (pending) {
+        pendingResolvers.delete(requestId);
+        pending({
+          protocolVersion: 1,
+          kind: 'discoverRunCommands',
+          requestId,
+          status: 'cancelled',
+          summary: '',
+          commands: [],
+        });
+      }
+    };
+
+    const renderStrictDiscover = (hasModel: boolean, modalKey: string) => createElement(
+      StrictMode,
+      null,
+      createElement(I18nProvider, {
+        locale: 'en',
+        children: createElement(MotionRoot, {
+          children: createElement(DiscoverRunCommandsModal, {
+            key: modalKey,
+            repositoryName: 'strict-demo',
+            existingCommands: [],
+            hasModel,
+            canDiscover: hasModel,
+            onClose: () => {},
+            onConfigureModel: () => {},
+            onAddManual: () => {},
+            onDiscover,
+            onCancelDiscover,
+            onAddCommands: () => {},
+          }),
+        }),
+      }),
+    );
+
+    await act(async () => { root.render(renderStrictDiscover(true, 'strict-1')); });
+    await tick();
+    assert(
+      startedIds.length >= 2 && cancelledIds.has(startedIds[0]) && !cancelledIds.has(startedIds[startedIds.length - 1]),
+      `StrictMode remount must start a fresh discovery request after Mount #1 is cancelled (started=${startedIds.length}, cancelled=${cancelledIds.size})`,
+    );
+    const activeId = startedIds[startedIds.length - 1];
+    const finishActive = pendingResolvers.get(activeId);
+    assert(!!finishActive, 'Active StrictMode discovery request must be pending');
+    await act(async () => {
+      finishActive({
+        protocolVersion: 1,
+        kind: 'discoverRunCommands',
+        requestId: activeId,
+        status: 'done',
+        summary: 'StrictMode scan completed.',
+        commands: [
+          {
+            label: 'Strict Dev',
+            command: 'pnpm dev',
+            description: 'Start dev server.',
+            category: 'dev',
+          },
+        ],
+      });
+    });
+    await tick();
+    assert(
+      !document.querySelector('.run-discover-scanning')
+        && (document.body.textContent ?? '').includes('StrictMode scan completed.')
+        && (document.body.textContent ?? '').includes('Strict Dev'),
+      'DiscoverRunCommandsModal under StrictMode must exit scanning state and render discovered commands',
+    );
+
+    // Also verify hasModel: false -> true auto-starts cleanly under StrictMode:
+    startedIds = [];
+    cancelledIds.clear();
+    pendingResolvers.clear();
+    const getStartedCount = () => startedIds.length;
+    await act(async () => { root.render(renderStrictDiscover(false, 'strict-2')); });
+    await tick();
+    assert(getStartedCount() === 0, 'Modal opened without a model must not start scanning');
+    await act(async () => { root.render(renderStrictDiscover(true, 'strict-2')); });
+    await tick();
+    assert(getStartedCount() === 1 && pendingResolvers.has(startedIds[0]), 'Configuring a model must trigger exactly one scan');
+    await act(async () => {
+      pendingResolvers.get(startedIds[0])!({
+        protocolVersion: 1,
+        kind: 'discoverRunCommands',
+        requestId: startedIds[0],
+        status: 'done',
+        summary: 'Post-config scan completed.',
+        commands: [],
+      });
+    });
+    await tick();
+    assert(
+      !document.querySelector('.run-discover-scanning')
+        && (document.body.textContent ?? '').includes('Post-config scan completed.'),
+      'DiscoverRunCommandsModal must complete scanning after hasModel transitions false -> true',
+    );
+  }
+
+  checks.push('Local Run commands: Git|Run dual view switch, multi-module grouping/filter/Running Now/Shared Env, independent MessageDock over Run, running-delete confirmation, Discover StrictMode & error retry, Compact IDEA quick-run, and Tray controls');
 }

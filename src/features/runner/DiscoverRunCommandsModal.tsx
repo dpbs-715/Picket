@@ -92,6 +92,9 @@ export function DiscoverRunCommandsModal(props: Props) {
   const activeRequestRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const didAutoStartRef = useRef(false);
+  const hasCompletedScanRef = useRef(false);
+  const propsRef = useRef(props);
+  propsRef.current = props;
 
   const existingCommandKeys = useRef<Set<string>>(new Set());
   existingCommandKeys.current = new Set(
@@ -102,12 +105,12 @@ export function DiscoverRunCommandsModal(props: Props) {
     const rid = activeRequestRef.current;
     if (rid) {
       activeRequestRef.current = null;
-      props.onCancelDiscover?.(rid);
+      propsRef.current.onCancelDiscover?.(rid);
     }
-  }, [props]);
+  }, []);
 
   const startScan = useCallback(async () => {
-    if (!props.hasModel || !props.canDiscover) return;
+    if (!propsRef.current.hasModel || !propsRef.current.canDiscover) return;
     cancelActive();
     const requestId = `disc-${crypto.randomUUID().slice(0, 12)}`;
     activeRequestRef.current = requestId;
@@ -119,7 +122,7 @@ export function DiscoverRunCommandsModal(props: Props) {
     setStatusLabel(t.run.discoverScanning);
     setScanSteps([t.run.discoverScanning]);
     try {
-      const reply = await props.onDiscover(requestId, (event) => {
+      const reply = await propsRef.current.onDiscover(requestId, (event) => {
         if (mountedRef.current && activeRequestRef.current === requestId) {
           const nextLabel = event.statusLabel?.trim() || t.run.discoverScanning;
           setStatusLabel(nextLabel);
@@ -133,6 +136,7 @@ export function DiscoverRunCommandsModal(props: Props) {
       activeRequestRef.current = null;
       setScanning(false);
       if (reply.status === 'cancelled') return;
+      hasCompletedScanRef.current = true;
       setHasScanned(true);
       setSummary(reply.summary);
       setRows(
@@ -158,19 +162,25 @@ export function DiscoverRunCommandsModal(props: Props) {
       if (!mountedRef.current || activeRequestRef.current !== requestId) return;
       activeRequestRef.current = null;
       setScanning(false);
+      hasCompletedScanRef.current = true;
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [cancelActive, props, t.run.discoverScanning]);
+  }, [cancelActive, t.run.discoverScanning]);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
+      const cancelledInFlight = activeRequestRef.current !== null;
       mountedRef.current = false;
       cancelActive();
+      if (cancelledInFlight && !hasCompletedScanRef.current) {
+        // React StrictMode development double-invocation cancels Mount #1's auto-started
+        // scan while preserving refs and state; reset both so Mount #2 starts cleanly.
+        didAutoStartRef.current = false;
+        setScanning(false);
+      }
     };
-    // Cancel any in-flight discovery when modal unmounts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cancelActive]);
 
   useEffect(() => {
     if (!props.hasModel || !props.canDiscover || didAutoStartRef.current) return;
@@ -406,7 +416,7 @@ export function DiscoverRunCommandsModal(props: Props) {
             <Icon name="folder" />
             <span className="mono truncate">{props.repositoryName}</span>
           </div>
-          {(hasScanned || Boolean(error)) && !scanning && props.hasModel && props.canDiscover && (
+          {!scanning && props.hasModel && props.canDiscover && (
             <button
               type="button"
               className="secondary compact"

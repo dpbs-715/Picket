@@ -15,7 +15,7 @@ use crate::{
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     path::PathBuf,
     sync::{
@@ -70,8 +70,14 @@ pub struct ProbeReport {
 }
 
 #[derive(Default)]
+struct RequestRegistry {
+    active: HashMap<String, watch::Sender<bool>>,
+    pre_cancelled: HashSet<String>,
+}
+
+#[derive(Default)]
 struct SupervisorState {
-    active: Mutex<HashMap<String, watch::Sender<bool>>>,
+    registry: Mutex<RequestRegistry>,
     settled: Notify,
     closing: AtomicBool,
 }
@@ -86,8 +92,8 @@ struct ActiveRequest {
 
 impl Drop for ActiveRequest {
     fn drop(&mut self) {
-        if let Ok(mut active) = self.state.active.lock() {
-            active.remove(&self.id);
+        if let Ok(mut registry) = self.state.registry.lock() {
+            registry.active.remove(&self.id);
         }
         self.state.settled.notify_waiters();
     }
@@ -96,7 +102,7 @@ impl Drop for ActiveRequest {
 impl PiSupervisor {
     #[cfg(test)]
     pub(super) fn has_active_requests(&self) -> bool {
-        !self.0.active.lock().unwrap().is_empty()
+        !self.0.registry.lock().unwrap().active.is_empty()
     }
 
     fn register_request(
@@ -116,7 +122,7 @@ impl PiSupervisor {
             });
         }
         let (cancel, cancelled) = watch::channel(false);
-        let mut active = self.0.active.lock().map_err(|_| match localized {
+        let mut registry = self.0.registry.lock().map_err(|_| match localized {
             Some(locale) => i18n::pi::pi_registry_unavailable(locale).to_string(),
             None => "Request registry is unavailable".to_string(),
         })?;
@@ -126,13 +132,16 @@ impl PiSupervisor {
                 None => "Application is shutting down".into(),
             });
         }
-        if active.contains_key(request_id) {
+        if registry.active.contains_key(request_id) {
             return Err(match localized {
                 Some(locale) => i18n::pi::pi_duplicate_request(locale).into(),
                 None => "Request is already running".into(),
             });
         }
-        active.insert(request_id.to_owned(), cancel);
+        if registry.pre_cancelled.remove(request_id) {
+            let _ = cancel.send(true);
+        }
+        registry.active.insert(request_id.to_owned(), cancel);
         Ok((
             ActiveRequest {
                 id: request_id.to_owned(),
@@ -143,26 +152,51 @@ impl PiSupervisor {
     }
 
     pub fn cancel(&self, request_id: &str) -> Result<(), String> {
-        let active = self
+        let registry = self
             .0
-            .active
+            .registry
             .lock()
             .map_err(|_| "Request registry is unavailable")?;
-        let sender = active.get(request_id).ok_or("No matching active request")?;
+        let sender = registry
+            .active
+            .get(request_id)
+            .ok_or("No matching active request")?;
         sender
             .send(true)
             .map_err(|_| "Request has already settled".to_string())
     }
 
+    /// Cancels an active Pi request, or records a pre-cancellation tombstone under the same lock
+    /// so a request that is still completing host setup immediately observes cancellation upon
+    /// registration with zero race window.
+    pub fn cancel_or_pre_cancel(&self, request_id: &str) {
+        if let Ok(mut registry) = self.0.registry.lock() {
+            if let Some(sender) = registry.active.get(request_id) {
+                let _ = sender.send(true);
+            } else {
+                if registry.pre_cancelled.len() >= 128 {
+                    registry.pre_cancelled.clear();
+                }
+                registry.pre_cancelled.insert(request_id.to_owned());
+            }
+        }
+    }
+
+    pub fn clear_pre_cancelled(&self, request_id: &str) {
+        if let Ok(mut registry) = self.0.registry.lock() {
+            registry.pre_cancelled.remove(request_id);
+        }
+    }
+
     pub async fn shutdown(&self) -> Result<(), String> {
         {
-            let active = self
+            let registry = self
                 .0
-                .active
+                .registry
                 .lock()
                 .map_err(|_| "Request registry is unavailable")?;
             self.0.closing.store(true, Ordering::SeqCst);
-            for sender in active.values() {
+            for sender in registry.active.values() {
                 let _ = sender.send(true);
             }
         }
@@ -171,9 +205,10 @@ impl PiSupervisor {
                 let settled = self.0.settled.notified();
                 if self
                     .0
-                    .active
+                    .registry
                     .lock()
                     .map_err(|_| "Request registry is unavailable")?
+                    .active
                     .is_empty()
                 {
                     return Ok(());
@@ -346,6 +381,9 @@ impl PiSupervisor {
         let (_registration, mut cancelled) = self
             .register_request(&request_id, Some(locale))
             .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
+        if *cancelled.borrow() {
+            return Ok(PiTaskOutcome::Cancelled);
+        }
         let mut proc = SpawnedPiProcess::spawn(paths, Some(locale), &scrub)
             .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
         let pid = proc.pid;
@@ -358,24 +396,36 @@ impl PiSupervisor {
         let mut explicit_error = false;
         let exchange: Result<PiTaskOutcome, AppError> = async {
             let handshake_started = Instant::now();
-            let ready = match timeout(
-                START_TIMEOUT.min(remaining_budget),
-                next_event(&mut proc.lines),
-            )
-            .await
-            {
-                Ok(result) => {
-                    result.map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?
+            let ready = tokio::select! {
+                biased;
+                change = cancelled.changed() => {
+                    change.map_err(|_| {
+                        AppError::model(
+                            AppErrorCode::PiRuntimeError,
+                            i18n::pi::pi_cancel_channel_closed(locale),
+                        )
+                    })?;
+                    return Ok(PiTaskOutcome::Cancelled);
                 }
-                Err(_) => {
-                    explicit_error = true;
-                    return Err(AppError::model(
-                        AppErrorCode::ModelTimeout,
-                        i18n::pi::pi_handshake_timeout(locale),
-                    ));
+                step = timeout(START_TIMEOUT.min(remaining_budget), next_event(&mut proc.lines)) => {
+                    match step {
+                        Ok(result) => {
+                            result.map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?
+                        }
+                        Err(_) => {
+                            explicit_error = true;
+                            return Err(AppError::model(
+                                AppErrorCode::ModelTimeout,
+                                i18n::pi::pi_handshake_timeout(locale),
+                            ));
+                        }
+                    }
                 }
             };
             remaining_budget = remaining_budget.saturating_sub(handshake_started.elapsed());
+            if *cancelled.borrow() {
+                return Ok(PiTaskOutcome::Cancelled);
+            }
             let PiEvent::Ready {
                 protocol_version,
                 pi_core_version,
@@ -573,6 +623,9 @@ impl PiSupervisor {
                     i18n::pi::pi_append_diagnostic(locale, &sanitized, &diagnostic)
                 })
             });
+        }
+        if matches!(exchange, Ok(PiTaskOutcome::Cancelled)) {
+            return Ok(PiTaskOutcome::Cancelled);
         }
         let status =
             exit.map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, scrub(msg)))?;

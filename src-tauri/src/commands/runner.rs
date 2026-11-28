@@ -152,6 +152,6 @@ pub fn cancel_discover_run_commands(
     request_id: String,
 ) -> Result<bool, AppError> {
     manager.mark_discover_cancelled(&request_id);
-    let _ = supervisor.cancel(&request_id);
+    supervisor.cancel_or_pre_cancel(&request_id);
     Ok(true)
 }

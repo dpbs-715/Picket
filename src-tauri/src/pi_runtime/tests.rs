@@ -567,3 +567,99 @@ async fn tool_human_wait_pauses_total_timeout_large_frames_pass_and_explicit_err
         "expected business error to be preserved over exit code, got: {err}"
     );
 }
+
+#[tokio::test]
+async fn pre_cancel_and_handshake_cancel_settle_immediately_as_cancelled() {
+    let context = RequestContext {
+        repository_id: "repo-1".into(),
+        worktree_id: "wt-1".into(),
+        session_id: "sess-cancel".into(),
+        scope_version: "scope-1".into(),
+    };
+
+    // 1. Pre-cancelling before run_task starts must short-circuit before spawning any child:
+    let supervisor = PiSupervisor::default();
+    supervisor.cancel_or_pre_cancel("req-pre-cancelled");
+    let missing_paths = PiPaths {
+        node: std::path::PathBuf::from("/nonexistent/picket-node"),
+        script: std::path::PathBuf::from("/nonexistent/pi-sidecar.mjs"),
+    };
+    let pre_cmd = PiCommand::TestConnection {
+        request_id: "req-pre-cancelled".into(),
+        context: context.clone(),
+        model: sample_model(),
+        locale: LanguageKind::En,
+    };
+    let outcome = supervisor
+        .run_task(
+            &missing_paths,
+            "req-pre-cancelled".into(),
+            context.clone(),
+            &pre_cmd,
+            Duration::from_secs(5),
+            None,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, PiTaskOutcome::Cancelled));
+
+    // 2. Cancelling while sidecar is stuck before emitting `ready` must cancel immediately
+    //    without waiting for START_TIMEOUT or returning an abnormal-exit error:
+    let directory = tempfile::tempdir().unwrap();
+    let silent_boot = directory.path().join("silent-boot.mjs");
+    std::fs::write(
+        &silent_boot,
+        r#"
+            import { createInterface } from 'node:readline';
+            const rl = createInterface({ input: process.stdin });
+            rl.on('line', (line) => {
+              const cmd = JSON.parse(line);
+              if (cmd.type === 'shutdown') process.exit(0);
+            });
+            setInterval(() => {}, 1000);
+        "#,
+    )
+    .unwrap();
+    let paths = PiPaths {
+        node: PiPaths::development().node,
+        script: silent_boot,
+    };
+    let handshake_cmd = PiCommand::TestConnection {
+        request_id: "req-handshake-cancel".into(),
+        context: context.clone(),
+        model: sample_model(),
+        locale: LanguageKind::En,
+    };
+    let cancel_sup = supervisor.clone();
+    let cancel_task = tokio::spawn(async move {
+        loop {
+            if cancel_sup.has_active_requests() {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                cancel_sup.cancel_or_pre_cancel("req-handshake-cancel");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let started = std::time::Instant::now();
+    let outcome = supervisor
+        .run_task(
+            &paths,
+            "req-handshake-cancel".into(),
+            context,
+            &handshake_cmd,
+            Duration::from_secs(10),
+            None,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    cancel_task.await.unwrap();
+    assert!(matches!(outcome, PiTaskOutcome::Cancelled));
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "handshake cancellation took too long: {:?}",
+        started.elapsed()
+    );
+}

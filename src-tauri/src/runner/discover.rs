@@ -189,12 +189,14 @@ pub fn scan_project_manifest_paths(worktree_root: &Path) -> Vec<String> {
 
 struct DiscoverCancelCleanup<'a> {
     manager: &'a RunProcessManager,
+    supervisor: &'a PiSupervisor,
     request_id: String,
 }
 
 impl Drop for DiscoverCancelCleanup<'_> {
     fn drop(&mut self) {
         self.manager.clear_discover_cancelled(&self.request_id);
+        self.supervisor.clear_pre_cancelled(&self.request_id);
     }
 }
 
@@ -237,6 +239,7 @@ where
         .map_err(|msg| AppError::runner(AppErrorCode::RunnerInvalidInput, msg))?;
     let _cancel_cleanup = DiscoverCancelCleanup {
         manager,
+        supervisor,
         request_id: request.request_id.clone(),
     };
     let progress_cb = Arc::new(on_progress);
