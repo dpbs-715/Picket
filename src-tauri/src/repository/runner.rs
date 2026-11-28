@@ -1,4 +1,7 @@
-use crate::i18n::{self, LanguageKind};
+use crate::{
+    error::{AppError, AppErrorCode},
+    i18n::{self, LanguageKind},
+};
 use std::{
     path::Path,
     process::Stdio,
@@ -8,11 +11,54 @@ use std::{
     },
     time::Duration,
 };
+use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
     sync::{Notify, watch},
 };
+
+#[derive(Debug, Error)]
+pub enum GitExecError {
+    #[error("{0}")]
+    ShuttingDown(String),
+    #[error("{0}")]
+    Timeout(String),
+    #[error("{0}")]
+    ExternalFilterBlocked(String),
+    #[error("{0}")]
+    OutputTooLarge(String),
+    #[error("{0}")]
+    SpawnFailed(String),
+    #[error("{0}")]
+    NonUtf8Output(String),
+    #[error("{0}")]
+    CommandFailed(String),
+}
+
+impl From<GitExecError> for String {
+    fn from(value: GitExecError) -> Self {
+        value.to_string()
+    }
+}
+
+impl From<GitExecError> for AppError {
+    fn from(value: GitExecError) -> Self {
+        match value {
+            GitExecError::ShuttingDown(msg) => AppError::repository(AppErrorCode::RepoBusy, msg),
+            GitExecError::Timeout(msg) => {
+                AppError::git(AppErrorCode::GitFailed, msg).with_retryable(true)
+            }
+            GitExecError::ExternalFilterBlocked(msg) => {
+                AppError::git(AppErrorCode::CommitExternalFilterBlocked, msg)
+            }
+            GitExecError::OutputTooLarge(msg)
+            | GitExecError::SpawnFailed(msg)
+            | GitExecError::NonUtf8Output(msg)
+            | GitExecError::CommandFailed(msg) => AppError::git(AppErrorCode::GitFailed, msg),
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExecutionMode {
@@ -144,9 +190,12 @@ impl GitReader {
         }
         Ok(reader)
     }
-    pub async fn run(&self, root: &Path, args: &[&str]) -> Result<GitOutput, String> {
+    pub async fn run_typed(&self, root: &Path, args: &[&str]) -> Result<GitOutput, GitExecError> {
         self.execute(root, args, ExecutionMode::Read, None, None)
             .await
+    }
+    pub async fn run(&self, root: &Path, args: &[&str]) -> Result<GitOutput, String> {
+        self.run_typed(root, args).await.map_err(Into::into)
     }
     pub async fn run_with_input(
         &self,
@@ -156,6 +205,7 @@ impl GitReader {
     ) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Read, None, Some(input))
             .await
+            .map_err(Into::into)
     }
     pub async fn run_with_index(
         &self,
@@ -166,12 +216,14 @@ impl GitReader {
     ) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Read, Some(index), input)
             .await
+            .map_err(Into::into)
     }
     // Only the branch and commit coordinators call write/hook runners after safety checks.
     // Unlike reads, writes and hooks must not override the user's hooksPath.
     pub async fn write(&self, root: &Path, args: &[&str]) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Write, None, None)
             .await
+            .map_err(Into::into)
     }
     pub async fn write_with(
         &self,
@@ -182,6 +234,7 @@ impl GitReader {
     ) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Write, index, input)
             .await
+            .map_err(Into::into)
     }
     pub async fn run_hook(
         &self,
@@ -191,10 +244,12 @@ impl GitReader {
     ) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Hook, index, None)
             .await
+            .map_err(Into::into)
     }
     pub async fn remote(&self, root: &Path, args: &[&str]) -> Result<GitOutput, String> {
         self.execute(root, args, ExecutionMode::Remote, None, None)
             .await
+            .map_err(Into::into)
     }
     async fn execute(
         &self,
@@ -203,13 +258,15 @@ impl GitReader {
         mode: ExecutionMode,
         index: Option<&Path>,
         input: Option<&[u8]>,
-    ) -> Result<GitOutput, String> {
+    ) -> Result<GitOutput, GitExecError> {
         let locale = self.locale;
         self.inner.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(self.inner.clone());
         let mut cancelled = self.inner.cancelled.subscribe();
         if *cancelled.borrow() {
-            return Err(i18n::repository::repo_shutting_down_error(locale).into());
+            return Err(GitExecError::ShuttingDown(
+                i18n::repository::repo_shutting_down_error(locale).into(),
+            ));
         }
         let mut command = Command::new("/usr/bin/git");
         command
@@ -270,11 +327,16 @@ impl GitReader {
             .env("GIT_EDITOR", ":");
         command.args(args);
         let mut child = command.spawn().map_err(|_| {
-            "Cannot start /usr/bin/git; verify that Xcode Command Line Tools are installed"
-                .to_string()
+            GitExecError::SpawnFailed(
+                "Cannot start /usr/bin/git; verify that Xcode Command Line Tools are installed"
+                    .to_string(),
+            )
         })?;
         let writer = if let Some(input) = input {
-            let mut stdin = child.stdin.take().ok_or("Git stdin is unavailable")?;
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| GitExecError::CommandFailed("Git stdin is unavailable".into()))?;
             let payload = input.to_vec();
             Some(tokio::spawn(async move {
                 stdin.write_all(&payload).await?;
@@ -283,8 +345,14 @@ impl GitReader {
         } else {
             None
         };
-        let stdout = child.stdout.take().ok_or("Git stdout is unavailable")?;
-        let stderr = child.stderr.take().ok_or("Git stderr is unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| GitExecError::CommandFailed("Git stdout is unavailable".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| GitExecError::CommandFailed("Git stderr is unavailable".into()))?;
         let output = tokio::spawn(async move {
             let mut bytes = Vec::new();
             stdout
@@ -302,39 +370,52 @@ impl GitReader {
                 .map(|_| bytes)
         });
         let result = tokio::select! {
-            status = child.wait() => status.map_err(|_| "Git process exited unexpectedly; refresh to verify live status".to_string()),
-            _ = cancelled.changed() => { let _ = child.kill().await; Err(i18n::repository::repo_shutting_down_error(locale).into()) },
-            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => { let _ = child.kill().await; Err("Git command timed out; refresh to verify live status (writes are never retried automatically)".into()) },
+            status = child.wait() => status.map_err(|_| GitExecError::CommandFailed("Git process exited unexpectedly; refresh to verify live status".to_string())),
+            _ = cancelled.changed() => {
+                let _ = child.kill().await;
+                Err(GitExecError::ShuttingDown(i18n::repository::repo_shutting_down_error(locale).into()))
+            },
+            _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                let _ = child.kill().await;
+                Err(GitExecError::Timeout("Git command timed out; refresh to verify live status (writes are never retried automatically)".into()))
+            },
         };
-        let stdin_result = match writer {
-            Some(writer) => Some(writer.await.map_err(|_| "Cannot join Git stdin writer")?),
-            None => None,
-        };
+        let stdin_result =
+            match writer {
+                Some(writer) => Some(writer.await.map_err(|_| {
+                    GitExecError::CommandFailed("Cannot join Git stdin writer".into())
+                })?),
+                None => None,
+            };
         let bytes = output
             .await
-            .map_err(|_| "Cannot join Git stdout task")?
-            .map_err(|_| "Cannot read Git stdout")?;
+            .map_err(|_| GitExecError::CommandFailed("Cannot join Git stdout task".into()))?
+            .map_err(|_| GitExecError::CommandFailed("Cannot read Git stdout".into()))?;
         let stderr = errors
             .await
-            .map_err(|_| "Cannot join Git stderr task")?
-            .map_err(|_| "Cannot read Git stderr")?;
+            .map_err(|_| GitExecError::CommandFailed("Cannot join Git stderr task".into()))?
+            .map_err(|_| GitExecError::CommandFailed("Cannot read Git stderr".into()))?;
         let status = result?;
         if status.success()
             && let Some(Err(_)) = stdin_result
         {
-            return Err("Failed to write complete Git stdin; operation did not complete".into());
+            return Err(GitExecError::CommandFailed(
+                "Failed to write complete Git stdin; operation did not complete".into(),
+            ));
         }
         if bytes.len() as u64 > OUTPUT_LIMIT || stderr.len() as u64 > OUTPUT_LIMIT {
-            return Err(
+            return Err(GitExecError::OutputTooLarge(
                 "Repository status output is too large; incomplete results were not loaded".into(),
-            );
+            ));
         }
         if !status.success() && stderr.windows(12).any(|part| part == b"clean filter") {
-            return Err(if mode == ExecutionMode::Read {
-                i18n::repository::runner_external_filter_read_error(locale).into()
-            } else {
-                i18n::repository::runner_external_filter_write_error(locale).into()
-            });
+            return Err(GitExecError::ExternalFilterBlocked(
+                if mode == ExecutionMode::Read {
+                    i18n::repository::runner_external_filter_read_error(locale).into()
+                } else {
+                    i18n::repository::runner_external_filter_write_error(locale).into()
+                },
+            ));
         }
         Ok(GitOutput {
             success: status.success(),
@@ -344,7 +425,7 @@ impl GitReader {
         })
     }
     pub async fn bytes(&self, root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-        let output = self.run(root, args).await?;
+        let output = self.run_typed(root, args).await.map_err(String::from)?;
         if !output.success {
             return Err(format!(
                 "Git {} read failed; check that the repository is accessible (draft and selection were preserved)",
@@ -356,7 +437,12 @@ impl GitReader {
     pub async fn text(&self, root: &Path, args: &[&str]) -> Result<String, String> {
         let bytes = self.bytes(root, args).await?;
         let mut text = String::from_utf8(bytes)
-            .map_err(|_| i18n::repository::parse_non_utf8_path_error(self.locale).to_string())?;
+            .map_err(|_| {
+                GitExecError::NonUtf8Output(
+                    i18n::repository::parse_non_utf8_path_error(self.locale).to_string(),
+                )
+            })
+            .map_err(String::from)?;
         if text.ends_with('\n') {
             text.pop();
         }
