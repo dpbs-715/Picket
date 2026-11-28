@@ -46,10 +46,7 @@ pub async fn create_provider_connection(
     input: CreateProviderConnectionInput,
 ) -> Result<ProviderSaveReply, AppError> {
     let data_dir = picket_data_dir().map_err(AppError::storage)?;
-    models
-        .create_provider_connection(&data_dir, &input)
-        .await
-        .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))
+    models.create_provider_connection(&data_dir, &input).await
 }
 
 #[tauri::command]
@@ -58,10 +55,7 @@ pub async fn update_provider_connection(
     input: UpdateProviderConnectionInput,
 ) -> Result<ProviderUpdateReply, AppError> {
     let data_dir = picket_data_dir().map_err(AppError::storage)?;
-    models
-        .update_provider_connection(&data_dir, &input)
-        .await
-        .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))
+    models.update_provider_connection(&data_dir, &input).await
 }
 
 #[tauri::command]
@@ -73,7 +67,6 @@ pub async fn delete_provider_connection(
     models
         .delete_provider_connection_with_locale(&data_dir, &request.connection_id, request.locale)
         .await
-        .map_err(|msg| AppError::model(AppErrorCode::ModelNotFound, msg))
 }
 
 #[tauri::command]
@@ -82,10 +75,7 @@ pub async fn save_model(
     input: SaveModelInput,
 ) -> Result<ModelSaveReply, AppError> {
     let data_dir = picket_data_dir().map_err(AppError::storage)?;
-    models
-        .save_model(&data_dir, &input)
-        .await
-        .map_err(|msg| AppError::model(AppErrorCode::ModelInvalidConfig, msg))
+    models.save_model(&data_dir, &input).await
 }
 
 #[tauri::command]
@@ -97,7 +87,6 @@ pub async fn select_model(
     models
         .select_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
-        .map_err(|msg| AppError::model(AppErrorCode::ModelNotFound, msg))
 }
 
 #[tauri::command]
@@ -109,7 +98,6 @@ pub async fn delete_model(
     models
         .delete_model_with_locale(&data_dir, &request.model_id, request.locale)
         .await
-        .map_err(|msg| AppError::model(AppErrorCode::ModelNotFound, msg))
 }
 
 #[tauri::command]
@@ -121,7 +109,6 @@ pub async fn reveal_provider_api_key(
     models
         .reveal_provider_api_key(&data_dir, &request.connection_id, request.locale)
         .await
-        .map_err(|msg| AppError::auth(AppErrorCode::LocalAuthFailed, msg))
 }
 
 #[tauri::command]

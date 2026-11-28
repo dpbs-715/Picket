@@ -531,7 +531,7 @@ async fn rolls_back_credentials_when_models_file_write_fails() {
         )
         .await
         .unwrap_err();
-    assert!(!create_err.contains("sk-must-roll-back-create-4444"));
+    assert!(!create_err.message.contains("sk-must-roll-back-create-4444"));
     let creds_raw = fs::read_to_string(temp.path().join("credentials.json")).unwrap();
     assert!(
         !creds_raw.contains("sk-must-roll-back-create-4444"),
