@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,25 @@ const env = {
   PATH: process.env.PATH ? `${cargoBin}:${process.env.PATH}` : cargoBin,
 };
 
+function ensureSidecarResourcesForTauriBuild() {
+  const required = [
+    join(root, 'src-tauri/binaries/picket-node-aarch64-apple-darwin'),
+    join(root, 'src-tauri/resources/generated/manifest.json'),
+  ];
+  if (required.every((filePath) => existsSync(filePath))) return;
+  const prep = spawnSync(process.execPath, [join(root, 'scripts/prepare-sidecar.mjs')], {
+    cwd: root,
+    env,
+    stdio: 'inherit',
+  });
+  if (prep.error) throw prep.error;
+  if (prep.status !== 0) {
+    process.exit(prep.status ?? 1);
+  }
+}
+
 function runExport(targetDir) {
+  ensureSidecarResourcesForTauriBuild();
   const result = spawnSync(
     'cargo',
     [
