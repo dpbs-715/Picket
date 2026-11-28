@@ -138,6 +138,9 @@ export function TrayPopover({
 
   useEffect(() => {
     setCleanExpanded(false);
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
   }, [openGeneration]);
 
   useEffect(() => {
@@ -228,7 +231,6 @@ export function TrayPopover({
             {runningServices.length > 0 && (
               <div className="tray-running-section" data-tray-running-services>
                 <div className="tray-running-heading">
-                  <span className="tray-status-dot tone-success" aria-hidden="true" />
                   <span>{runText.trayRunningSectionTitle(runningServices.length)}</span>
                 </div>
                 <div className="tray-running-list">
@@ -237,11 +239,17 @@ export function TrayPopover({
                       <button
                         type="button"
                         className="tray-running-info"
-                        title={runText.trayOpenLogsTitle}
+                        title={`${svc.label} · ${svc.repositoryName} — ${runText.trayOpenLogsTitle}`}
                         onClick={() => onOpenRunLogs?.(svc.processId)}
                       >
-                        <span className="tray-running-label truncate">{svc.label}</span>
-                        <span className="tray-running-repo mono truncate">{svc.repositoryName}</span>
+                        <span
+                          className={`tray-status-dot ${svc.status === 'stopping' ? 'tone-warning' : 'tone-success is-live'}`}
+                          aria-hidden="true"
+                        />
+                        <span className="tray-running-text">
+                          <span className="tray-running-label truncate">{svc.label}</span>
+                          <span className="tray-running-repo mono truncate">{svc.repositoryName}</span>
+                        </span>
                       </button>
                       <div className="tray-running-actions">
                         <IconButton

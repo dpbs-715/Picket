@@ -5,6 +5,7 @@ import { I18nProvider } from '../../../../i18n';
 import { MotionRoot } from '../../../../ui/motion';
 import { DiscoverRunCommandsModal } from '../../../runner/DiscoverRunCommandsModal';
 import { TrayPopover } from '../../../tray/TrayPopover';
+import trayStylesRaw from '../../../tray/tray.css?raw';
 import { disconnectedBackend, type WorkbenchBackend } from '../../commands';
 import { fixture } from '../fixtures';
 import { assert, button, clickElement, createControlledWindow, text, tick, type, type BrowserCheckHarness } from './harness';
@@ -441,7 +442,23 @@ export async function runRunCommandsChecks(harness: BrowserCheckHarness) {
     theme: 'dark',
     hasUpdate: false,
     refreshing: false,
-    repositories: [],
+    repositories: [
+      {
+        repositoryId: 'repo-1',
+        worktreeId: 'wt-1',
+        name: 'Picket',
+        branch: 'main',
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        hasUpstream: true,
+        changeCount: 0,
+        localKeepCount: 0,
+        worktreeCount: 1,
+        active: true,
+        sessionStatus: 'idle',
+      },
+    ],
     runningServices: [
       {
         processId: 'wt-1::run-1',
@@ -454,27 +471,71 @@ export async function runRunCommandsChecks(harness: BrowserCheckHarness) {
       },
     ],
   };
-  await act(async () => {
-    root.render(createElement(TrayPopover, {
-      snapshot: traySnap,
-      onRefresh: () => {},
-      onOpenSettings: () => {},
-      onOpenMainWindow: () => {},
-      onStopRunService: (pid) => { trayEvents.push(`stop:${pid}`); },
-      onOpenRunLogs: (pid) => { trayEvents.push(`logs:${pid}`); },
-      onQuit: () => {},
-      onDismiss: () => {},
-    }));
-  });
-  await tick();
-  const trayText = document.body.textContent ?? '';
-  assert(!!document.querySelector('[data-tray-running-services]') && trayText.includes('Desktop Dev'), 'Tray popover should display running services section');
-  await clickElement(document.querySelector<HTMLButtonElement>('.tray-stop-btn')!);
-  await clickElement(document.querySelector<HTMLButtonElement>('.tray-running-info')!);
-  assert(
-    trayEvents.includes('stop:wt-1::run-1') && trayEvents.includes('logs:wt-1::run-1'),
-    `Tray popover running service controls failed: ${JSON.stringify(trayEvents)}`,
-  );
+  const trayStyleEl = document.createElement('style');
+  trayStyleEl.textContent = trayStylesRaw;
+  document.head.appendChild(trayStyleEl);
+  try {
+    await act(async () => {
+      root.render(createElement(
+        'div',
+        { style: { width: '320px' } },
+        createElement(TrayPopover, {
+          snapshot: {
+            ...traySnap,
+            runningServices: [
+              ...traySnap.runningServices!,
+              {
+                processId: 'wt-1::run-long',
+                repositoryId: 'repo-1',
+                repositoryName: 'extremely-long-enterprise-microservice-repository-name',
+                worktreeId: 'wt-1',
+                commandId: 'run-long',
+                label: 'Spring Boot Business Gateway Starter Application Dev Server',
+                status: 'running',
+              },
+            ],
+          },
+          onRefresh: () => {},
+          onOpenSettings: () => {},
+          onOpenMainWindow: () => {},
+          onStopRunService: (pid) => { trayEvents.push(`stop:${pid}`); },
+          onOpenRunLogs: (pid) => { trayEvents.push(`logs:${pid}`); },
+          onQuit: () => {},
+          onDismiss: () => {},
+        }),
+      ));
+    });
+    await tick();
+    const trayText = document.body.textContent ?? '';
+    assert(!!document.querySelector('[data-tray-running-services]') && trayText.includes('Desktop Dev'), 'Tray popover should display running services section');
+    const trayCardRect = document.querySelector<HTMLElement>('.tray-card')!.getBoundingClientRect();
+    const runningDots = document.querySelectorAll<HTMLElement>('.tray-running-info .tray-status-dot.tone-success.is-live');
+    const repoCard = document.querySelector<HTMLButtonElement>('.tray-repo-card.is-current')!;
+    const repoDot = repoCard.querySelector<HTMLElement>('.tray-status-dot');
+    const repoMeta = repoCard.querySelector<HTMLElement>('.tray-repo-meta')!;
+    const stopBtns = [...document.querySelectorAll<HTMLButtonElement>('.tray-stop-btn')];
+    const currentCardBg = getComputedStyle(repoCard).backgroundColor;
+    const runningInfoOverflow = getComputedStyle(document.querySelector<HTMLElement>('.tray-running-info')!).overflowX;
+    assert(
+      runningDots.length === 2
+        && !document.querySelector('.tray-running-heading .tray-status-dot')
+        && !!repoDot
+        && Math.abs(runningDots[0].getBoundingClientRect().left - repoDot.getBoundingClientRect().left) <= 1
+        && runningInfoOverflow === 'visible'
+        && (currentCardBg === 'rgba(0, 0, 0, 0)' || currentCardBg === 'transparent')
+        && trayCardRect.right - repoMeta.getBoundingClientRect().right <= 18
+        && stopBtns.every((btn) => btn.getBoundingClientRect().right <= trayCardRect.right + 1),
+      `Tray popover alignment/overflow failed (dotDelta=${repoDot ? Math.round(runningDots[0].getBoundingClientRect().left - repoDot.getBoundingClientRect().left) : 'n/a'}, infoOverflow=${runningInfoOverflow}, currentBg=${currentCardBg}, rightInset=${Math.round(trayCardRect.right - repoMeta.getBoundingClientRect().right)}, maxStopRight=${Math.round(Math.max(...stopBtns.map((b) => b.getBoundingClientRect().right)))}, cardRight=${Math.round(trayCardRect.right)})`,
+    );
+    await clickElement(stopBtns[0]!);
+    await clickElement(document.querySelector<HTMLButtonElement>('.tray-running-info')!);
+    assert(
+      trayEvents.includes('stop:wt-1::run-1') && trayEvents.includes('logs:wt-1::run-1'),
+      `Tray popover running service controls failed: ${JSON.stringify(trayEvents)}`,
+    );
+  } finally {
+    trayStyleEl.remove();
+  }
 
   // 4. Independent MessageDock over Run view (A3) & deleting a running Run command with confirmation (A4) & Discover error retry:
   {
