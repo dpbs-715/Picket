@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   CUSTOM_ACTION_LIMITS,
   isCustomActionWriteTrusted,
@@ -8,19 +8,15 @@ import {
   type GenerateCustomActionProgressEvent,
   type GenerateCustomActionReply,
 } from '../../../shared/custom-action-protocol';
-import type {
-  MessageUserAnswer,
-  MessageUserCard,
-  MessageUserRequest,
-  MessageUserResponse,
-} from '../../../shared/message-user-protocol';
+import type { MessageUserResponse } from '../../../shared/message-user-protocol';
 import { useI18n } from '../../i18n';
 import { Icon, Overlay } from '../../ui/controls';
-import { MessageBlocks } from '../workbench/components/MessageBlocks';
 import {
   classifyCustomActionSyncTarget,
   type CustomActionSyncRepoTarget,
 } from '../workbench/state/workbench';
+import { ActionSyncRepoPicker } from './ActionSyncRepoPicker';
+import { CreateWithPiPane } from './CreateWithPiPane';
 
 interface Props {
   repositoryName: string;
@@ -60,12 +56,14 @@ export function CustomActionModal(props: Props) {
   );
   const [label, setLabel] = useState(props.initialAction?.label ?? '');
   const [prompt, setPrompt] = useState(props.initialAction?.prompt ?? '');
+  const [nlRequest, setNlRequest] = useState('');
+  const [generating, setGenerating] = useState(false);
   const [selectAfterSave, setSelectAfterSave] = useState(!isEditing);
   const [draftSummary, setDraftSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedSyncRepoIds, setSelectedSyncRepoIds] = useState<string[]>([]);
   const [trustReset, setTrustReset] = useState(false);
-  const selectAllSyncRef = useRef<HTMLInputElement>(null);
+  const cancelGenerateRef = useRef<() => void>(() => {});
 
   const syncTargets = props.otherRepositories.map((repo) => ({
     ...repo,
@@ -81,20 +79,9 @@ export function CustomActionModal(props: Props) {
   const effectiveSelectedSyncIds = selectedSyncRepoIds.filter((id) => selectableSyncIds.includes(id));
   const allSyncSelected = selectableSyncIds.length > 0
     && effectiveSelectedSyncIds.length === selectableSyncIds.length;
-  const someSyncSelected = effectiveSelectedSyncIds.length > 0 && !allSyncSelected;
-
-  useLayoutEffect(() => {
-    if (selectAllSyncRef.current) {
-      selectAllSyncRef.current.indeterminate = someSyncSelected;
-    }
-  }, [someSyncSelected, allSyncSelected]);
 
   function toggleSelectAllSyncRepos() {
-    if (allSyncSelected) {
-      setSelectedSyncRepoIds([]);
-    } else {
-      setSelectedSyncRepoIds(selectableSyncIds);
-    }
+    setSelectedSyncRepoIds(allSyncSelected ? [] : selectableSyncIds);
   }
 
   function toggleSyncRepo(repoId: string) {
@@ -102,32 +89,6 @@ export function CustomActionModal(props: Props) {
       prev.includes(repoId) ? prev.filter((id) => id !== repoId) : [...prev, repoId],
     );
   }
-
-  // Create with Pi state
-  const [nlRequest, setNlRequest] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [statusLabel, setStatusLabel] = useState('');
-  const activeRunIdRef = useRef<string | null>(null);
-  const submittingAnswerRef = useRef(false);
-  const latestCancelRef = useRef(props.onCancelGenerate);
-  latestCancelRef.current = props.onCancelGenerate;
-  useEffect(() => () => {
-    const activeId = activeRunIdRef.current;
-    if (activeId) {
-      activeRunIdRef.current = null;
-      latestCancelRef.current?.(activeId);
-    }
-  }, []);
-  const [pendingQuestion, setPendingQuestion] = useState<{
-    runId: string;
-    callId: string;
-    request: MessageUserRequest;
-    card?: MessageUserCard;
-  } | null>(null);
-  const [liveCard, setLiveCard] = useState<MessageUserCard | null>(null);
-  const [activeQuestionIdx, setActiveQuestionIdx] = useState(0);
-  const [selectedByQ, setSelectedByQ] = useState<Record<number, string[]>>({});
-  const [customByQ, setCustomByQ] = useState<Record<number, string>>({});
 
   const promptUnchanged = isEditing
     && normalizeCustomActionPrompt(prompt) === normalizeCustomActionPrompt(props.initialAction?.prompt ?? '');
@@ -171,142 +132,9 @@ export function CustomActionModal(props: Props) {
     props.onSave(built, selectAfterSave, effectiveSelectedSyncIds);
   }
 
-  async function handleGenerate() {
-    if (!props.onGenerateWithPi || generating) return;
-    const trimmed = nlRequest.trim();
-    if (!trimmed) {
-      setError(t.actions.createPromptRequired);
-      return;
-    }
-    const requestId = crypto.randomUUID();
-    activeRunIdRef.current = requestId;
-    setGenerating(true);
-    setError(null);
-    setPendingQuestion(null);
-    setLiveCard(null);
-    setStatusLabel(t.actions.createInspectingStatus);
-
-    try {
-      const reply = await props.onGenerateWithPi(requestId, trimmed, (event) => {
-        if (activeRunIdRef.current !== requestId) return;
-        setStatusLabel(event.statusLabel);
-        if (event.card) {
-          setLiveCard(event.card);
-        }
-        if (event.status === 'needsDecision' && event.pendingCallId && event.questionnaire) {
-          setPendingQuestion({
-            runId: event.runId,
-            callId: event.pendingCallId,
-            request: event.questionnaire,
-            ...(event.card ? { card: event.card } : {}),
-          });
-          setActiveQuestionIdx(0);
-          setSelectedByQ({});
-          setCustomByQ({});
-        } else if (event.status === 'running') {
-          setPendingQuestion(null);
-        }
-      });
-      if (activeRunIdRef.current !== requestId) return;
-      if (reply.status === 'done' && reply.draft) {
-        setLabel(reply.draft.label);
-        setPrompt(reply.draft.prompt);
-        setDraftSummary(reply.draft.summary);
-        setPendingQuestion(null);
-        setLiveCard(null);
-        setMode('manual');
-      }
-    } catch (err) {
-      if (activeRunIdRef.current === requestId) {
-        setError(err instanceof Error ? err.message : t.actions.createFailedFallback);
-      }
-    } finally {
-      if (activeRunIdRef.current === requestId) {
-        activeRunIdRef.current = null;
-        setGenerating(false);
-        setPendingQuestion(null);
-      }
-    }
-  }
-
-  function handleCancelGenerate() {
-    const runId = activeRunIdRef.current;
-    if (runId) {
-      activeRunIdRef.current = null;
-      props.onCancelGenerate?.(runId);
-    }
-    setGenerating(false);
-    setPendingQuestion(null);
-    setLiveCard(null);
-    setStatusLabel('');
-  }
-
-  async function submitInlineAnswer(
-    overrideSelections?: Record<number, string[]>,
-    overrideCustoms?: Record<number, string>,
-    cancelled = false,
-  ) {
-    if (submittingAnswerRef.current || !pendingQuestion || !props.onRespondGenerateQuestion) return;
-    submittingAnswerRef.current = true;
-    const { runId, callId, request } = pendingQuestion;
-    const reqQuestions = request.questions ?? [];
-    const selMap = overrideSelections ?? selectedByQ;
-    const customMap = overrideCustoms ?? customByQ;
-    const answers: MessageUserAnswer[] = [];
-    const unanswered: number[] = [];
-
-    if (cancelled) {
-      reqQuestions.forEach((_, idx) => unanswered.push(idx));
-    } else {
-      reqQuestions.forEach((q, idx) => {
-        const ids = selMap[idx] ?? [];
-        const customText = (customMap[idx] ?? '').trim();
-        const labels = ids
-          .map((id) => q.options.find((opt) => opt.id === id)?.label)
-          .filter((item): item is string => Boolean(item));
-        if (labels.length === 0 && !customText) {
-          unanswered.push(idx);
-        } else {
-          answers.push({
-            questionIndex: idx,
-            questionId: q.id,
-            header: q.header,
-            selectedOptionIds: ids,
-            selectedLabels: labels,
-            ...(customText ? { customText } : {}),
-          });
-        }
-      });
-    }
-
-    setPendingQuestion(null);
-    try {
-      await props.onRespondGenerateQuestion(runId, callId, {
-        cancelled,
-        answers,
-        unanswered,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t.actions.createFailedFallback);
-    } finally {
-      submittingAnswerRef.current = false;
-    }
-  }
-
-  const pendingQuestions = pendingQuestion?.request.questions ?? [];
-  const currentQuestion = pendingQuestions.length > 0
-    ? pendingQuestions[Math.min(activeQuestionIdx, pendingQuestions.length - 1)]
-    : undefined;
-  const isSingleQuick = pendingQuestions.length === 1 && !pendingQuestions[0].multiSelect;
-  const currentSelectedIds = selectedByQ[activeQuestionIdx] ?? [];
-  const currentCustom = customByQ[activeQuestionIdx] ?? '';
-  const hasAnyAnswer = pendingQuestions.some((_, idx) => (
-    (selectedByQ[idx]?.length ?? 0) > 0 || Boolean((customByQ[idx] ?? '').trim())
-  ));
-
   const title = isEditing ? t.actions.editModalTitle : t.actions.newModalTitle;
   const handleBackOrClose = () => {
-    handleCancelGenerate();
+    cancelGenerateRef.current();
     if (props.onBack) props.onBack();
     else props.onClose();
   };
@@ -319,7 +147,7 @@ export function CustomActionModal(props: Props) {
       variant={props.onBack ? 'drill' : 'sheet'}
       onBack={props.onBack ? handleBackOrClose : undefined}
       backLabel={props.backLabel}
-      onClose={() => { handleCancelGenerate(); props.onClose(); }}
+      onClose={() => { cancelGenerateRef.current(); props.onClose(); }}
     >
       <div className="custom-action-modal">
         <div className="custom-action-shell-head">
@@ -357,156 +185,28 @@ export function CustomActionModal(props: Props) {
         </div>
 
         {mode === 'create' && !isEditing ? (
-          <div className="create-pi-pane">
-            {!props.hasModel ? (
-              <div className="custom-action-shell-body scroll-area">
-                <div className="model-empty">
-                  <p className="muted">{t.actions.createNeedsModel}</p>
-                  <button type="button" className="primary compact" onClick={props.onConfigureModel}>
-                    <Icon name="settings" />
-                    {t.primaryActions.configureModel}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="custom-action-shell-body scroll-area">
-                  <label className="form-field">
-                    <span>{t.actions.createDescribeLabel}</span>
-                    <textarea
-                      data-autofocus
-                      rows={4}
-                      maxLength={CUSTOM_ACTION_LIMITS.maxGenerateRequestChars}
-                      disabled={generating}
-                      value={nlRequest}
-                      onChange={(event) => setNlRequest(event.target.value)}
-                      placeholder={t.actions.createDescribePlaceholder}
-                    />
-                  </label>
-
-                  {generating && !pendingQuestion && (
-                    <div className="create-pi-status" role="status" aria-live="polite">
-                      <Icon name="loader" className="spinning" />
-                      <span className="truncate">{statusLabel || t.actions.createInspectingStatus}</span>
-                    </div>
-                  )}
-
-                  {!pendingQuestion && liveCard?.blocks && liveCard.blocks.length > 0 && (
-                    <div className="create-pi-question">
-                      {liveCard.title && <p className="create-pi-question-text">{liveCard.title}</p>}
-                      <MessageBlocks blocks={liveCard.blocks} editorShort="IDE" />
-                    </div>
-                  )}
-
-                  {pendingQuestion && currentQuestion && (
-                    <div className="create-pi-question">
-                      {pendingQuestion.card?.blocks && pendingQuestion.card.blocks.length > 0 && (
-                        <MessageBlocks blocks={pendingQuestion.card.blocks} editorShort="IDE" />
-                      )}
-                      {pendingQuestions.length > 1 && (
-                        <div className="questionnaire-tabs" role="tablist">
-                          {pendingQuestions.map((item, idx) => (
-                            <button
-                              type="button"
-                              role="tab"
-                              key={item.id}
-                              aria-selected={idx === activeQuestionIdx}
-                              className={`questionnaire-tab ${idx === activeQuestionIdx ? 'is-active' : ''}`}
-                              onClick={() => setActiveQuestionIdx(idx)}
-                            >
-                              <span className="truncate">{item.header}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <p className="create-pi-question-text">{currentQuestion.question}</p>
-                      <div className="option-card-list">
-                        {currentQuestion.options.map((opt) => {
-                          const isSelected = currentSelectedIds.includes(opt.id);
-                          return (
-                            <button
-                              type="button"
-                              key={opt.id}
-                              data-option-id={opt.id}
-                              className={`option-card ${opt.recommended ? 'is-recommended' : ''} ${isSelected ? 'is-selected' : ''}`}
-                              onClick={() => {
-                                if (isSingleQuick) {
-                                  void submitInlineAnswer({ [activeQuestionIdx]: [opt.id] }, customByQ, false);
-                                  return;
-                                }
-                                setSelectedByQ((prev) => {
-                                  const cur = prev[activeQuestionIdx] ?? [];
-                                  const next = currentQuestion.multiSelect
-                                    ? (cur.includes(opt.id) ? cur.filter((id) => id !== opt.id) : [...cur, opt.id])
-                                    : [opt.id];
-                                  return { ...prev, [activeQuestionIdx]: next };
-                                });
-                              }}
-                            >
-                              <span className="option-card-content">
-                                <span className="option-card-title-row">
-                                  <span className="option-card-label">{opt.label}</span>
-                                  {opt.recommended && <span className="option-recommended-badge">{t.dock.recommendedBadge}</span>}
-                                </span>
-                                <span className="option-card-desc muted">{opt.description}</span>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className="message-reply">
-                        <input
-                          value={currentCustom}
-                          onChange={(event) => setCustomByQ((prev) => ({ ...prev, [activeQuestionIdx]: event.target.value }))}
-                          placeholder={t.dock.customOptionPlaceholder}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' && currentCustom.trim()) {
-                              event.preventDefault();
-                              void submitInlineAnswer({}, { [activeQuestionIdx]: currentCustom.trim() }, false);
-                            }
-                          }}
-                        />
-                      </div>
-                      <div className="questionnaire-footer">
-                        <button type="button" className="secondary compact" onClick={() => void submitInlineAnswer(undefined, undefined, true)}>
-                          {t.dock.cancelQuestion}
-                        </button>
-                        {!isSingleQuick && (
-                          <button type="button" className="primary compact" disabled={!hasAnyAnswer} onClick={() => void submitInlineAnswer()}>
-                            {t.dock.submitAnswers}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="overlay-footer">
-                  {error && <div className="form-result danger" role="alert">{error}</div>}
-                  <div className="form-actions">
-                    <button type="button" className="secondary" onClick={handleBackOrClose}>
-                      {t.common.cancel}
-                    </button>
-                    {generating ? (
-                      <button type="button" className="secondary" onClick={handleCancelGenerate}>
-                        {t.actions.cancelGenerateButton}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={!props.canGenerateWithPi || !nlRequest.trim()}
-                        onClick={() => void handleGenerate()}
-                      >
-                        <Icon name="sparkles" />
-                        {t.actions.generateButton}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+          <CreateWithPiPane
+            hasModel={props.hasModel}
+            canGenerateWithPi={props.canGenerateWithPi}
+            nlRequest={nlRequest}
+            generating={generating}
+            error={error}
+            cancelRef={cancelGenerateRef}
+            onNlRequestChange={setNlRequest}
+            onGeneratingChange={setGenerating}
+            onError={setError}
+            onDraftReady={(draft) => {
+              setLabel(draft.label);
+              setPrompt(draft.prompt);
+              setDraftSummary(draft.summary);
+              setMode('manual');
+            }}
+            onConfigureModel={props.onConfigureModel}
+            onBackOrClose={handleBackOrClose}
+            onGenerateWithPi={props.onGenerateWithPi}
+            onRespondGenerateQuestion={props.onRespondGenerateQuestion}
+            onCancelGenerate={props.onCancelGenerate}
+          />
         ) : (
           <form className="custom-action-form" onSubmit={handleSave}>
             <div className="custom-action-shell-body scroll-area">
@@ -568,67 +268,13 @@ export function CustomActionModal(props: Props) {
                 </div>
               )}
 
-              {syncTargets.length > 0 && (
-                <div className="action-sync-section" data-sync-picker>
-                  <div className="action-sync-section-head">
-                    <span className="action-sync-section-title">{t.actions.syncReposSectionTitle}</span>
-                    <span className={`action-sync-count mono ${effectiveSelectedSyncIds.length > 0 ? 'is-active' : ''}`}>
-                      {t.actions.syncSelectedCount(effectiveSelectedSyncIds.length, syncTargets.length)}
-                    </span>
-                  </div>
-                  <div className="action-sync-card is-picker">
-                    <label className={`action-sync-select-all ${selectableSyncIds.length === 0 ? 'is-disabled' : ''}`}>
-                      <input
-                        ref={selectAllSyncRef}
-                        type="checkbox"
-                        data-sync-select-all
-                        checked={allSyncSelected}
-                        disabled={selectableSyncIds.length === 0}
-                        aria-checked={someSyncSelected ? 'mixed' : allSyncSelected}
-                        onChange={toggleSelectAllSyncRepos}
-                      />
-                      <span className="action-sync-select-all-label">{t.actions.syncSelectAllLabel}</span>
-                      <span className="action-sync-on-save-hint">{t.actions.syncOnSaveHint}</span>
-                    </label>
-                    <div className="action-sync-repo-list scroll-area" role="group" aria-label={t.actions.syncReposSectionTitle}>
-                      {syncTargets.map((repo) => {
-                        const disabled = repo.status === 'full';
-                        const checked = !disabled && effectiveSelectedSyncIds.includes(repo.id);
-                        const badge = repo.status === 'synced'
-                          ? (checked
-                              ? { text: t.actions.syncStatusWillUpdate, tone: 'indigo' }
-                              : { text: t.actions.syncStatusSynced, tone: 'muted' })
-                          : repo.status === 'sameLabel'
-                            ? (checked
-                                ? { text: t.actions.syncStatusWillOverwrite, tone: 'amber' }
-                                : { text: t.actions.syncStatusSameName, tone: 'amber' })
-                            : repo.status === 'full'
-                              ? { text: t.actions.syncStatusFull, tone: 'muted' }
-                              : null;
-                        return (
-                          <label
-                            key={repo.id}
-                            data-sync-repo-id={repo.id}
-                            className={`action-sync-repo-row ${checked ? 'is-checked' : ''} ${disabled ? 'is-disabled' : ''}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              disabled={disabled}
-                              onChange={() => toggleSyncRepo(repo.id)}
-                            />
-                            <Icon name="folder" />
-                            <span className="mono truncate action-sync-repo-name" title={repo.name}>{repo.name}</span>
-                            {badge && (
-                              <span className={`action-sync-badge is-${badge.tone}`}>{badge.text}</span>
-                            )}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
+              <ActionSyncRepoPicker
+                syncTargets={syncTargets}
+                selectableSyncIds={selectableSyncIds}
+                effectiveSelectedSyncIds={effectiveSelectedSyncIds}
+                onToggleSelectAll={toggleSelectAllSyncRepos}
+                onToggleRepo={toggleSyncRepo}
+              />
             </div>
 
             <div className="overlay-footer">
