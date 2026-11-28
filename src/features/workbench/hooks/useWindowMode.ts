@@ -1,18 +1,13 @@
 import {
   useCallback,
-  useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
-import { flushSync } from 'react-dom';
-import { WINDOW_DIMENSIONS, type WindowSize } from '../../../../shared/workbench-persistence-protocol';
+import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import {
-  clampCompactHeight,
-  normalizeCompactWidth,
   normalizeFullWindowSize,
   type WindowController,
 } from '../../../desktop/window';
@@ -34,6 +29,16 @@ import type {
   SettingsSession,
   WorkbenchDispatch,
 } from '../types';
+import {
+  commitBeforeWindowResize,
+  measureWorkbenchHeight,
+  useWindowSettingsTransition,
+  type WindowTransitionKind,
+  type WindowTransitionState,
+} from './useWindowSettingsTransition';
+import { useWindowSyncEffects } from './useWindowSyncEffects';
+
+export type { WindowTransitionKind } from './useWindowSettingsTransition';
 
 interface UseWindowModeParams {
   state: WorkbenchState;
@@ -47,28 +52,6 @@ interface UseWindowModeParams {
   notify: NotifyFn;
   setModelOverlay: Dispatch<SetStateAction<ModelOverlayState>>;
   onClearOverlays: () => void;
-}
-
-export type WindowTransitionKind = 'idle' | 'expanding' | 'collapsing';
-
-interface WindowTransitionState {
-  kind: 'expanding' | 'collapsing';
-  heightPx: number;
-  mountWorkbenchDuringExpand?: boolean;
-}
-
-function measureWorkbenchHeight(fallback: number): number {
-  if (typeof document === 'undefined') return fallback;
-  const measured = Math.round(document.querySelector<HTMLElement>('.workbench')?.getBoundingClientRect().height ?? 0);
-  return measured > WINDOW_DIMENSIONS.compactDefaultHeight ? measured : fallback;
-}
-
-function commitBeforeWindowResize(update: () => void): void {
-  try {
-    flushSync(update);
-  } catch {
-    update();
-  }
 }
 
 export function useWindowMode({
@@ -106,178 +89,27 @@ export function useWindowMode({
   const transitionKind: WindowTransitionKind = windowTransition?.kind ?? 'idle';
   const transitionHeightPx = windowTransition?.heightPx ?? null;
 
-  function openSettingsFromWorkbench(focusModels = false) {
-    const next: SettingsSession = { returnTo: 'workbench', focusModels };
-    settingsSessionRef.current = next;
-    setSettingsSession(next);
-  }
-
-  function clearWorkbenchSettingsSession() {
-    if (settingsSessionRef.current?.returnTo === 'workbench') {
-      settingsSessionRef.current = null;
-      setSettingsSession(null);
-    }
-  }
-
-  async function openSettingsFromCompact(options: { focusModels?: boolean; drawerWasOpen?: boolean } = {}) {
-    if (pinInFlight.current || activeSurfaceRef.current !== 'compact') return;
-    const currentPrefs = latestState.current.windowPrefs;
-    const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
-
-    if (!windowController.isDesktopWindow) {
-      try {
-        await windowController.applyWindowMode({
-          pinned: currentPrefs.pinned,
-          compactMode: false,
-          fullSize,
-          placement: 'anchorTopLeft',
-          locale: state.locale,
-        });
-      } catch (error) {
-        notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
-      }
-      return;
-    }
-
-    const focusModels = Boolean(options.focusModels);
-    const fallbackCompactHeight = clampCompactHeight(collapsedCompactHeightRef.current);
-    const provisionalSession: SettingsSession = {
-      returnTo: 'compact',
-      focusModels,
-      ...(currentPrefs.compactPosition
-        ? {
-            compactSnapshot: {
-              position: currentPrefs.compactPosition,
-              size: { width: WINDOW_DIMENSIONS.compactWidth, height: fallbackCompactHeight },
-            },
-          }
-        : {}),
-    };
-
-    pinInFlight.current = true;
-    // Synchronously mount standalone Settings at fullSize.height BEFORE enlarging the native window
-    // so neither a stretched CompactBar nor the full workbench content can ever flash during expansion.
-    settingsSessionRef.current = provisionalSession;
-    commitBeforeWindowResize(() => {
-      setPinBusy(true);
-      setWindowTransition({ kind: 'expanding', heightPx: fullSize.height });
-      setSettingsSession(provisionalSession);
-    });
-
-    try {
-      const applied = await windowController.applyWindowMode({
-        pinned: currentPrefs.pinned,
-        compactMode: false,
-        fullSize,
-        placement: 'anchorTopLeft',
-        locale: state.locale,
-      });
-      const isTransientlyExpanded = Boolean(options.drawerWasOpen)
-        || desiredCompactHeightRef.current > fallbackCompactHeight + 2;
-      const compactSize: WindowSize = {
-        width: normalizeCompactWidth(applied.previousSize.width),
-        height: isTransientlyExpanded
-          ? fallbackCompactHeight
-          : clampCompactHeight(applied.previousSize.height),
-      };
-      const settledSession: SettingsSession = {
-        returnTo: 'compact',
-        focusModels,
-        compactSnapshot: {
-          position: applied.previousPosition,
-          size: compactSize,
-        },
-      };
-      settingsSessionRef.current = settledSession;
-      setSettingsSession(settledSession);
-      dispatch({
-        type: 'windowPreferencesUpdated',
-        preferences: {
-          ...latestState.current.windowPrefs,
-          pinned: applied.pinned,
-          compactMode: true,
-          compactPosition: applied.previousPosition,
-        },
-      });
-    } catch (error) {
-      settingsSessionRef.current = null;
-      setSettingsSession(null);
-      notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
-    } finally {
-      pinInFlight.current = false;
-      setPinBusy(false);
-      setWindowTransition(null);
-    }
-  }
-
-  async function closeSettings() {
-    const session = settingsSessionRef.current;
-    if (!session) return;
-
-    if (session.returnTo === 'workbench') {
-      settingsSessionRef.current = null;
-      setSettingsSession(null);
-      return;
-    }
-
-    if (pinInFlight.current) return;
-    const currentPrefs = latestState.current.windowPrefs;
-    const fullSize = normalizeFullWindowSize(currentPrefs.fullSize ?? defaultWindowPreferences().fullSize);
-    const snapshot = session.compactSnapshot;
-    const targetPosition = snapshot?.position ?? currentPrefs.compactPosition;
-    const targetWidth = normalizeCompactWidth(snapshot?.size.width);
-    const targetHeight = clampCompactHeight(snapshot?.size.height ?? collapsedCompactHeightRef.current);
-    const freezeHeight = measureWorkbenchHeight(fullSize.height);
-
-    pinInFlight.current = true;
-    commitBeforeWindowResize(() => {
-      setPinBusy(true);
-      setWindowTransition({ kind: 'collapsing', heightPx: freezeHeight });
-    });
-    try {
-      // Shrink and move back to pre-settings compact geometry FIRST while standalone Settings
-      // remains mounted and height-locked, then swap directly to CompactBar without ever mounting full workbench.
-      const applied = await windowController.applyWindowMode({
-        pinned: currentPrefs.pinned,
-        compactMode: true,
-        compactWidth: targetWidth,
-        compactHeight: targetHeight,
-        fullSize,
-        placement: targetPosition ? 'restorePosition' : 'anchorTopLeft',
-        ...(targetPosition ? { targetPosition } : {}),
-        locale: state.locale,
-      });
-      desiredCompactHeightRef.current = applied.size.height;
-      collapsedCompactHeightRef.current = applied.size.height;
-      onClearOverlays();
-      pinInFlight.current = false;
-      setPinBusy(false);
-      setWindowTransition(null);
-      settingsSessionRef.current = null;
-      setSettingsSession(null);
-      dispatch({
-        type: 'windowPreferencesUpdated',
-        preferences: {
-          ...latestState.current.windowPrefs,
-          pinned: applied.pinned,
-          compactMode: true,
-          compactPosition: applied.position,
-        },
-      });
-    } catch (error) {
-      onClearOverlays();
-      pinInFlight.current = false;
-      setPinBusy(false);
-      setWindowTransition(null);
-      settingsSessionRef.current = null;
-      setSettingsSession(null);
-      notify(error instanceof Error ? error.message : t.workbench.setPinFailedFallback);
-    } finally {
-      pinInFlight.current = false;
-      setPinBusy(false);
-      setWindowTransition(null);
-    }
-  }
+  const {
+    openSettingsFromWorkbench,
+    clearWorkbenchSettingsSession,
+    openSettingsFromCompact,
+    closeSettings,
+  } = useWindowSettingsTransition({
+    locale: state.locale,
+    latestState,
+    windowController,
+    dispatch,
+    notify,
+    onClearOverlays,
+    settingsSessionRef,
+    setSettingsSession,
+    setWindowTransition,
+    setPinBusy,
+    pinInFlight,
+    activeSurfaceRef,
+    desiredCompactHeightRef,
+    collapsedCompactHeightRef,
+  });
 
   function openConfigureModel() {
     if (latestState.current.connections.length === 0) {
@@ -465,70 +297,20 @@ export function useWindowMode({
     }
   }
 
-  useLayoutEffect(() => {
-    if (!hydrated || !windowController.isDesktopWindow || workbenchReadyNotifiedRef.current) return;
-    // Defer by one short macrotask (rather than rAF, which WebKit can throttle in hidden windows)
-    // so the hydrated DOM has flushed before signaling the startup splash to leap and reveal.
-    const timer = window.setTimeout(() => {
-      if (workbenchReadyNotifiedRef.current) return;
-      workbenchReadyNotifiedRef.current = true;
-      void windowController.notifyWorkbenchReady?.();
-    }, 16);
-    return () => window.clearTimeout(timer);
-  }, [hydrated, windowController]);
-
-  useLayoutEffect(() => {
-    if (windowTransition) return;
-    const pendingFocus = pendingModeFocusRef.current;
-    pendingModeFocusRef.current = null;
-    if (!pendingFocus || typeof document === 'undefined') return;
-    if (pendingFocus.kind === 'changes') {
-      const panel = document.querySelector<HTMLElement>('.changes-panel');
-      panel?.scrollIntoView({ block: 'nearest' });
-      (panel?.querySelector<HTMLElement>('input[type="checkbox"], button') ?? panel)?.focus();
-      return;
-    }
-    if (pendingFocus.kind === 'dock') {
-      const dock = document.querySelector<HTMLElement>('.d2-sheet, .message-expanded, .message-collapsed');
-      (dock?.querySelector<HTMLElement>('.d2-bottom button, .d2-bottom input, .message-actions button, .message-reply input, button') ?? dock)?.focus();
-      return;
-    }
-    if (pendingFocus.kind === 'repo') {
-      document.querySelector<HTMLElement>('.repository-open-button, .repository-button')?.focus();
-    }
-  }, [presentation.surface, windowTransition]);
-
-  useEffect(() => {
-    if (!hydrated || !windowController.isDesktopWindow) return;
-    let mounted = true;
-    if ((initialState || !backendHasLoadState)
-      && !latestState.current.settingsModified
-      && !latestState.current.windowPrefs.compactMode
-      && !latestState.current.windowPrefs.fullPosition
-      && !pinInFlight.current) {
-      void windowController.readSnapshot().then((snap) => {
-        if (!mounted || !snap || latestState.current.settingsModified || pinInFlight.current) return;
-        dispatch({
-          type: 'windowSnapshotSynced',
-          pinned: snap.pinned,
-          size: normalizeFullWindowSize(snap.size),
-          position: snap.position,
-        });
-      }).catch(() => {});
-    }
-    const unsubscribeGeometry = windowController.subscribeGeometry?.((observed) => {
-      if (!mounted || settingsSessionRef.current?.returnTo === 'compact') return;
-      dispatch({ type: 'windowGeometryObserved', position: observed.position, size: observed.size });
-    });
-    const unsubscribeTap = windowController.subscribeNotificationTap?.(() => {
-      // Focusing the window on notification click must never auto-expand compact mode.
-    });
-    return () => {
-      mounted = false;
-      unsubscribeGeometry?.();
-      unsubscribeTap?.();
-    };
-  }, [backendHasLoadState, dispatch, hydrated, initialState, latestState, windowController]);
+  useWindowSyncEffects({
+    hydrated,
+    initialState,
+    backendHasLoadState,
+    latestState,
+    windowController,
+    dispatch,
+    pinInFlight,
+    settingsSessionRef,
+    workbenchReadyNotifiedRef,
+    pendingModeFocusRef,
+    presentationSurface: presentation.surface,
+    windowTransition,
+  });
 
   return {
     settingsSession,
