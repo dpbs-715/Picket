@@ -1,79 +1,32 @@
-import type { AppLocale } from './language-protocol';
+import type {
+  Change as GitChange,
+  LocalKeepReply as GitLocalKeepReply,
+  LocalKeepRequest as GitLocalKeepRequest,
+  OpenRequest as GitOpenRepositoryRequest,
+  ReadReply as GitReadReply,
+  ReadTarget as GitReadTarget,
+  RefreshRequest as GitReadRequest,
+  Remote as GitRemote,
+  RemoteBranch as GitRemoteBranch,
+  RepositorySnapshot as GitRepositorySnapshot,
+  WorktreeSnapshot as GitWorktree,
+} from './generated';
 
 export const GIT_READ_PROTOCOL_VERSION = 1;
 
-export interface GitReadTarget {
-  repositoryId: string;
-  worktreeId: string;
-  sessionId: string;
-  scopeVersion: string;
-}
-export interface GitOpenRepositoryRequest { requestId: string; locale?: AppLocale }
-export interface GitReadRequest { requestId: string; target: GitReadTarget; locale?: AppLocale }
-export interface GitLocalKeepRequest {
-  requestId: string;
-  target: GitReadTarget;
-  paths: string[];
-  keep: boolean;
-  locale?: AppLocale;
-}
-export interface GitChange {
-  id: string;
-  path: string;
-  previousPath?: string;
-  status: 'A' | 'M' | 'D' | 'R' | 'U' | 'T' | 'C';
-  gitStatus: string;
-  range: { kind: 'partial' | 'staged' | 'unstaged'; added: number; removed: number };
-  binary: boolean;
-  ignoredForReview: boolean;
-  localKeep?: boolean;
-  contentVersion: string;
-  commitToken: string;
-}
-export type GitRemote = { kind: 'tracked'; branch: string; ahead: number; behind: number; localOnly: boolean }
-  | { kind: 'missing' | 'error'; reason: string };
-export interface GitWorktree {
-  repositoryId: string;
-  worktreeId: string;
-  label: string;
-  path: string;
-  branch: string;
-  detached: boolean;
-  head: string | null;
-  statusVersion: string;
-  branchToken: string | null;
-  readError: string | null;
-  remote: GitRemote;
-  files: GitChange[];
-}
-export interface GitRemoteBranch {
-  name: string;
-  remote: string;
-  localName: string;
-}
-export interface GitRepositorySnapshot {
-  repository: {
-    id: string;
-    name: string;
-    branches: { name: string; worktreeId?: string }[];
-    remoteBranches?: GitRemoteBranch[];
-    localKeepPaths?: string[];
-  };
-  worktrees: GitWorktree[];
-  activeWorktreeId: string;
-  readSequence: number;
-}
-export interface GitReadReply {
-  protocolVersion: typeof GIT_READ_PROTOCOL_VERSION;
-  requestId: string;
-  target?: GitReadTarget;
-  snapshot: GitRepositorySnapshot | null;
-}
-export interface GitLocalKeepReply extends GitReadReply {
-  kind: 'localKeep';
-  target: GitReadTarget;
-  snapshot: NonNullable<GitReadReply['snapshot']>;
-}
+export type {
+  GitChange,
+  GitLocalKeepReply,
+  GitLocalKeepRequest,
+  GitOpenRepositoryRequest,
+  GitReadReply,
+  GitReadRequest,
+  GitReadTarget,
+  GitRemote,
+  GitRemoteBranch,
+  GitRepositorySnapshot,
+  GitWorktree,
+};
 
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function string(value: unknown): value is string { return typeof value === 'string'; }

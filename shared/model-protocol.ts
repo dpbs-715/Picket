@@ -1,10 +1,23 @@
 import type {
   ApiFormatKind,
+  CommitSelection as ModelFileSelection,
+  CreateProviderConnectionInput,
+  ListModelsInput,
+  ModelListReply,
+  ModelMutateReply,
+  ModelSaveReply,
+  ModelTestReply,
   ProviderKind,
+  ProviderRevealKeyReply,
+  ProviderSaveReply,
+  ProviderUpdateReply,
+  RemoteModelOption,
+  SaveModelInput,
   SavedModelConfiguration,
   SavedProviderConnection,
+  TestConnectionInput,
+  UpdateProviderConnectionInput,
 } from './generated';
-import type { AppLocale } from './language-protocol';
 
 export const MODEL_PROTOCOL_VERSION = 2;
 
@@ -14,157 +27,24 @@ export const MODEL_PROVIDER_IDS = ['anthropic', 'openai', 'deepseek', 'ollama', 
 export type ModelApiFormat = ApiFormatKind;
 export const MODEL_API_FORMATS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const satisfies readonly ModelApiFormat[];
 
-export type { SavedModelConfiguration, SavedProviderConnection };
-
-export interface CreateProviderConnectionInput {
-  provider: ModelProviderId;
-  connectionName: string;
-  baseUrl: string;
-  apiKey: string;
-  modelName: string;
-  modelId: string;
-  apiFormat?: ModelApiFormat;
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  keepActiveModel?: boolean;
-  locale?: AppLocale;
-}
-
-export interface UpdateProviderConnectionInput {
-  connectionId: string;
-  name: string;
-  apiKey: string;
-  locale?: AppLocale;
-}
-
-export interface SaveModelInput {
-  id?: string;
-  connectionId: string;
-  name: string;
-  modelId: string;
-  apiFormat?: ModelApiFormat;
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  locale?: AppLocale;
-}
-
-export type TestConnectionInput =
-  | {
-      kind: 'newConnection';
-      provider: ModelProviderId;
-      baseUrl: string;
-      apiKey: string;
-      modelId: string;
-      apiFormat?: ModelApiFormat;
-      contextWindow?: number;
-      maxOutputTokens?: number;
-      locale?: AppLocale;
-    }
-  | {
-      kind: 'connectionModel';
-      connectionId: string;
-      modelId: string;
-      apiFormat?: ModelApiFormat;
-      contextWindow?: number;
-      maxOutputTokens?: number;
-      locale?: AppLocale;
-    }
-  | {
-      kind: 'existingConnection';
-      connectionId: string;
-      apiKey: string;
-      modelId?: string;
-      locale?: AppLocale;
-    };
-
-export interface ModelTestReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  provider: ModelProviderId;
-  modelId: string;
-  summary: string;
-  latencyMs: number;
-}
-
-export interface RemoteModelOption {
-  id: string;
-  displayName?: string;
-  contextWindow?: number;
-  maxOutputTokens?: number;
-}
-
-export type ListModelsInput =
-  | {
-      kind: 'newConnection';
-      provider: ModelProviderId;
-      baseUrl: string;
-      apiKey: string;
-      apiFormat?: ModelApiFormat;
-      locale?: AppLocale;
-    }
-  | {
-      kind: 'existingConnection';
-      connectionId: string;
-      apiFormat?: ModelApiFormat;
-      locale?: AppLocale;
-    };
-
-export interface ModelListReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  provider: ModelProviderId;
-  models: RemoteModelOption[];
-}
-
-export interface ProviderSaveReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  connection: SavedProviderConnection;
-  model: SavedModelConfiguration;
-  connections: SavedProviderConnection[];
-  models: SavedModelConfiguration[];
-  activeModelId: string;
-}
-
-export interface ProviderUpdateReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  connection: SavedProviderConnection;
-  connections: SavedProviderConnection[];
-  models: SavedModelConfiguration[];
-  activeModelId: string | null;
-}
-
-export interface ModelSaveReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  model: SavedModelConfiguration;
-  connections: SavedProviderConnection[];
-  models: SavedModelConfiguration[];
-  activeModelId: string;
-}
-
-export interface ModelMutateReply {
-  protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-  connections: SavedProviderConnection[];
-  models: SavedModelConfiguration[];
-  activeModelId: string | null;
-}
-
-export type ProviderRevealKeyReply =
-  | {
-      protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-      connectionId: string;
-      outcome: 'authenticated';
-      apiKey: string;
-      keyHint: string;
-    }
-  | {
-      protocolVersion: typeof MODEL_PROTOCOL_VERSION;
-      connectionId: string;
-      outcome: 'cancelled' | 'failed';
-      message: string;
-    };
-
-export interface ModelFileSelection {
-  fileId: string;
-  commitToken: string;
-}
+export type {
+  CreateProviderConnectionInput,
+  ListModelsInput,
+  ModelFileSelection,
+  ModelListReply,
+  ModelMutateReply,
+  ModelSaveReply,
+  ModelTestReply,
+  ProviderRevealKeyReply,
+  ProviderSaveReply,
+  ProviderUpdateReply,
+  RemoteModelOption,
+  SaveModelInput,
+  SavedModelConfiguration,
+  SavedProviderConnection,
+  TestConnectionInput,
+  UpdateProviderConnectionInput,
+};
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);

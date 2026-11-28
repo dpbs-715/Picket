@@ -16,25 +16,47 @@ use crate::{
         },
         session_store::ActionSessionSnapshot,
         types::{
-            CPushLandedCommit, CPushQaItem, CPushSessionSnapshot, CPushSessionStatus,
-            CustomActionDraft, TrustedActionUpdate, WorkflowLink, WorkflowMessageCommitSummary,
-            WorkflowMessageFileChip, WorkflowMessageOption, WorkflowMessageProgress,
-            WorkflowTimelineItem, WorkflowUiMessage,
+            CPushCommandReply, CPushLandedCommit, CPushProgressEvent, CPushQaItem,
+            CPushSessionSnapshot, CPushSessionStatus, CustomActionCommandReply, CustomActionDraft,
+            CustomActionProgressEvent, DismissSessionDoneRequest,
+            GenerateCustomActionProgressEvent, GenerateCustomActionReply,
+            GenerateCustomActionRequest, PullRebaseRequest, ReconcileCPushRequest,
+            RespondCPushRequest, RespondCustomActionRequest, StartCPushRequest,
+            StartCustomActionRequest, TrustedActionUpdate, WorkflowLink,
+            WorkflowMessageCommitSummary, WorkflowMessageFileChip, WorkflowMessageOption,
+            WorkflowMessageProgress, WorkflowTimelineItem, WorkflowUiMessage,
         },
     },
     error::{AppError, AppErrorCode, ErrorCategory},
     i18n::LanguageKind,
     models::types::{
-        ApiFormatKind, ProviderKind, SavedModelConfiguration, SavedProviderConnection,
+        ApiFormatKind, CreateProviderConnectionInput, ListModelsInput, ModelListReply,
+        ModelMutateReply, ModelSaveReply, ModelTestReply, ProviderKind, ProviderRevealKeyOutcome,
+        ProviderRevealKeyReply, ProviderSaveReply, ProviderUpdateReply, RemoteModelOption,
+        SaveModelInput, SavedModelConfiguration, SavedProviderConnection, TestConnectionInput,
+        UpdateProviderConnectionInput,
     },
     repository::types::{
-        EditorKind, PersistedWindowPreferences, ThemeKind, WindowPosition, WindowSize,
+        Branch, BranchAction, BranchReply, BranchRequest, Change, CommitSelection, EditorKind,
+        LocalKeepReply, LocalKeepRequest, OpenFileAction, OpenFileReply, OpenFileRequest,
+        OpenRequest, PersistedCustomAction, PersistedRepositorySettings,
+        PersistedWindowPreferences, PersistedWorktreeState, Range, ReadReply, ReadTarget,
+        RefreshRequest, Remote, RemoteBranch, RepositoryInfo, RepositorySnapshot, ThemeKind,
+        WindowPosition, WindowSize, WorkbenchRestoreReply, WorkbenchSaveRequest, WorkbenchTab,
+        WorktreeSnapshot,
+    },
+    skills::sync::{
+        GetSkillsStateRequest, ResetSkillsRequest, SkillCatalogItem, SkillsStateSnapshot,
+        SyncSkillsRequest, UpdateEnabledSkillsRequest,
     },
     tray::state::{
         TrayMainWindowAction, TrayRepositorySummary, TraySessionStatus, TrayStateSnapshot,
         TrayUiContextUpdate,
     },
-    updater::types::{UpdateInstallBlocker, UpdatePhase, UpdateStateSnapshot},
+    updater::types::{
+        CancelUpdateRequest, CheckUpdateRequest, InstallUpdateRequest, OpenReleasePageRequest,
+        UpdateInstallBlocker, UpdatePhase, UpdateStateSnapshot,
+    },
 };
 use std::{
     collections::BTreeMap,
@@ -56,13 +78,64 @@ fn export_all_bindings(dir: &Path) {
     WindowSize::export_all(&cfg).unwrap();
     WindowPosition::export_all(&cfg).unwrap();
     PersistedWindowPreferences::export_all(&cfg).unwrap();
+    ReadTarget::export_all(&cfg).unwrap();
+    OpenRequest::export_all(&cfg).unwrap();
+    RefreshRequest::export_all(&cfg).unwrap();
+    LocalKeepRequest::export_all(&cfg).unwrap();
+    LocalKeepReply::export_all(&cfg).unwrap();
+    BranchAction::export_all(&cfg).unwrap();
+    BranchRequest::export_all(&cfg).unwrap();
+    BranchReply::export_all(&cfg).unwrap();
+    CommitSelection::export_all(&cfg).unwrap();
+    OpenFileRequest::export_all(&cfg).unwrap();
+    OpenFileAction::export_all(&cfg).unwrap();
+    OpenFileReply::export_all(&cfg).unwrap();
+    WorkbenchTab::export_all(&cfg).unwrap();
+    PersistedCustomAction::export_all(&cfg).unwrap();
+    PersistedRepositorySettings::export_all(&cfg).unwrap();
+    PersistedWorktreeState::export_all(&cfg).unwrap();
+    WorkbenchSaveRequest::export_all(&cfg).unwrap();
+    WorkbenchRestoreReply::export_all(&cfg).unwrap();
+    ReadReply::export_all(&cfg).unwrap();
+    RepositorySnapshot::export_all(&cfg).unwrap();
+    RepositoryInfo::export_all(&cfg).unwrap();
+    Branch::export_all(&cfg).unwrap();
+    RemoteBranch::export_all(&cfg).unwrap();
+    WorktreeSnapshot::export_all(&cfg).unwrap();
+    Remote::export_all(&cfg).unwrap();
+    Change::export_all(&cfg).unwrap();
+    Range::export_all(&cfg).unwrap();
     ApiFormatKind::export_all(&cfg).unwrap();
     ProviderKind::export_all(&cfg).unwrap();
     SavedProviderConnection::export_all(&cfg).unwrap();
     SavedModelConfiguration::export_all(&cfg).unwrap();
+    CreateProviderConnectionInput::export_all(&cfg).unwrap();
+    UpdateProviderConnectionInput::export_all(&cfg).unwrap();
+    SaveModelInput::export_all(&cfg).unwrap();
+    TestConnectionInput::export_all(&cfg).unwrap();
+    ModelTestReply::export_all(&cfg).unwrap();
+    RemoteModelOption::export_all(&cfg).unwrap();
+    ListModelsInput::export_all(&cfg).unwrap();
+    ModelListReply::export_all(&cfg).unwrap();
+    ProviderSaveReply::export_all(&cfg).unwrap();
+    ProviderUpdateReply::export_all(&cfg).unwrap();
+    ModelSaveReply::export_all(&cfg).unwrap();
+    ProviderRevealKeyOutcome::export_all(&cfg).unwrap();
+    ProviderRevealKeyReply::export_all(&cfg).unwrap();
+    ModelMutateReply::export_all(&cfg).unwrap();
+    SkillCatalogItem::export_all(&cfg).unwrap();
+    SkillsStateSnapshot::export_all(&cfg).unwrap();
+    GetSkillsStateRequest::export_all(&cfg).unwrap();
+    SyncSkillsRequest::export_all(&cfg).unwrap();
+    UpdateEnabledSkillsRequest::export_all(&cfg).unwrap();
+    ResetSkillsRequest::export_all(&cfg).unwrap();
     UpdatePhase::export_all(&cfg).unwrap();
     UpdateInstallBlocker::export_all(&cfg).unwrap();
     UpdateStateSnapshot::export_all(&cfg).unwrap();
+    CheckUpdateRequest::export_all(&cfg).unwrap();
+    InstallUpdateRequest::export_all(&cfg).unwrap();
+    CancelUpdateRequest::export_all(&cfg).unwrap();
+    OpenReleasePageRequest::export_all(&cfg).unwrap();
     TraySessionStatus::export_all(&cfg).unwrap();
     TrayRepositorySummary::export_all(&cfg).unwrap();
     TrayStateSnapshot::export_all(&cfg).unwrap();
@@ -98,6 +171,20 @@ fn export_all_bindings(dir: &Path) {
     WorkflowUiMessage::export_all(&cfg).unwrap();
     TrustedActionUpdate::export_all(&cfg).unwrap();
     CustomActionDraft::export_all(&cfg).unwrap();
+    StartCustomActionRequest::export_all(&cfg).unwrap();
+    RespondCustomActionRequest::export_all(&cfg).unwrap();
+    CustomActionProgressEvent::export_all(&cfg).unwrap();
+    CustomActionCommandReply::export_all(&cfg).unwrap();
+    GenerateCustomActionRequest::export_all(&cfg).unwrap();
+    GenerateCustomActionProgressEvent::export_all(&cfg).unwrap();
+    GenerateCustomActionReply::export_all(&cfg).unwrap();
+    StartCPushRequest::export_all(&cfg).unwrap();
+    PullRebaseRequest::export_all(&cfg).unwrap();
+    ReconcileCPushRequest::export_all(&cfg).unwrap();
+    RespondCPushRequest::export_all(&cfg).unwrap();
+    CPushProgressEvent::export_all(&cfg).unwrap();
+    CPushCommandReply::export_all(&cfg).unwrap();
+    DismissSessionDoneRequest::export_all(&cfg).unwrap();
     CPushSessionSnapshot::export_all(&cfg).unwrap();
     ActionSessionSnapshot::export_all(&cfg).unwrap();
 

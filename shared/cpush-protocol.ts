@@ -1,12 +1,16 @@
 import type {
+  CPushCommandReply,
+  CPushProgressEvent,
   CPushQaItem,
   CPushSessionSnapshot,
   CPushSessionStatus,
+  PullRebaseRequest,
+  ReconcileCPushRequest,
+  RespondCPushRequest,
+  StartCPushRequest,
 } from './generated';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
 import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
-import type { AppLocale, CommitLanguage } from './language-protocol';
-import type { ModelFileSelection } from './model-protocol';
 import {
   decodeWorkflowCommits,
   decodeWorkflowTimeline,
@@ -19,61 +23,22 @@ import {
 
 export const CPUSH_PROTOCOL_VERSION = 1;
 
-export type { CPushQaItem, CPushSessionSnapshot, CPushSessionStatus };
+export type {
+  CPushCommandReply,
+  CPushProgressEvent,
+  CPushQaItem,
+  CPushSessionSnapshot,
+  CPushSessionStatus,
+  PullRebaseRequest,
+  ReconcileCPushRequest,
+  RespondCPushRequest,
+  StartCPushRequest,
+};
 
 export type CPushMessageKind = WorkflowMessageKind;
 export type CPushTimelineItem = WorkflowTimelineItem;
 export type CPushLandedCommit = WorkflowLandedCommit;
 export type CPushUiMessage = WorkflowUiMessage;
-
-export interface StartCPushRequest {
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  selections: ModelFileSelection[];
-  prompt: string;
-  push?: boolean;
-  locale?: AppLocale;
-  commitLanguage?: CommitLanguage;
-}
-
-export interface PullRebaseRequest {
-  requestId: string;
-  target: GitReadTarget;
-  modelId?: string;
-  locale?: AppLocale;
-}
-
-export interface ReconcileCPushRequest {
-  requestId: string;
-  target: GitReadTarget;
-  locale?: AppLocale;
-}
-
-export interface RespondCPushRequest {
-  requestId: string;
-  target: GitReadTarget;
-  runId: string;
-  messageId: string;
-  optionId?: string;
-  text?: string;
-  modelId?: string;
-  locale?: AppLocale;
-}
-
-export interface CPushProgressEvent {
-  protocolVersion: typeof CPUSH_PROTOCOL_VERSION;
-  session: CPushSessionSnapshot;
-  repositorySnapshot?: GitRepositorySnapshot;
-}
-
-export interface CPushCommandReply {
-  protocolVersion: typeof CPUSH_PROTOCOL_VERSION;
-  kind: 'cPush';
-  requestId: string;
-  session: CPushSessionSnapshot;
-  repositorySnapshot?: GitRepositorySnapshot;
-}
 
 const VALID_SESSION_STATUSES: readonly CPushSessionStatus[] = [
   'idle',

@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  extractMessageUserCard,
+  decodeMessageUserCard,
   formatMessageUserResponseForModel,
   hasMessageQuestions,
-  validateMessageUserRequest,
 } from '../../shared/message-user-protocol';
 import type { ProbeEvent } from '../../shared/pi-protocol';
 import { sanitizeProviderError } from '../src/providers';
@@ -94,38 +93,10 @@ describe('Dual-layer Git skill registry & upstream normalization', () => {
   });
 });
 
-describe('message_user validation, rich blocks, formatting, and tool wrapper', () => {
-  it('validates question constraints, non-blocking cards, and sanitizes unsafe paths/links', () => {
-    // Rejects completely empty message_user calls:
-    expect(validateMessageUserRequest({})).toMatchObject({ ok: false, code: 'missing_title' });
-
-    // Rejects reserved labels:
-    expect(validateMessageUserRequest({
-      questions: [{
-        header: 'Scope',
-        question: 'How should we group these changes?',
-        options: [
-          { label: 'Single PR', description: 'Combine into one PR' },
-          { label: 'Other', description: 'Custom choice' },
-        ],
-      }],
-    })).toMatchObject({ ok: false, code: 'reserved_option_label' });
-
-    // Rejects preview with multiSelect:
-    expect(validateMessageUserRequest({
-      questions: [{
-        header: 'Labels',
-        question: 'Pick labels',
-        multiSelect: true,
-        options: [
-          { label: 'bug', description: 'Bug fix', preview: 'preview text' },
-          { label: 'feat', description: 'Feature' },
-        ],
-      }],
-    })).toMatchObject({ ok: false, code: 'preview_with_multiselect' });
-
+describe('message_user card decoding, formatting, and tool bridge forwarding', () => {
+  it('decodes safe rich cards defensively, strips unsafe paths/links, and formats Q&A answers for the model', () => {
     // Rejects unsafe path escapes and .git paths in findings and files blocks:
-    expect(validateMessageUserRequest({
+    expect(decodeMessageUserCard({
       title: 'Unsafe finding path',
       blocks: [{
         type: 'findings',
@@ -137,18 +108,18 @@ describe('message_user validation, rich blocks, formatting, and tool wrapper', (
           line: 1,
         }],
       }],
-    })).toMatchObject({ ok: false, code: 'invalid_finding_path' });
+    })).toBeUndefined();
 
-    expect(validateMessageUserRequest({
+    expect(decodeMessageUserCard({
       title: 'Unsafe file chip path',
       blocks: [{
         type: 'files',
         items: [{ path: '.git/config', badge: 'blocked' }],
       }],
-    })).toMatchObject({ ok: false, code: 'invalid_file_path' });
+    })).toBeUndefined();
 
-    // Validates non-blocking rich card with all 7 blocks and strips unsafe links:
-    const richCardRes = validateMessageUserRequest({
+    // Decodes all 7 rich blocks and strips unsafe javascript: links:
+    const card = decodeMessageUserCard({
       tone: 'warning',
       title: 'Code review finished',
       subtitle: '2 findings across 3 files',
@@ -198,31 +169,25 @@ describe('message_user validation, rich blocks, formatting, and tool wrapper', (
           ],
         },
       ],
-      context: {
-        links: [
-          { label: 'PR #42', url: 'https://github.com/acme/demo/pull/42' },
-          { label: 'XSS', url: 'javascript:alert(1)' },
-        ],
-      },
+      links: [
+        { label: 'PR #42', url: 'https://github.com/acme/demo/pull/42' },
+        { label: 'XSS', url: 'javascript:alert(1)' },
+      ],
     });
-    expect(richCardRes.ok).toBe(true);
-    if (!richCardRes.ok) return;
-    expect(hasMessageQuestions(richCardRes.request)).toBe(false);
-    const card = extractMessageUserCard(richCardRes.request);
     expect(card?.blocks).toHaveLength(7);
     const findingsBlock = card?.blocks?.[3];
     expect(findingsBlock?.type === 'findings' && findingsBlock.items[0].path).toBe('src/api/pay.ts');
     expect(findingsBlock?.type === 'findings' && findingsBlock.items[1].path).toBeUndefined();
     const filesBlock = card?.blocks?.[6];
     expect(filesBlock?.type === 'files' && filesBlock.items).toHaveLength(1);
-    expect(richCardRes.request.context?.links).toEqual([
+    expect(card?.links).toEqual([
       { label: 'PR #42', url: 'https://github.com/acme/demo/pull/42' },
     ]);
 
-    // Validates blocking Q&A + response formatting:
-    const valid = validateMessageUserRequest({
+    const request = {
       questions: [
         {
+          id: 'q-1',
           header: 'Grouping',
           question: 'Group payment and docs separately?',
           options: [
@@ -231,16 +196,10 @@ describe('message_user validation, rich blocks, formatting, and tool wrapper', (
           ],
         },
       ],
-      context: {
-        scope: '2 feature areas',
-        allowDontAskAgain: true,
-      },
-    });
-    expect(valid.ok).toBe(true);
-    if (!valid.ok) return;
-    expect(hasMessageQuestions(valid.request)).toBe(true);
+    };
+    expect(hasMessageQuestions(request)).toBe(true);
 
-    const answeredText = formatMessageUserResponseForModel(valid.request, {
+    const answeredText = formatMessageUserResponseForModel(request, {
       cancelled: false,
       answers: [{
         questionIndex: 0,
@@ -255,7 +214,7 @@ describe('message_user validation, rich blocks, formatting, and tool wrapper', (
     expect(answeredText).toContain('[Grouping] Split into 2 PRs (id=split)');
     expect(answeredText).toContain('do not ask again');
 
-    const cancelledText = formatMessageUserResponseForModel(valid.request, {
+    const cancelledText = formatMessageUserResponseForModel(request, {
       cancelled: true,
       answers: [],
       unanswered: [0],

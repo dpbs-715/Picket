@@ -1,4 +1,11 @@
-import type { AppLocale } from './language-protocol';
+import type {
+  GetSkillsStateRequest,
+  ResetSkillsRequest,
+  SkillCatalogItem,
+  SkillsStateSnapshot,
+  SyncSkillsRequest,
+  UpdateEnabledSkillsRequest,
+} from './generated';
 
 export const SKILLS_PROTOCOL_VERSION = 1;
 
@@ -15,45 +22,15 @@ export const DEFAULT_GIT_SKILLS = [
   'submit',
 ] as const;
 
-export type SkillEntrySource = 'bundled' | 'synced';
-
-export interface SkillCatalogItem {
-  name: string;
-  description: string;
-  enabled: boolean;
-  builtIn: boolean;
-  source: SkillEntrySource;
-  fileCount: number;
-  referenceCount: number;
-}
-
-export interface SkillsStateSnapshot {
-  protocolVersion: typeof SKILLS_PROTOCOL_VERSION;
-  mode: SkillEntrySource;
-  sourceRepo: string;
-  defaultSourceRepo: string;
-  sourceCommit?: string;
-  syncedAt?: string;
-  skills: SkillCatalogItem[];
-}
-
-export interface GetSkillsStateRequest {
-  locale?: AppLocale;
-}
-
-export interface SyncSkillsRequest {
-  sourceRepo?: string;
-  locale?: AppLocale;
-}
-
-export interface UpdateEnabledSkillsRequest {
-  enabledSkills: string[];
-  locale?: AppLocale;
-}
-
-export interface ResetSkillsRequest {
-  locale?: AppLocale;
-}
+export type SkillEntrySource = SkillCatalogItem['source'];
+export type {
+  GetSkillsStateRequest,
+  ResetSkillsRequest,
+  SkillCatalogItem,
+  SkillsStateSnapshot,
+  SyncSkillsRequest,
+  UpdateEnabledSkillsRequest,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

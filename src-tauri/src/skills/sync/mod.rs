@@ -56,21 +56,26 @@ const SKILL_MANIFEST_FILE: &str = "skills-manifest.json";
 static STAGE_NONCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SkillCatalogItem {
     pub name: String,
     pub description: String,
     pub enabled: bool,
     pub built_in: bool,
+    #[cfg_attr(test, ts(type = "'bundled' | 'synced'"))]
     pub source: &'static str,
     pub file_count: usize,
     pub reference_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct SkillsStateSnapshot {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'bundled' | 'synced'"))]
     pub mode: &'static str,
     pub source_repo: String,
     pub default_source_repo: String,
@@ -82,35 +87,43 @@ pub struct SkillsStateSnapshot {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetSkillsStateRequest {
     #[allow(dead_code)]
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SyncSkillsRequest {
     #[serde(default)]
     pub source_repo: Option<String>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateEnabledSkillsRequest {
     pub enabled_skills: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResetSkillsRequest {
     #[allow(dead_code)]
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 

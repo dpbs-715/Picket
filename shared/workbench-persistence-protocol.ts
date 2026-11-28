@@ -1,27 +1,25 @@
 import type {
+  PersistedRepositorySettings,
   PersistedWindowPreferences,
+  PersistedWorktreeState,
   WindowPosition,
   WindowSize,
+  WorkbenchRestoreReply,
+  WorkbenchSaveRequest,
 } from './generated';
 import { decodeCPushSessionSnapshot } from './cpush-protocol';
-import type { CPushSessionSnapshot } from './cpush-protocol';
 import {
   CUSTOM_ACTION_LIMITS,
   decodeActionSessionSnapshot,
   decodeCustomActionConfig,
-  type ActionSessionSnapshot,
   type CustomActionConfig,
 } from './custom-action-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION, isValidRepoRelativePath } from './git-read-protocol';
 import type { GitRepositorySnapshot } from './git-read-protocol';
 import { isGitEditorId } from './ide-protocol';
-import type { GitEditorId } from './ide-protocol';
 import { isAppLocale } from './language-protocol';
-import type { AppLocale, CommitLanguage } from './language-protocol';
 import { isAppTheme } from './theme-protocol';
-import type { AppTheme } from './theme-protocol';
 import { decodeSavedModelConfiguration, decodeSavedProviderConnection } from './model-protocol';
-import type { SavedModelConfiguration, SavedProviderConnection } from './model-protocol';
 
 export const WORKBENCH_PERSISTENCE_PROTOCOL_VERSION = 2;
 
@@ -38,60 +36,15 @@ export const WINDOW_DIMENSIONS = {
   maxStoredCoordinateAbs: 65_536,
 } as const;
 
-export type { PersistedWindowPreferences, WindowPosition, WindowSize };
-
-export interface PersistedRepositorySettings {
-  repositoryId: string;
-  editor: GitEditorId;
-  commitLanguage: CommitLanguage;
-  localKeepPaths?: string[];
-  customActions?: CustomActionConfig[];
-  activeActionId?: string | null;
-}
-
-export interface PersistedWorktreeState {
-  repositoryId: string;
-  worktreeId: string;
-  promptText: string;
-  selectedIds: string[];
-  unselectedIds?: string[];
-  scopeVersion: string;
-  tab?: 'commit' | 'review';
-}
-
-export interface WorkbenchSaveRequest {
-  revision: number;
-  locale?: AppLocale;
-  theme?: AppTheme;
-  editor: GitEditorId;
-  defaultCommitLanguage?: CommitLanguage;
-  repositorySettings?: PersistedRepositorySettings[];
-  windowPreferences?: PersistedWindowPreferences;
-  activeWorktreeId: string | null;
-  emptyPrompt: string;
-  worktrees: PersistedWorktreeState[];
-}
-
-export interface WorkbenchRestoreReply {
-  protocolVersion: typeof WORKBENCH_PERSISTENCE_PROTOCOL_VERSION;
-  locale?: AppLocale;
-  theme?: AppTheme;
-  editor: GitEditorId;
-  defaultCommitLanguage?: CommitLanguage;
-  repositorySettings?: PersistedRepositorySettings[];
-  windowPreferences?: PersistedWindowPreferences;
-  installedEditors?: GitEditorId[];
-  activeWorktreeId: string | null;
-  emptyPrompt: string;
-  worktrees: PersistedWorktreeState[];
-  snapshots: GitRepositorySnapshot[];
-  connections?: SavedProviderConnection[];
-  models?: SavedModelConfiguration[];
-  activeModelId?: string | null;
-  cPushSessions?: CPushSessionSnapshot[];
-  actionSessions?: ActionSessionSnapshot[];
-  warning: string | null;
-}
+export type {
+  PersistedRepositorySettings,
+  PersistedWindowPreferences,
+  PersistedWorktreeState,
+  WindowPosition,
+  WindowSize,
+  WorkbenchRestoreReply,
+  WorkbenchSaveRequest,
+};
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);

@@ -79,32 +79,40 @@ impl UpdateStateSnapshot {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CheckUpdateRequest {
     #[serde(default)]
     pub manual: bool,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallUpdateRequest {
     pub version: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelUpdateRequest {
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenReleasePageRequest {
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }

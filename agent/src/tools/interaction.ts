@@ -2,7 +2,7 @@ import type { AgentTool } from '@earendil-works/pi-agent-core';
 import {
   formatMessageUserResponseForModel,
   hasMessageQuestions,
-  validateMessageUserRequest,
+  type MessageUserRequest,
   type MessageUserResponse,
 } from '../../../shared/message-user-protocol';
 import type { ToolBridge } from './bridge';
@@ -148,15 +148,17 @@ export function createMessageUserTool(bridge: ToolBridge): AgentTool<any, Messag
     },
     executionMode: 'sequential',
     async execute(_toolCallId, params, signal) {
-      const validation = validateMessageUserRequest(params);
-      if (!validation.ok) {
+      if (!params || typeof params !== 'object' || Array.isArray(params)) {
         return {
-          content: [{ type: 'text', text: `Invalid message_user arguments (${validation.code}): ${validation.message}` }],
-          details: { cancelled: true, answers: [], errorCode: validation.code },
+          content: [{ type: 'text', text: 'Invalid message_user arguments: expected an object with `title` and optional `blocks` and/or `questions`.' }],
+          details: { cancelled: true, answers: [], errorCode: 'invalid_root' },
           isError: true,
         };
       }
-      const response = await bridge.invokeHostTool('message_user', validation.request as unknown as Record<string, unknown>, signal);
+      // Rust (`src-tauri/src/actions/message_user.rs`) is the single authoritative validator for
+      // `message_user` blocks, questions, limits, paths, and links.
+      const request = params as MessageUserRequest;
+      const response = await bridge.invokeHostTool('message_user', params as Record<string, unknown>, signal);
       if (!response.ok || response.isError) {
         return {
           content: [{ type: 'text', text: response.content || 'User message dock was unavailable.' }],
@@ -164,15 +166,18 @@ export function createMessageUserTool(bridge: ToolBridge): AgentTool<any, Messag
           isError: true,
         };
       }
-      if (!hasMessageQuestions(validation.request)) {
+      const detailsRecord = response.details && typeof response.details === 'object'
+        ? (response.details as Record<string, unknown>)
+        : undefined;
+      if (detailsRecord?.displayed === true || !hasMessageQuestions(request)) {
         return {
           content: [{ type: 'text', text: response.content || 'Message displayed to user in MessageDock.' }],
           details: { displayed: true },
         };
       }
       let parsed: MessageUserResponse | undefined;
-      if (response.details && typeof response.details === 'object') {
-        parsed = response.details as MessageUserResponse;
+      if (detailsRecord) {
+        parsed = detailsRecord as unknown as MessageUserResponse;
       } else {
         try {
           parsed = JSON.parse(response.content) as MessageUserResponse;
@@ -187,7 +192,7 @@ export function createMessageUserTool(bridge: ToolBridge): AgentTool<any, Messag
           isError: true,
         };
       }
-      const modelText = formatMessageUserResponseForModel(validation.request, parsed);
+      const modelText = formatMessageUserResponseForModel(request, parsed);
       return {
         content: [{ type: 'text', text: modelText }],
         details: parsed,

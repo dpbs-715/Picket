@@ -1,32 +1,25 @@
 import type {
+  CancelUpdateRequest,
+  CheckUpdateRequest,
+  InstallUpdateRequest,
+  OpenReleasePageRequest,
   UpdateInstallBlocker,
   UpdatePhase,
   UpdateStateSnapshot,
 } from './generated';
-import type { AppLocale } from './language-protocol';
 
 export const UPDATE_PROTOCOL_VERSION = 1 as const;
 export const PICKET_RELEASES_URL = 'https://github.com/dpbs-715/Picket/releases';
 
-export type { UpdateInstallBlocker, UpdatePhase, UpdateStateSnapshot };
-
-export interface CheckUpdateRequest {
-  manual: boolean;
-  locale?: AppLocale;
-}
-
-export interface InstallUpdateRequest {
-  version: string;
-  locale?: AppLocale;
-}
-
-export interface CancelUpdateRequest {
-  locale?: AppLocale;
-}
-
-export interface OpenReleasePageRequest {
-  locale?: AppLocale;
-}
+export type {
+  CancelUpdateRequest,
+  CheckUpdateRequest,
+  InstallUpdateRequest,
+  OpenReleasePageRequest,
+  UpdateInstallBlocker,
+  UpdatePhase,
+  UpdateStateSnapshot,
+};
 
 const VALID_PHASES = new Set<UpdatePhase>([
   'idle',

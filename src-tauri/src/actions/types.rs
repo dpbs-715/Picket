@@ -182,6 +182,7 @@ pub struct TrustedActionUpdate {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartCustomActionRequest {
     pub request_id: String,
@@ -197,12 +198,15 @@ pub struct StartCustomActionRequest {
     #[serde(default)]
     pub resume_from_run_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub commit_language: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RespondCustomActionRequest {
     pub request_id: String,
@@ -210,12 +214,15 @@ pub struct RespondCustomActionRequest {
     pub call_id: String,
     pub response: MessageUserResponse,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CustomActionProgressEvent {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
     pub run_id: String,
     pub repository_id: String,
@@ -223,23 +230,33 @@ pub struct CustomActionProgressEvent {
     pub session_id: String,
     pub action_id: String,
     pub action_label: String,
+    #[cfg_attr(
+        test,
+        ts(type = "'running' | 'needsDecision' | 'done' | 'cancelled' | 'failed'")
+    )]
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub pending_call_id: Option<String>,
     pub message: Option<CustomActionUiMessage>,
     pub timeline: Vec<CustomActionTimelineItem>,
     pub commits: Vec<CPushLandedCommit>,
     pub links: Vec<CustomActionLink>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub trusted_action_update: Option<TrustedActionUpdate>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub repository_snapshot: Option<RepositorySnapshot>,
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CustomActionCommandReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'customAction'"))]
     pub kind: &'static str,
     pub request_id: String,
     pub run_id: String,
@@ -248,6 +265,7 @@ pub struct CustomActionCommandReply {
     pub session_id: String,
     pub action_id: String,
     pub action_label: String,
+    #[cfg_attr(test, ts(type = "'done' | 'cancelled' | 'failed'"))]
     pub status: &'static str,
     pub summary: String,
     pub message: Option<CustomActionUiMessage>,
@@ -255,12 +273,15 @@ pub struct CustomActionCommandReply {
     pub commits: Vec<CPushLandedCommit>,
     pub links: Vec<CustomActionLink>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub trusted_action_update: Option<TrustedActionUpdate>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub repository_snapshot: Option<RepositorySnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GenerateCustomActionRequest {
     pub request_id: String,
@@ -270,6 +291,7 @@ pub struct GenerateCustomActionRequest {
     #[serde(default)]
     pub existing_labels: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
@@ -283,10 +305,16 @@ pub struct CustomActionDraft {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateCustomActionProgressEvent {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
     pub run_id: String,
+    #[cfg_attr(
+        test,
+        ts(type = "'running' | 'needsDecision' | 'done' | 'cancelled' | 'failed'")
+    )]
     pub status: &'static str,
     pub status_label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -298,11 +326,15 @@ pub struct GenerateCustomActionProgressEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateCustomActionReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'generateCustomAction'"))]
     pub kind: &'static str,
     pub request_id: String,
+    #[cfg_attr(test, ts(type = "'done' | 'cancelled'"))]
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<CustomActionDraft>,
@@ -424,6 +456,7 @@ impl StoredCPushSession {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartCPushRequest {
     pub request_id: String,
@@ -434,12 +467,15 @@ pub struct StartCPushRequest {
     #[serde(default)]
     pub push: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub commit_language: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PullRebaseRequest {
     pub request_id: String,
@@ -451,6 +487,7 @@ pub struct PullRebaseRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcileCPushRequest {
     pub request_id: String,
@@ -460,6 +497,7 @@ pub struct ReconcileCPushRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RespondCPushRequest {
     pub request_id: String,
@@ -477,8 +515,10 @@ pub struct RespondCPushRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct CPushProgressEvent {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
     pub session: CPushSessionSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -486,9 +526,12 @@ pub struct CPushProgressEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct CPushCommandReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'cPush'"))]
     pub kind: &'static str,
     pub request_id: String,
     pub session: CPushSessionSnapshot,
@@ -497,6 +540,7 @@ pub struct CPushCommandReply {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DismissSessionDoneRequest {
     pub request_id: String,
@@ -505,6 +549,7 @@ pub struct DismissSessionDoneRequest {
     pub run_id: Option<String>,
     pub message_id: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 

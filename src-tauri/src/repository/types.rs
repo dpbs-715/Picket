@@ -19,6 +19,7 @@ where
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadTarget {
     pub repository_id: String,
@@ -27,21 +28,26 @@ pub struct ReadTarget {
     pub scope_version: String,
 }
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenRequest {
     pub request_id: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RefreshRequest {
     pub request_id: String,
     pub target: ReadTarget,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalKeepRequest {
     pub request_id: String,
@@ -49,24 +55,30 @@ pub struct LocalKeepRequest {
     pub paths: Vec<String>,
     pub keep: bool,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LocalKeepReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'localKeep'"))]
     pub kind: &'static str,
     pub request_id: String,
     pub target: ReadTarget,
     pub snapshot: RepositorySnapshot,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum BranchAction {
     SwitchBranch,
     CheckoutRemoteBranch,
 }
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchRequest {
     pub request_id: String,
@@ -75,20 +87,27 @@ pub struct BranchRequest {
     pub branch: String,
     pub branch_token: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BranchReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'branch'"))]
     pub kind: &'static str,
     pub request_id: String,
     pub target: ReadTarget,
     pub action: BranchAction,
+    #[cfg_attr(test, ts(type = "'completed'"))]
     pub outcome: &'static str,
+    #[cfg_attr(test, ts(as = "RepositorySnapshot"))]
     pub snapshot: Option<RepositorySnapshot>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommitSelection {
     pub file_id: String,
@@ -134,6 +153,7 @@ impl EditorKind {
     ];
 }
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenFileRequest {
     pub request_id: String,
@@ -145,9 +165,11 @@ pub struct OpenFileRequest {
     pub editor: EditorKind,
     pub line: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum OpenFileAction {
     Open,
@@ -157,9 +179,12 @@ pub enum OpenFileAction {
     Merge,
 }
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct OpenFileReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(type = "'openFile'"))]
     pub kind: &'static str,
     pub request_id: String,
     pub target: ReadTarget,
@@ -170,6 +195,7 @@ pub struct OpenFileReply {
     pub line: Option<u32>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum WorkbenchTab {
     Commit,
@@ -204,6 +230,7 @@ pub struct PersistedWindowPreferences {
     pub compact_position: Option<WindowPosition>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedCustomAction {
     pub id: String,
@@ -217,19 +244,24 @@ pub struct PersistedCustomAction {
     pub trusted_prompt_hash: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedRepositorySettings {
     pub repository_id: String,
     pub editor: EditorKind,
     pub commit_language: LanguageKind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
     pub local_keep_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<PersistedCustomAction>>", optional))]
     pub custom_actions: Vec<PersistedCustomAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional = nullable))]
     pub active_action_id: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedWorktreeState {
     pub repository_id: String,
@@ -237,86 +269,117 @@ pub struct PersistedWorktreeState {
     pub prompt_text: String,
     pub selected_ids: Vec<String>,
     #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
     pub unselected_ids: Vec<String>,
     pub scope_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub tab: Option<WorkbenchTab>,
 }
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkbenchSaveRequest {
+    #[cfg_attr(test, ts(type = "number"))]
     pub revision: u64,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_theme_or_default")]
+    #[cfg_attr(test, ts(as = "Option<ThemeKind>", optional))]
     pub theme: ThemeKind,
     pub editor: EditorKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub default_commit_language: LanguageKind,
     #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<Vec<PersistedRepositorySettings>>", optional))]
     pub repository_settings: Vec<PersistedRepositorySettings>,
     #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
     pub window_preferences: Option<PersistedWindowPreferences>,
     pub active_worktree_id: Option<String>,
     pub empty_prompt: String,
     pub worktrees: Vec<PersistedWorktreeState>,
 }
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WorkbenchRestoreReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
+    #[cfg_attr(test, ts(as = "Option<ThemeKind>", optional))]
     pub theme: ThemeKind,
     pub editor: EditorKind,
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub default_commit_language: LanguageKind,
+    #[cfg_attr(test, ts(as = "Option<Vec<PersistedRepositorySettings>>", optional))]
     pub repository_settings: Vec<PersistedRepositorySettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub window_preferences: Option<PersistedWindowPreferences>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub installed_editors: Option<Vec<EditorKind>>,
     pub active_worktree_id: Option<String>,
     pub empty_prompt: String,
     pub worktrees: Vec<PersistedWorktreeState>,
     pub snapshots: Vec<RepositorySnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub connections: Option<Vec<crate::models::types::SavedProviderConnection>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub models: Option<Vec<crate::models::types::SavedModelConfiguration>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional = nullable, type = "string | null"))]
     pub active_model_id: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub c_push_sessions: Option<Vec<crate::actions::types::CPushSessionSnapshot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub action_sessions: Option<Vec<crate::actions::session_store::ActionSessionSnapshot>>,
     pub warning: Option<String>,
 }
 #[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReadReply {
+    #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
     pub request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub target: Option<ReadTarget>,
     pub snapshot: Option<RepositorySnapshot>,
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepositorySnapshot {
     pub repository: RepositoryInfo,
     pub worktrees: Vec<WorktreeSnapshot>,
     pub active_worktree_id: String,
+    #[cfg_attr(test, ts(type = "number"))]
     pub read_sequence: u64,
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepositoryInfo {
     pub id: String,
     pub name: String,
     pub branches: Vec<Branch>,
+    #[cfg_attr(test, ts(as = "Option<Vec<RemoteBranch>>", optional))]
     pub remote_branches: Vec<RemoteBranch>,
+    #[cfg_attr(test, ts(as = "Option<Vec<String>>", optional))]
     pub local_keep_paths: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct Branch {
     pub name: String,
@@ -324,6 +387,7 @@ pub struct Branch {
     pub worktree_id: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteBranch {
     pub name: String,
@@ -331,6 +395,7 @@ pub struct RemoteBranch {
     pub local_name: String,
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeSnapshot {
     pub repository_id: String,
@@ -347,12 +412,15 @@ pub struct WorktreeSnapshot {
     pub files: Vec<Change>,
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Remote {
     #[serde(rename_all = "camelCase")]
     Tracked {
         branch: String,
+        #[cfg_attr(test, ts(type = "number"))]
         ahead: u64,
+        #[cfg_attr(test, ts(type = "number"))]
         behind: u64,
         local_only: bool,
     },
@@ -364,24 +432,32 @@ pub enum Remote {
     },
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     pub id: String,
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub previous_path: Option<String>,
+    #[cfg_attr(test, ts(type = "'A' | 'M' | 'D' | 'R' | 'U' | 'T' | 'C'"))]
     pub status: String,
     pub git_status: String,
     pub range: Range,
     pub binary: bool,
     pub ignored_for_review: bool,
+    #[cfg_attr(test, ts(as = "Option<bool>", optional))]
     pub local_keep: bool,
     pub content_version: String,
     pub commit_token: String,
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct Range {
+    #[cfg_attr(test, ts(type = "'partial' | 'staged' | 'unstaged'"))]
     pub kind: String,
+    #[cfg_attr(test, ts(type = "number"))]
     pub added: u64,
+    #[cfg_attr(test, ts(type = "number"))]
     pub removed: u64,
 }

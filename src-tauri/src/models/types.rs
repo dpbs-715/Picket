@@ -119,6 +119,7 @@ pub struct SavedModelConfiguration {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateProviderConnectionInput {
     pub provider: ProviderKind,
@@ -138,8 +139,10 @@ pub struct CreateProviderConnectionInput {
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
+    #[cfg_attr(test, ts(as = "Option<bool>", optional))]
     pub keep_active_model: bool,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
@@ -162,6 +165,7 @@ impl Default for CreateProviderConnectionInput {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateProviderConnectionInput {
     pub connection_id: String,
@@ -169,10 +173,12 @@ pub struct UpdateProviderConnectionInput {
     #[serde(default)]
     pub api_key: String,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveModelInput {
     #[serde(default)]
@@ -188,10 +194,12 @@ pub struct SaveModelInput {
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
+    #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub locale: LanguageKind,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -213,6 +221,7 @@ pub enum TestConnectionInput {
         #[serde(default)]
         max_output_tokens: Option<u32>,
         #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
         locale: LanguageKind,
     },
     ConnectionModel {
@@ -225,6 +234,7 @@ pub enum TestConnectionInput {
         #[serde(default)]
         max_output_tokens: Option<u32>,
         #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
         locale: LanguageKind,
     },
     ExistingConnection {
@@ -234,6 +244,7 @@ pub enum TestConnectionInput {
         #[serde(default)]
         model_id: Option<String>,
         #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
         locale: LanguageKind,
     },
 }
@@ -261,16 +272,20 @@ pub struct NormalizedModelFields {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTestReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub provider: ProviderKind,
     pub model_id: String,
     pub summary: String,
+    #[cfg_attr(test, ts(type = "number"))]
     pub latency_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoteModelOption {
     pub id: String,
@@ -283,6 +298,7 @@ pub struct RemoteModelOption {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -299,6 +315,7 @@ pub enum ListModelsInput {
         #[serde(default)]
         api_format: Option<ApiFormatKind>,
         #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
         locale: LanguageKind,
     },
     ExistingConnection {
@@ -306,21 +323,26 @@ pub enum ListModelsInput {
         #[serde(default)]
         api_format: Option<ApiFormatKind>,
         #[serde(default, deserialize_with = "deserialize_language_or_default")]
+        #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
         locale: LanguageKind,
     },
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelListReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub provider: ProviderKind,
     pub models: Vec<RemoteModelOption>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSaveReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub connection: SavedProviderConnection,
     pub model: SavedModelConfiguration,
@@ -330,8 +352,10 @@ pub struct ProviderSaveReply {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUpdateReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub connection: SavedProviderConnection,
     pub connections: Vec<SavedProviderConnection>,
@@ -340,8 +364,10 @@ pub struct ProviderUpdateReply {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSaveReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub model: SavedModelConfiguration,
     pub connections: Vec<SavedProviderConnection>,
@@ -350,6 +376,7 @@ pub struct ModelSaveReply {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(
     tag = "outcome",
     rename_all = "camelCase",
@@ -362,8 +389,10 @@ pub enum ProviderRevealKeyOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRevealKeyReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub connection_id: String,
     #[serde(flatten)]
@@ -371,8 +400,10 @@ pub struct ProviderRevealKeyReply {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMutateReply {
+    #[cfg_attr(test, ts(type = "2"))]
     pub protocol_version: u8,
     pub connections: Vec<SavedProviderConnection>,
     pub models: Vec<SavedModelConfiguration>,

@@ -1,32 +1,13 @@
-import type { EditorKind } from './generated';
-import type { GitReadTarget } from './git-read-protocol';
-import type { AppLocale } from './language-protocol';
+import type {
+  EditorKind as GitEditorId,
+  OpenFileAction as GitOpenFileAction,
+  OpenFileReply as GitOpenFileReply,
+  OpenFileRequest as GitOpenFileRequest,
+} from './generated';
 
 export const IDE_PROTOCOL_VERSION = 1;
 
-export type GitEditorId = EditorKind;
-export type GitOpenFileAction = 'open' | 'goto' | 'diff' | 'stagedDiff' | 'merge';
-
-export interface GitOpenFileRequest {
-  requestId: string;
-  target: GitReadTarget;
-  fileId?: string;
-  path?: string;
-  editor: GitEditorId;
-  line?: number;
-  locale?: AppLocale;
-}
-
-export interface GitOpenFileReply {
-  protocolVersion: typeof IDE_PROTOCOL_VERSION;
-  kind: 'openFile';
-  requestId: string;
-  target: GitReadTarget;
-  editor: GitEditorId;
-  filePath: string;
-  action: GitOpenFileAction;
-  line?: number;
-}
+export type { GitEditorId, GitOpenFileAction, GitOpenFileReply, GitOpenFileRequest };
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);

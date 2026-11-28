@@ -1,19 +1,23 @@
 import type {
   ActionSessionSnapshot,
+  CustomActionCommandReply,
   CustomActionDraft,
+  CustomActionProgressEvent,
+  DismissSessionDoneRequest,
+  GenerateCustomActionProgressEvent,
+  GenerateCustomActionReply,
+  GenerateCustomActionRequest,
+  PersistedCustomAction as CustomActionConfig,
+  RespondCustomActionRequest,
+  StartCustomActionRequest,
   TrustedActionUpdate,
 } from './generated';
 import {
   decodeMessageUserCard,
-  type MessageUserCard,
   type MessageUserRequest,
-  type MessageUserResponse,
 } from './message-user-protocol';
-import type { CPushLandedCommit } from './cpush-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
-import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
-import type { AppLocale, CommitLanguage } from './language-protocol';
-import type { ModelFileSelection } from './model-protocol';
+import type { GitRepositorySnapshot } from './git-read-protocol';
 import {
   decodeWorkflowCommits,
   decodeWorkflowLinks,
@@ -34,114 +38,24 @@ export const CUSTOM_ACTION_LIMITS = {
   maxGenerateRequestChars: 2000,
 } as const;
 
-export interface CustomActionConfig {
-  id: string;
-  templateKey?: string;
-  label: string;
-  prompt: string;
-  skipWriteConfirm?: boolean;
-  trustedPromptHash?: string;
-}
-
 export type CustomActionLink = WorkflowLink;
 export type CustomActionTimelineItem = WorkflowTimelineItem;
 export type CustomActionUiMessage = WorkflowUiMessage;
 
-export type { ActionSessionSnapshot, CustomActionDraft, TrustedActionUpdate };
-
-export interface StartCustomActionRequest {
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  action: CustomActionConfig;
-  selections: ModelFileSelection[];
-  extraPrompt: string;
-  followUpPrompt?: string;
-  resumeFromRunId?: string;
-  locale?: AppLocale;
-  commitLanguage?: CommitLanguage;
-}
-
-export interface RespondCustomActionRequest {
-  requestId: string;
-  runId: string;
-  callId: string;
-  response: MessageUserResponse;
-  locale?: AppLocale;
-}
-
-export interface DismissSessionDoneRequest {
-  requestId: string;
-  target: GitReadTarget;
-  runId?: string;
-  messageId: string;
-  locale?: AppLocale;
-}
-
-export interface CustomActionProgressEvent {
-  protocolVersion: typeof CUSTOM_ACTION_PROTOCOL_VERSION;
-  runId: string;
-  repositoryId: string;
-  worktreeId: string;
-  sessionId: string;
-  actionId: string;
-  actionLabel: string;
-  status: 'running' | 'needsDecision' | 'done' | 'cancelled' | 'failed';
-  pendingCallId?: string;
-  message: CustomActionUiMessage | null;
-  timeline: CustomActionTimelineItem[];
-  commits: CPushLandedCommit[];
-  links: CustomActionLink[];
-  trustedActionUpdate?: TrustedActionUpdate;
-  repositorySnapshot?: GitRepositorySnapshot;
-}
-
-export interface CustomActionCommandReply {
-  protocolVersion: typeof CUSTOM_ACTION_PROTOCOL_VERSION;
-  kind: 'customAction';
-  requestId: string;
-  runId: string;
-  repositoryId: string;
-  worktreeId: string;
-  sessionId: string;
-  actionId: string;
-  actionLabel: string;
-  status: 'done' | 'cancelled' | 'failed';
-  summary: string;
-  message: CustomActionUiMessage | null;
-  timeline: CustomActionTimelineItem[];
-  commits: CPushLandedCommit[];
-  links: CustomActionLink[];
-  trustedActionUpdate?: TrustedActionUpdate;
-  repositorySnapshot?: GitRepositorySnapshot;
-}
-
-export interface GenerateCustomActionRequest {
-  requestId: string;
-  target: GitReadTarget;
-  modelId: string;
-  userRequest: string;
-  existingLabels: string[];
-  locale?: AppLocale;
-}
-
-export interface GenerateCustomActionProgressEvent {
-  protocolVersion: typeof CUSTOM_ACTION_PROTOCOL_VERSION;
-  runId: string;
-  status: 'running' | 'needsDecision' | 'done' | 'cancelled' | 'failed';
-  statusLabel: string;
-  pendingCallId?: string;
-  card?: MessageUserCard;
-  questionnaire?: MessageUserRequest;
-}
-
-export interface GenerateCustomActionReply {
-  protocolVersion: typeof CUSTOM_ACTION_PROTOCOL_VERSION;
-  kind: 'generateCustomAction';
-  requestId: string;
-  status: 'done' | 'cancelled';
-  draft?: CustomActionDraft;
-}
+export type {
+  ActionSessionSnapshot,
+  CustomActionCommandReply,
+  CustomActionConfig,
+  CustomActionDraft,
+  CustomActionProgressEvent,
+  DismissSessionDoneRequest,
+  GenerateCustomActionProgressEvent,
+  GenerateCustomActionReply,
+  GenerateCustomActionRequest,
+  RespondCustomActionRequest,
+  StartCustomActionRequest,
+  TrustedActionUpdate,
+};
 
 export interface CustomActionSyncResult {
   added: number;
