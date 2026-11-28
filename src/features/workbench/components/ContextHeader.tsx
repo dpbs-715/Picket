@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
 import { useI18n } from '../../../i18n';
-import { HelpTip, Icon, IconButton, Popover, RotatingChevron } from '../../../ui/controls';
+import { HelpTip, Icon, IconButton, Popover, RotatingChevron, handleDragRegionDoubleClick } from '../../../ui/controls';
 import { Collapse, MotionPresence } from '../../../ui/motion';
 import { isActiveSession, isProtected, orderedMessages } from '../state/workbench';
 import type { Repository, WorkbenchState, Worktree } from '../state/workbench';
@@ -62,7 +62,15 @@ export function ContextHeader(props: Props) {
   const close = () => setMenu(null);
 
   return <header className="context-header">
-    <div className="context-row context-top" data-tauri-drag-region>
+    <div
+      className="context-row context-top"
+      data-tauri-drag-region
+      onMouseDown={(event) => handleDragRegionDoubleClick(event, () => {
+        if (props.pinBusy) return;
+        close();
+        props.onCollapse();
+      })}
+    >
       <div className="menu-anchor repository-anchor" data-tauri-drag-region>
         <button type="button" className="context-button repository-button" disabled={props.opening} data-popover-trigger aria-expanded={menu === 'repository'} onClick={() => toggle('repository')}>
           <span className="mono truncate">{repository?.name ?? (props.opening ? t.header.opening : t.header.openRepository)}</span><RotatingChevron open={menu === 'repository'} direction="down-up" />

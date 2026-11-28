@@ -119,6 +119,62 @@ export async function runCompactModeChecks(harness: BrowserCheckHarness) {
     'Clicking Pin in Full Mode must only pin the window without auto-collapsing into Compact Mode',
   );
 
+  // Double-clicking the main titlebar blank drag region toggles Compact Mode instead of maximizing,
+  // while double-clicking header buttons never triggers a compact mode toggle:
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('.repository-button')!.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 2 }),
+    );
+  });
+  await tick();
+  assert(
+    !document.querySelector('.compact-bar'),
+    'Double-clicking repository button must not collapse the workbench into Compact Mode',
+  );
+  let documentSawDoubleClick = false;
+  const documentSpy = () => { documentSawDoubleClick = true; };
+  document.addEventListener('mousedown', documentSpy);
+  try {
+    await act(async () => {
+      document.querySelector<HTMLElement>('.context-top')!.dispatchEvent(
+        new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 2 }),
+      );
+    });
+  } finally {
+    document.removeEventListener('mousedown', documentSpy);
+  }
+  await tick();
+  assert(
+    !!document.querySelector('.compact-bar') && !documentSawDoubleClick,
+    'Double-clicking Full Mode header drag area must stop propagation before document maximize and collapse into Compact Mode',
+  );
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('.compact-repo-button')!.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 2 }),
+    );
+  });
+  await tick();
+  assert(
+    !!document.querySelector('.compact-bar'),
+    'Double-clicking Compact Mode repository button must not expand back to Full Mode',
+  );
+  documentSawDoubleClick = false;
+  document.addEventListener('mousedown', documentSpy);
+  try {
+    await act(async () => {
+      document.querySelector<HTMLElement>('.compact-drag-spacer')!.dispatchEvent(
+        new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 2 }),
+      );
+    });
+  } finally {
+    document.removeEventListener('mousedown', documentSpy);
+  }
+  await tick();
+  assert(
+    !document.querySelector('.compact-bar') && !documentSawDoubleClick,
+    'Double-clicking Compact Mode titlebar drag spacer must stop propagation before document maximize and expand back to Full Mode',
+  );
+
   // Clicking Collapse enters 2-row ~86px Compact Mode while keeping pinned=true and top-left (210, 145) unchanged:
   await click('Collapse to Compact Mode');
   await tick();

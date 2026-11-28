@@ -17,6 +17,7 @@ import {
 
 const config = JSON.parse(readFileSync(new URL('../../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
 const capability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/main.json', import.meta.url), 'utf8'));
+const runLogsCapability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/run-logs.json', import.meta.url), 'utf8'));
 const trayCapability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/tray-popover.json', import.meta.url), 'utf8'));
 
 function createMockWindowEnv(initial?: {
@@ -109,6 +110,7 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
   it('grants only minimal window geometry, focus, pin, drag, and notification permissions without shell or filesystem access', () => {
     expect(capability.permissions).toEqual([
       'core:default',
+      'core:window:deny-internal-toggle-maximize',
       'core:window:allow-set-always-on-top',
       'core:window:allow-start-dragging',
       'core:window:allow-set-size',
@@ -116,6 +118,12 @@ describe('macOS native overlaid titlebar and compact window configuration', () =
       'core:window:allow-set-position',
       'core:window:allow-set-focus',
       'notification:default',
+    ]);
+    expect(runLogsCapability.windows).toEqual(['run-logs']);
+    expect(runLogsCapability.permissions).toEqual([
+      'core:default',
+      'core:window:allow-set-focus',
+      'core:window:allow-start-dragging',
     ]);
     expect(trayCapability.windows).toEqual(['tray-popover']);
     expect(trayCapability.permissions).toEqual(['core:default']);

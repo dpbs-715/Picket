@@ -69,8 +69,8 @@ body.run-logs-body,
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
-  padding: 6px 12px 6px 76px;
+  height: 38px;
+  padding: 0 12px 0 76px;
   background: var(--logs-header);
   border-bottom: 1px solid var(--logs-border);
   user-select: none;
@@ -80,11 +80,17 @@ body.run-logs-body,
 .run-logs-tabs {
   display: flex;
   align-items: center;
+  align-self: stretch;
   gap: 4px;
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.run-logs-drag-spacer {
+  flex: 1 0 44px;
+  align-self: stretch;
 }
 
 .run-logs-tabs::-webkit-scrollbar {

@@ -247,7 +247,7 @@ export function RunLogsWindow(props: RunLogsWindowProps) {
     <I18nProvider locale={props.locale}>
       <div className="run-logs-shell">
         <header className="run-logs-titlebar" data-tauri-drag-region>
-          <div className="run-logs-tabs" role="tablist" aria-label={t.logsWindowTitle}>
+          <div className="run-logs-tabs" role="tablist" aria-label={t.logsWindowTitle} data-tauri-drag-region>
             {props.processes.map((proc) => {
               const selected = proc.processId === activeProcessId;
               return (
@@ -270,6 +270,7 @@ export function RunLogsWindow(props: RunLogsWindowProps) {
               );
             })}
           </div>
+          <div className="run-logs-drag-spacer" data-tauri-drag-region />
         </header>
 
         {!activeProcess ? (

@@ -9,7 +9,7 @@ import {
 } from '../../../../shared/run-protocol';
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { useI18n } from '../../../i18n';
-import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
+import { Icon, IconButton, RotatingChevron, handleDragRegionDoubleClick } from '../../../ui/controls';
 import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../../ui/motion';
 import { RunCommandIcon } from '../../runner/RunCommandIcon';
 import { resolveRunCommandIcon } from '../../runner/runIcon';
@@ -247,7 +247,15 @@ export function CompactBar(props: Props) {
       role="region"
       aria-label={t.compact.barLabel}
     >
-      <header className="compact-top" data-tauri-drag-region>
+      <header
+        className="compact-top"
+        data-tauri-drag-region
+        onMouseDown={(event) => handleDragRegionDoubleClick(event, () => {
+          if (props.pinBusy) return;
+          setDrawer('none');
+          props.onExpand();
+        })}
+      >
         <div className="compact-context" data-tauri-drag-region>
           <button
             type="button"

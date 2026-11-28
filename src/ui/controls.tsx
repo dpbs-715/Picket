@@ -1,6 +1,6 @@
 import { useIsPresent } from 'motion/react';
 import { useEffect, useId, useRef } from 'react';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useI18n } from '../i18n';
 import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from './motion';
 
@@ -155,6 +155,21 @@ export function Popover({
   );
 }
 
+export function handleDragRegionDoubleClick(
+  event: ReactMouseEvent<HTMLElement>,
+  onDoubleClick?: () => void,
+) {
+  if (event.button !== 0 || event.detail !== 2) return;
+  const target = event.target;
+  if (!(target instanceof Element) || !target.hasAttribute('data-tauri-drag-region')) return;
+  // Intercept before Tauri's document-level mousedown drag handler invokes
+  // `plugin:window|internal_toggle_maximize`, allowing custom double-click actions on `main`.
+  event.preventDefault();
+  event.stopPropagation();
+  event.nativeEvent.stopImmediatePropagation();
+  onDoubleClick?.();
+}
+
 export type OverlayVariant = 'sheet' | 'standalone' | 'drill';
 
 export function Overlay({
@@ -261,7 +276,11 @@ export function Overlay({
       exit={exitProps}
       transition={instant ? { duration: 0 } : { duration: variant === 'standalone' ? MOTION_DURATION.fast : MOTION_DURATION.overlay, ease: MOTION_EASE }}
     >
-      <div className="overlay-heading" data-tauri-drag-region>
+      <div
+        className="overlay-heading"
+        data-tauri-drag-region
+        onMouseDown={(event) => handleDragRegionDoubleClick(event)}
+      >
         <div className="overlay-heading-leading" data-tauri-drag-region>
           {onBack && (
             <>

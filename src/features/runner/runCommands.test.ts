@@ -1,3 +1,5 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { decodeCommand } from '../../../shared/pi-protocol';
 import {
@@ -10,6 +12,7 @@ import {
   type RunProcessSnapshot,
 } from '../../../shared/run-protocol';
 import {
+  RunLogsWindow,
   applyClearToBucket,
   applyLogBatchToBucket,
   mergeLoadedLogBucket,
@@ -329,5 +332,43 @@ describe('run-protocol and workbench run commands state', () => {
       { seq: 99, stream: 'stdout', text: 'stale-gen1', timestampMs: 99 },
     ]);
     expect(ignoredStale).toBe(gen2);
+  });
+
+  it('marks RunLogsWindow titlebar, tab strip background, and trailing spacer as drag regions without marking tab buttons', () => {
+    const html = renderToStaticMarkup(
+      createElement(RunLogsWindow, {
+        locale: 'en',
+        theme: 'dark',
+        processes: [
+          {
+            processId: 'wt-1::cmd-1',
+            generation: 1,
+            repositoryId: 'repo-1',
+            repositoryName: 'Picket',
+            worktreeId: 'wt-1',
+            worktreeLabel: 'main',
+            commandId: 'cmd-1',
+            label: 'Desktop Dev',
+            command: 'pnpm desktop dev',
+            cwd: '.',
+            status: 'running',
+            startedAtMs: 1000,
+            detectedUrls: [],
+            logLineCount: 0,
+          },
+        ],
+        selectedProcessId: 'wt-1::cmd-1',
+        onSelectProcess: () => {},
+        loadLogs: async () => [],
+        subscribeLogs: () => () => {},
+        onStop: async () => {},
+        onClear: async () => {},
+        onOpenUrl: async () => {},
+      }),
+    );
+    expect(html).toMatch(/class="run-logs-titlebar" data-tauri-drag-region="true"/);
+    expect(html).toMatch(/class="run-logs-tabs"[^>]*data-tauri-drag-region="true"/);
+    expect(html).toMatch(/class="run-logs-drag-spacer" data-tauri-drag-region="true"/);
+    expect(html).not.toMatch(/<button[^>]*data-tauri-drag-region/);
   });
 });
