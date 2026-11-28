@@ -30,6 +30,7 @@ export interface SettingsMessages {
       light: string;
     };
     actionApproval: string;
+    actionApprovalTipLabel: string;
     actionApprovalOptions: {
       ask: string;
       auto: string;
@@ -209,10 +210,11 @@ export const settingsEn: SettingsMessages = {
       light: 'Light',
     },
     actionApproval: 'Action Approval',
+    actionApprovalTipLabel: 'Action approval mode info',
     actionApprovalOptions: {
       ask: 'Ask',
       auto: 'Auto',
-      allowAll: 'Allow All',
+      allowAll: 'Always Allow',
     },
     actionApprovalHelp: 'Controls write-command confirmations only. Decision questions still ask and safety redlines stay active.',
     modelsHeading: 'Models',
@@ -394,11 +396,12 @@ export const settingsZh: SettingsMessages = {
       dark: '深色',
       light: '浅色',
     },
-    actionApproval: '操作确认模式',
+    actionApproval: '操作确认',
+    actionApprovalTipLabel: '操作确认说明',
     actionApprovalOptions: {
       ask: '询问',
       auto: '自动',
-      allowAll: '全放开',
+      allowAll: '免确认',
     },
     actionApprovalHelp: '仅控制写操作确认弹窗；业务决策仍会询问，硬安全红线始终生效。',
     modelsHeading: '模型',

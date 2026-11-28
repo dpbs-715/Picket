@@ -146,15 +146,21 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
     'ActionFooter must disambiguate duplicate model display names across connections',
   );
 
-  // Opening Settings displays General -> Action Approval (Ask | Auto | Allow All, default Auto) and persists changes:
+  // Opening Settings displays General -> Action Approval (Ask | Auto | Always Allow, default Auto)
+  // using a compact HelpTip icon instead of inline helper prose, and persists changes:
   await click('Settings');
   const approvalAskBtn = document.querySelector<HTMLButtonElement>('[data-approval-option="ask"]');
   const approvalAutoBtn = document.querySelector<HTMLButtonElement>('[data-approval-option="auto"]');
   const approvalAllowAllBtn = document.querySelector<HTMLButtonElement>('[data-approval-option="allowAll"]');
+  const approvalHelpTip = document.querySelector<HTMLElement>('[aria-label="Action approval mode info"]');
   assert(
     !!approvalAskBtn && !!approvalAutoBtn && !!approvalAllowAllBtn
-      && approvalAutoBtn.getAttribute('aria-pressed') === 'true',
-    'Settings -> General -> App must render 3-mode Action Approval control defaulting to Auto',
+      && approvalAutoBtn.getAttribute('aria-pressed') === 'true'
+      && approvalAllowAllBtn.textContent?.trim() === 'Always Allow'
+      && !document.querySelector('.settings-row-help')
+      && !!approvalHelpTip
+      && getComputedStyle(approvalHelpTip.querySelector('.help-tip-bubble')!).visibility === 'hidden',
+    'Settings -> General -> App must render 3-mode Action Approval control (Ask | Auto | Always Allow) with a hover HelpTip and no inline helper paragraph',
   );
   await clickElement(approvalAskBtn!);
   await tick();
@@ -168,7 +174,7 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
   assert(
     approvalAllowAllBtn!.getAttribute('aria-pressed') === 'true'
       && persistedPayloads.some((p) => p.actionApprovalMode === 'allowAll'),
-    'Selecting Allow All in Action Approval must update aria-pressed and persist actionApprovalMode=allowAll',
+    'Selecting Always Allow in Action Approval must update aria-pressed and persist actionApprovalMode=allowAll',
   );
   await clickElement(approvalAutoBtn!);
   await tick();

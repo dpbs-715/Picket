@@ -6,7 +6,7 @@ import type { AppLocale, CommitLanguage } from '../../../shared/language-protoco
 import { APP_THEMES, type AppTheme } from '../../../shared/theme-protocol';
 import type { UpdateStateSnapshot } from '../../../shared/update-protocol';
 import { LANGUAGE_OPTIONS, useI18n } from '../../i18n';
-import { Icon } from '../../ui/controls';
+import { HelpTip, Icon } from '../../ui/controls';
 import { editors, type EditorId } from '../workbench/state/workbench';
 import { UpdatesSection } from './UpdatesSection';
 
@@ -116,7 +116,14 @@ export function GeneralSection(props: GeneralSectionProps) {
         </div>
 
         <div className="settings-row-item">
-          <span className="settings-row-label">{t.settings.actionApproval}</span>
+          <span className="settings-row-label">
+            <span>{t.settings.actionApproval}</span>
+            <HelpTip
+              align="start"
+              label={t.settings.actionApprovalTipLabel}
+              text={t.settings.actionApprovalHelp}
+            />
+          </span>
           <div
             className="segmented-control"
             data-setting-group="action-approval"
@@ -136,7 +143,6 @@ export function GeneralSection(props: GeneralSectionProps) {
             ))}
           </div>
         </div>
-        <p className="muted settings-row-help">{t.settings.actionApprovalHelp}</p>
 
         {props.updateState && (
           <UpdatesSection
