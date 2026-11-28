@@ -11,6 +11,7 @@ import {
 interface UseDockResizeParams {
   hasExpandedDock: boolean;
   canMeasureDock: boolean;
+  activeMainView?: string;
   workbenchContentRef: RefObject<HTMLDivElement | null>;
   lowerWorkspaceRef: RefObject<HTMLElement | null>;
 }
@@ -18,6 +19,7 @@ interface UseDockResizeParams {
 export function useDockResize({
   hasExpandedDock,
   canMeasureDock,
+  activeMainView,
   workbenchContentRef,
   lowerWorkspaceRef,
 }: UseDockResizeParams) {
@@ -37,12 +39,12 @@ export function useDockResize({
 
   function measureDockArea(): { available: number; dock: number } {
     const contentEl = workbenchContentRef.current;
-    const changesEl = contentEl?.querySelector<HTMLElement>('.changes-panel');
+    const upperEl = contentEl?.querySelector<HTMLElement>('.changes-panel, .run-services-panel');
     const lowerEl = lowerWorkspaceRef.current;
-    const changesH = changesEl?.getBoundingClientRect().height ?? 0;
+    const upperH = upperEl?.getBoundingClientRect().height ?? 0;
     const lowerH = lowerEl?.getBoundingClientRect().height ?? 0;
     return {
-      available: Math.round(changesH + lowerH),
+      available: Math.round(upperH + lowerH),
       dock: Math.round(lowerH),
     };
   }
@@ -71,7 +73,7 @@ export function useDockResize({
     const observer = new ResizeObserver(() => syncAvailable());
     observer.observe(contentEl);
     return () => observer.disconnect();
-  }, [canMeasureDock]);
+  }, [canMeasureDock, activeMainView]);
 
   function handleDockResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || !hasExpandedDock) return;

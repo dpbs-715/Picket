@@ -4,7 +4,7 @@ use super::{
     executor::{exec_controlled_git, exec_controlled_platform_cli},
     policy::{CommandDecision, classify_git_command, classify_platform_cli_command},
     session_store::{
-        ACTION_SESSIONS_FILE, PersistedActionSession, SubmitGroupCheckpoint, SubmitSessionLedger,
+        ACTION_SESSIONS_FILE, SubmitGroupCheckpoint, SubmitSessionLedger,
         find_latest_resumable_session, format_resume_checkpoint_for_prompt, now_millis,
         upsert_session,
     },
@@ -14,8 +14,9 @@ use super::{
         remove_verified_submit_worktree,
     },
     types::{
-        CPushLandedCommit, CustomActionLink, CustomActionTimelineItem,
-        DismissCustomActionDoneRequest, RemoteRepoIdentity,
+        ActionProfileKind, ActionSessionStatus, CPushLandedCommit, CustomActionLink,
+        DismissCustomActionDoneRequest, RemoteRepoIdentity, StoredActionSession,
+        WorkflowTimelineItem,
     },
 };
 use crate::{
@@ -788,28 +789,44 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
     let fake_wt = tmp.path().join("live-submit-wt");
     fs::create_dir_all(&fake_wt).unwrap();
 
-    let session = PersistedActionSession {
+    let session = StoredActionSession {
         run_id: "run-crash-1".into(),
         repository_id: "repo-demo".into(),
         worktree_id: "wt-main".into(),
+        session_id: "s1".into(),
         action_id: "act-submit".into(),
         action_label: "Submit -> v1.9.0 -> test".into(),
+        profile: ActionProfileKind::CustomAction,
         action_prompt_hash: "abc123".into(),
-        status: "running".into(),
+        frozen_scope_version: "sv1".into(),
+        model_id: String::new(),
+        branch: "main".into(),
+        initial_head: None,
+        prompt: String::new(),
+        recent_commits: vec![],
+        unselected_paths: vec![],
+        frozen_files: vec![],
+        planned_groups: vec![],
+        skipped_file_ids: vec![],
+        next_step_index: 0,
+        committed_file_ids: vec![],
+        status: ActionSessionStatus::Running,
+        pending_call_id: None,
         updated_at_ms: now_millis(),
         summary: String::new(),
         card: None,
-        dismissed_message_id: None,
+        message: None,
         timeline: vec![
-            CustomActionTimelineItem {
+            WorkflowTimelineItem {
                 state: "done".into(),
                 label: "Created isolated submit worktree".into(),
             },
-            CustomActionTimelineItem {
+            WorkflowTimelineItem {
                 state: "active".into(),
                 label: "Running gh pr merge".into(),
             },
         ],
+        qa_log: vec![],
         commits: vec![CPushLandedCommit {
             oid: "1111111111111111111111111111111111111111".into(),
             short_oid: "1111111".into(),
@@ -827,6 +844,11 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
                 url: "https://github.com/acme/demo/pull/101".into(),
             },
         ],
+        can_retry_remaining: false,
+        push_authorized: false,
+        auto_collapse: false,
+        notice_dismissed: false,
+        dismissed_message_id: None,
         edited_file_hashes: Default::default(),
         submit_ledger: SubmitSessionLedger {
             workflow_kind: "submitPromote".into(),
@@ -855,6 +877,8 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
             promotion: None,
             cleanup: None,
         },
+        locale: LanguageKind::En,
+        commit_language: LanguageKind::En,
     };
     upsert_session(&storage, session).unwrap();
 
@@ -877,7 +901,7 @@ fn phase3_session_persistence_cold_restart_reconciliation_and_dismissal() {
     let coordinator = CustomActionCoordinator::default();
     let restored = coordinator.restore_sessions(&storage, LanguageKind::En);
     assert_eq!(restored.len(), 1);
-    assert_eq!(restored[0].status, "interrupted");
+    assert_eq!(restored[0].status, ActionSessionStatus::Interrupted);
     assert_eq!(restored[0].timeline[1].state, "failed");
     assert!(
         fake_wt.exists(),
@@ -941,23 +965,46 @@ async fn phase1_action_sessions_handle_concurrent_upserts_and_unknown_disk_field
     for idx in 0..12 {
         let dir = storage.clone();
         handles.push(tokio::spawn(async move {
-            let record = PersistedActionSession {
+            let record = StoredActionSession {
                 run_id: format!("concurrent-run-{idx}"),
                 repository_id: format!("repo-{idx}"),
                 worktree_id: format!("wt-{idx}"),
+                session_id: format!("sess-{idx}"),
                 action_id: "act-1".into(),
                 action_label: "Action".into(),
+                profile: ActionProfileKind::CustomAction,
                 action_prompt_hash: "h1".into(),
-                status: "done".into(),
+                frozen_scope_version: "sv1".into(),
+                model_id: String::new(),
+                branch: "main".into(),
+                initial_head: None,
+                prompt: String::new(),
+                recent_commits: vec![],
+                unselected_paths: vec![],
+                frozen_files: vec![],
+                planned_groups: vec![],
+                skipped_file_ids: vec![],
+                next_step_index: 0,
+                committed_file_ids: vec![],
+                status: ActionSessionStatus::Done,
+                pending_call_id: None,
                 updated_at_ms: 1_000 + idx as u64,
                 summary: format!("Completed {idx}"),
                 card: None,
-                dismissed_message_id: None,
+                message: None,
                 timeline: vec![],
+                qa_log: vec![],
                 commits: vec![],
                 links: vec![],
+                can_retry_remaining: false,
+                push_authorized: false,
+                auto_collapse: false,
+                notice_dismissed: false,
+                dismissed_message_id: None,
                 edited_file_hashes: BTreeMap::new(),
                 submit_ledger: SubmitSessionLedger::default(),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
             };
             upsert_session_async(&dir, record).await.unwrap();
         }));

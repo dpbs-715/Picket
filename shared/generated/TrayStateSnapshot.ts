@@ -2,5 +2,6 @@
 import type { LanguageKind } from "./LanguageKind";
 import type { ThemeKind } from "./ThemeKind";
 import type { TrayRepositorySummary } from "./TrayRepositorySummary";
+import type { TrayRunningServiceSummary } from "./TrayRunningServiceSummary";
 
-export type TrayStateSnapshot = { protocolVersion: 1, locale: LanguageKind, theme: ThemeKind, hasUpdate: boolean, refreshing: boolean, repositories: Array<TrayRepositorySummary>, };
+export type TrayStateSnapshot = { protocolVersion: 1, locale: LanguageKind, theme: ThemeKind, hasUpdate: boolean, refreshing: boolean, repositories: Array<TrayRepositorySummary>, runningServices?: Array<TrayRunningServiceSummary>, };

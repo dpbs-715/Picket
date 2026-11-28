@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decodeCPushSessionSnapshot } from './cpush-protocol';
 import { decodeActionSessionSnapshot } from './custom-action-protocol';
 import { decodeGitReadReply } from './git-read-protocol';
 import type { TrayStateSnapshot } from './tray-protocol';
@@ -17,9 +16,10 @@ function readFixture(name: string): unknown {
 describe('Cross-language TS <-> Rust protocol golden contracts', () => {
   it('decodes golden C-Push session fixture including live pendingCallId, card, questionnaire, and links', () => {
     const raw = readFixture('cpush-session.json');
-    const decoded = decodeCPushSessionSnapshot(raw);
+    const decoded = decodeActionSessionSnapshot(raw);
     expect(decoded.runId).toBe('run-contract-cpush-1');
-    expect(decoded.sessionStatus).toBe('needsDecision');
+    expect(decoded.profile).toBe('cpush');
+    expect(decoded.status).toBe('needsDecision');
     expect(decoded.pendingCallId).toBe('tc-1');
     expect(decoded.message?.card?.tone).toBe('info');
     expect(decoded.message?.card?.blocks).toEqual([
@@ -35,6 +35,7 @@ describe('Cross-language TS <-> Rust protocol golden contracts', () => {
     const raw = readFixture('action-session.json');
     const decoded = decodeActionSessionSnapshot(raw);
     expect(decoded.runId).toBe('run-contract-action-1');
+    expect(decoded.profile).toBe('customAction');
     expect(decoded.status).toBe('done');
     expect(decoded.links).toHaveLength(2);
     expect(decoded.commits).toHaveLength(1);
@@ -62,13 +63,11 @@ describe('Cross-language TS <-> Rust protocol golden contracts', () => {
       emptyPrompt: saveRaw.emptyPrompt,
       worktrees: saveRaw.worktrees,
       snapshots: [readDecoded.snapshot],
-      cPushSessions: [cpushRaw],
-      actionSessions: [actionRaw],
+      actionSessions: [cpushRaw, actionRaw],
       warning: null,
     });
     expect(restored.locale).toBe('zh');
-    expect(restored.cPushSessions).toHaveLength(1);
-    expect(restored.actionSessions).toHaveLength(1);
+    expect(restored.actionSessions).toHaveLength(2);
     expect(restored.snapshots).toHaveLength(1);
   });
 

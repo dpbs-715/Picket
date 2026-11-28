@@ -6,16 +6,18 @@ import { getMessages, I18nProvider } from '../../i18n';
 import { MotionRoot } from '../../ui/motion';
 import { useResolvedTheme } from '../../ui/theme';
 import { disconnectedBackend, type WorkbenchBackend } from './commands';
+import { RunServicesPanel } from '../runner/RunServicesPanel';
 import { ActionContextStrip } from './components/ActionContextStrip';
 import { ActionFooter } from './components/ActionFooter';
 import { ChangesPanel } from './components/ChangesPanel';
 import { CompactBar } from './components/CompactBar';
-import { ContextHeader } from './components/ContextHeader';
+import { ContextHeader, type WorkbenchMainView } from './components/ContextHeader';
 import { MessageDock } from './components/MessageDock';
 import { OperationNoticeBar } from './components/OperationNoticeBar';
 import { WorkbenchOverlays } from './components/WorkbenchOverlays';
 import { useDockResize } from './hooks/useDockResize';
 import { useNoticeFeedback } from './hooks/useNoticeFeedback';
+import { useRunProcesses } from './hooks/useRunProcesses';
 import { useSettingsServices } from './hooks/useSettingsServices';
 import { useWindowMode } from './hooks/useWindowMode';
 import { useWorkbenchCommands } from './hooks/useWorkbenchCommands';
@@ -27,12 +29,14 @@ import {
   effectiveCommitLanguageFor,
   effectiveEditorFor,
   emptyWorkbench,
+  runCommandsFor,
+  runSharedEnvFor,
   selectedFiles,
   targetOf,
   workbenchReducer,
   type WorkbenchState,
 } from './state/workbench';
-import type { ActionOverlayItem, ModelOverlayState } from './types';
+import type { ActionOverlayItem, ModelOverlayState, RunOverlayState } from './types';
 import './workbench.css';
 
 interface Props {
@@ -52,6 +56,8 @@ export function Workbench({
 
   const [modelOverlay, setModelOverlay] = useState<ModelOverlayState>({ kind: 'closed' });
   const [actionStack, setActionStack] = useState<ActionOverlayItem[]>([]);
+  const [runOverlay, setRunOverlay] = useState<RunOverlayState>({ kind: 'closed' });
+  const [activeMainView, setActiveMainView] = useState<WorkbenchMainView>('git');
   const [promptOpen, setPromptOpen] = useState(false);
   const [hydrated, setHydrated] = useState(() => !!initialState || !backend.loadWorkbenchState);
 
@@ -66,6 +72,7 @@ export function Workbench({
   const t = getMessages(state.locale);
   const modelOverlayOpen = modelOverlay.kind !== 'closed';
   const actionOverlayOpen = actionStack.length > 0;
+  const runOverlayOpen = runOverlay.kind !== 'closed';
 
   const worktree = state.worktrees.find((tree) => tree.worktreeId === state.activeWorktreeId);
   const repository = state.repositories.find((item) => item.id === worktree?.repositoryId);
@@ -119,6 +126,8 @@ export function Workbench({
   const activeCommitLanguage = effectiveCommitLanguageFor(state, worktree?.repositoryId);
   const activeRepoCustomActions = customActionsFor(state, worktree?.repositoryId);
   const activeCustomAction = activeCustomActionFor(state, worktree?.repositoryId);
+  const activeRepoRunCommands = runCommandsFor(state, worktree?.repositoryId);
+  const activeRepoRunSharedEnv = runSharedEnvFor(state, worktree?.repositoryId);
   const otherRepositories = repository
     ? state.repositories
         .filter((item) => item.id !== repository.id)
@@ -138,6 +147,7 @@ export function Workbench({
   function clearTransientOverlays() {
     setModelOverlay({ kind: 'closed' });
     setActionStack([]);
+    setRunOverlay({ kind: 'closed' });
   }
 
   function isEditingCommitInput(): boolean {
@@ -190,6 +200,13 @@ export function Workbench({
     latestState,
   });
 
+  const runner = useRunProcesses({
+    backend,
+    state,
+    worktree,
+    notify,
+  });
+
   useWorkbenchSync({
     state,
     latestState,
@@ -218,27 +235,37 @@ export function Workbench({
   const opening = commands.pending.includes('global:openRepository');
   const branchBusy = !!worktree && commands.pending.includes(`${worktree.repositoryId}:write`);
   const pullBusy = !!worktree && commands.pending.includes(`${worktree.repositoryId}:pull`);
-  const customActionBusy = !!worktree && commands.pending.includes(`${worktree.repositoryId}:customAction`);
+  const actionBusy = !!worktree && commands.pending.includes(`${worktree.repositoryId}:action`);
   const localKeepBusy = !!worktree && commands.pending.some((key) => key.startsWith(`${worktree.repositoryId}:localKeep:`));
   const gitBusyForUpdate = branchBusy
     || pullBusy
     || localKeepBusy
-    || commands.pending.some((key) => key.endsWith(':cPush') || key.endsWith(':respond') || key.endsWith(':pull') || key.endsWith(':customAction'));
+    || commands.pending.some((key) => key.endsWith(':action') || key.endsWith(':runRecovery') || key.endsWith(':pull'));
   const busy = refreshing
     || branchBusy
     || pullBusy
-    || customActionBusy
+    || actionBusy
     || localKeepBusy
     || commands.pending.some((key) => key.startsWith(`${viewKey}:`));
   const hasLivePendingQuestion = Boolean(worktree?.activeRun?.pendingCallId);
   const dockBusy = hasLivePendingQuestion
-    ? commands.pending.includes(`${worktree!.worktreeId}:respondCustomAction`)
+    ? commands.pending.includes(`${worktree!.worktreeId}:respondActionQuestion`)
     : busy;
 
   function openActionOverlayFromCompact(next: ActionOverlayItem) {
     setActionStack([next]);
     void windowMode.expandFromCompact();
   }
+
+  function openRunOverlayFromCompact(mode: 'create' | 'discover' | 'panel') {
+    setActiveMainView('run');
+    if (mode !== 'panel') {
+      setRunOverlay({ kind: mode });
+    }
+    void windowMode.expandFromCompact();
+  }
+
+  const effectiveMainView: WorkbenchMainView = worktree ? activeMainView : 'git';
 
   const syncNativeWindowTheme = useCallback(
     (nextTheme: AppTheme) => windowController.setTheme?.(nextTheme) ?? Promise.resolve(),
@@ -272,6 +299,7 @@ export function Workbench({
   } = useDockResize({
     hasExpandedDock,
     canMeasureDock,
+    activeMainView: effectiveMainView,
     workbenchContentRef,
     lowerWorkspaceRef,
   });
@@ -305,6 +333,10 @@ export function Workbench({
                 hasModel={!!model}
                 customActions={activeRepoCustomActions}
                 activeAction={activeCustomAction}
+                runCommands={activeRepoRunCommands}
+                runProcesses={runner.processes}
+                runBusyIds={runner.busyIds}
+                activeRunCount={runner.activeCountForWorktree}
                 opening={opening}
                 branchBusy={branchBusy}
                 pullBusy={pullBusy}
@@ -317,14 +349,22 @@ export function Workbench({
                 onSwitchWorktree={(worktreeId) => commands.switchWorktree(worktreeId)}
                 onOpenRepository={() => void commands.execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
                 onBranch={async (kind, branch) => worktree ? commands.execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
-                onPull={() => { if (worktree) void commands.execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
+                onPull={() => { if (worktree) void commands.execute({ kind: 'runRecovery', target: targetOf(worktree), requestId: crypto.randomUUID(), action: { kind: 'pullRebase' }, locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
                 onSelect={(fileId) => { if (worktree) { dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
                 onSelectAll={() => { if (worktree) { dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
                 onSelectAction={(actionId) => { if (worktree) dispatch({ type: 'selectActiveAction', repositoryId: worktree.repositoryId, actionId }); }}
                 onNewAction={(mode) => openActionOverlayFromCompact({ kind: 'create', mode })}
                 onManageActions={() => openActionOverlayFromCompact({ kind: 'manage' })}
+                onStartRunCommand={(cmd) => void runner.start(cmd)}
+                onStopRunCommand={(pid, label) => void runner.stop(pid, label)}
+                onRestartRunCommand={(cmd) => void runner.restart(cmd)}
+                onOpenRunLogs={(pid) => void runner.openLogs(pid)}
+                onManageRunFromCompact={openRunOverlayFromCompact}
                 onExpand={() => void windowMode.expandFromCompact()}
-                onExpandTarget={(target) => void windowMode.expandFromCompact(target)}
+                onExpandTarget={(target) => {
+                  if (target === 'changes') setActiveMainView('git');
+                  void windowMode.expandFromCompact(target);
+                }}
                 onPin={() => void windowMode.togglePin()}
                 onSettings={(drawerWasOpen) => void windowMode.openSettingsFromCompact({ focusModels: false, drawerWasOpen })}
                 onPrimary={commands.primary}
@@ -346,13 +386,15 @@ export function Workbench({
             <div
               ref={workbenchContentRef}
               className="workbench-content"
-              inert={windowMode.settingsOpen || modelOverlayOpen || actionOverlayOpen}
+              inert={windowMode.settingsOpen || modelOverlayOpen || actionOverlayOpen || runOverlayOpen}
             >
               <ContextHeader
                 key={`header:${viewKey}`}
                 state={state}
                 worktree={worktree}
                 repository={repository}
+                activeMainView={effectiveMainView}
+                activeRunCount={runner.activeCountForWorktree}
                 opening={opening}
                 branchBusy={branchBusy}
                 pullBusy={pullBusy}
@@ -363,9 +405,12 @@ export function Workbench({
                 onPin={() => void windowMode.togglePin()}
                 onSettings={() => windowMode.openSettingsFromWorkbench(false)}
                 onOpenRepository={() => void commands.execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
-                onSwitch={commands.switchWorktree}
+                onSwitch={(worktreeId, expand) => {
+                  commands.switchWorktree(worktreeId, expand);
+                }}
                 onBranch={async (kind, branch) => worktree ? commands.execute({ kind, branch, branchToken: worktree.branchToken ?? '', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }) : false}
-                onPull={() => { if (worktree) void commands.execute({ kind: 'pull', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
+                onPull={() => { if (worktree) void commands.execute({ kind: 'runRecovery', target: targetOf(worktree), requestId: crypto.randomUUID(), action: { kind: 'pullRebase' }, locale: state.locale, ...(model ? { modelId: model.id } : {}) }); }}
+                onSelectMainView={setActiveMainView}
               />
               <OperationNoticeBar
                 viewKey={viewKey}
@@ -377,23 +422,47 @@ export function Workbench({
                   notify('');
                 }}
               />
-              <ChangesPanel
-                worktree={worktree}
-                editorShort={editorShort}
-                opening={opening}
-                repositoryReadsAvailable={!!backend.repositoryReadsAvailable}
-                layoutMode={changesLayoutMode}
-                peekHeightPx={dockSplit.changesHeightPx}
-                resizingDock={resizingDock}
-                onOpenRepository={() => void commands.execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
-                onSelect={(fileId) => { if (worktree) { dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
-                onSelectAll={() => { if (worktree) { dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
-                onSelectFiles={(fileIds) => { if (worktree) { dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
-                onSetLocalKeep={commands.setLocalKeep}
-                onOpenFile={commands.openFile}
-                refreshing={refreshing}
-                onRefresh={() => { if (worktree) void commands.execute({ kind: 'refresh', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }); }}
-              />
+              {effectiveMainView === 'run' && worktree ? (
+                <RunServicesPanel
+                  worktreeId={worktree.worktreeId}
+                  commands={activeRepoRunCommands}
+                  processes={runner.processes}
+                  busyIds={runner.busyIds}
+                  sharedEnvCount={activeRepoRunSharedEnv.length}
+                  layoutMode={changesLayoutMode}
+                  peekHeightPx={dockSplit.changesHeightPx}
+                  resizingDock={resizingDock}
+                  onStart={(cmd) => void runner.start(cmd)}
+                  onStop={(pid, label) => void runner.stop(pid, label)}
+                  onStopAll={() => void runner.stopAll()}
+                  onRestart={(cmd) => void runner.restart(cmd)}
+                  onOpenLogs={(pid) => void runner.openLogs(pid)}
+                  onOpenUrl={(url) => void runner.openUrl(url)}
+                  onEdit={(cmd) => setRunOverlay({ kind: 'edit', command: cmd })}
+                  onAddManual={() => setRunOverlay({ kind: 'create' })}
+                  onDiscoverWithAi={() => setRunOverlay({ kind: 'discover' })}
+                  onOpenSharedEnv={() => setRunOverlay({ kind: 'sharedEnv' })}
+                  onRefreshEnv={() => void runner.refreshEnv()}
+                />
+              ) : (
+                <ChangesPanel
+                  worktree={worktree}
+                  editorShort={editorShort}
+                  opening={opening}
+                  repositoryReadsAvailable={!!backend.repositoryReadsAvailable}
+                  layoutMode={changesLayoutMode}
+                  peekHeightPx={dockSplit.changesHeightPx}
+                  resizingDock={resizingDock}
+                  onOpenRepository={() => void commands.execute({ kind: 'openRepository', requestId: crypto.randomUUID(), locale: state.locale })}
+                  onSelect={(fileId) => { if (worktree) { dispatch({ type: 'select', worktreeId: worktree.worktreeId, fileId }); } }}
+                  onSelectAll={() => { if (worktree) { dispatch({ type: 'selectAll', worktreeId: worktree.worktreeId }); } }}
+                  onSelectFiles={(fileIds) => { if (worktree) { dispatch({ type: 'selectFiles', worktreeId: worktree.worktreeId, fileIds }); } }}
+                  onSetLocalKeep={commands.setLocalKeep}
+                  onOpenFile={commands.openFile}
+                  refreshing={refreshing}
+                  onRefresh={() => { if (worktree) void commands.execute({ kind: 'refresh', target: targetOf(worktree), requestId: crypto.randomUUID(), locale: state.locale }); }}
+                />
+              )}
               <section
                 ref={lowerWorkspaceRef}
                 className={`lower-workspace ${hasExpandedDock ? 'is-dock-expanded' : ''}`}
@@ -423,11 +492,11 @@ export function Workbench({
                     onResizeStart={handleDockResizeStart}
                     onResizeDoubleClick={handleDockResizeDoubleClick}
                     onResizeKeyDown={handleDockResizeKeyDown}
-                    onExpanded={(expanded) => dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded })}
+                    onExpanded={(expanded) => {
+                      dispatch({ type: 'dock', worktreeId: worktree.worktreeId, expanded });
+                    }}
                     onDismiss={(message) => {
-                      const dismissTarget = worktree.activeRun?.kind === 'cpush'
-                        ? worktree.activeRun.frozenTarget
-                        : targetOf(worktree);
+                      const dismissTarget = worktree.activeRun?.frozenTarget ?? targetOf(worktree);
                       const dismissRunId = worktree.activeRun?.runId;
                       dispatch({ type: 'dismissMessage', worktreeId: worktree.worktreeId, messageId: message.id });
                       void backend.dismissSessionDone?.(dismissTarget, dismissRunId, message.id, state.locale).catch(() => {});
@@ -475,6 +544,12 @@ export function Workbench({
             setModelOverlay={setModelOverlay}
             actionStack={actionStack}
             setActionStack={setActionStack}
+            runOverlay={runOverlay}
+            setRunOverlay={setRunOverlay}
+            activeRepoRunCommands={activeRepoRunCommands}
+            activeRepoRunSharedEnv={activeRepoRunSharedEnv}
+            runProcesses={runner.processes}
+            onStopAllForRunCommand={runner.stopAllForCommand}
             worktree={worktree}
             repository={repository}
             viewKey={viewKey}

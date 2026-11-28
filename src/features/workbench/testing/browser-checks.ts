@@ -5,6 +5,7 @@ import { runCustomActionsChecks } from './checks/customActionsChecks';
 import { createBrowserCheckHarness } from './checks/harness';
 import { runLocalKeepChecks } from './checks/localKeepChecks';
 import { runRepositoryAndWorkflowChecks } from './checks/repositoryAndWorkflowChecks';
+import { runRunCommandsChecks } from './checks/runCommandsChecks';
 import { runSettingsUpdaterMotionChecks } from './checks/settingsUpdaterMotionChecks';
 import { runSkillsAndSyncChecks } from './checks/skillsAndSyncChecks';
 import { runTrayThemeTransitionsChecks } from './checks/trayThemeTransitionsChecks';
@@ -21,6 +22,7 @@ export async function verifyWorkbench(root: Root) {
     await runCustomActionsChecks(harness);
     await runSkillsAndSyncChecks(harness);
     await runTrayThemeTransitionsChecks(harness);
+    await runRunCommandsChecks(harness);
 
     return {
       environment: 'Chrome headless · development fixtures only (not real Git or live model acceptance)',

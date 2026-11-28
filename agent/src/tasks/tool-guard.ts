@@ -20,6 +20,7 @@ const OVERHEAD_TOOLS = new Set([
   'read_skill_doc',
   'record_action_checkpoint',
   'message_user',
+  'handoff_to_recovery',
 ]);
 
 function normalizeValue(value: unknown, depth = 0): unknown {
@@ -79,31 +80,35 @@ export function createToolLoopGuard(policy: ToolLoopGuardPolicy): ToolLoopGuard 
   let lastSignature = '';
   let identicalStreak = 0;
   let consecutiveErrors = 0;
+  let overheadConsecutiveErrors = 0;
   let identicalBlockCount = 0;
 
   return {
     async beforeToolCall(ctx) {
       const toolName = ctx.toolCall.name;
+      const isInteractiveOverhead = toolName === 'message_user'
+        || toolName === 'record_action_checkpoint'
+        || toolName === 'handoff_to_recovery';
 
-      // Always allow communicating with the user or recording verified checkpoints so the run can recover cleanly.
-      if (toolName === 'message_user' || toolName === 'record_action_checkpoint') {
-        lastSignature = '';
-        identicalStreak = 0;
-        identicalBlockCount = 0;
-        return undefined;
-      }
-
-      if (executionCalls >= policy.runawayCeiling) {
+      if (!isInteractiveOverhead && executionCalls >= policy.runawayCeiling) {
         return {
           block: true,
           reason: `Safety ceiling (${policy.runawayCeiling} non-overhead tool calls) reached. Save a checkpoint with \`record_action_checkpoint\` if needed and return your concise final JSON summary now.`,
         };
       }
 
-      if (consecutiveErrors >= policy.maxConsecutiveErrors) {
+      if (!isInteractiveOverhead && consecutiveErrors >= policy.maxConsecutiveErrors) {
         return {
           block: true,
           reason: `Stopped after ${consecutiveErrors} consecutive failing tool calls. Do not keep retrying blindly; either ask the user for guidance via \`message_user\` or return your final JSON summary explaining the blocker.`,
+        };
+      }
+
+      const maxOverheadErrors = Math.min(policy.maxConsecutiveErrors, 4);
+      if (isInteractiveOverhead && overheadConsecutiveErrors >= maxOverheadErrors) {
+        return {
+          block: true,
+          reason: `Stopped after ${overheadConsecutiveErrors} consecutive failing \`${toolName}\` calls. Return your final JSON summary explaining the blocker.`,
         };
       }
 
@@ -138,16 +143,17 @@ export function createToolLoopGuard(policy: ToolLoopGuardPolicy): ToolLoopGuard 
 
     async afterToolCall(ctx) {
       const toolName = ctx.toolCall.name;
-      if (toolName === 'message_user' || toolName === 'record_action_checkpoint') {
-        if (!ctx.isError) {
-          consecutiveErrors = 0;
-        }
-        return undefined;
-      }
+      const isInteractiveOverhead = toolName === 'message_user'
+        || toolName === 'record_action_checkpoint'
+        || toolName === 'handoff_to_recovery';
       if (ctx.isError) {
         consecutiveErrors += 1;
+        if (isInteractiveOverhead) {
+          overheadConsecutiveErrors += 1;
+        }
       } else {
         consecutiveErrors = 0;
+        overheadConsecutiveErrors = 0;
       }
       return undefined;
     },

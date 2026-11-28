@@ -1,5 +1,5 @@
 use super::{persistence::WorkbenchPersistence, smoke::Fixture, *};
-use crate::i18n::LanguageKind;
+use crate::{actions::types::ActionApprovalMode, i18n::LanguageKind};
 use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
@@ -13,6 +13,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
     let initial = persistence.restore(storage.path(), &store).await.unwrap();
     assert_eq!(initial.protocol_version, 2);
     assert_eq!(initial.locale, LanguageKind::En);
+    assert_eq!(initial.action_approval_mode, ActionApprovalMode::Auto);
     assert_eq!(initial.editor, EditorKind::Idea);
     assert_eq!(initial.default_commit_language, LanguageKind::En);
     assert!(initial.repository_settings.is_empty());
@@ -32,6 +33,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
                 revision: 2,
                 locale: LanguageKind::Zh,
                 theme: ThemeKind::Light,
+                action_approval_mode: ActionApprovalMode::Ask,
                 editor: EditorKind::Cursor,
                 default_commit_language: LanguageKind::Zh,
                 repository_settings: vec![PersistedRepositorySettings {
@@ -41,6 +43,8 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
                     local_keep_paths: vec![],
                     custom_actions: vec![],
                     active_action_id: None,
+                    run_commands: vec![],
+                    run_shared_env: vec![],
                 }],
                 window_preferences: Some(PersistedWindowPreferences {
                     pinned: true,
@@ -89,6 +93,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
                 revision: 1,
                 locale: LanguageKind::En,
                 theme: ThemeKind::Dark,
+                action_approval_mode: ActionApprovalMode::AllowAll,
                 editor: EditorKind::Idea,
                 default_commit_language: LanguageKind::En,
                 repository_settings: vec![],
@@ -124,6 +129,7 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
     assert_eq!(restored.protocol_version, 2);
     assert_eq!(restored.locale, LanguageKind::Zh);
     assert_eq!(restored.theme, ThemeKind::Light);
+    assert_eq!(restored.action_approval_mode, ActionApprovalMode::Ask);
     assert_eq!(
         persistence::read_persisted_theme(storage.path()),
         ThemeKind::Light
@@ -139,6 +145,8 @@ async fn persists_and_cold_restores_editor_repositories_and_per_worktree_prompts
             local_keep_paths: vec![],
             custom_actions: vec![],
             active_action_id: None,
+            run_commands: vec![],
+            run_shared_env: vec![],
         }]
     );
     assert_eq!(
@@ -184,6 +192,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                 revision: 1,
                 locale: LanguageKind::En,
                 theme: ThemeKind::System,
+                action_approval_mode: ActionApprovalMode::Auto,
                 editor: EditorKind::Webstorm,
                 default_commit_language: LanguageKind::Zh,
                 repository_settings: vec![PersistedRepositorySettings {
@@ -193,6 +202,8 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                     local_keep_paths: vec![],
                     custom_actions: vec![],
                     active_action_id: None,
+                    run_commands: vec![],
+                    run_shared_env: vec![],
                 }],
                 window_preferences: None,
                 active_worktree_id: Some(wt_id.clone()),
@@ -245,6 +256,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                 revision: 1,
                 locale: LanguageKind::Zh,
                 theme: ThemeKind::Dark,
+                action_approval_mode: ActionApprovalMode::Auto,
                 editor: EditorKind::Vscode,
                 default_commit_language: LanguageKind::En,
                 repository_settings: vec![],
@@ -291,6 +303,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                     revision: 2,
                     locale: LanguageKind::En,
                     theme: ThemeKind::System,
+                    action_approval_mode: ActionApprovalMode::Auto,
                     editor: EditorKind::Idea,
                     default_commit_language: LanguageKind::En,
                     repository_settings: vec![
@@ -301,6 +314,8 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                             local_keep_paths: vec![],
                             custom_actions: vec![],
                             active_action_id: None,
+                            run_commands: vec![],
+                            run_shared_env: vec![],
                         },
                         PersistedRepositorySettings {
                             repository_id: "dup".into(),
@@ -309,6 +324,8 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                             local_keep_paths: vec![],
                             custom_actions: vec![],
                             active_action_id: None,
+                            run_commands: vec![],
+                            run_shared_env: vec![],
                         },
                     ],
                     window_preferences: None,
@@ -331,6 +348,7 @@ async fn preserves_unavailable_repository_prompts_upgrades_v1_discarding_legacy_
                     revision: 3,
                     locale: LanguageKind::En,
                     theme: ThemeKind::System,
+                    action_approval_mode: ActionApprovalMode::Auto,
                     editor: EditorKind::Idea,
                     default_commit_language: LanguageKind::En,
                     repository_settings: vec![],
@@ -675,6 +693,7 @@ async fn persists_custom_actions_cold_restores_and_invalidates_stale_write_trust
                 revision: 1,
                 locale: LanguageKind::En,
                 theme: ThemeKind::Dark,
+                action_approval_mode: ActionApprovalMode::AllowAll,
                 editor: EditorKind::Idea,
                 default_commit_language: LanguageKind::En,
                 repository_settings: vec![PersistedRepositorySettings {
@@ -701,6 +720,19 @@ async fn persists_custom_actions_cold_restores_and_invalidates_stale_write_trust
                         },
                     ],
                     active_action_id: Some("act-trusted".into()),
+                    run_commands: vec![crate::runner::PersistedRunCommand {
+                        id: "run-dev".into(),
+                        label: "Desktop Dev".into(),
+                        command: "pnpm desktop dev --no-watch".into(),
+                        cwd: None,
+                        group: Some("Desktop".into()),
+                        icon: Some("desktop".into()),
+                        env: vec![],
+                    }],
+                    run_shared_env: vec![crate::runner::RunEnvEntry {
+                        key: "JAVA_HOME".into(),
+                        value: "/Library/Java/jbr-25".into(),
+                    }],
                 }],
                 window_preferences: None,
                 active_worktree_id: Some(opened.active_worktree_id.clone()),
@@ -724,6 +756,10 @@ async fn persists_custom_actions_cold_restores_and_invalidates_stale_write_trust
     // Edited prompt hash mismatch must automatically revoke skip_write_confirm:
     assert_eq!(repo_cfg.custom_actions[1].skip_write_confirm, None);
     assert_eq!(repo_cfg.custom_actions[1].trusted_prompt_hash, None);
+    assert_eq!(repo_cfg.run_commands.len(), 1);
+    assert_eq!(repo_cfg.run_commands[0].group.as_deref(), Some("Desktop"));
+    assert_eq!(repo_cfg.run_shared_env.len(), 1);
+    assert_eq!(repo_cfg.run_shared_env[0].key, "JAVA_HOME");
 }
 
 #[tokio::test]

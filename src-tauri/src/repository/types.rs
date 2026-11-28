@@ -1,4 +1,7 @@
-use crate::i18n::{LanguageKind, deserialize_language_or_default};
+use crate::{
+    actions::types::{ActionApprovalMode, deserialize_approval_mode_or_default},
+    i18n::{LanguageKind, deserialize_language_or_default},
+};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -259,6 +262,15 @@ pub struct PersistedRepositorySettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional = nullable))]
     pub active_action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        test,
+        ts(as = "Option<Vec<crate::runner::PersistedRunCommand>>", optional)
+    )]
+    pub run_commands: Vec<crate::runner::PersistedRunCommand>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<crate::runner::RunEnvEntry>>", optional))]
+    pub run_shared_env: Vec<crate::runner::RunEnvEntry>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -288,6 +300,9 @@ pub struct WorkbenchSaveRequest {
     #[serde(default, deserialize_with = "deserialize_theme_or_default")]
     #[cfg_attr(test, ts(as = "Option<ThemeKind>", optional))]
     pub theme: ThemeKind,
+    #[serde(default, deserialize_with = "deserialize_approval_mode_or_default")]
+    #[cfg_attr(test, ts(as = "Option<ActionApprovalMode>", optional))]
+    pub action_approval_mode: ActionApprovalMode,
     pub editor: EditorKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
@@ -312,6 +327,8 @@ pub struct WorkbenchRestoreReply {
     pub locale: LanguageKind,
     #[cfg_attr(test, ts(as = "Option<ThemeKind>", optional))]
     pub theme: ThemeKind,
+    #[cfg_attr(test, ts(as = "Option<ActionApprovalMode>", optional))]
+    pub action_approval_mode: ActionApprovalMode,
     pub editor: EditorKind,
     #[cfg_attr(test, ts(as = "Option<LanguageKind>", optional))]
     pub default_commit_language: LanguageKind,
@@ -338,10 +355,7 @@ pub struct WorkbenchRestoreReply {
     pub active_model_id: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
-    pub c_push_sessions: Option<Vec<crate::actions::types::CPushSessionSnapshot>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
-    pub action_sessions: Option<Vec<crate::actions::session_store::ActionSessionSnapshot>>,
+    pub action_sessions: Option<Vec<crate::actions::types::ActionSessionSnapshot>>,
     pub warning: Option<String>,
 }
 #[derive(Serialize)]

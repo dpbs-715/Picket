@@ -1,3 +1,7 @@
+import {
+  ACTION_APPROVAL_MODES,
+  type ActionApprovalMode,
+} from '../../../shared/custom-action-protocol';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
 import { APP_THEMES, type AppTheme } from '../../../shared/theme-protocol';
 import type { UpdateStateSnapshot } from '../../../shared/update-protocol';
@@ -9,12 +13,14 @@ import { UpdatesSection } from './UpdatesSection';
 interface GeneralSectionProps {
   locale: AppLocale;
   theme: AppTheme;
+  actionApprovalMode: ActionApprovalMode;
   repositoryName?: string;
   editor: EditorId;
   commitLanguage: CommitLanguage;
   installedEditors?: EditorId[];
   onLocale(locale: AppLocale): void;
   onTheme(theme: AppTheme): void;
+  onActionApprovalMode(mode: ActionApprovalMode): void;
   onEditor(editor: EditorId): void;
   onCommitLanguage(commitLanguage: CommitLanguage): void;
   updateState?: UpdateStateSnapshot;
@@ -108,6 +114,29 @@ export function GeneralSection(props: GeneralSectionProps) {
             ))}
           </div>
         </div>
+
+        <div className="settings-row-item">
+          <span className="settings-row-label">{t.settings.actionApproval}</span>
+          <div
+            className="segmented-control"
+            data-setting-group="action-approval"
+            role="group"
+            aria-label={t.settings.actionApproval}
+          >
+            {ACTION_APPROVAL_MODES.map((option) => (
+              <button
+                type="button"
+                key={option}
+                data-approval-option={option}
+                aria-pressed={option === props.actionApprovalMode}
+                onClick={() => props.onActionApprovalMode(option)}
+              >
+                {t.settings.actionApprovalOptions[option]}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="muted settings-row-help">{t.settings.actionApprovalHelp}</p>
 
         {props.updateState && (
           <UpdatesSection

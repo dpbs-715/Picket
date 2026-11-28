@@ -112,6 +112,8 @@ export function mergeSnapshot(state: WorkbenchState, snapshot: GitRepositorySnap
     ...(resolvedKeepPaths.length ? { localKeepPaths: resolvedKeepPaths } : {}),
     ...(existingSettings?.customActions?.length ? { customActions: existingSettings.customActions } : {}),
     ...(existingSettings?.activeActionId ? { activeActionId: existingSettings.activeActionId } : {}),
+    ...(existingSettings?.runCommands?.length ? { runCommands: existingSettings.runCommands } : {}),
+    ...(existingSettings?.runSharedEnv?.length ? { runSharedEnv: existingSettings.runSharedEnv } : {}),
   };
   const repositorySettings = {
     ...state.repositorySettings,
@@ -195,6 +197,8 @@ export function applyLocalKeepUpdate(
       ...(nextKeepList.length ? { localKeepPaths: nextKeepList } : {}),
       ...(existingSettings?.customActions?.length ? { customActions: existingSettings.customActions } : {}),
       ...(existingSettings?.activeActionId ? { activeActionId: existingSettings.activeActionId } : {}),
+      ...(existingSettings?.runCommands?.length ? { runCommands: existingSettings.runCommands } : {}),
+      ...(existingSettings?.runSharedEnv?.length ? { runSharedEnv: existingSettings.runSharedEnv } : {}),
     },
   };
   const repositories = state.repositories.map((repo) =>

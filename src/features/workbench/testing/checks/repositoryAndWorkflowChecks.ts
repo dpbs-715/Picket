@@ -164,7 +164,7 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
 
   // 14. Per-project Editor & Commit Message Language isolation (`orders` vs `cli`) + C-Push forwarding:
   const isolatedOpenCalls: Extract<WorkbenchCommand, { kind: 'openFile' }>[] = [];
-  const isolatedAiCalls: Extract<WorkbenchCommand, { kind: 'cPush' }>[] = [];
+  const isolatedAiCalls: Extract<WorkbenchCommand, { kind: 'startAction' }>[] = [];
   let failOpen = false;
   const multiProjectState = fixture('typing');
   multiProjectState.worktrees = multiProjectState.worktrees.map((tree) => ({
@@ -184,15 +184,16 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
         };
         return reply;
       }
-      if (command.kind === 'cPush') {
+      if (command.kind === 'startAction' && command.profile === 'cpush') {
         isolatedAiCalls.push(command);
         return {
-          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          protocolVersion: 2, kind: 'action', requestId: command.requestId,
           session: {
             runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
+            sessionId: command.target.sessionId, actionId: 'builtin:cpush', actionLabel: 'C-Push', profile: 'cpush',
+            frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
             frozenFileIds: command.fileIds, committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'done', autoCollapse: true, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+            status: 'done', summary: '', autoCollapse: true, canRetryRemaining: false, timeline: [], qaLog: [], commits: [], links: [],
             message: { id: `done-${command.requestId}`, kind: 'done', title: `Done (${command.commitLanguage})`, description: 'Done' },
           },
         };
@@ -223,7 +224,7 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
   });
   assert(isolatedOpenCalls.at(-1)?.editor === 'rustrover', 'Double-clicking file row should launch rustrover diff');
   await click('C-Push');
-  assert(isolatedAiCalls.at(-1)?.kind === 'cPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh' && isolatedAiCalls.at(-1)?.locale === 'en', 'orders C-Push should send commitLanguage: zh while keeping locale: en');
+  assert(isolatedAiCalls.at(-1)?.kind === 'startAction' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh' && isolatedAiCalls.at(-1)?.locale === 'en', 'orders C-Push should send commitLanguage: zh while keeping locale: en');
 
   await click('my-order-service');
   await clickElement([...document.querySelectorAll<HTMLButtonElement>('.repository-menu button')].find((b) => b.textContent?.includes('picket-cli'))!);
@@ -244,13 +245,13 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
   assert(isolatedOpenCalls.at(-1)?.editor === 'cursor' && text().includes('Executable not found for cursor'), 'cli file open should launch cursor and surface missing CLI error');
   failOpen = false;
   await click('C-Push');
-  assert(isolatedAiCalls.at(-1)?.kind === 'cPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'en', 'cli C-Push should send commitLanguage: en');
+  assert(isolatedAiCalls.at(-1)?.kind === 'startAction' && isolatedAiCalls.at(-1)?.commitLanguage === 'en', 'cli C-Push should send commitLanguage: en');
 
   await click('picket-cli');
   await clickElement([...document.querySelectorAll<HTMLButtonElement>('.repository-menu button')].find((b) => b.textContent?.includes('my-order-service'))!);
   assert((document.querySelector('.file-hover')?.textContent ?? '').includes('RustRover Staged Diff'), 'Switching back to orders must retain RustRover');
   await click('C-Push');
-  assert(isolatedAiCalls.at(-1)?.kind === 'cPush' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh', 'Switching back to orders must retain commitLanguage: zh');
+  assert(isolatedAiCalls.at(-1)?.kind === 'startAction' && isolatedAiCalls.at(-1)?.commitLanguage === 'zh', 'Switching back to orders must retain commitLanguage: zh');
   checks.push('External IDE launch, per-project Editor & Commit Message Language isolation across repositories');
 
   // 15. Cross-restart v2 persistence of per-project settings, prompts, selections, and installedEditors filtering:
@@ -470,24 +471,25 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
     subscribe(receive) { cPushSub.receive = receive; return () => { cPushSub.receive = undefined; }; },
     async execute(command) {
       cPushCmds.push(command);
-      if (command.kind === 'cPush') {
+      if (command.kind === 'startAction' && command.profile === 'cpush') {
         return new Promise((resolve) => { resolveInitialCPush = resolve; });
       }
-      if (command.kind === 'respond') {
+      if (command.kind === 'runRecovery') {
         if (step2Paused) {
           step2Paused = false;
           return {
-            protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+            protocolVersion: 2, kind: 'action', requestId: command.requestId,
             session: {
               runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+              sessionId: command.target.sessionId, actionId: 'builtin:cpush', actionLabel: 'C-Push', profile: 'cpush',
+              frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
               frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: ['order', 'pay', 'retry'], skippedFileIds: [],
-              sessionStatus: 'needsDecision', canRetryRemaining: true,
+              status: 'needsDecision', summary: '', canRetryRemaining: true, links: [],
               timeline: [
                 { state: 'done', label: 'Commit 1/2: a3f91c2 feat(order): add idempotency lock' },
                 { state: 'failed', label: 'Commit 2/2 paused: docs: update release notes' },
               ],
-              qaLog: [{ questionId: command.messageId, question: 'Include release notes in this commit?', answer: 'Commit separately & push together' }],
+              qaLog: [{ questionId: command.messageId ?? 'q-m4', question: 'Include release notes in this commit?', answer: 'Commit separately & push together' }],
               commits: [{ oid: 'a3f91c2000', shortOid: 'a3f91c2', title: 'feat(order): add idempotency lock', branch: 'feat/pay', fileIds: ['order', 'pay', 'retry'] }],
               message: {
                 id: 'err-step-2', kind: 'error', title: 'Completed 1/2 commits; commit 2 paused', scope: 'Commit 2/2',
@@ -499,12 +501,13 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
           };
         }
         return {
-          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          protocolVersion: 2, kind: 'action', requestId: command.requestId,
           session: {
             runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+            sessionId: command.target.sessionId, actionId: 'builtin:cpush', actionLabel: 'C-Push', profile: 'cpush',
+            frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: ['order', 'pay', 'retry', 'release'], skippedFileIds: [],
-            sessionStatus: 'done', canRetryRemaining: false,
+            status: 'done', summary: '', canRetryRemaining: false, links: [],
             timeline: [
               { state: 'done', label: 'Commit 1/2: a3f91c2 feat(order): add idempotency lock' },
               { state: 'done', label: 'Commit 2/2: b84d120 docs: update release notes' },
@@ -526,7 +529,7 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
     },
   });
   await click('C-Push');
-  assert(cPushCmds.length === 1 && cPushCmds[0].kind === 'cPush' && cPushCmds[0].selections?.length === 4, 'C-Push omitted per-file commitTokens');
+  assert(cPushCmds.length === 1 && cPushCmds[0].kind === 'startAction' && cPushCmds[0].profile === 'cpush' && cPushCmds[0].selections?.length === 4, 'C-Push omitted per-file commitTokens');
   const startedCmd = cPushCmds[0];
   await click('Collapse Message');
   const m4Editor = document.querySelector<HTMLTextAreaElement>('.prompt-textarea')!;
@@ -535,12 +538,13 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
   await act(async () => { document.querySelector<HTMLInputElement>('[aria-label="Select pnpm-lock.yaml"]')!.click(); });
   await act(async () => {
     resolveInitialCPush!({
-      protocolVersion: 1, kind: 'cPush', requestId: startedCmd.requestId,
+      protocolVersion: 2, kind: 'action', requestId: startedCmd.requestId,
       session: {
         runId: startedCmd.requestId, repositoryId: startedCmd.target.repositoryId, worktreeId: startedCmd.target.worktreeId,
-        sessionId: startedCmd.target.sessionId, frozenScopeVersion: startedCmd.target.scopeVersion, modelId: 'test-claude',
+        sessionId: startedCmd.target.sessionId, actionId: 'builtin:cpush', actionLabel: 'C-Push', profile: 'cpush',
+        frozenScopeVersion: startedCmd.target.scopeVersion, modelId: 'test-claude',
         frozenFileIds: ['order', 'pay', 'retry', 'release'], committedFileIds: [], skippedFileIds: [],
-        sessionStatus: 'needsDecision', canRetryRemaining: false,
+        status: 'needsDecision', summary: '', canRetryRemaining: false, links: [],
         timeline: [{ state: 'done', label: 'Froze scope for 4 selected files' }, { state: 'active', label: 'Waiting for decision: Include release notes in this commit?' }],
         qaLog: [], commits: [],
         message: { ...releaseQuestion(), id: 'q-m4' },
@@ -553,7 +557,7 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
   assert(cPushCmds.length === 1 && !!document.querySelector('.message-expanded'), 'Clicking resume button must expand dock rather than starting a second C-Push');
   await click('Commit separately & push together');
   const firstRespond = cPushCmds[1];
-  assert(firstRespond?.kind === 'respond' && firstRespond.runId === startedCmd.requestId && firstRespond.target.scopeVersion === startedCmd.target.scopeVersion, 'Mid-run checkbox toggle mutated frozen C-Push target');
+  assert(firstRespond?.kind === 'runRecovery' && firstRespond.runId === startedCmd.requestId && firstRespond.target.scopeVersion === startedCmd.target.scopeVersion, 'Mid-run checkbox toggle mutated frozen C-Push target');
   assert(text().includes('Completed 1/2 commits; commit 2 paused') && !!document.querySelector('[aria-label="Session execution steps"]'), 'Paused step state or timeline did not render');
   await click('Retry Remaining Commits');
   assert(text().includes('Completed 2 local split commits') && text().includes('b84d120') && !!document.querySelector('[aria-label="Session Q&A log"]'), 'Retrying remaining steps did not finish or omitted Q&A log');
@@ -577,15 +581,16 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
       const pushedSnap = repositoryReply(`reconcile-${reconcileCalls}`, nextReadSequence()).snapshot!;
       pushedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 0, behind: 0, localOnly: false };
       m5Sub.receive?.({
-        type: 'cPushProgress',
+        type: 'actionProgress',
         progress: {
-          protocolVersion: 1,
+          protocolVersion: 2,
           repositorySnapshot: pushedSnap,
           session: {
             runId: 'conflict-run-1', repositoryId: target.repositoryId, worktreeId: target.worktreeId,
-            sessionId: target.sessionId, frozenScopeVersion: target.scopeVersion, modelId: 'test-claude',
+            sessionId: target.sessionId, actionId: 'builtin:pull-rebase', actionLabel: 'Pull & Rebase', profile: 'pullRebase',
+            frozenScopeVersion: target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'done', autoCollapse: true, canRetryRemaining: false,
+            status: 'done', summary: '', autoCollapse: true, canRetryRemaining: false, links: [],
             timeline: [{ state: 'done', label: 'Detected merge and push completed in terminal to mirror/feat/pay' }],
             qaLog: [], commits: [],
             message: { id: 'reconciled-done', kind: 'done', title: 'Detected merge and push completed in terminal', description: 'Local and remote HEAD match.' },
@@ -595,16 +600,17 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
     },
     async execute(command) {
       m5Cmds.push(command);
-      if (command.kind === 'pull') {
+      if (command.kind === 'runRecovery' && command.action.kind === 'pullRebase') {
         const pullSnap = repositoryReply(command.requestId, nextReadSequence()).snapshot!;
         if (pullCreatesConflict) {
           return {
-            protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pullSnap,
+            protocolVersion: 2, kind: 'action', requestId: command.requestId, repositorySnapshot: pullSnap,
             session: {
               runId: 'conflict-run-1', repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+              sessionId: command.target.sessionId, actionId: 'builtin:pull-rebase', actionLabel: 'Pull & Rebase', profile: 'pullRebase',
+              frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
               frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
-              sessionStatus: 'conflict', canRetryRemaining: false,
+              status: 'conflict', summary: '', canRetryRemaining: false, links: [],
               timeline: [{ state: 'failed', label: 'Rebase conflict on src/service/Order.ts' }],
               qaLog: [], commits: [],
               message: {
@@ -621,26 +627,28 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
         }
         pullSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 2, behind: 0, localOnly: false };
         return {
-          protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pullSnap,
+          protocolVersion: 2, kind: 'action', requestId: command.requestId, repositorySnapshot: pullSnap,
           session: {
             runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+            sessionId: command.target.sessionId, actionId: 'builtin:pull-rebase', actionLabel: 'Pull & Rebase', profile: 'pullRebase',
+            frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'idle', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [],
+            status: 'idle', summary: '', message: null, canRetryRemaining: false, timeline: [], qaLog: [], commits: [], links: [],
           },
         };
       }
-      if (command.kind === 'cPush') {
+      if (command.kind === 'startAction' && command.profile === 'cpush') {
         const localCommittedSnap = repositoryReply(command.requestId, nextReadSequence()).snapshot!;
         localCommittedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 3, behind: 0, localOnly: true };
         localCommittedSnap.worktrees[0].files = localCommittedSnap.worktrees[0].files.filter((f) => f.id !== 'retry');
         return {
-          protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: localCommittedSnap,
+          protocolVersion: 2, kind: 'action', requestId: command.requestId, repositorySnapshot: localCommittedSnap,
           session: {
             runId: command.requestId, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
+            sessionId: command.target.sessionId, actionId: 'builtin:cpush', actionLabel: 'C-Push', profile: 'cpush',
+            frozenScopeVersion: command.target.scopeVersion, modelId: command.modelId,
             frozenFileIds: command.fileIds, committedFileIds: command.fileIds, skippedFileIds: [],
-            sessionStatus: 'pushFailed', canRetryRemaining: false,
+            status: 'pushFailed', summary: '', canRetryRemaining: false, links: [],
             timeline: [
               { state: 'done', label: 'Local commit c9012ab: feat(order): commit and push' },
               { state: 'failed', label: 'Push to mirror/feat/pay failed' },
@@ -656,17 +664,18 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
           },
         };
       }
-      if (command.kind === 'respond') {
-        if (command.optionId === 'retry-push') {
+      if (command.kind === 'runRecovery') {
+        if (command.action.kind === 'retryPush') {
           const pushedSnap = repositoryReply(command.requestId, nextReadSequence()).snapshot!;
           pushedSnap.worktrees[0].remote = { kind: 'tracked', branch: 'mirror/feat/pay', ahead: 0, behind: 0, localOnly: false };
           return {
-            protocolVersion: 1, kind: 'cPush', requestId: command.requestId, repositorySnapshot: pushedSnap,
+            protocolVersion: 2, kind: 'action', requestId: command.requestId, repositorySnapshot: pushedSnap,
             session: {
               runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-              sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+              sessionId: command.target.sessionId, actionId: 'builtin:cpush', actionLabel: 'C-Push', profile: 'cpush',
+              frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
               frozenFileIds: ['order', 'retry'], committedFileIds: ['order', 'retry'], skippedFileIds: [],
-              sessionStatus: 'done', canRetryRemaining: false,
+              status: 'done', summary: '', canRetryRemaining: false, links: [],
               timeline: [{ state: 'done', label: '1 commit pushed to mirror/feat/pay' }],
               qaLog: [],
               commits: [{ oid: 'c9012ab000', shortOid: 'c9012ab', title: 'feat(order): commit and push', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
@@ -675,12 +684,13 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
           };
         }
         return {
-          protocolVersion: 1, kind: 'cPush', requestId: command.requestId,
+          protocolVersion: 2, kind: 'action', requestId: command.requestId,
           session: {
             runId: command.runId!, repositoryId: command.target.repositoryId, worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId, frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
+            sessionId: command.target.sessionId, actionId: 'builtin:pull-rebase', actionLabel: 'Pull & Rebase', profile: 'pullRebase',
+            frozenScopeVersion: command.target.scopeVersion, modelId: 'test-claude',
             frozenFileIds: [], committedFileIds: [], skippedFileIds: [],
-            sessionStatus: 'waitingManual', canRetryRemaining: false,
+            status: 'waitingManual', summary: '', canRetryRemaining: false, links: [],
             timeline: [{ state: 'active', label: 'Waiting for manual merge in external IDE…' }],
             qaLog: [], commits: [],
             message: {
@@ -715,13 +725,13 @@ export async function runRepositoryAndWorkflowChecks(harness: BrowserCheckHarnes
   await click('C-Push');
   assert(text().includes('Committed locally, push failed') && text().includes('c9012ab') && button('Retry Push'), 'Push failure did not surface preserved local commit or Retry Push');
   assert(document.querySelector<HTMLTextAreaElement>('.prompt-textarea')?.value === 'keep staged hunk atomic', 'Push failure must preserve extra instructions while Retry Push is pending');
-  const cPushCmdCountBeforeRetry = m5Cmds.filter((c) => c.kind === 'cPush').length;
+  const cPushCmdCountBeforeRetry = m5Cmds.filter((c) => c.kind === 'startAction').length;
   await click('Collapse Message');
   await click('Retry Push');
-  assert(!!document.querySelector('.message-expanded') && m5Cmds.filter((c) => c.kind === 'cPush').length === cPushCmdCountBeforeRetry, 'Footer Retry Push resume button did not expand dock');
+  assert(!!document.querySelector('.message-expanded') && m5Cmds.filter((c) => c.kind === 'startAction').length === cPushCmdCountBeforeRetry, 'Footer Retry Push resume button did not expand dock');
   await click('Retry Push');
   assert(
-    m5Cmds.filter((c) => c.kind === 'cPush').length === cPushCmdCountBeforeRetry
+    m5Cmds.filter((c) => c.kind === 'startAction').length === cPushCmdCountBeforeRetry
       && text().includes('1 commit pushed to mirror/feat/pay')
       && text().includes('↑ 0')
       && !document.querySelector('.prompt-textarea'),

@@ -1,5 +1,9 @@
 import { useRef, useState, type MutableRefObject } from 'react';
-import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
+import {
+  BUILTIN_CPUSH_ACTION_ID,
+  type CustomActionConfig,
+  type SessionRecoveryAction,
+} from '../../../../shared/custom-action-protocol';
 import type { CommitLanguage } from '../../../../shared/language-protocol';
 import type { MessageUserResponse } from '../../../../shared/message-user-protocol';
 import { getMessages } from '../../../i18n';
@@ -163,12 +167,45 @@ export function useWorkbenchCommands({
     });
   }
 
+function resolveSessionRecoveryAction(
+  message: Message,
+  answer: { optionId?: string; text?: string },
+): SessionRecoveryAction {
+  const optionId = answer.optionId;
+  if (optionId === 'retry-push' || optionId === 'continue-push') {
+    return { kind: 'retryPush' };
+  }
+  if (optionId?.startsWith('push-set-upstream:')) {
+    return { kind: 'retryPush', setUpstreamRemote: optionId.slice('push-set-upstream:'.length) };
+  }
+  if (optionId === 'retry-remaining') {
+    return { kind: 'retryRemainingCommits' };
+  }
+  if (optionId === 'abort-rebase') {
+    return { kind: 'abortRebase' };
+  }
+  if (optionId === 'manual-merge') {
+    return { kind: 'manualMerge' };
+  }
+  if (optionId === 'agent-merge') {
+    return { kind: 'agentConflictMerge' };
+  }
+  if (optionId === 'dismiss-session') {
+    return { kind: 'dismissSession' };
+  }
+  const trimmedText = answer.text?.trim();
+  if (message.kind === 'conflict') {
+    return { kind: 'agentConflictMerge', ...(trimmedText ? { instruction: trimmedText } : {}) };
+  }
+  return { kind: 'setUpstreamFreeText', text: trimmedText ?? optionId ?? '' };
+}
+
   function launchCustomAction(
     action: CustomActionConfig,
     options?: { followUpPrompt?: string; resumeFromRunId?: string; forceExpandDock?: boolean },
   ) {
     if (!worktree || !model || worktree.readError) return;
-    if (inFlight.current.has(`${worktree.repositoryId}:customAction`) || inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
+    if (inFlight.current.has(`${worktree.repositoryId}:action`)) return;
     const requestId = crypto.randomUUID();
     const target = targetOf(worktree);
     const fileIds = selected.map((file) => file.id);
@@ -177,15 +214,20 @@ export function useWorkbenchCommands({
       : undefined;
     const expandDock = options?.forceExpandDock ?? (!isEditingCommitInput() && !compactMode);
     dispatch({
-      type: 'customActionStarted',
+      type: 'actionStarted',
       worktreeId: worktree.worktreeId,
+      profile: 'customAction',
       runId: requestId,
       actionId: action.id,
       actionLabel: action.label,
+      frozenTarget: target,
+      frozenFileIds: fileIds,
+      modelId: model.id,
       expandDock,
     });
     void execute({
-      kind: 'runCustomAction',
+      kind: 'startAction',
+      profile: 'customAction',
       target,
       requestId,
       action,
@@ -197,12 +239,13 @@ export function useWorkbenchCommands({
       ...(options?.resumeFromRunId ? { resumeFromRunId: options.resumeFromRunId } : {}),
       locale: state.locale,
       commitLanguage: activeCommitLanguage,
+      approvalMode: state.actionApprovalMode,
     });
   }
 
   function followUpCustomAction(message: Message, text: string): boolean {
     const trimmed = text.trim();
-    const customRun = worktree?.activeRun?.kind === 'customAction' ? worktree.activeRun : undefined;
+    const customRun = worktree?.activeRun?.profile === 'customAction' ? worktree.activeRun : undefined;
     if (!worktree || !trimmed || !customRun) return false;
     if (!model) {
       if (compactMode) {
@@ -252,7 +295,7 @@ export function useWorkbenchCommands({
       launchCustomAction(activeCustomAction);
       return;
     }
-    if (inFlight.current.has(`${worktree.worktreeId}:cPush`)) return;
+    if (inFlight.current.has(`${worktree.repositoryId}:action`)) return;
     if (worktree.detached) {
       notify(t.workbench.detachedPrimaryBlocked, viewKey, { tone: 'warning' });
       return;
@@ -266,24 +309,29 @@ export function useWorkbenchCommands({
         : undefined;
       const expandDock = !isEditingCommitInput() && !compactMode;
       dispatch({
-        type: 'cPushStarted',
+        type: 'actionStarted',
         worktreeId: worktree.worktreeId,
+        profile: 'cpush',
         runId: requestId,
+        actionId: BUILTIN_CPUSH_ACTION_ID,
+        actionLabel: 'C-Push',
         frozenTarget: target,
         frozenFileIds: fileIds,
         modelId: model.id,
         expandDock,
       });
       void execute({
-        kind: 'cPush',
+        kind: 'startAction',
+        profile: 'cpush',
         target,
         requestId,
         fileIds,
         selections,
         modelId: model.id,
-        prompt: promptText,
+        extraPrompt: promptText,
         locale: state.locale,
         commitLanguage: activeCommitLanguage,
+        approvalMode: state.actionApprovalMode,
       });
     }
   }
@@ -296,13 +344,13 @@ export function useWorkbenchCommands({
     const id = worktree.worktreeId;
     const livePendingRunId = worktree.activeRun?.pendingCallId ? worktree.activeRun.runId : undefined;
     const livePendingCallId = worktree.activeRun?.pendingCallId;
-    if (livePendingRunId && livePendingCallId && answer.questionnaireResponse && backend.respondCustomAction) {
-      const respKey = `${id}:respondCustomAction`;
+    if (livePendingRunId && livePendingCallId && answer.questionnaireResponse && backend.respondActionQuestion) {
+      const respKey = `${id}:respondActionQuestion`;
       if (inFlight.current.has(respKey)) return false;
       inFlight.current.add(respKey);
       setPending([...inFlight.current]);
       try {
-        const accepted = await backend.respondCustomAction({
+        const accepted = await backend.respondActionQuestion({
           requestId: crypto.randomUUID(),
           runId: livePendingRunId,
           callId: livePendingCallId,
@@ -319,20 +367,19 @@ export function useWorkbenchCommands({
         setPending([...inFlight.current]);
       }
     }
-    const cPushRun = worktree.activeRun?.kind === 'cpush' ? worktree.activeRun : undefined;
-    const target = cPushRun?.frozenTarget ?? targetOf(worktree);
-    const runId = cPushRun?.runId;
-    const { questionnaireResponse, ...wireAnswer } = answer;
+    const activeRun = worktree.activeRun;
+    const target = activeRun?.frozenTarget ?? targetOf(worktree);
+    const runId = activeRun?.runId;
+    const recoveryAction = resolveSessionRecoveryAction(message, answer);
     const accepted = await execute({
-      kind: 'respond',
+      kind: 'runRecovery',
       target,
       requestId: crypto.randomUUID(),
       ...(runId ? { runId } : {}),
-      ...(model ? { modelId: model.id } : {}),
-      ...(questionnaireResponse ? { questionnaireResponse } : {}),
       messageId: message.id,
+      action: recoveryAction,
+      ...(model ? { modelId: model.id } : {}),
       locale: state.locale,
-      ...wireAnswer,
     });
     if (accepted) {
       dispatch({ type: 'reply', worktreeId: id, messageId: message.id, text: '' });
@@ -340,10 +387,17 @@ export function useWorkbenchCommands({
     return accepted;
   }
 
-  function cancelActiveCustomAction() {
+  async function cancelActiveCustomAction(): Promise<boolean> {
     const runId = worktree?.activeRun?.runId;
-    if (!runId) return;
-    void backend.cancelCustomAction?.(runId).catch(() => {});
+    if (!runId || !backend.cancelAction) return false;
+    try {
+      await backend.cancelAction(runId);
+      return true;
+    } catch (error) {
+      const errText = error instanceof Error ? error.message : t.workbench.genericOperationFailed;
+      notify(errText, viewKey, { tone: 'error' });
+      return false;
+    }
   }
 
   function syncActionToAllRepos(action: CustomActionConfig, overwrite: boolean) {

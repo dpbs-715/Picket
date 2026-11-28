@@ -19,6 +19,7 @@ pub enum ErrorCategory {
     Storage,
     Updater,
     Skills,
+    Runner,
     Window,
     Internal,
 }
@@ -71,11 +72,15 @@ pub enum AppErrorCode {
     ActionInvalidInput,
     ActionFailed,
 
-    // Storage / Updater / Skills / Window / Internal
+    // Storage / Updater / Skills / Runner / Window / Internal
     StorageFailed,
     UpdaterDraining,
     UpdaterFailed,
     SkillsFailed,
+    RunnerInvalidInput,
+    RunnerAlreadyRunning,
+    RunnerNotFound,
+    RunnerFailed,
     WindowFailed,
     Internal,
 }
@@ -153,6 +158,10 @@ impl AppError {
 
     pub fn skills(message: impl Into<String>) -> Self {
         Self::new(AppErrorCode::SkillsFailed, ErrorCategory::Skills, message)
+    }
+
+    pub fn runner(code: AppErrorCode, message: impl Into<String>) -> Self {
+        Self::new(code, ErrorCategory::Runner, message)
     }
 
     pub fn window(message: impl Into<String>) -> Self {

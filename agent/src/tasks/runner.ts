@@ -2,6 +2,7 @@ import { Agent, type AgentTool } from '@earendil-works/pi-agent-core';
 import { normalizeAppLocale } from '../../../shared/language-protocol';
 import { MODEL_GLOBAL_DEFAULTS } from '../../../shared/model-defaults';
 import type {
+  DiscoverRunCommandsCommand,
   GenerateCustomActionCommand,
   PiTaskRequest,
   PiToolResultCommand,
@@ -13,28 +14,7 @@ import { LocalizedSidecarError, getSidecarMessages } from '../i18n';
 import { createProbe } from '../probe';
 import { classifyProviderError, createIsolatedModelRuntime } from '../providers';
 import { SkillRegistry } from '../skills';
-import {
-  ToolBridge,
-  createCheckCliEnvTool,
-  createCleanupSubmitDuplicatesTool,
-  createCommitExactScopeTool,
-  createEditRepoFileTool,
-  createInstallPlatformCliTool,
-  createManageSubmitWorktreeTool,
-  createMessageUserTool,
-  createReadConflictFileTool,
-  createReadRepoFileTool,
-  createReadScopeDiffTool,
-  createReadSkillDocTool,
-  createRecordActionCheckpointTool,
-  createRunGitTool,
-  createRunPlatformCliTool,
-  createRunRepoCommandTool,
-  createSearchRepoTool,
-  createSyncAndPushTool,
-  createWriteConflictResolutionTool,
-  createWriteRepoFileTool,
-} from '../tools';
+import { ToolBridge } from '../tools';
 import {
   buildCPushModePrompts,
   buildCustomActionPrompts,
@@ -44,7 +24,14 @@ import {
   parseCustomActionResult,
 } from './custom-actions';
 import {
-  CUSTOM_ACTION_GUARD_DEFAULTS,
+  buildDiscoverRunCommandsPrompts,
+  parseDiscoveredRunCommands,
+} from './discover-run';
+import {
+  resolveAgentExecutionProfile,
+  type AgentExecutionProfileId,
+} from './profiles';
+import {
   createToolLoopGuard,
   type ToolLoopGuardPolicy,
 } from './tool-guard';
@@ -52,12 +39,12 @@ import {
 const TEST_CONNECTION_HTTP_TIMEOUT_MS = 45_000;
 const TASK_HTTP_CEILING_TIMEOUT_MS = 600_000;
 const ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
-const MAX_GENERATE_ACTION_TOOL_CALLS = 16;
 
 type AgentTaskCommand =
   | TestConnectionRequest
   | RunCustomActionCommand
-  | GenerateCustomActionCommand;
+  | GenerateCustomActionCommand
+  | DiscoverRunCommandsCommand;
 
 export interface TaskRunnerHandle {
   cancel: () => void;
@@ -74,87 +61,33 @@ async function prepareAgentTaskConfig(
   tools: AgentTool<any>[];
   guardPolicy: ToolLoopGuardPolicy;
 }> {
+  let profileId: AgentExecutionProfileId;
+  let prompts: { systemPrompt: string; userPrompt: string };
+
   if (command.type === 'testConnection') {
-    return {
-      prompts: { systemPrompt: 'Reply with OK only.', userPrompt: 'Connection check.' },
-      tools: [],
-      guardPolicy: { kind: 'none' },
-    };
-  }
-  if (command.type === 'runCustomAction') {
+    profileId = 'testConnection';
+    prompts = { systemPrompt: 'Reply with OK only.', userPrompt: 'Connection check.' };
+  } else if (command.type === 'runCustomAction') {
     const mode = command.mode ?? 'customAction';
-    if (mode === 'cpush') {
-      return {
-        prompts: await buildCPushModePrompts(command, registry),
-        tools: [
-          createCommitExactScopeTool(bridge, { cpushMode: true }),
-          createMessageUserTool(bridge),
-          createReadScopeDiffTool(bridge),
-          createReadRepoFileTool(bridge),
-          createSearchRepoTool(bridge),
-        ],
-        guardPolicy: {
-          kind: 'adaptive',
-          maxIdenticalConsecutive: 3,
-          maxConsecutiveErrors: 6,
-          runawayCeiling: 32,
-        },
-      };
-    }
-    if (mode === 'resolveConflict') {
-      return {
-        prompts: buildResolveConflictModePrompts(command),
-        tools: [
-          createReadConflictFileTool(bridge),
-          createWriteConflictResolutionTool(bridge),
-          createReadRepoFileTool(bridge),
-          createSearchRepoTool(bridge),
-        ],
-        guardPolicy: {
-          kind: 'adaptive',
-          maxIdenticalConsecutive: 3,
-          maxConsecutiveErrors: 6,
-          runawayCeiling: 64,
-        },
-      };
-    }
-    return {
-      prompts: buildCustomActionPrompts(command, registry),
-      tools: [
-        createReadSkillDocTool(registry),
-        createCheckCliEnvTool(bridge),
-        createInstallPlatformCliTool(bridge),
-        createRunGitTool(bridge, false),
-        createRunPlatformCliTool(bridge),
-        createEditRepoFileTool(bridge),
-        createWriteRepoFileTool(bridge),
-        createRunRepoCommandTool(bridge),
-        createCommitExactScopeTool(bridge),
-        createSyncAndPushTool(bridge),
-        createManageSubmitWorktreeTool(bridge),
-        createCleanupSubmitDuplicatesTool(bridge),
-        createRecordActionCheckpointTool(bridge),
-        createReadRepoFileTool(bridge),
-        createSearchRepoTool(bridge),
-        createMessageUserTool(bridge),
-      ],
-      guardPolicy: {
-        kind: 'adaptive',
-        ...CUSTOM_ACTION_GUARD_DEFAULTS,
-      },
-    };
+    profileId = mode;
+    prompts = mode === 'cpush'
+      ? await buildCPushModePrompts(command, registry)
+      : mode === 'resolveConflict'
+        ? buildResolveConflictModePrompts(command)
+        : buildCustomActionPrompts(command, registry);
+  } else if (command.type === 'discoverRunCommands') {
+    profileId = 'discoverRunCommands';
+    prompts = buildDiscoverRunCommandsPrompts(command);
+  } else {
+    profileId = 'generateAction';
+    prompts = buildGenerateCustomActionPrompts(command, registry);
   }
+
+  const profile = resolveAgentExecutionProfile(profileId);
   return {
-    prompts: buildGenerateCustomActionPrompts(command, registry),
-    tools: [
-      createReadSkillDocTool(registry),
-      createCheckCliEnvTool(bridge),
-      createRunGitTool(bridge, true),
-      createReadRepoFileTool(bridge),
-      createSearchRepoTool(bridge),
-      createMessageUserTool(bridge),
-    ],
-    guardPolicy: { kind: 'fixed', maxCalls: MAX_GENERATE_ACTION_TOOL_CALLS },
+    prompts,
+    tools: profile.buildTools(bridge, registry),
+    guardPolicy: profile.guardPolicy,
   };
 }
 
@@ -223,9 +156,14 @@ function runAgentTask(
             thinkingLevel: 'off',
             systemPrompt: prompts.systemPrompt,
           },
-          beforeToolCall: toolGuard ? (ctx) => toolGuard.beforeToolCall(ctx) : undefined,
+          beforeToolCall: async (ctx) => {
+            if (cancelled || bridge.getSettledOutcome()) {
+              return { block: true, reason: 'Run already settled or cancelled by host.' };
+            }
+            return toolGuard ? toolGuard.beforeToolCall(ctx) : undefined;
+          },
           afterToolCall: toolGuard ? (ctx) => toolGuard.afterToolCall(ctx) : undefined,
-          finishTurn: async () => (bridge.getSettledOutcome() ? { action: 'end' as const } : undefined),
+          finishTurn: async () => (cancelled || bridge.getSettledOutcome() ? { action: 'end' as const } : undefined),
           streamFn: (targetModel, context, options) => models.streamSimple(targetModel, context, {
             ...options,
             maxTokens: isTest
@@ -324,6 +262,16 @@ function runAgentTask(
         } else if (command.type === 'runCustomAction') {
           const result = parseCustomActionResult(firstTurn.rawText, locale);
           emit({ ...envelope, type: 'customActionCompleted', summary: result.summary, links: result.links });
+        } else if (command.type === 'discoverRunCommands') {
+          const discovered = wrapLengthTruncation(firstTurn.stopReason, () =>
+            parseDiscoveredRunCommands(firstTurn.rawText),
+          );
+          emit({
+            ...envelope,
+            type: 'runCommandsDiscovered',
+            summary: discovered.summary,
+            commands: discovered.commands,
+          });
         } else {
           const draft = wrapLengthTruncation(firstTurn.stopReason, () =>
             parseCustomActionDraft(firstTurn.rawText, locale),

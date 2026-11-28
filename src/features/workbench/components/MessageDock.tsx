@@ -32,7 +32,7 @@ interface Props {
   ): void | Promise<boolean | void>;
   onOpenFile(fileId: string): void;
   onOpenRepoPath(path: string, line?: number): void;
-  onCancelCustomAction?(): void;
+  onCancelCustomAction?(): void | boolean | Promise<boolean | void>;
   onFollowUpCustomAction?(message: Message, text: string): void | boolean | Promise<boolean | void>;
 }
 
@@ -82,7 +82,7 @@ export function MessageDock(props: Props) {
   const activeRun = props.worktree.activeRun;
   const canFollowUpAction = primary
     ? !isQuestionnaire
-      && activeRun?.kind === 'customAction'
+      && activeRun?.profile === 'customAction'
       && Boolean(props.onFollowUpCustomAction)
       && (primary.kind === 'done' || (primary.kind === 'error' && !primary.options?.length))
     : false;
@@ -122,15 +122,17 @@ export function MessageDock(props: Props) {
     const capturedId = primaryId;
     submittingRef.current = true;
     setPendingAction(action);
+    let keepPending = false;
     try {
       const outcome = await run();
       if (activePrimaryIdRef.current !== capturedId) return;
-      if (outcome !== true) {
-        submittingRef.current = false;
-        setPendingAction(null);
+      if (action.kind === 'cancelAction' && outcome === true) {
+        keepPending = true;
       }
     } catch {
-      if (activePrimaryIdRef.current === capturedId) {
+      keepPending = false;
+    } finally {
+      if (!keepPending && activePrimaryIdRef.current === capturedId) {
         submittingRef.current = false;
         setPendingAction(null);
       }
@@ -172,9 +174,18 @@ export function MessageDock(props: Props) {
   const sheetTone = primary ? resolveSheetTone(primary) : 'info';
   const toneIcon = primary ? resolveToneIcon(primary, sheetTone) : { icon: 'sparkles' as IconName };
   const timeline = activeTimeline;
-  const qaLog = activeRun?.kind === 'cpush' ? activeRun.qaLog : [];
+  const qaLog = activeRun?.qaLog ?? [];
   const hasTraceDetails = !isQuestionnaire && (timeline.length > 0 || qaLog.length > 0);
   const collapseTraceByDefault = Boolean(hasCardBlocks && primary?.kind !== 'progress');
+
+  const isCancellableProgress = Boolean(
+    primary
+    && primary.kind === 'progress'
+    && activeRun
+    && props.onCancelCustomAction
+    && !primary.id.startsWith('progress-push-')
+    && !primary.id.includes('-step-'),
+  );
 
   const hasBottomTray = Boolean(
     primary
@@ -182,7 +193,7 @@ export function MessageDock(props: Props) {
       isQuestionnaire
       || Boolean(primary.options?.length)
       || primary.kind === 'waitingManual'
-      || (primary.kind === 'progress' && Boolean(activeRun) && props.onCancelCustomAction)
+      || isCancellableProgress
       || canReply
       || canFollowUpAction
     ),
@@ -381,18 +392,16 @@ export function MessageDock(props: Props) {
                         </button>
                       )}
 
-                      {primary.kind === 'progress' && Boolean(activeRun) && props.onCancelCustomAction && (
+                      {isCancellableProgress && (
                         <button
                           type="button"
                           className={`d2-action-btn d2-centered-btn ${pendingAction?.kind === 'cancelAction' ? 'is-loading' : ''}`}
                           aria-busy={pendingAction?.kind === 'cancelAction' || undefined}
                           disabled={pendingAction?.kind === 'cancelAction'}
-                          onClick={() => {
-                            if (submittingRef.current) return;
-                            submittingRef.current = true;
-                            setPendingAction({ kind: 'cancelAction' });
-                            props.onCancelCustomAction?.();
-                          }}
+                          onClick={() => void dispatchDockAction(
+                            { kind: 'cancelAction' },
+                            () => props.onCancelCustomAction?.(),
+                          )}
                         >
                           {pendingAction?.kind === 'cancelAction' && (
                             <Icon name="loader" className="spinning d2-btn-spinner" />

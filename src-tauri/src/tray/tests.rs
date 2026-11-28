@@ -129,6 +129,7 @@ fn tray_attention_and_tooltip_prioritize_urgent_sessions_changes_and_updates() {
         has_update: false,
         refreshing: false,
         repositories: vec![sample_repo("alpha", 0, TraySessionStatus::Idle)],
+        running_services: vec![],
     };
     assert!(!tray_needs_attention(&clean));
     assert_eq!(build_tray_tooltip(&clean), "Picket");
@@ -143,6 +144,7 @@ fn tray_attention_and_tooltip_prioritize_urgent_sessions_changes_and_updates() {
             sample_repo("alpha", 3, TraySessionStatus::Idle),
             sample_repo("beta", 1, TraySessionStatus::Idle),
         ],
+        running_services: vec![],
     };
     assert!(!tray_needs_attention(&with_changes));
     assert_eq!(
@@ -157,6 +159,7 @@ fn tray_attention_and_tooltip_prioritize_urgent_sessions_changes_and_updates() {
         has_update: false,
         refreshing: false,
         repositories: vec![sample_repo("alpha", 2, TraySessionStatus::NeedsDecision)],
+        running_services: vec![],
     };
     assert!(tray_needs_attention(&with_decision));
     assert_eq!(build_tray_tooltip(&with_decision), "Picket · 待你决定");
@@ -168,6 +171,7 @@ fn tray_attention_and_tooltip_prioritize_urgent_sessions_changes_and_updates() {
         has_update: true,
         refreshing: false,
         repositories: vec![],
+        running_services: vec![],
     };
     assert!(tray_needs_attention(&with_update));
     assert_eq!(
@@ -274,6 +278,7 @@ fn rust_authoritative_tray_snapshot_picks_most_urgent_worktree_and_counts_local_
     let built = build_tray_state_snapshot(
         &[snap],
         &sessions,
+        vec![],
         Some("wt-main"),
         LanguageKind::En,
         ThemeKind::Dark,

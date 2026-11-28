@@ -2,7 +2,7 @@
 //! pre/post worktree diff tracking for safe commit closure via `commit_exact_scope`.
 
 use super::{
-    context::{ActionToolContext, append_unique_links, push_timeline_step},
+    context::{ActionToolContext, Tier2RiskLevel, append_unique_links, push_timeline_step},
     tools_workspace::{MAX_EDIT_FILE_BYTES, sha256_hex},
 };
 use crate::{
@@ -109,16 +109,14 @@ pub(super) async fn handle_run_repo_command(
         }
         CommandDecision::AllowTier0 | CommandDecision::AllowTier1 => {}
         CommandDecision::RequireConfirmTier2 {
-            reason,
-            preview,
-            allow_dont_ask_again,
+            reason, preview, ..
         } => {
             if let Err(err_result) = ctx
                 .confirm_tier2_write(
                     call_id,
+                    Tier2RiskLevel::RoutineWrite,
                     &reason,
                     &preview,
-                    allow_dont_ask_again,
                     "User declined to run the repository command.",
                 )
                 .await

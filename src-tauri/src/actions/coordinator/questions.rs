@@ -78,7 +78,16 @@ fn detect_install_option_tool(option: &MessageQuestionOption) -> Option<&'static
 }
 
 impl CustomActionCoordinator {
-    pub fn respond_question(&self, request: &RespondCustomActionRequest) -> Result<bool, AppError> {
+    pub fn cancel_pending_questions_for_run(&self, run_id: &str) {
+        if let Ok(mut map) = self.inner.pending_questions.lock() {
+            map.retain(|(pending_run_id, _), _| pending_run_id != run_id);
+        }
+    }
+
+    pub fn respond_question(
+        &self,
+        request: &RespondActionQuestionRequest,
+    ) -> Result<bool, AppError> {
         repository::validate_request_id_with_locale(&request.request_id, request.locale)
             .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))?;
         let key = (request.run_id.clone(), request.call_id.clone());
@@ -230,7 +239,7 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         coordinator
-            .respond_question(&RespondCustomActionRequest {
+            .respond_question(&RespondActionQuestionRequest {
                 request_id: "resp-1".into(),
                 run_id: "run-1".into(),
                 call_id: "tc-1".into(),
@@ -266,7 +275,7 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         coordinator
-            .respond_question(&RespondCustomActionRequest {
+            .respond_question(&RespondActionQuestionRequest {
                 request_id: "resp-2".into(),
                 run_id: "run-1".into(),
                 call_id: "tc-2".into(),

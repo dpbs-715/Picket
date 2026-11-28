@@ -7,7 +7,7 @@ import { DesktopCommandError } from '../../../../desktop/errors';
 import type { WindowController } from '../../../../desktop/window';
 import type { ModelConfiguration, ProviderConnection } from '../../../settings/modelProviders';
 import { disconnectedBackend } from '../../commands';
-import type { WorkbenchBackend, WorkbenchCommand } from '../../commands';
+import type { WorkbenchBackend } from '../../commands';
 import { fixture } from '../fixtures';
 import { assert, button, click, clickElement, createControlledWindow, openSettingsTab, text, tick, type, type BrowserCheckHarness } from './harness';
 
@@ -146,8 +146,34 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
     'ActionFooter must disambiguate duplicate model display names across connections',
   );
 
-  // Opening Settings displays `keyHint` on provider cards without calling revealProviderApiKey:
+  // Opening Settings displays General -> Action Approval (Ask | Auto | Allow All, default Auto) and persists changes:
   await click('Settings');
+  const approvalAskBtn = document.querySelector<HTMLButtonElement>('[data-approval-option="ask"]');
+  const approvalAutoBtn = document.querySelector<HTMLButtonElement>('[data-approval-option="auto"]');
+  const approvalAllowAllBtn = document.querySelector<HTMLButtonElement>('[data-approval-option="allowAll"]');
+  assert(
+    !!approvalAskBtn && !!approvalAutoBtn && !!approvalAllowAllBtn
+      && approvalAutoBtn.getAttribute('aria-pressed') === 'true',
+    'Settings -> General -> App must render 3-mode Action Approval control defaulting to Auto',
+  );
+  await clickElement(approvalAskBtn!);
+  await tick();
+  assert(
+    approvalAskBtn!.getAttribute('aria-pressed') === 'true'
+      && persistedPayloads.some((p) => p.actionApprovalMode === 'ask'),
+    'Selecting Ask in Action Approval must update aria-pressed and persist actionApprovalMode=ask',
+  );
+  await clickElement(approvalAllowAllBtn!);
+  await tick();
+  assert(
+    approvalAllowAllBtn!.getAttribute('aria-pressed') === 'true'
+      && persistedPayloads.some((p) => p.actionApprovalMode === 'allowAll'),
+    'Selecting Allow All in Action Approval must update aria-pressed and persist actionApprovalMode=allowAll',
+  );
+  await clickElement(approvalAutoBtn!);
+  await tick();
+
+  // Opening Models tab displays `keyHint` on provider cards without calling revealProviderApiKey:
   await openSettingsTab('models');
   const providerCards = [...document.querySelectorAll<HTMLElement>('.provider-card')];
   assert(
@@ -563,7 +589,7 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
   await mount(fixture('typing'), {
     ...disconnectedBackend,
     async execute(command) {
-      if (command.kind === 'cPush') {
+      if (command.kind === 'startAction' && command.profile === 'cpush') {
         throw new DesktopCommandError({
           code: 'modelAuthFailed',
           category: 'model',
@@ -632,10 +658,31 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
   assert(dismissedDoneIds.length === 2 && dismissedDoneIds.every((id) => id === 'done'), `Expected both done dismissals to notify backend persistence: ${JSON.stringify(dismissedDoneIds)}`);
 
   // Multi-question message_user questionnaire with preview, multi-select, and dontAskAgain:
-  const questionnaireCommands: WorkbenchCommand[] = [];
+  const questionnaireRequests: Array<{ runId: string; callId: string; response: import('../../../../../shared/message-user-protocol').MessageUserResponse }> = [];
   const qState = fixture('typing');
   qState.worktrees[0].dockExpanded = true;
   qState.worktrees[0].sessionStatus = 'needsDecision';
+  qState.worktrees[0].activeRun = {
+    profile: 'customAction',
+    runId: 'run-ask-q-1',
+    actionId: 'act-release-tag',
+    actionLabel: 'Release Tag',
+    frozenTarget: {
+      repositoryId: qState.worktrees[0].repositoryId,
+      worktreeId: qState.worktrees[0].worktreeId,
+      sessionId: qState.worktrees[0].sessionId,
+      scopeVersion: qState.worktrees[0].scopeVersion,
+    },
+    frozenFileIds: [],
+    promptRevisionAtStart: 0,
+    modelId: 'test-claude',
+    pendingCallId: 'tc-ask-q-1',
+    timeline: [],
+    qaLog: [],
+    commits: [],
+    links: [],
+    canRetryRemaining: false,
+  };
   qState.worktrees[0].messages = [{
     id: 'msg-ask-q',
     kind: 'question',
@@ -684,8 +731,13 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
   }];
   await mount(qState, {
     ...disconnectedBackend,
-    async execute(command) {
-      questionnaireCommands.push(command);
+    async respondActionQuestion(request) {
+      questionnaireRequests.push({
+        runId: request.runId,
+        callId: request.callId,
+        response: request.response,
+      });
+      return true;
     },
   });
   assert(document.querySelectorAll('.questionnaire-tab').length === 2, 'Multi-question dock must render one tab per question');
@@ -698,12 +750,13 @@ export async function runSettingsUpdaterMotionChecks(harness: BrowserCheckHarnes
   await clickElement(document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="release"]')!);
   await clickElement(document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="changelog"]')!);
   await click('Submit');
-  const submitted = questionnaireCommands.find((cmd) => cmd.kind === 'respond');
+  const submitted = questionnaireRequests[0];
   assert(
-    submitted?.kind === 'respond'
-      && submitted.questionnaireResponse?.dontAskAgain === true
-      && submitted.questionnaireResponse.answers.find((item) => item.questionId === 'strategy')?.selectedLabels.includes('Annotated tag')
-      && submitted.questionnaireResponse.answers.find((item) => item.questionId === 'checks')?.selectedLabels.length === 2,
+    submitted?.runId === 'run-ask-q-1'
+      && submitted.callId === 'tc-ask-q-1'
+      && submitted.response.dontAskAgain === true
+      && submitted.response.answers.find((item) => item.questionId === 'strategy')?.selectedLabels.includes('Annotated tag')
+      && submitted.response.answers.find((item) => item.questionId === 'checks')?.selectedLabels.length === 2,
     `message_user Submit did not forward structured answers and dontAskAgain: ${JSON.stringify(submitted)}`,
   );
   checks.push('Phase 1 UX: zero-shift semantic floating Toast, MessageDock true done dismissal, and multi-question message_user flow');

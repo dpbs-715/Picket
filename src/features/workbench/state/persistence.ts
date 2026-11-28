@@ -1,3 +1,4 @@
+import { DEFAULT_ACTION_APPROVAL_MODE } from '../../../../shared/custom-action-protocol';
 import { isValidRepoRelativePath } from '../../../../shared/git-read-protocol';
 import { DEFAULT_APP_LOCALE, DEFAULT_COMMIT_LANGUAGE } from '../../../../shared/language-protocol';
 import { DEFAULT_APP_THEME } from '../../../../shared/theme-protocol';
@@ -8,12 +9,14 @@ import {
   type WorkbenchSaveRequest,
 } from '../../../../shared/workbench-persistence-protocol';
 import { computeNormalUnselectedIds, defaultWindowPreferences } from './selectors';
+import { toActiveActionRun, toWorktreeSessionStatus } from './sessionSync';
 import { mergeSnapshot, normalizeWorktreeLocalKeep, projectWorktree, readScopeVersion } from './snapshotMerge';
 import type { EditorId, RepositorySettings, WorkbenchState, Worktree } from './types';
 
 export interface PersistenceKeySnapshot {
   locale: WorkbenchState['locale'];
   theme: WorkbenchState['theme'];
+  actionApprovalMode: WorkbenchState['actionApprovalMode'];
   editor: WorkbenchState['editor'];
   defaultCommitLanguage: WorkbenchState['defaultCommitLanguage'];
   repositorySettings: WorkbenchState['repositorySettings'];
@@ -46,6 +49,7 @@ export function resolvePersistenceKeys(
     previous
     && previous.locale === state.locale
     && previous.theme === state.theme
+    && previous.actionApprovalMode === state.actionApprovalMode
     && previous.editor === state.editor
     && previous.defaultCommitLanguage === state.defaultCommitLanguage
     && previous.repositorySettings === state.repositorySettings
@@ -81,6 +85,7 @@ export function resolvePersistenceKeys(
   const structuralKey = JSON.stringify([
     state.locale,
     state.theme,
+    state.actionApprovalMode,
     state.editor,
     state.defaultCommitLanguage,
     state.repositorySettings,
@@ -94,6 +99,7 @@ export function resolvePersistenceKeys(
   return {
     locale: state.locale,
     theme: state.theme,
+    actionApprovalMode: state.actionApprovalMode,
     editor: state.editor,
     defaultCommitLanguage: state.defaultCommitLanguage,
     repositorySettings: state.repositorySettings,
@@ -127,6 +133,7 @@ export function serializeWorkbenchPersistence(state: WorkbenchState, revision: n
     revision,
     locale: state.locale,
     theme: state.theme,
+    actionApprovalMode: state.actionApprovalMode,
     editor: state.editor,
     defaultCommitLanguage: state.defaultCommitLanguage,
     repositorySettings: Object.entries(state.repositorySettings).map(([repositoryId, cfg]) => ({
@@ -136,6 +143,8 @@ export function serializeWorkbenchPersistence(state: WorkbenchState, revision: n
       ...(cfg.localKeepPaths?.length ? { localKeepPaths: [...cfg.localKeepPaths] } : {}),
       ...(cfg.customActions?.length ? { customActions: cfg.customActions.map((item) => ({ ...item })) } : {}),
       ...(cfg.activeActionId ? { activeActionId: cfg.activeActionId } : {}),
+      ...(cfg.runCommands?.length ? { runCommands: cfg.runCommands.map((item) => ({ ...item, ...(item.env?.length ? { env: item.env.map((e) => ({ ...e })) } : {}) })) } : {}),
+      ...(cfg.runSharedEnv?.length ? { runSharedEnv: cfg.runSharedEnv.map((e) => ({ ...e })) } : {}),
     })),
     windowPreferences,
     activeWorktreeId: state.activeWorktreeId,
@@ -153,7 +162,6 @@ export function serializeWorkbenchPersistence(state: WorkbenchState, revision: n
 
 export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchRestoreReply): WorkbenchState {
   const persistedByWorktree = new Map(restored.worktrees.map((item) => [item.worktreeId, item]));
-  const cPushByWorktree = new Map((restored.cPushSessions ?? []).map((item) => [item.worktreeId, item]));
   const actionByWorktree = new Map((restored.actionSessions ?? []).map((item) => [item.worktreeId, item]));
   const userEditedEmpty = state.emptyPrompt.length > 0;
   const hydratedConnections = restored.connections === undefined
@@ -176,9 +184,11 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       : desired;
   const restoredLocale = restored.locale ?? DEFAULT_APP_LOCALE;
   const restoredTheme = restored.theme ?? DEFAULT_APP_THEME;
+  const restoredApprovalMode = restored.actionApprovalMode ?? DEFAULT_ACTION_APPROVAL_MODE;
   const restoredDefaultCommitLang = restored.defaultCommitLanguage ?? DEFAULT_COMMIT_LANGUAGE;
   const locale = state.settingsModified ? state.locale : restoredLocale;
   const theme = state.settingsModified ? state.theme : restoredTheme;
+  const actionApprovalMode = state.settingsModified ? state.actionApprovalMode : restoredApprovalMode;
   const defaultCommitLanguage = state.settingsModified ? state.defaultCommitLanguage : restoredDefaultCommitLang;
   const desiredEditor = state.settingsModified ? state.editor : restored.editor;
   const effectiveEditor = resolveEditor(desiredEditor);
@@ -186,6 +196,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
   for (const entry of restored.repositorySettings ?? []) {
     const keepPaths = entry.localKeepPaths?.filter(isValidRepoRelativePath) ?? [];
     const customActions = entry.customActions?.length ? entry.customActions : undefined;
+    const runCommands = entry.runCommands?.length ? entry.runCommands : undefined;
+    const runSharedEnv = entry.runSharedEnv?.length ? entry.runSharedEnv : undefined;
     const activeActionId = entry.activeActionId && customActions?.some((item) => item.id === entry.activeActionId)
       ? entry.activeActionId
       : undefined;
@@ -195,6 +207,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       ...(keepPaths.length ? { localKeepPaths: [...new Set(keepPaths)].sort() } : {}),
       ...(customActions ? { customActions } : {}),
       ...(activeActionId ? { activeActionId } : {}),
+      ...(runCommands ? { runCommands } : {}),
+      ...(runSharedEnv ? { runSharedEnv } : {}),
     };
   }
   for (const snapshot of restored.snapshots) {
@@ -209,6 +223,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       ...(mergedKeep?.length ? { localKeepPaths: mergedKeep } : {}),
       ...(existing?.customActions?.length ? { customActions: existing.customActions } : {}),
       ...(existing?.activeActionId ? { activeActionId: existing.activeActionId } : {}),
+      ...(existing?.runCommands?.length ? { runCommands: existing.runCommands } : {}),
+      ...(existing?.runSharedEnv?.length ? { runSharedEnv: existing.runSharedEnv } : {}),
     };
   }
   if (state.settingsModified) {
@@ -216,6 +232,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       const existing = repositorySettings[repositoryId];
       const keepPaths = cfg.localKeepPaths ?? existing?.localKeepPaths;
       const customActions = cfg.customActions ?? existing?.customActions;
+      const runCommands = cfg.runCommands ?? existing?.runCommands;
+      const runSharedEnv = cfg.runSharedEnv ?? existing?.runSharedEnv;
       const activeActionId = cfg.activeActionId !== undefined ? cfg.activeActionId : existing?.activeActionId;
       repositorySettings[repositoryId] = {
         editor: resolveEditor(cfg.editor),
@@ -223,6 +241,8 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
         ...(keepPaths?.length ? { localKeepPaths: keepPaths } : {}),
         ...(customActions?.length ? { customActions } : {}),
         ...(activeActionId ? { activeActionId } : {}),
+        ...(runCommands?.length ? { runCommands } : {}),
+        ...(runSharedEnv?.length ? { runSharedEnv } : {}),
       };
     }
   }
@@ -242,6 +262,7 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
     ...state,
     locale,
     theme,
+    actionApprovalMode,
     editor: effectiveEditor,
     defaultCommitLanguage,
     repositorySettings,
@@ -264,7 +285,6 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
       const incoming = normalizeWorktreeLocalKeep(rawIncoming, keepSet, hasSnapshotKeepList);
       const base = projectWorktree(incoming);
       const saved = persistedByWorktree.get(incoming.worktreeId);
-      const savedCPush = cPushByWorktree.get(incoming.worktreeId);
       const savedAction = actionByWorktree.get(incoming.worktreeId);
       const withSavedPrompt: Worktree = (!saved || incoming.readError) ? base : (() => {
         const selectedIds = saved.unselectedIds !== undefined
@@ -286,47 +306,25 @@ export function hydrateWorkbench(state: WorkbenchState, restored: WorkbenchResto
           prompt: { text: saved.promptText, revision: 0 },
         };
       })();
-      if (savedCPush && savedCPush.sessionStatus !== 'idle') {
+      if (savedAction && (savedAction.status !== 'idle' || Boolean(savedAction.message))) {
+        const nextStatus = toWorktreeSessionStatus(savedAction.status);
+        const keepRun = savedAction.status !== 'idle'
+          && savedAction.status !== 'cancelled'
+          && !(savedAction.status === 'failed' && !savedAction.message);
         return {
           ...withSavedPrompt,
-          sessionId: savedCPush.sessionId,
-          sessionStatus: savedCPush.sessionStatus,
-          messages: savedCPush.message ? [savedCPush.message] : [],
+          sessionId: savedAction.sessionId || withSavedPrompt.sessionId,
+          sessionStatus: nextStatus,
+          messages: savedAction.message ? [savedAction.message] : [],
           dockExpanded: false,
-          activeRun: {
-            kind: 'cpush',
-            runId: savedCPush.runId,
-            frozenTarget: {
-              repositoryId: savedCPush.repositoryId,
-              worktreeId: savedCPush.worktreeId,
-              sessionId: savedCPush.sessionId,
-              scopeVersion: savedCPush.frozenScopeVersion,
-            },
-            frozenFileIds: savedCPush.frozenFileIds,
-            promptRevisionAtStart: withSavedPrompt.prompt.revision,
-            modelId: savedCPush.modelId,
-            timeline: savedCPush.timeline,
-            qaLog: savedCPush.qaLog,
-            commits: savedCPush.commits,
-            canRetryRemaining: savedCPush.canRetryRemaining,
-          },
-        };
-      }
-      if (savedAction?.message) {
-        return {
-          ...withSavedPrompt,
-          sessionStatus: savedAction.status === 'done' ? 'done' : 'idle',
-          messages: [savedAction.message],
-          dockExpanded: false,
-          activeRun: {
-            kind: 'customAction',
-            runId: savedAction.runId,
-            actionId: savedAction.actionId,
-            actionLabel: savedAction.actionLabel,
-            timeline: savedAction.timeline,
-            commits: savedAction.commits,
-            links: savedAction.links,
-          },
+          activeRun: keepRun
+            ? toActiveActionRun(
+                savedAction,
+                withSavedPrompt.sessionId,
+                withSavedPrompt.scopeVersion,
+                withSavedPrompt.prompt.revision,
+              )
+            : undefined,
         };
       }
       return withSavedPrompt;

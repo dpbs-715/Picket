@@ -4,7 +4,7 @@
 
 use super::{
     CPUSH_AI_IDLE_TIMEOUT, CustomActionCoordinator,
-    cpush_helpers::{apply_rebased_commits, enter_conflict_state, summarize_commits},
+    session_helpers::{apply_rebased_commits, enter_conflict_state, summarize_commits},
 };
 use crate::{
     actions::types::*,
@@ -89,11 +89,11 @@ impl CustomActionCoordinator {
         models: &ModelStore,
         repo_store: &RepositoryStore,
         request_id: &str,
-        session: &mut StoredCPushSession,
-        previous_msg: &CPushUiMessage,
+        session: &mut StoredActionSession,
+        previous_msg: &WorkflowUiMessage,
         instruction: &str,
-        on_progress: &mut (impl FnMut(CPushProgressEvent) -> Result<(), String> + Send),
-    ) -> Result<CPushCommandReply, AppError> {
+        on_progress: &mut (impl FnMut(ActionProgressEvent) -> Result<(), String> + Send),
+    ) -> Result<ActionCommandReply, AppError> {
         let map_action = |msg: String| AppError::action(AppErrorCode::ActionFailed, msg);
         let locale = session.locale;
         if session.model_id.trim().is_empty() {
@@ -105,7 +105,7 @@ impl CustomActionCoordinator {
         let spec = models
             .resolve_runtime_spec_with_locale(storage_dir, &session.model_id, locale)
             .await?;
-        let read_target = self.session_read_target(session);
+        let read_target = session.read_target();
         let batch = repo_store
             .extract_conflict_batch(&read_target, locale)
             .await
@@ -125,19 +125,19 @@ impl CustomActionCoordinator {
             answer: answer_text.clone(),
             option_id: instruction.is_empty().then(|| "agent-merge".into()),
         });
-        session.session_status = CPushSessionStatus::Running;
+        session.status = ActionSessionStatus::Running;
         session.pending_call_id = None;
         session.timeline = vec![
-            CPushTimelineItem {
+            WorkflowTimelineItem {
                 state: "done".into(),
                 label: i18n::cpush::cpush_timeline_authorized_agent_merge(locale, &answer_text),
             },
-            CPushTimelineItem {
+            WorkflowTimelineItem {
                 state: "active".into(),
                 label: i18n::cpush::cpush_timeline_merging_files(locale, batch.files.len()),
             },
         ];
-        session.message = Some(CPushUiMessage {
+        session.message = Some(WorkflowUiMessage {
             id: format!("progress-merge-{request_id}"),
             kind: "progress".into(),
             title: i18n::cpush::cpush_progress_merging_title(locale).into(),
@@ -146,19 +146,20 @@ impl CustomActionCoordinator {
             files: None,
             commits: None,
             options: None,
-            links: None,
+            links: (!session.links.is_empty()).then_some(session.links.clone()),
             card: None,
             questionnaire: None,
-            progress: Some(CPushMessageProgress {
+            progress: Some(WorkflowMessageProgress {
                 completed: 3,
                 total: 4,
                 label: i18n::cpush::cpush_progress_merging_steps(locale).into(),
             }),
         });
-        self.save_cpush_in_memory(session).map_err(map_action)?;
-        let _ = on_progress(CPushProgressEvent {
-            protocol_version: CPUSH_PROTOCOL_VERSION,
+        self.save_session_in_memory(session).map_err(map_action)?;
+        let _ = on_progress(ActionProgressEvent {
+            protocol_version: ACTION_PROTOCOL_VERSION,
             session: session.to_public(),
+            trusted_action_update: None,
             repository_snapshot: None,
         });
 
@@ -179,25 +180,27 @@ impl CustomActionCoordinator {
             Ok(res) => res,
             Err(err) => {
                 session.qa_log.pop();
-                session.session_status = CPushSessionStatus::Conflict;
+                session.status = ActionSessionStatus::Conflict;
                 session.timeline = prev_timeline;
                 let mut restored_msg = prev_msg;
                 restored_msg.description =
                     i18n::cpush::cpush_merge_resolver_failed_desc(locale, &err.message);
                 session.message = Some(restored_msg);
-                self.save_cpush_in_memory(session).map_err(map_action)?;
-                let _ = self.persist_cpush_sessions(storage_dir).await;
+                self.save_session_in_memory(session).map_err(map_action)?;
+                let _ = self.persist_session(storage_dir, session).await;
                 let public = session.to_public();
-                let _ = on_progress(CPushProgressEvent {
-                    protocol_version: CPUSH_PROTOCOL_VERSION,
+                let _ = on_progress(ActionProgressEvent {
+                    protocol_version: ACTION_PROTOCOL_VERSION,
                     session: public.clone(),
+                    trusted_action_update: None,
                     repository_snapshot: None,
                 });
-                return Ok(CPushCommandReply {
-                    protocol_version: CPUSH_PROTOCOL_VERSION,
-                    kind: "cPush",
+                return Ok(ActionCommandReply {
+                    protocol_version: ACTION_PROTOCOL_VERSION,
+                    kind: "action",
                     request_id: request_id.to_owned(),
                     session: public,
+                    trusted_action_update: None,
                     repository_snapshot: None,
                 });
             }
@@ -218,26 +221,28 @@ impl CustomActionCoordinator {
                     .refresh_with_locale(&read_target, locale)
                     .await
                     .ok();
-                session.session_status = CPushSessionStatus::Conflict;
+                session.status = ActionSessionStatus::Conflict;
                 session.timeline = prev_timeline;
                 let mut restored_msg = prev_msg;
                 restored_msg.description = i18n::cpush::cpush_merge_apply_failed_desc(locale, &err);
                 session.message = Some(restored_msg);
-                self.save_cpush_in_memory(session).map_err(map_action)?;
-                self.persist_cpush_sessions(storage_dir)
+                self.save_session_in_memory(session).map_err(map_action)?;
+                self.persist_session(storage_dir, session)
                     .await
                     .map_err(AppError::storage)?;
                 let public = session.to_public();
-                let _ = on_progress(CPushProgressEvent {
-                    protocol_version: CPUSH_PROTOCOL_VERSION,
+                let _ = on_progress(ActionProgressEvent {
+                    protocol_version: ACTION_PROTOCOL_VERSION,
                     session: public.clone(),
+                    trusted_action_update: None,
                     repository_snapshot: refreshed.clone(),
                 });
-                Ok(CPushCommandReply {
-                    protocol_version: CPUSH_PROTOCOL_VERSION,
-                    kind: "cPush",
+                Ok(ActionCommandReply {
+                    protocol_version: ACTION_PROTOCOL_VERSION,
+                    kind: "action",
                     request_id: request_id.to_owned(),
                     session: public,
+                    trusted_action_update: None,
                     repository_snapshot: refreshed,
                 })
             }
@@ -253,21 +258,23 @@ impl CustomActionCoordinator {
                     true,
                     Some(i18n::cpush::cpush_next_commit_conflict_reason(locale)),
                 );
-                self.save_cpush_in_memory(session).map_err(map_action)?;
-                self.persist_cpush_sessions(storage_dir)
+                self.save_session_in_memory(session).map_err(map_action)?;
+                self.persist_session(storage_dir, session)
                     .await
                     .map_err(AppError::storage)?;
                 let public = session.to_public();
-                let _ = on_progress(CPushProgressEvent {
-                    protocol_version: CPUSH_PROTOCOL_VERSION,
+                let _ = on_progress(ActionProgressEvent {
+                    protocol_version: ACTION_PROTOCOL_VERSION,
                     session: public.clone(),
+                    trusted_action_update: None,
                     repository_snapshot: Some(snapshot.clone()),
                 });
-                Ok(CPushCommandReply {
-                    protocol_version: CPUSH_PROTOCOL_VERSION,
-                    kind: "cPush",
+                Ok(ActionCommandReply {
+                    protocol_version: ACTION_PROTOCOL_VERSION,
+                    kind: "action",
                     request_id: request_id.to_owned(),
                     session: public,
+                    trusted_action_update: None,
                     repository_snapshot: Some(snapshot),
                 })
             }
@@ -279,7 +286,7 @@ impl CustomActionCoordinator {
             }) => {
                 apply_rebased_commits(session, &rebased_commits);
                 if session.push_authorized {
-                    self.sync_and_push_commits(
+                    self.sync_and_push_session(
                         storage_dir,
                         repo_store,
                         request_id,
@@ -291,17 +298,17 @@ impl CustomActionCoordinator {
                     .await
                     .map_err(map_action)
                 } else {
-                    session.session_status = CPushSessionStatus::Done;
+                    session.status = ActionSessionStatus::Done;
                     session.can_retry_remaining = false;
                     session.timeline = vec![
-                        CPushTimelineItem {
+                        WorkflowTimelineItem {
                             state: "done".into(),
                             label: i18n::cpush::cpush_timeline_agent_merge_done(
                                 locale,
                                 &merge_summary,
                             ),
                         },
-                        CPushTimelineItem {
+                        WorkflowTimelineItem {
                             state: "done".into(),
                             label: i18n::cpush::cpush_timeline_rebase_done_no_push(
                                 locale, &upstream,
@@ -309,10 +316,12 @@ impl CustomActionCoordinator {
                         },
                     ];
                     let commits = summarize_commits(&session.commits);
-                    session.message = Some(CPushUiMessage {
+                    let title = i18n::cpush::cpush_done_merge_pull_title(locale, &upstream);
+                    session.summary = title.clone();
+                    session.message = Some(WorkflowUiMessage {
                         id: format!("done-merge-pull-{}", session.run_id),
                         kind: "done".into(),
-                        title: i18n::cpush::cpush_done_merge_pull_title(locale, &upstream),
+                        title,
                         description: i18n::cpush::cpush_done_merge_pull_desc(
                             locale,
                             &merge_summary,
@@ -321,26 +330,28 @@ impl CustomActionCoordinator {
                         files: None,
                         commits: (!commits.is_empty()).then_some(commits),
                         options: None,
-                        links: None,
+                        links: (!session.links.is_empty()).then_some(session.links.clone()),
                         card: None,
                         questionnaire: None,
                         progress: None,
                     });
-                    self.save_cpush_in_memory(session).map_err(map_action)?;
-                    self.persist_cpush_sessions(storage_dir)
+                    self.save_session_in_memory(session).map_err(map_action)?;
+                    self.persist_session(storage_dir, session)
                         .await
                         .map_err(AppError::storage)?;
                     let public = session.to_public();
-                    let _ = on_progress(CPushProgressEvent {
-                        protocol_version: CPUSH_PROTOCOL_VERSION,
+                    let _ = on_progress(ActionProgressEvent {
+                        protocol_version: ACTION_PROTOCOL_VERSION,
                         session: public.clone(),
+                        trusted_action_update: None,
                         repository_snapshot: Some(snapshot.clone()),
                     });
-                    Ok(CPushCommandReply {
-                        protocol_version: CPUSH_PROTOCOL_VERSION,
-                        kind: "cPush",
+                    Ok(ActionCommandReply {
+                        protocol_version: ACTION_PROTOCOL_VERSION,
+                        kind: "action",
                         request_id: request_id.to_owned(),
                         session: public,
+                        trusted_action_update: None,
                         repository_snapshot: Some(snapshot),
                     })
                 }
@@ -356,7 +367,7 @@ impl CustomActionCoordinator {
         repo_store: &RepositoryStore,
         spec: &ResolvedRuntimeSpec,
         request_id: &str,
-        session: &StoredCPushSession,
+        session: &StoredActionSession,
         upstream: &str,
         instruction: &str,
         files: &[ExtractedConflictFile],
@@ -403,6 +414,7 @@ impl CustomActionCoordinator {
             conflict_files: Some(conflict_summaries),
             locale: session.locale,
             commit_language: session.commit_language,
+            approval_mode: None,
             previous_checkpoint: None,
             follow_up_prompt: None,
             skill_overrides: None,
@@ -412,9 +424,10 @@ impl CustomActionCoordinator {
         let merge_state = Arc::new(Mutex::new(ConflictMergeState::default()));
         let closure_merge_state = Arc::clone(&merge_state);
         let tool_store = repo_store.clone();
-        let tool_target = self.session_read_target(session);
+        let tool_target = session.read_target();
         let locale = session.locale;
 
+        let _pi_cancel_guard = self.register_active_pi_request(&session.run_id, &pi_request_id);
         let outcome = supervisor
             .run_task_with_tools(
                 paths,

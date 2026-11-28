@@ -33,7 +33,7 @@ pub enum CommandDecision {
     },
 }
 
-pub(super) fn format_preview(binary: &str, args: &[String]) -> String {
+pub fn format_preview(binary: &str, args: &[String]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(binary.to_owned());
     for arg in args {

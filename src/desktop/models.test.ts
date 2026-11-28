@@ -130,55 +130,62 @@ describe('M3 desktop model protocol, provider connections, and security boundari
     // Missing per-file commitTokens on cPush is rejected before IPC:
     const target = { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' };
     await expect(desktopWorkbenchBackend.execute({
-      kind: 'cPush',
+      kind: 'startAction',
+      profile: 'cpush',
       requestId: 'cpush-no-token',
       target,
       fileIds: ['f1'],
       modelId: 'm1',
-      prompt: 'split lockfile',
+      extraPrompt: 'split lockfile',
     })).rejects.toThrow('scope tokens');
     expect(invokeMock).toHaveBeenCalledTimes(2);
 
     // Valid cPush round-trip verifies target, modelId, prompt, locale, and commitLanguage:
     invokeMock.mockResolvedValueOnce({
-      protocolVersion: 1,
-      kind: 'cPush',
+      protocolVersion: 2,
+      kind: 'action',
       requestId: 'cpush-ok',
       session: {
         runId: 'cpush-ok',
         repositoryId: 'r1',
         worktreeId: 'w1',
         sessionId: 's1',
+        actionId: 'builtin:cpush',
+        actionLabel: 'C-Push',
+        profile: 'cpush',
         frozenScopeVersion: 'v1',
         modelId: 'm1',
         frozenFileIds: ['f1'],
         committedFileIds: ['f1'],
         skippedFileIds: [],
-        sessionStatus: 'done',
+        status: 'done',
+        summary: '',
         message: null,
         timeline: [],
         qaLog: [],
         commits: [],
+        links: [],
         canRetryRemaining: false,
       },
     });
     const cPushReply = await desktopWorkbenchBackend.execute({
-      kind: 'cPush',
+      kind: 'startAction',
+      profile: 'cpush',
       requestId: 'cpush-ok',
       target,
       fileIds: ['f1'],
       selections: [{ fileId: 'f1', commitToken: 'tok-1' }],
       modelId: 'm1',
-      prompt: 'write detailed bullets',
+      extraPrompt: 'write detailed bullets',
       locale: 'en',
       commitLanguage: 'zh',
     });
     expect(cPushReply).toMatchObject({
-      kind: 'cPush',
+      kind: 'action',
       requestId: 'cpush-ok',
     });
     expect(invokeMock.mock.calls[2][1]).toMatchObject({
-      request: { prompt: 'write detailed bullets', locale: 'en', commitLanguage: 'zh' },
+      request: { profile: 'cpush', extraPrompt: 'write detailed bullets', locale: 'en', commitLanguage: 'zh' },
     });
 
     expect(decodeModelTestReply({

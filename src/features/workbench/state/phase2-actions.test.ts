@@ -319,8 +319,15 @@ describe('Phase 2 custom actions persistence, prompt-hash trust invalidation, co
         runId: 'run-submit-1',
         repositoryId: 'repo-1',
         worktreeId: 'wt-1',
+        sessionId: 'sess-1',
         actionId: 'act-submit',
         actionLabel: 'Submit to v1.9.0 then test',
+        profile: 'customAction',
+        frozenScopeVersion: 'sv-1',
+        modelId: 'm-1',
+        frozenFileIds: [],
+        committedFileIds: [],
+        skippedFileIds: [],
         status: 'interrupted',
         summary: 'Submit to v1.9.0 then test was interrupted before completion. Created Issues, branches, and PRs were preserved.',
         message: {
@@ -331,8 +338,10 @@ describe('Phase 2 custom actions persistence, prompt-hash trust invalidation, co
           links: [{ label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' }],
         },
         timeline: [{ state: 'done', label: 'Created isolated worktree' }, { state: 'failed', label: 'gh pr merge' }],
+        qaLog: [],
         commits: [{ oid: '1111111111111111111111111111111111111111', shortOid: '1111111', title: 'fix: auth', branch: 'fix/issue-42', fileIds: [] }],
         links: [{ label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' }],
+        canRetryRemaining: false,
       }],
       warning: null,
     });
@@ -341,11 +350,9 @@ describe('Phase 2 custom actions persistence, prompt-hash trust invalidation, co
     const hydrated = hydrateWorkbench(emptyState, decoded);
     const wt = hydrated.worktrees[0];
     expect(wt.sessionStatus).toBe('idle');
-    expect(wt.activeRun?.kind).toBe('customAction');
+    expect(wt.activeRun?.profile).toBe('customAction');
     expect(wt.activeRun?.runId).toBe('run-submit-1');
-    if (wt.activeRun?.kind === 'customAction') {
-      expect(wt.activeRun.links).toEqual([{ label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' }]);
-    }
+    expect(wt.activeRun?.links).toEqual([{ label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' }]);
     expect(wt.messages).toHaveLength(1);
     expect(wt.messages[0].id).toBe('interrupted-action-run-submit-1');
 
@@ -357,5 +364,138 @@ describe('Phase 2 custom actions persistence, prompt-hash trust invalidation, co
     });
     expect(afterDismiss.worktrees[0].messages).toHaveLength(0);
     expect(afterDismiss.worktrees[0].activeRun).toBeUndefined();
+  });
+
+  it('clears running state on customAction failure even with landed commits, honors suppressExpand on settle, and drops stale expectedRunId progress', () => {
+    let state = fixture();
+    const tree = state.worktrees[0];
+    state = workbenchReducer(state, {
+      type: 'actionStarted',
+      worktreeId: tree.worktreeId,
+      profile: 'customAction',
+      runId: 'run-ca-commits',
+      actionId: 'act-release',
+      actionLabel: 'Release',
+      frozenTarget: {
+        repositoryId: tree.repositoryId,
+        worktreeId: tree.worktreeId,
+        sessionId: tree.sessionId,
+        scopeVersion: tree.scopeVersion,
+      },
+      frozenFileIds: [],
+      modelId: 'test-claude',
+      expandDock: false,
+    });
+    // Simulate a commit having already landed mid-run:
+    state = {
+      ...state,
+      worktrees: state.worktrees.map((wt) => (
+        wt.worktreeId === tree.worktreeId && wt.activeRun
+          ? {
+              ...wt,
+              activeRun: {
+                ...wt.activeRun,
+                commits: [{ oid: '111', shortOid: '111', title: 'chore: bump', branch: 'feat/pay', fileIds: [] }],
+              },
+            }
+          : wt
+      )),
+    };
+
+    // Custom Action start/IPC failure must still exit 'running' and surface error message:
+    const afterFail = workbenchReducer(state, {
+      type: 'actionStartFailed',
+      worktreeId: tree.worktreeId,
+      runId: 'run-ca-commits',
+      message: 'Transport closed unexpectedly',
+    });
+    const failedTree = afterFail.worktrees[0];
+    expect(failedTree.sessionStatus).toBe('idle');
+    expect(failedTree.messages[0]).toMatchObject({
+      kind: 'error',
+      description: 'Transport closed unexpectedly',
+    });
+
+    // Settled failure with suppressExpand: true (e.g., user typing or compact mode) must NOT force dockExpanded:
+    const suppressedSettle = workbenchReducer(afterFail, {
+      type: 'actionSettled',
+      expandDock: false,
+      suppressExpand: true,
+      reply: {
+        protocolVersion: 2,
+        kind: 'action',
+        requestId: 'run-ca-commits',
+        session: {
+          runId: 'run-ca-commits',
+          repositoryId: tree.repositoryId,
+          worktreeId: tree.worktreeId,
+          sessionId: tree.sessionId,
+          actionId: 'act-release',
+          actionLabel: 'Release',
+          profile: 'customAction',
+          frozenScopeVersion: tree.scopeVersion,
+          modelId: 'test-claude',
+          frozenFileIds: [],
+          committedFileIds: [],
+          skippedFileIds: [],
+          status: 'failed',
+          summary: 'Failed',
+          message: {
+            id: 'fail-suppressed',
+            kind: 'error',
+            title: 'Failed',
+            description: 'Model error',
+          },
+          timeline: [],
+          qaLog: [],
+          commits: [],
+          links: [],
+          canRetryRemaining: false,
+        },
+      },
+    });
+    expect(suppressedSettle.worktrees[0].dockExpanded).toBe(false);
+
+    // Stale reconcile event with mismatched expectedRunId must be dropped even when worktree is idle:
+    const idleState = fixture();
+    const afterStaleReconcile = workbenchReducer(idleState, {
+      type: 'event',
+      event: {
+        type: 'actionProgress',
+        expectedRunId: 'run-already-dismissed',
+        progress: {
+          protocolVersion: 2,
+          session: {
+            runId: 'run-already-dismissed',
+            repositoryId: tree.repositoryId,
+            worktreeId: tree.worktreeId,
+            sessionId: tree.sessionId,
+            actionId: 'act-old',
+            actionLabel: 'Old Action',
+            profile: 'customAction',
+            frozenScopeVersion: tree.scopeVersion,
+            modelId: 'test-claude',
+            frozenFileIds: [],
+            committedFileIds: [],
+            skippedFileIds: [],
+            status: 'conflict',
+            summary: 'Stale conflict',
+            message: {
+              id: 'stale-conflict',
+              kind: 'conflict',
+              title: 'Stale conflict',
+              description: 'Should be ignored',
+            },
+            timeline: [],
+            qaLog: [],
+            commits: [],
+            links: [],
+            canRetryRemaining: false,
+          },
+        },
+      },
+    });
+    expect(afterStaleReconcile.worktrees[0].sessionStatus).toBe('idle');
+    expect(afterStaleReconcile.worktrees[0].messages).toHaveLength(0);
   });
 });

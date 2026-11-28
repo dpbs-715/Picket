@@ -7,6 +7,7 @@ use crate::{
     repository::types::{
         Remote, RepositorySnapshot, ThemeKind, WorktreeSnapshot, deserialize_theme_or_default,
     },
+    runner::RunProcessStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -71,6 +72,19 @@ pub struct TrayRepositorySummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrayRunningServiceSummary {
+    pub process_id: String,
+    pub repository_id: String,
+    pub repository_name: String,
+    pub worktree_id: String,
+    pub command_id: String,
+    pub label: String,
+    pub status: RunProcessStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrayStateSnapshot {
     #[cfg_attr(test, ts(type = "1"))]
     pub protocol_version: u8,
@@ -81,6 +95,9 @@ pub struct TrayStateSnapshot {
     pub has_update: bool,
     pub refreshing: bool,
     pub repositories: Vec<TrayRepositorySummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(as = "Option<Vec<TrayRunningServiceSummary>>", optional))]
+    pub running_services: Vec<TrayRunningServiceSummary>,
 }
 
 impl Default for TrayStateSnapshot {
@@ -92,6 +109,7 @@ impl Default for TrayStateSnapshot {
             has_update: false,
             refreshing: false,
             repositories: Vec::new(),
+            running_services: Vec::new(),
         }
     }
 }
@@ -264,9 +282,11 @@ fn summarize_worktree(
 
 /// Builds the authoritative `TrayStateSnapshot` directly in Rust from cached repository snapshots,
 /// live C-Push / Custom Action sessions, update status, and UI locale/theme/active-worktree context.
+#[allow(clippy::too_many_arguments)]
 pub fn build_tray_state_snapshot(
     snapshots: &[RepositorySnapshot],
     sessions: &HashMap<String, TrayWorktreeSessionInfo>,
+    running_services: Vec<TrayRunningServiceSummary>,
     active_worktree_id: Option<&str>,
     locale: LanguageKind,
     theme: ThemeKind,
@@ -317,5 +337,6 @@ pub fn build_tray_state_snapshot(
         has_update,
         refreshing,
         repositories,
+        running_services,
     }
 }

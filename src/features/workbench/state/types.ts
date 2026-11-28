@@ -1,21 +1,19 @@
 import type { ModelConfiguration, ProviderConnection } from '../../settings/modelProviders';
 import type {
-  CPushCommandReply,
+  ActionApprovalMode,
+  ActionCommandReply,
+  ActionProfileKind,
+  ActionProgressEvent,
   CPushLandedCommit,
-  CPushProgressEvent,
   CPushQaItem,
-  CPushTimelineItem,
-} from '../../../../shared/cpush-protocol';
-import type {
-  CustomActionCommandReply,
   CustomActionConfig,
-  CustomActionLink,
-  CustomActionProgressEvent,
-  CustomActionTimelineItem,
+  WorkflowLink,
+  WorkflowTimelineItem,
 } from '../../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../../shared/git-branch-protocol';
 import type { GitLocalKeepReply, GitReadReply, GitReadTarget, GitRemoteBranch, GitRepositorySnapshot } from '../../../../shared/git-read-protocol';
 import type { AppLocale, CommitLanguage } from '../../../../shared/language-protocol';
+import type { RunCommandConfig, RunEnvEntry } from '../../../../shared/run-protocol';
 import type { AppTheme } from '../../../../shared/theme-protocol';
 import type { MessageUserCard, MessageUserRequest } from '../../../../shared/message-user-protocol';
 import type {
@@ -56,32 +54,24 @@ export interface Message {
   progress?: { completed: number; total: number; label: string };
 }
 
-export interface ActiveCPushRun {
-  kind: 'cpush';
+export interface ActiveActionRun {
+  profile: ActionProfileKind;
   runId: string;
+  actionId: string;
+  actionLabel: string;
   frozenTarget: Target;
   frozenFileIds: string[];
   promptRevisionAtStart: number;
   modelId: string;
   pendingCallId?: string;
-  timeline: CPushTimelineItem[];
+  timeline: WorkflowTimelineItem[];
   qaLog: CPushQaItem[];
   commits: CPushLandedCommit[];
+  links: WorkflowLink[];
   canRetryRemaining: boolean;
 }
 
-export interface ActiveCustomActionRun {
-  kind: 'customAction';
-  runId: string;
-  actionId: string;
-  actionLabel: string;
-  pendingCallId?: string;
-  timeline: CustomActionTimelineItem[];
-  commits: CPushLandedCommit[];
-  links: CustomActionLink[];
-}
-
-export type ActiveWorkflowRun = ActiveCPushRun | ActiveCustomActionRun;
+export type ActiveWorkflowRun = ActiveActionRun;
 
 export interface Worktree extends Target {
   label: string;
@@ -119,6 +109,8 @@ export interface RepositorySettings {
   localKeepPaths?: string[];
   customActions?: CustomActionConfig[];
   activeActionId?: string | null;
+  runCommands?: RunCommandConfig[];
+  runSharedEnv?: RunEnvEntry[];
 }
 
 export interface WorkbenchState {
@@ -131,6 +123,7 @@ export interface WorkbenchState {
   activeModelId: string | null;
   locale: AppLocale;
   theme: AppTheme;
+  actionApprovalMode: ActionApprovalMode;
   editor: EditorId;
   defaultCommitLanguage: CommitLanguage;
   repositorySettings: Record<string, RepositorySettings>;
@@ -178,17 +171,24 @@ export interface CompactStatusSummary {
 export type WorkbenchEvent =
   | { type: 'message'; target: Target; message: Message; sessionStatus?: Worktree['sessionStatus'] }
   | { type: 'files'; target: Target; nextScopeVersion: string; files: Change[]; changedPaths: string[] }
-  | { type: 'cPushProgress'; progress: CPushProgressEvent }
-  | { type: 'customActionProgress'; progress: CustomActionProgressEvent };
+  | { type: 'actionProgress'; progress: ActionProgressEvent; expectedRunId?: string };
 
 export type WorkbenchAction =
   | { type: 'workbenchHydrated'; restored: WorkbenchRestoreReply }
-  | { type: 'cPushStarted'; worktreeId: string; runId: string; frozenTarget: Target; frozenFileIds: string[]; modelId: string; expandDock: boolean }
-  | { type: 'cPushSettled'; reply: CPushCommandReply; expandDock?: boolean }
-  | { type: 'cPushStartFailed'; worktreeId: string; runId: string }
-  | { type: 'customActionStarted'; worktreeId: string; runId: string; actionId: string; actionLabel: string; expandDock: boolean }
-  | { type: 'customActionSettled'; reply: CustomActionCommandReply; expandDock?: boolean }
-  | { type: 'customActionFailed'; worktreeId: string; runId: string; message?: string }
+  | {
+      type: 'actionStarted';
+      worktreeId: string;
+      profile: ActionProfileKind;
+      runId: string;
+      actionId: string;
+      actionLabel: string;
+      frozenTarget: Target;
+      frozenFileIds: string[];
+      modelId: string;
+      expandDock: boolean;
+    }
+  | { type: 'actionSettled'; reply: ActionCommandReply; expandDock?: boolean; suppressExpand?: boolean }
+  | { type: 'actionStartFailed'; worktreeId: string; runId: string; message?: string }
   | { type: 'selectActiveAction'; repositoryId: string; actionId: string | null }
   | {
       type: 'saveCustomAction';
@@ -208,6 +208,10 @@ export type WorkbenchAction =
     }
   | { type: 'trustCustomActionWrites'; repositoryId: string; actionId: string; trustedPromptHash: string }
   | { type: 'resetCustomActionWriteTrust'; repositoryId: string; actionId: string }
+  | { type: 'saveRunCommand'; repositoryId: string; command: RunCommandConfig }
+  | { type: 'addRunCommands'; repositoryId: string; commands: RunCommandConfig[] }
+  | { type: 'deleteRunCommand'; repositoryId: string; commandId: string }
+  | { type: 'setRunSharedEnv'; repositoryId: string; env: RunEnvEntry[] }
   | { type: 'repositoryBranchStarted'; repositoryId: string; requestId: string }
   | { type: 'repositoryBranchFinished'; repositoryId: string; reply: GitBranchReply }
   | { type: 'repositoryBranchFailed'; repositoryId: string; requestId: string }
@@ -228,6 +232,7 @@ export type WorkbenchAction =
   | { type: 'reply'; worktreeId: string; messageId: string; text: string }
   | { type: 'locale'; locale: AppLocale }
   | { type: 'theme'; theme: AppTheme }
+  | { type: 'actionApprovalMode'; mode: ActionApprovalMode }
   | { type: 'editor'; editor: EditorId; repositoryId?: string | null }
   | { type: 'commitLanguage'; commitLanguage: CommitLanguage; repositoryId?: string | null }
   | { type: 'windowPreferencesUpdated'; preferences: PersistedWindowPreferences }

@@ -8,6 +8,6 @@ import type { WorkflowMessageOption } from "./WorkflowMessageOption";
 import type { WorkflowMessageProgress } from "./WorkflowMessageProgress";
 
 /**
- * Unified UI message model shared by both C-Push and Custom Action workflows.
+ * Unified UI message model shared across all built-in and custom action workflows.
  */
 export type WorkflowUiMessage = { id: string, kind: 'progress' | 'question' | 'conflict' | 'waitingManual' | 'resolved' | 'pushFailed' | 'done' | 'error', title: string, description: string, scope?: string, files?: Array<WorkflowMessageFileChip>, commits?: Array<WorkflowMessageCommitSummary>, options?: Array<WorkflowMessageOption>, links?: Array<WorkflowLink>, card?: MessageUserCard, questionnaire?: MessageUserRequest, progress?: WorkflowMessageProgress, };

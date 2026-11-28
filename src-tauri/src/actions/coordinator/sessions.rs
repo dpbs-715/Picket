@@ -1,92 +1,104 @@
-//! In-memory session cache, startup restoration, done-notice dismissal, and menu-bar tray projection.
+//! Unified in-memory session cache, startup restoration, done-notice dismissal, and menu-bar tray projection.
 
-use super::{CustomActionCoordinator, cpush_helpers};
+use super::CustomActionCoordinator;
 use crate::{
-    actions::{
-        session_store::{self, ActionSessionSnapshot},
-        types::*,
-    },
+    actions::{session_store, types::*},
     error::{AppError, AppErrorCode},
     i18n::{self, LanguageKind},
-    repository::{
-        self,
-        types::{ReadTarget, RepositorySnapshot},
-    },
+    repository::{self, types::RepositorySnapshot},
 };
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 impl CustomActionCoordinator {
-    pub(super) fn save_cpush_in_memory(&self, session: &StoredCPushSession) -> Result<(), String> {
+    pub(super) fn save_session_in_memory(
+        &self,
+        session: &StoredActionSession,
+    ) -> Result<(), String> {
         self.inner
-            .cpush_sessions
+            .active_sessions
             .lock()
-            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .map_err(|_| "Session cache lock is unavailable")?
             .insert(session.worktree_id.clone(), session.clone());
         Ok(())
     }
 
-    pub(super) fn remove_cpush_in_memory(&self, worktree_id: &str) -> Result<(), String> {
+    pub(super) fn remove_session_in_memory(&self, worktree_id: &str) -> Result<(), String> {
         self.inner
-            .cpush_sessions
+            .active_sessions
             .lock()
-            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .map_err(|_| "Session cache lock is unavailable")?
             .remove(worktree_id);
         Ok(())
     }
 
-    pub(super) async fn persist_cpush_sessions(&self, storage_dir: &Path) -> Result<(), String> {
-        let all: Vec<StoredCPushSession> = self
-            .inner
-            .cpush_sessions
-            .lock()
-            .map_err(|_| "C-Push session cache lock is unavailable")?
-            .values()
-            .cloned()
-            .collect();
-        session_store::save_cpush_sessions_async(storage_dir, all).await
+    pub(super) async fn persist_session(
+        &self,
+        storage_dir: &Path,
+        session: &StoredActionSession,
+    ) -> Result<(), String> {
+        let mut to_store = session.clone();
+        to_store.updated_at_ms = session_store::now_millis();
+        session_store::upsert_session_async(storage_dir, to_store).await
     }
 
-    pub(super) fn lookup_processed_cpush_request(
+    pub(super) async fn remove_persisted_session(
+        &self,
+        storage_dir: &Path,
+        worktree_id: &str,
+        run_id: Option<&str>,
+    ) -> Result<(), String> {
+        session_store::remove_session_async(
+            storage_dir,
+            worktree_id.to_owned(),
+            run_id.map(str::to_owned),
+        )
+        .await
+    }
+
+    pub(super) fn lookup_processed_request(
         &self,
         request_id: &str,
-    ) -> Result<Option<CPushCommandReply>, String> {
+    ) -> Result<Option<ActionCommandReply>, String> {
         Ok(self
             .inner
-            .processed_cpush_requests
+            .processed_requests
             .lock()
-            .map_err(|_| "C-Push request registry lock is unavailable")?
+            .map_err(|_| "Action request registry lock is unavailable")?
             .get(request_id)
             .cloned())
     }
 
-    pub(super) fn record_processed_cpush_request(
+    pub(super) fn record_processed_request(
         &self,
         request_id: &str,
-        reply: &CPushCommandReply,
+        reply: &ActionCommandReply,
     ) -> Result<(), String> {
         self.inner
-            .processed_cpush_requests
+            .processed_requests
             .lock()
-            .map_err(|_| "C-Push request registry lock is unavailable")?
+            .map_err(|_| "Action request registry lock is unavailable")?
             .insert(request_id.to_owned(), reply.clone());
         Ok(())
     }
 
-    pub(super) fn ensure_no_busy_cpush_session(
+    pub(super) fn ensure_no_busy_session(
         &self,
         worktree_id: &str,
         locale: LanguageKind,
         for_cpush: bool,
     ) -> Result<(), AppError> {
-        let existing_active = self
+        let existing = self
             .inner
-            .cpush_sessions
+            .active_sessions
             .lock()
-            .map_err(|_| AppError::internal("C-Push session cache lock is unavailable"))?
+            .map_err(|_| AppError::internal("Session cache lock is unavailable"))?
             .get(worktree_id)
             .cloned();
-        if let Some(active) = existing_active
-            && cpush_helpers::is_active_status(active.session_status)
+        if let Some(active) = existing
+            && active.status.is_active()
         {
             return Err(AppError::action(
                 AppErrorCode::ActionBusy,
@@ -95,15 +107,6 @@ impl CustomActionCoordinator {
             .with_retryable(true));
         }
         Ok(())
-    }
-
-    pub(super) fn session_read_target(&self, session: &StoredCPushSession) -> ReadTarget {
-        ReadTarget {
-            repository_id: session.repository_id.clone(),
-            worktree_id: session.worktree_id.clone(),
-            session_id: session.session_id.clone(),
-            scope_version: session.frozen_scope_version.clone(),
-        }
     }
 
     #[cfg(test)]
@@ -120,11 +123,9 @@ impl CustomActionCoordinator {
         &self,
         storage_dir: &Path,
         snapshots: &[RepositorySnapshot],
-    ) -> Result<(Vec<CPushSessionSnapshot>, Option<String>), String> {
-        let (_, cpush, warn) = self
-            .restore_all_sessions_async(storage_dir, snapshots, LanguageKind::En)
-            .await?;
-        Ok((cpush, warn))
+    ) -> Result<(Vec<ActionSessionSnapshot>, Option<String>), String> {
+        self.restore_all_sessions_async(storage_dir, snapshots, LanguageKind::En)
+            .await
     }
 
     pub async fn restore_all_sessions_async(
@@ -132,14 +133,7 @@ impl CustomActionCoordinator {
         storage_dir: &Path,
         snapshots: &[RepositorySnapshot],
         locale: LanguageKind,
-    ) -> Result<
-        (
-            Vec<ActionSessionSnapshot>,
-            Vec<CPushSessionSnapshot>,
-            Option<String>,
-        ),
-        String,
-    > {
+    ) -> Result<(Vec<ActionSessionSnapshot>, Option<String>), String> {
         let reconciled = session_store::reconcile_all_sessions_on_startup_async(
             storage_dir,
             snapshots.to_vec(),
@@ -149,19 +143,27 @@ impl CustomActionCoordinator {
         {
             let mut memory = self
                 .inner
-                .cpush_sessions
+                .active_sessions
                 .lock()
-                .map_err(|_| "C-Push session cache lock is unavailable")?;
+                .map_err(|_| "Session cache lock is unavailable")?;
             memory.clear();
-            for session in reconciled.cpush_stored {
-                memory.insert(session.worktree_id.clone(), session);
+            // Load the highest-priority / newest session per worktree only if it is still visible,
+            // never resurrecting older historical sessions behind a dismissed/cancelled/failed one.
+            let mut ordered = reconciled.stored_sessions;
+            ordered.sort_by_key(|s| (!s.status.is_active(), std::cmp::Reverse(s.updated_at_ms)));
+            let mut seen_worktrees = HashSet::new();
+            for session in ordered {
+                if !seen_worktrees.insert(session.worktree_id.clone()) {
+                    continue;
+                }
+                if session.status.is_active()
+                    || (session.status == ActionSessionStatus::Done && !session.notice_dismissed)
+                {
+                    memory.insert(session.worktree_id.clone(), session);
+                }
             }
         }
-        Ok((
-            reconciled.action_sessions,
-            reconciled.cpush_public,
-            reconciled.warning,
-        ))
+        Ok((reconciled.public_sessions, reconciled.warning))
     }
 
     #[cfg(test)]
@@ -172,7 +174,7 @@ impl CustomActionCoordinator {
     ) -> Result<bool, AppError> {
         repository::validate_request_id_with_locale(&request.request_id, request.locale)
             .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))?;
-        self.mark_cpush_dismissed_in_memory(request)?;
+        self.mark_dismissed_in_memory(request)?;
         session_store::dismiss_session_message(
             storage_dir,
             &request.target.repository_id,
@@ -183,57 +185,27 @@ impl CustomActionCoordinator {
         .map_err(AppError::storage)
     }
 
-    pub(super) fn set_action_tray_status(
-        &self,
-        worktree_id: &str,
-        status: crate::tray::TraySessionStatus,
-        detail: Option<String>,
-    ) {
-        if let Ok(mut map) = self.inner.active_action_tray.lock() {
-            if matches!(status, crate::tray::TraySessionStatus::Idle) {
-                map.remove(worktree_id);
-            } else {
-                map.insert(
-                    worktree_id.to_owned(),
-                    crate::tray::TrayWorktreeSessionInfo { status, detail },
-                );
-            }
-        }
-    }
-
-    /// Aggregates live C-Push and Custom Action worktree session states directly in Rust for
-    /// the menu bar tray without depending on the main WebView.
+    /// Aggregates live worktree session states directly in Rust for the menu bar tray
+    /// from the single unified `active_sessions` cache without depending on the main WebView.
     pub fn tray_session_statuses(&self) -> HashMap<String, crate::tray::TrayWorktreeSessionInfo> {
         use crate::tray::{TraySessionStatus, TrayWorktreeSessionInfo};
         let mut out: HashMap<String, TrayWorktreeSessionInfo> = HashMap::new();
-        if let Ok(cpush) = self.inner.cpush_sessions.lock() {
-            for (wt_id, session) in cpush.iter() {
-                let status = match session.session_status {
-                    CPushSessionStatus::Idle => TraySessionStatus::Idle,
-                    CPushSessionStatus::Running => TraySessionStatus::Running,
-                    CPushSessionStatus::NeedsDecision => TraySessionStatus::NeedsDecision,
-                    CPushSessionStatus::Conflict => TraySessionStatus::Conflict,
-                    CPushSessionStatus::WaitingManual => TraySessionStatus::WaitingManual,
-                    CPushSessionStatus::PushFailed => TraySessionStatus::PushFailed,
-                    CPushSessionStatus::Done => TraySessionStatus::Done,
-                };
+        if let Ok(sessions) = self.inner.active_sessions.lock() {
+            for (wt_id, session) in sessions.iter() {
+                if session.status == ActionSessionStatus::Done && session.notice_dismissed {
+                    continue;
+                }
+                let status = session.status.to_tray_status();
                 if status != TraySessionStatus::Idle {
                     let detail = session
                         .message
                         .as_ref()
                         .map(|m| m.title.clone())
-                        .filter(|s| !s.trim().is_empty());
+                        .filter(|s| !s.trim().is_empty())
+                        .or_else(|| {
+                            (!session.summary.trim().is_empty()).then(|| session.summary.clone())
+                        });
                     out.insert(wt_id.clone(), TrayWorktreeSessionInfo { status, detail });
-                }
-            }
-        }
-        if let Ok(actions) = self.inner.active_action_tray.lock() {
-            for (wt_id, info) in actions.iter() {
-                let replace = out
-                    .get(wt_id)
-                    .is_none_or(|prev| info.status.urgency_rank() < prev.status.urgency_rank());
-                if replace {
-                    out.insert(wt_id.clone(), info.clone());
                 }
             }
         }
@@ -247,10 +219,7 @@ impl CustomActionCoordinator {
     ) -> Result<bool, AppError> {
         repository::validate_request_id_with_locale(&request.request_id, request.locale)
             .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))?;
-        let mem_updated = self.mark_cpush_dismissed_in_memory(request)?;
-        if let Ok(mut map) = self.inner.active_action_tray.lock() {
-            map.remove(&request.target.worktree_id);
-        }
+        let mem_updated = self.mark_dismissed_in_memory(request)?;
         let disk_updated = session_store::dismiss_session_message_async(
             storage_dir,
             request.target.repository_id.clone(),
@@ -263,21 +232,19 @@ impl CustomActionCoordinator {
         Ok(mem_updated || disk_updated)
     }
 
-    fn mark_cpush_dismissed_in_memory(
+    fn mark_dismissed_in_memory(
         &self,
         request: &DismissSessionDoneRequest,
     ) -> Result<bool, AppError> {
         let mut memory = self
             .inner
-            .cpush_sessions
+            .active_sessions
             .lock()
-            .map_err(|_| AppError::internal("C-Push session cache lock is unavailable"))?;
+            .map_err(|_| AppError::internal("Session cache lock is unavailable"))?;
         let Some(session) = memory.get_mut(&request.target.worktree_id) else {
             return Ok(false);
         };
-        if session.repository_id != request.target.repository_id
-            || session.session_status != CPushSessionStatus::Done
-        {
+        if session.repository_id != request.target.repository_id || session.status.is_active() {
             return Ok(false);
         }
         if let Some(run_id) = request
@@ -299,6 +266,7 @@ impl CustomActionCoordinator {
             return Ok(false);
         }
         session.notice_dismissed = true;
+        session.dismissed_message_id = Some(request.message_id.clone());
         session.message = None;
         Ok(true)
     }
@@ -307,8 +275,10 @@ impl CustomActionCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::message_user::{MessageBlock, MessageFindingItem, MessageFindingSeverity};
-    use crate::actions::session_store::{PersistedActionSession, now_millis, upsert_session};
+    use crate::actions::{
+        message_user::{MessageBlock, MessageFindingItem, MessageFindingSeverity},
+        session_store::{now_millis, upsert_session},
+    };
 
     #[test]
     fn message_user_card_validation_filters_unsafe_links_and_paths_and_restores_after_restart() {
@@ -330,11 +300,11 @@ mod tests {
                 skipped: None,
             }]),
             links: Some(vec![
-                CustomActionLink {
+                WorkflowLink {
                     label: "PR #42".into(),
                     url: "https://github.com/acme/picket/pull/42".into(),
                 },
-                CustomActionLink {
+                WorkflowLink {
                     label: "Bad".into(),
                     url: "javascript:alert(1)".into(),
                 },
@@ -383,23 +353,46 @@ mod tests {
         let storage = tmp.path().join(".picket");
         upsert_session(
             &storage,
-            PersistedActionSession {
+            StoredActionSession {
                 run_id: "run-card-1".into(),
                 repository_id: "repo-1".into(),
                 worktree_id: "wt-1".into(),
+                session_id: "sess-1".into(),
                 action_id: "act-dcr".into(),
                 action_label: "Review Code".into(),
+                profile: ActionProfileKind::CustomAction,
                 action_prompt_hash: "hash-1".into(),
-                status: "done".into(),
+                frozen_scope_version: String::new(),
+                model_id: "m-1".into(),
+                branch: "main".into(),
+                initial_head: None,
+                prompt: String::new(),
+                recent_commits: vec![],
+                unselected_paths: vec![],
+                frozen_files: vec![],
+                planned_groups: vec![],
+                skipped_file_ids: vec![],
+                next_step_index: 0,
+                committed_file_ids: vec![],
+                status: ActionSessionStatus::Done,
+                pending_call_id: None,
                 updated_at_ms: now_millis(),
                 summary: "Review complete".into(),
                 card: Some(card.clone()),
-                dismissed_message_id: None,
+                message: None,
                 timeline: vec![],
+                qa_log: vec![],
                 commits: vec![],
                 links: card.links.clone().unwrap_or_default(),
+                can_retry_remaining: false,
+                push_authorized: false,
+                auto_collapse: false,
+                notice_dismissed: false,
+                dismissed_message_id: None,
                 edited_file_hashes: Default::default(),
                 submit_ledger: Default::default(),
+                locale: LanguageKind::En,
+                commit_language: LanguageKind::En,
             },
         )
         .unwrap();

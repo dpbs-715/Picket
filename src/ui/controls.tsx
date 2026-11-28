@@ -38,11 +38,15 @@ const iconPaths = {
   alertCircle: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 8v4M12 16h.01',
   info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 16v-4M12 8h.01',
   terminal: 'm4 17 6-6-6-6M12 19h8',
+  play: 'm6 4 14 8-14 8z',
+  square: 'M6 6h12v12H6z',
   fileCode: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M10 13l-2 2 2 2M14 13l2 2-2 2',
   arrowUpRight: 'M7 17 17 7M7 7h10v10',
   sendUp: 'M12 19V5M5 12l7-7 7 7',
   messageSquare: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   promptNote: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 9h8M8 13h5',
+  search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.35-4.35',
+  sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
 } as const;
 export type IconName = keyof typeof iconPaths;
 export function Icon({ name, className = '' }: { name: IconName; className?: string }) {

@@ -1,7 +1,7 @@
 //! Controlled repository file editing (`edit_repo_file`) and creation (`write_repo_file`)
 //! handlers for Custom Actions, plus verified hash hydration across resumed runs.
 
-use super::context::{ActionToolContext, push_timeline_step};
+use super::context::{ActionToolContext, Tier2RiskLevel, push_timeline_step};
 use crate::{
     actions::executor::exec_controlled_git,
     i18n,
@@ -227,6 +227,11 @@ pub(super) async fn handle_edit_repo_file(
                     "Refused to edit `{path}` because it is partially staged; editing the working tree would risk corrupting unstaged drafts."
                 ));
             }
+            if initial_change.range.kind == "staged" {
+                return PiToolExecutionResult::error(format!(
+                    "Refused to edit `{path}` because it is already staged; editing the working tree would diverge from the staged index."
+                ));
+            }
             if let Ok(Some(live_entry)) = live_porcelain_status_for_path(&ctx.root, &path).await {
                 let xy = live_entry.as_bytes();
                 let is_staged = xy.first().is_some_and(|&b| b != b' ' && b != b'?');
@@ -291,9 +296,9 @@ pub(super) async fn handle_edit_repo_file(
     if let Err(err_result) = ctx
         .confirm_tier2_edit(
             call_id,
+            Tier2RiskLevel::RoutineWrite,
             &reason,
             &preview,
-            true,
             "User declined to edit the repository file.",
         )
         .await
@@ -501,9 +506,9 @@ pub(super) async fn handle_write_repo_file(
     if let Err(err_result) = ctx
         .confirm_tier2_create(
             call_id,
+            Tier2RiskLevel::RoutineWrite,
             &reason,
             &preview,
-            true,
             "User declined to create the repository file.",
         )
         .await

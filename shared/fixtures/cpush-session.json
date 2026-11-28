@@ -3,13 +3,17 @@
   "repositoryId": "repo-orders",
   "worktreeId": "wt-orders-main",
   "sessionId": "sess-orders-1",
+  "actionId": "builtin:cpush",
+  "actionLabel": "C-Push",
+  "profile": "cpush",
   "frozenScopeVersion": "sv-101",
   "modelId": "model-claude-sonnet",
   "frozenFileIds": ["file-order", "file-notes"],
   "committedFileIds": ["file-order"],
   "skippedFileIds": [],
-  "sessionStatus": "needsDecision",
+  "status": "needsDecision",
   "pendingCallId": "tc-1",
+  "summary": "",
   "message": {
     "id": "q-run-contract-cpush-1-1",
     "kind": "question",
@@ -73,5 +77,6 @@
       "fileIds": ["file-order"]
     }
   ],
+  "links": [],
   "canRetryRemaining": false
 }

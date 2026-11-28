@@ -103,6 +103,7 @@ export interface RunCustomActionCommand {
   conflictFiles?: PiConflictFileSummary[];
   locale?: AppLocale;
   commitLanguage?: CommitLanguage;
+  approvalMode?: 'ask' | 'auto' | 'allowAll';
   skillOverrides?: RuntimeSkillOverrideCatalog;
   previousCheckpoint?: string;
 }
@@ -119,11 +120,24 @@ export interface GenerateCustomActionCommand {
   skillOverrides?: RuntimeSkillOverrideCatalog;
 }
 
+export interface DiscoverRunCommandsCommand {
+  type: 'discoverRunCommands';
+  requestId: string;
+  context: RequestContext;
+  model: PiProviderSpec;
+  repositoryName: string;
+  projectFiles: string[];
+  workspaceModules?: string[];
+  existingCommands: string[];
+  locale?: AppLocale;
+}
+
 export type PiTaskRequest =
   | ProbeRequest
   | TestConnectionRequest
   | RunCustomActionCommand
-  | GenerateCustomActionCommand;
+  | GenerateCustomActionCommand
+  | DiscoverRunCommandsCommand;
 
 export interface PiToolResultCommand {
   type: 'toolResult';
@@ -151,6 +165,16 @@ export interface PiCustomActionDraft {
   summary: string;
 }
 
+export interface PiDiscoveredRunCommand {
+  label: string;
+  command: string;
+  cwd?: string;
+  group?: string;
+  icon?: string;
+  description: string;
+  category: string;
+}
+
 export type PiErrorCode =
   | 'modelAuthFailed'
   | 'modelEndpointNotFound'
@@ -175,6 +199,7 @@ export type ProbeEvent = {
   | { type: 'completed'; text: string }
   | { type: 'customActionCompleted'; summary: string; links: PiActionLink[] }
   | { type: 'customActionDrafted'; draft: PiCustomActionDraft }
+  | { type: 'runCommandsDiscovered'; summary: string; commands: PiDiscoveredRunCommand[] }
   | { type: 'cancelled' }
   | { type: 'failed'; message: string; errorCode?: PiErrorCode }
 );
@@ -387,6 +412,7 @@ export function decodeCommand(line: string): PiCommand {
       || !(command.upstream === undefined || command.upstream === null || typeof command.upstream === 'string')
       || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))
       || !(command.commitLanguage === undefined || command.commitLanguage === null || isAppLocale(command.commitLanguage))
+      || !(command.approvalMode === undefined || command.approvalMode === null || command.approvalMode === 'ask' || command.approvalMode === 'auto' || command.approvalMode === 'allowAll')
       || !(command.previousCheckpoint === undefined || command.previousCheckpoint === null || typeof command.previousCheckpoint === 'string')) {
       throw new Error('Invalid runCustomAction fields');
     }
@@ -427,6 +453,9 @@ export function decodeCommand(line: string): PiCommand {
       ...(conflictFiles ? { conflictFiles } : {}),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
       ...(isAppLocale(command.commitLanguage) ? { commitLanguage: command.commitLanguage } : {}),
+      ...(command.approvalMode === 'ask' || command.approvalMode === 'auto' || command.approvalMode === 'allowAll'
+        ? { approvalMode: command.approvalMode }
+        : {}),
       ...(skillOverrides ? { skillOverrides } : {}),
       ...(typeof command.previousCheckpoint === 'string' && command.previousCheckpoint.trim()
         ? { previousCheckpoint: command.previousCheckpoint }
@@ -450,6 +479,26 @@ export function decodeCommand(line: string): PiCommand {
       userRequest: command.userRequest.trim(),
       ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
       ...(skillOverrides ? { skillOverrides } : {}),
+    };
+  }
+  if (command.type === 'discoverRunCommands') {
+    if (typeof command.repositoryName !== 'string' || !command.repositoryName.trim()
+      || !(command.locale === undefined || command.locale === null || isAppLocale(command.locale))) {
+      throw new Error('Invalid discoverRunCommands fields');
+    }
+    const workspaceModules = command.workspaceModules === undefined || command.workspaceModules === null
+      ? undefined
+      : decodeStringList(command.workspaceModules, 'workspaceModules');
+    return {
+      type: 'discoverRunCommands',
+      requestId: command.requestId,
+      context: decodeRequestContext(command.context),
+      model: decodeProviderSpec(command.model),
+      repositoryName: command.repositoryName.trim(),
+      projectFiles: decodeStringList(command.projectFiles, 'projectFiles'),
+      ...(workspaceModules && workspaceModules.length > 0 ? { workspaceModules } : {}),
+      existingCommands: decodeStringList(command.existingCommands, 'existingCommands'),
+      ...(isAppLocale(command.locale) ? { locale: command.locale } : {}),
     };
   }
   throw new Error('Unknown command');

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { ActionApprovalMode } from '../../../shared/custom-action-protocol';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
 import type { SkillsStateSnapshot } from '../../../shared/skills-protocol';
 import type { AppTheme } from '../../../shared/theme-protocol';
@@ -17,6 +18,7 @@ export type SettingsTabId = 'general' | 'models' | 'skills';
 interface Props {
   locale: AppLocale;
   theme: AppTheme;
+  actionApprovalMode: ActionApprovalMode;
   repositoryName?: string;
   editor: EditorId;
   commitLanguage: CommitLanguage;
@@ -27,6 +29,7 @@ interface Props {
   covered: boolean;
   onLocale(locale: AppLocale): void;
   onTheme(theme: AppTheme): void;
+  onActionApprovalMode(mode: ActionApprovalMode): void;
   onEditor(editor: EditorId): void;
   onCommitLanguage(commitLanguage: CommitLanguage): void;
   onSelectModel(id: string): void;
@@ -188,12 +191,14 @@ export function SettingsPanel(props: Props) {
           <GeneralSection
             locale={props.locale}
             theme={props.theme}
+            actionApprovalMode={props.actionApprovalMode}
             repositoryName={props.repositoryName}
             editor={props.editor}
             commitLanguage={props.commitLanguage}
             installedEditors={props.installedEditors}
             onLocale={props.onLocale}
             onTheme={props.onTheme}
+            onActionApprovalMode={props.onActionApprovalMode}
             onEditor={props.onEditor}
             onCommitLanguage={props.onCommitLanguage}
             updateState={props.updateState}

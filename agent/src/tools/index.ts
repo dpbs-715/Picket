@@ -28,3 +28,4 @@ export {
   createReadConflictFileTool,
   createWriteConflictResolutionTool,
 } from './conflict';
+export { createHandoffToRecoveryTool } from './recovery';

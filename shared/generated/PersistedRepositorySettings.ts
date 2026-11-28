@@ -2,5 +2,7 @@
 import type { EditorKind } from "./EditorKind";
 import type { LanguageKind } from "./LanguageKind";
 import type { PersistedCustomAction } from "./PersistedCustomAction";
+import type { PersistedRunCommand } from "./PersistedRunCommand";
+import type { RunEnvEntry } from "./RunEnvEntry";
 
-export type PersistedRepositorySettings = { repositoryId: string, editor: EditorKind, commitLanguage: LanguageKind, localKeepPaths?: Array<string>, customActions?: Array<PersistedCustomAction>, activeActionId?: string | null, };
+export type PersistedRepositorySettings = { repositoryId: string, editor: EditorKind, commitLanguage: LanguageKind, localKeepPaths?: Array<string>, customActions?: Array<PersistedCustomAction>, activeActionId?: string | null, runCommands?: Array<PersistedRunCommand>, runSharedEnv?: Array<RunEnvEntry>, };

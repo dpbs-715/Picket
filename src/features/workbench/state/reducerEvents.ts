@@ -20,7 +20,7 @@ export function matchesTarget(worktree: Worktree, target: Target) {
 }
 
 export function receiveEvent(worktree: Worktree, event: WorkbenchEvent, keepSet: ReadonlySet<string>): Worktree {
-  if (event.type === 'cPushProgress' || event.type === 'customActionProgress') return worktree;
+  if (event.type === 'actionProgress') return worktree;
   if (!matchesTarget(worktree, event.target)) return worktree;
   switch (event.type) {
     case 'message':

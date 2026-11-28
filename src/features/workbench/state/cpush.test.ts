@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
+import { BUILTIN_CPUSH_ACTION_ID, type ActionSessionSnapshot } from '../../../../shared/custom-action-protocol';
 import { repositoryReply } from '../testing/repository-fixture';
 import {
   emptyWorkbench,
@@ -19,18 +19,22 @@ function openedWorkbench() {
   });
 }
 
-function makeCPushSession(overrides: Partial<CPushSessionSnapshot> = {}): CPushSessionSnapshot {
+function makeCPushSession(overrides: Partial<ActionSessionSnapshot> = {}): ActionSessionSnapshot {
   return {
     runId: 'run-1',
     repositoryId: 'orders',
     worktreeId: 'pay-tree',
     sessionId: 'sess-frozen',
+    actionId: BUILTIN_CPUSH_ACTION_ID,
+    actionLabel: 'C-Push',
+    profile: 'cpush',
     frozenScopeVersion: 'scope-frozen',
     modelId: 'model-1',
     frozenFileIds: ['order', 'pay', 'retry', 'release'],
     committedFileIds: [],
     skippedFileIds: [],
-    sessionStatus: 'needsDecision',
+    status: 'needsDecision',
+    summary: '',
     message: {
       id: 'q-run-1-1',
       kind: 'question',
@@ -49,6 +53,7 @@ function makeCPushSession(overrides: Partial<CPushSessionSnapshot> = {}): CPushS
     ],
     qaLog: [],
     commits: [],
+    links: [],
     canRetryRemaining: false,
     ...overrides,
   };
@@ -62,9 +67,12 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     const frozenTarget = targetOf(tree);
 
     state = workbenchReducer(state, {
-      type: 'cPushStarted',
+      type: 'actionStarted',
       worktreeId: 'pay-tree',
+      profile: 'cpush',
       runId: 'run-1',
+      actionId: BUILTIN_CPUSH_ACTION_ID,
+      actionLabel: 'C-Push',
       frozenTarget,
       frozenFileIds: ['order', 'pay', 'retry', 'release'],
       modelId: 'model-1',
@@ -79,19 +87,17 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     expect(payAfterSelect.selectedIds).toContain('lock');
     expect(payAfterSelect.scopeVersion).not.toBe(frozenTarget.scopeVersion);
     // Frozen C-Push target & authorized fileIds remain strictly immutable:
-    expect(payAfterSelect.activeRun?.kind).toBe('cpush');
-    if (payAfterSelect.activeRun?.kind === 'cpush') {
-      expect(payAfterSelect.activeRun.frozenTarget).toEqual(frozenTarget);
-      expect(payAfterSelect.activeRun.frozenFileIds).toEqual(['order', 'pay', 'retry', 'release']);
-    }
+    expect(payAfterSelect.activeRun?.profile).toBe('cpush');
+    expect(payAfterSelect.activeRun?.frozenTarget).toEqual(frozenTarget);
+    expect(payAfterSelect.activeRun?.frozenFileIds).toEqual(['order', 'pay', 'retry', 'release']);
 
     // Question arrives while viewing `fix-tree`: updates ONLY `pay-tree`, never auto-expands dock!
     state = workbenchReducer(state, {
       type: 'event',
       event: {
-        type: 'cPushProgress',
+        type: 'actionProgress',
         progress: {
-          protocolVersion: 1,
+          protocolVersion: 2,
           session: makeCPushSession({ sessionId: frozenTarget.sessionId, frozenScopeVersion: frozenTarget.scopeVersion }),
         },
       },
@@ -104,15 +110,18 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
   });
 
   it('clears unchanged prompt after C-Push succeeds and preserves mid-run prompt edits', () => {
-    // Case A: Prompt untouched during C-Push -> cleared when push succeeds (`sessionStatus: 'done'`):
+    // Case A: Prompt untouched during C-Push -> cleared when push succeeds (`status: 'done'`):
     let stateA = openedWorkbench();
     stateA = workbenchReducer(stateA, { type: 'prompt', worktreeId: 'pay-tree', text: 'split lockfile separately' });
     const treeA = stateA.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     const frozenTargetA = targetOf(treeA);
     stateA = workbenchReducer(stateA, {
-      type: 'cPushStarted',
+      type: 'actionStarted',
       worktreeId: 'pay-tree',
+      profile: 'cpush',
       runId: 'run-a',
+      actionId: BUILTIN_CPUSH_ACTION_ID,
+      actionLabel: 'C-Push',
       frozenTarget: frozenTargetA,
       frozenFileIds: ['order', 'retry'],
       modelId: 'model-1',
@@ -120,17 +129,17 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     });
     const snapDoneA = repositoryReply('done-a', 2).snapshot!;
     stateA = workbenchReducer(stateA, {
-      type: 'cPushSettled',
+      type: 'actionSettled',
       reply: {
-        protocolVersion: 1,
-        kind: 'cPush',
+        protocolVersion: 2,
+        kind: 'action',
         requestId: 'run-a',
         repositorySnapshot: snapDoneA,
         session: makeCPushSession({
           runId: 'run-a',
           sessionId: frozenTargetA.sessionId,
           frozenScopeVersion: frozenTargetA.scopeVersion,
-          sessionStatus: 'done',
+          status: 'done',
           committedFileIds: ['order', 'retry'],
           commits: [{ oid: 'c1', shortOid: 'c1', title: 'feat(order): split commit 1', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
           message: { id: 'done-run-a', kind: 'done', title: '1 commit pushed to origin/feat/pay', description: 'Done' },
@@ -146,9 +155,12 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     const frozenTarget = targetOf(tree);
 
     state = workbenchReducer(state, {
-      type: 'cPushStarted',
+      type: 'actionStarted',
       worktreeId: 'pay-tree',
+      profile: 'cpush',
       runId: 'run-1',
+      actionId: BUILTIN_CPUSH_ACTION_ID,
+      actionLabel: 'C-Push',
       frozenTarget,
       frozenFileIds: ['order', 'retry'],
       modelId: 'model-1',
@@ -159,16 +171,16 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     const snapAfter = repositoryReply('after-cpush', 2).snapshot!;
     snapAfter.worktrees[0].files = snapAfter.worktrees[0].files.filter((f) => f.id !== 'retry');
     state = workbenchReducer(state, {
-      type: 'cPushSettled',
+      type: 'actionSettled',
       reply: {
-        protocolVersion: 1,
-        kind: 'cPush',
+        protocolVersion: 2,
+        kind: 'action',
         requestId: 'run-1',
         repositorySnapshot: snapAfter,
         session: makeCPushSession({
           sessionId: frozenTarget.sessionId,
           frozenScopeVersion: frozenTarget.scopeVersion,
-          sessionStatus: 'done',
+          status: 'done',
           committedFileIds: ['order', 'retry'],
           commits: [{ oid: 'c1', shortOid: 'c1', title: 'feat(order): split commit 1', branch: 'feat/pay', fileIds: ['order', 'retry'] }],
           message: { id: 'done-run-1', kind: 'done', title: 'Completed 1 local split commit', description: 'Done' },
@@ -185,7 +197,7 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
   it('hydrates interrupted C-Push session on cold start with collapsed dock and aligned sessionId', () => {
     const snap = repositoryReply('restore', 1).snapshot!;
     const interrupted = makeCPushSession({
-      sessionStatus: 'needsDecision',
+      status: 'needsDecision',
       canRetryRemaining: true,
       commits: [{ oid: 'oid-1', shortOid: 'oid-1', title: 'feat: step 1', branch: 'feat/pay', fileIds: ['order'] }],
       message: {
@@ -205,7 +217,7 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
         emptyPrompt: '',
         worktrees: [],
         snapshots: [snap],
-        cPushSessions: [interrupted],
+        actionSessions: [interrupted],
         warning: null,
       },
     });
@@ -213,10 +225,8 @@ describe('M4 C-Push session state, scope freezing, and recovery isolation', () =
     expect(pay.sessionId).toBe('sess-frozen');
     expect(pay.sessionStatus).toBe('needsDecision');
     expect(pay.dockExpanded).toBe(false);
-    expect(pay.activeRun?.kind).toBe('cpush');
-    if (pay.activeRun?.kind === 'cpush') {
-      expect(pay.activeRun.canRetryRemaining).toBe(true);
-      expect(pay.activeRun.commits).toHaveLength(1);
-    }
+    expect(pay.activeRun?.profile).toBe('cpush');
+    expect(pay.activeRun?.canRetryRemaining).toBe(true);
+    expect(pay.activeRun?.commits).toHaveLength(1);
   });
 });

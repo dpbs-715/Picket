@@ -5,12 +5,11 @@
 use crate::{
     actions::{
         message_user::MessageBlock,
-        session_store::ActionSessionSnapshot,
         types::{
-            CPushLandedCommit, CPushMessageFileChip, CPushSessionSnapshot, CPushSessionStatus,
-            CPushTimelineItem, CPushUiMessage, CustomActionLink, CustomActionMessageCommitSummary,
-            CustomActionUiMessage, MessageQuestionItem, MessageQuestionOption, MessageTone,
-            MessageUserCard, MessageUserRequest,
+            ActionProfileKind, ActionSessionSnapshot, ActionSessionStatus, BUILTIN_CPUSH_ACTION_ID,
+            CPushLandedCommit, MessageQuestionItem, MessageQuestionOption, MessageTone,
+            MessageUserCard, MessageUserRequest, WorkflowLink, WorkflowMessageCommitSummary,
+            WorkflowMessageFileChip, WorkflowTimelineItem, WorkflowUiMessage,
         },
     },
     i18n::LanguageKind,
@@ -31,35 +30,39 @@ const WORKBENCH_SAVE_FIXTURE: &str = include_str!("../../shared/fixtures/workben
 #[test]
 fn cpush_session_matches_shared_golden_contract() {
     let expected: Value = serde_json::from_str(CPUSH_SESSION_FIXTURE).unwrap();
-    let sample = CPushSessionSnapshot {
+    let sample = ActionSessionSnapshot {
         run_id: "run-contract-cpush-1".into(),
         repository_id: "repo-orders".into(),
         worktree_id: "wt-orders-main".into(),
         session_id: "sess-orders-1".into(),
+        action_id: BUILTIN_CPUSH_ACTION_ID.into(),
+        action_label: "C-Push".into(),
+        profile: ActionProfileKind::Cpush,
         frozen_scope_version: "sv-101".into(),
         model_id: "model-claude-sonnet".into(),
         frozen_file_ids: vec!["file-order".into(), "file-notes".into()],
         committed_file_ids: vec!["file-order".into()],
         skipped_file_ids: vec![],
-        session_status: CPushSessionStatus::NeedsDecision,
+        status: ActionSessionStatus::NeedsDecision,
         pending_call_id: Some("tc-1".into()),
-        message: Some(CPushUiMessage {
+        summary: String::new(),
+        message: Some(WorkflowUiMessage {
             id: "q-run-contract-cpush-1-1".into(),
             kind: "question".into(),
             title: "Include release notes in this commit?".into(),
             description: "Confirm how to group RELEASE_NOTES.md".into(),
             scope: Some("Affects commit 2/2 (docs)".into()),
-            files: Some(vec![CPushMessageFileChip {
+            files: Some(vec![WorkflowMessageFileChip {
                 id: "file-notes".into(),
                 label: "RELEASE_NOTES.md".into(),
                 badge: Some("Confirm".into()),
             }]),
-            commits: Some(vec![CustomActionMessageCommitSummary {
+            commits: Some(vec![WorkflowMessageCommitSummary {
                 hash: "a1b2c3d".into(),
                 title: "feat(order): validate retry window".into(),
             }]),
             options: None,
-            links: Some(vec![CustomActionLink {
+            links: Some(vec![WorkflowLink {
                 label: "PR #101".into(),
                 url: "https://github.com/acme/orders/pull/101".into(),
             }]),
@@ -105,11 +108,11 @@ fn cpush_session_matches_shared_golden_contract() {
             progress: None,
         }),
         timeline: vec![
-            CPushTimelineItem {
+            WorkflowTimelineItem {
                 state: "done".into(),
                 label: "Frozen scope of 2 selected files".into(),
             },
-            CPushTimelineItem {
+            WorkflowTimelineItem {
                 state: "active".into(),
                 label: "Waiting for decision: Include release notes in this commit?".into(),
             },
@@ -122,6 +125,7 @@ fn cpush_session_matches_shared_golden_contract() {
             branch: "feat/pay".into(),
             file_ids: vec!["file-order".into()],
         }],
+        links: vec![],
         can_retry_remaining: false,
         auto_collapse: None,
     };
@@ -136,28 +140,36 @@ fn action_session_matches_shared_golden_contract() {
         run_id: "run-contract-action-1".into(),
         repository_id: "repo-orders".into(),
         worktree_id: "wt-orders-main".into(),
+        session_id: "sess-orders-1".into(),
         action_id: "act-submit".into(),
         action_label: "Submit -> main".into(),
-        status: "done".into(),
+        profile: ActionProfileKind::CustomAction,
+        frozen_scope_version: "sv-101".into(),
+        model_id: "model-claude-sonnet".into(),
+        frozen_file_ids: vec!["file-order".into()],
+        committed_file_ids: vec!["file-order".into()],
+        skipped_file_ids: vec![],
+        status: ActionSessionStatus::Done,
+        pending_call_id: None,
         summary: "Created Issue #42 and opened PR #101".into(),
-        message: Some(CustomActionUiMessage {
+        message: Some(WorkflowUiMessage {
             id: "done-action-run-contract-action-1".into(),
             kind: "done".into(),
             title: "Submit -> main".into(),
             description: "Created Issue #42 and opened PR #101".into(),
             scope: None,
             files: None,
-            commits: Some(vec![CustomActionMessageCommitSummary {
+            commits: Some(vec![WorkflowMessageCommitSummary {
                 hash: "a1b2c3d".into(),
                 title: "feat(order): validate retry window".into(),
             }]),
             options: None,
             links: Some(vec![
-                CustomActionLink {
+                WorkflowLink {
                     label: "Issue #42".into(),
                     url: "https://github.com/acme/orders/issues/42".into(),
                 },
-                CustomActionLink {
+                WorkflowLink {
                     label: "PR #101".into(),
                     url: "https://github.com/acme/orders/pull/101".into(),
                 },
@@ -167,15 +179,16 @@ fn action_session_matches_shared_golden_contract() {
             progress: None,
         }),
         timeline: vec![
-            CPushTimelineItem {
+            WorkflowTimelineItem {
                 state: "done".into(),
                 label: "Checked GitHub CLI login".into(),
             },
-            CPushTimelineItem {
+            WorkflowTimelineItem {
                 state: "done".into(),
                 label: "Created PR #101".into(),
             },
         ],
+        qa_log: vec![],
         commits: vec![CPushLandedCommit {
             oid: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".into(),
             short_oid: "a1b2c3d".into(),
@@ -184,15 +197,17 @@ fn action_session_matches_shared_golden_contract() {
             file_ids: vec!["file-order".into()],
         }],
         links: vec![
-            CustomActionLink {
+            WorkflowLink {
                 label: "Issue #42".into(),
                 url: "https://github.com/acme/orders/issues/42".into(),
             },
-            CustomActionLink {
+            WorkflowLink {
                 label: "PR #101".into(),
                 url: "https://github.com/acme/orders/pull/101".into(),
             },
         ],
+        can_retry_remaining: false,
+        auto_collapse: None,
     };
 
     assert_eq!(serde_json::to_value(&sample).unwrap(), expected);

@@ -8,6 +8,7 @@ pub mod desktop;
 pub mod models;
 pub mod pi;
 pub mod repository;
+pub mod runner;
 pub mod skills;
 pub mod updater;
 

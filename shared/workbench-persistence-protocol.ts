@@ -7,13 +7,20 @@ import type {
   WorkbenchRestoreReply,
   WorkbenchSaveRequest,
 } from './generated';
-import { decodeCPushSessionSnapshot } from './cpush-protocol';
 import {
   CUSTOM_ACTION_LIMITS,
   decodeActionSessionSnapshot,
   decodeCustomActionConfig,
+  isActionApprovalMode,
   type CustomActionConfig,
 } from './custom-action-protocol';
+import {
+  RUN_COMMAND_LIMITS,
+  decodeRunCommandConfig,
+  decodeRunEnvEntries,
+  type RunCommandConfig,
+  type RunEnvEntry,
+} from './run-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION, isValidRepoRelativePath } from './git-read-protocol';
 import type { GitRepositorySnapshot } from './git-read-protocol';
 import { isGitEditorId } from './ide-protocol';
@@ -86,6 +93,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
   if (!record(value) || value.protocolVersion !== WORKBENCH_PERSISTENCE_PROTOCOL_VERSION
     || !(value.locale === undefined || value.locale === null || isAppLocale(value.locale))
     || !(value.theme === undefined || value.theme === null || isAppTheme(value.theme))
+    || !(value.actionApprovalMode === undefined || value.actionApprovalMode === null || isActionApprovalMode(value.actionApprovalMode))
     || !isGitEditorId(value.editor)
     || !(value.defaultCommitLanguage === undefined || value.defaultCommitLanguage === null || isAppLocale(value.defaultCommitLanguage))
     || !(value.activeWorktreeId === null || typeof value.activeWorktreeId === 'string')
@@ -105,7 +113,9 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
         || !isAppLocale(entry.commitLanguage)
         || !(entry.localKeepPaths === undefined || (Array.isArray(entry.localKeepPaths) && entry.localKeepPaths.every(isValidRepoRelativePath)))
         || !(entry.customActions === undefined || Array.isArray(entry.customActions))
-        || !(entry.activeActionId === undefined || entry.activeActionId === null || typeof entry.activeActionId === 'string')) {
+        || !(entry.activeActionId === undefined || entry.activeActionId === null || typeof entry.activeActionId === 'string')
+        || !(entry.runCommands === undefined || Array.isArray(entry.runCommands))
+        || !(entry.runSharedEnv === undefined || Array.isArray(entry.runSharedEnv))) {
         return fail();
       }
       seen.add(entry.repositoryId);
@@ -123,6 +133,20 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
           return decoded;
         });
       }
+      let runCommands: RunCommandConfig[] | undefined;
+      if (Array.isArray(entry.runCommands)) {
+        if (entry.runCommands.length > RUN_COMMAND_LIMITS.maxPerRepo) return fail();
+        const seenRunIds = new Set<string>();
+        runCommands = entry.runCommands.map((rawCmd) => {
+          const decoded = decodeRunCommandConfig(rawCmd);
+          if (seenRunIds.has(decoded.id)) return fail();
+          seenRunIds.add(decoded.id);
+          return decoded;
+        });
+      }
+      const runSharedEnv: RunEnvEntry[] | undefined = Array.isArray(entry.runSharedEnv)
+        ? decodeRunEnvEntries(entry.runSharedEnv)
+        : undefined;
       const rawActiveActionId = typeof entry.activeActionId === 'string' && entry.activeActionId.trim()
         ? entry.activeActionId.trim()
         : null;
@@ -136,6 +160,8 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
         ...(localKeepPaths !== undefined ? { localKeepPaths } : {}),
         ...(customActions !== undefined && customActions.length > 0 ? { customActions } : {}),
         ...(activeActionId !== undefined ? { activeActionId } : {}),
+        ...(runCommands !== undefined && runCommands.length > 0 ? { runCommands } : {}),
+        ...(runSharedEnv !== undefined && runSharedEnv.length > 0 ? { runSharedEnv } : {}),
       };
     });
   })();
@@ -171,10 +197,6 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
   if (!(value.activeModelId === undefined || value.activeModelId === null || typeof value.activeModelId === 'string')) {
     return fail();
   }
-  const cPushSessions = value.cPushSessions === undefined ? undefined : (() => {
-    if (!Array.isArray(value.cPushSessions)) return fail();
-    return value.cPushSessions.map(decodeCPushSessionSnapshot);
-  })();
   const actionSessions = value.actionSessions === undefined ? undefined : (() => {
     if (!Array.isArray(value.actionSessions)) return fail();
     return value.actionSessions.map(decodeActionSessionSnapshot);
@@ -207,6 +229,7 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
     protocolVersion: WORKBENCH_PERSISTENCE_PROTOCOL_VERSION,
     ...(isAppLocale(value.locale) ? { locale: value.locale } : {}),
     ...(isAppTheme(value.theme) ? { theme: value.theme } : {}),
+    ...(isActionApprovalMode(value.actionApprovalMode) ? { actionApprovalMode: value.actionApprovalMode } : {}),
     editor: value.editor,
     ...(isAppLocale(value.defaultCommitLanguage) ? { defaultCommitLanguage: value.defaultCommitLanguage } : {}),
     ...(repositorySettings !== undefined ? { repositorySettings } : {}),
@@ -219,7 +242,6 @@ export function decodeWorkbenchRestoreReply(value: unknown): WorkbenchRestoreRep
     ...(connections !== undefined ? { connections } : {}),
     ...(models !== undefined ? { models } : {}),
     ...(value.activeModelId !== undefined ? { activeModelId: value.activeModelId } : {}),
-    ...(cPushSessions !== undefined ? { cPushSessions } : {}),
     ...(actionSessions !== undefined ? { actionSessions } : {}),
     warning: value.warning,
   };

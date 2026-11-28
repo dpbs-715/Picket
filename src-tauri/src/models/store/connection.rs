@@ -306,7 +306,8 @@ impl ModelStore {
                 i18n::models::model_test_cancelled_error(locale),
             )),
             PiTaskOutcome::CustomActionCompleted { .. }
-            | PiTaskOutcome::CustomActionDrafted { .. } => Err(AppError::model(
+            | PiTaskOutcome::CustomActionDrafted { .. }
+            | PiTaskOutcome::RunCommandsDiscovered { .. } => Err(AppError::model(
                 AppErrorCode::PiRuntimeError,
                 "Connection test returned an unexpected event type",
             )),

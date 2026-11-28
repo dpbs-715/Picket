@@ -10,6 +10,7 @@ import type { ToolBridge } from './bridge';
 type MessageUserToolDetails =
   | MessageUserResponse
   | { displayed: true }
+  | { stopAgent: true }
   | { cancelled: true; answers: []; errorCode: string };
 
 export function createMessageUserTool(bridge: ToolBridge): AgentTool<any, MessageUserToolDetails> {
@@ -169,6 +170,12 @@ export function createMessageUserTool(bridge: ToolBridge): AgentTool<any, Messag
       const detailsRecord = response.details && typeof response.details === 'object'
         ? (response.details as Record<string, unknown>)
         : undefined;
+      if (detailsRecord?.stopAgent === true) {
+        return {
+          content: [{ type: 'text', text: response.content || 'Stopped by host.' }],
+          details: { stopAgent: true },
+        };
+      }
       if (detailsRecord?.displayed === true || !hasMessageQuestions(request)) {
         return {
           content: [{ type: 'text', text: response.content || 'Message displayed to user in MessageDock.' }],

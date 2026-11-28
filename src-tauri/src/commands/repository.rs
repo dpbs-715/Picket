@@ -286,11 +286,10 @@ pub async fn load_workbench_state(
             None => m_warn,
         });
     }
-    let (action_sessions, cpush_sessions, session_warning) = actions
+    let (action_sessions, session_warning) = actions
         .restore_all_sessions_async(&data_dir, &restored.snapshots, restored.locale)
         .await
         .map_err(AppError::storage)?;
-    restored.c_push_sessions = Some(cpush_sessions);
     restored.action_sessions = Some(action_sessions);
     if let Some(s_warn) = session_warning {
         restored.warning = Some(match restored.warning {

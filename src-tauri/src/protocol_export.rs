@@ -14,17 +14,15 @@ use crate::{
             MessageQuestionOption, MessageSkippedFileItem, MessageTone, MessageUserAnswer,
             MessageUserCard, MessageUserRequest, MessageUserResponse,
         },
-        session_store::ActionSessionSnapshot,
         types::{
-            CPushCommandReply, CPushLandedCommit, CPushProgressEvent, CPushQaItem,
-            CPushSessionSnapshot, CPushSessionStatus, CustomActionCommandReply, CustomActionDraft,
-            CustomActionProgressEvent, DismissSessionDoneRequest,
-            GenerateCustomActionProgressEvent, GenerateCustomActionReply,
-            GenerateCustomActionRequest, PullRebaseRequest, ReconcileCPushRequest,
-            RespondCPushRequest, RespondCustomActionRequest, StartCPushRequest,
-            StartCustomActionRequest, TrustedActionUpdate, WorkflowLink,
-            WorkflowMessageCommitSummary, WorkflowMessageFileChip, WorkflowMessageOption,
-            WorkflowMessageProgress, WorkflowTimelineItem, WorkflowUiMessage,
+            ActionApprovalMode, ActionCommandReply, ActionProfileKind, ActionProgressEvent,
+            ActionSessionSnapshot, ActionSessionStatus, CPushLandedCommit, CPushQaItem,
+            CustomActionDraft, DismissSessionDoneRequest, GenerateCustomActionProgressEvent,
+            GenerateCustomActionReply, GenerateCustomActionRequest, ReconcileSessionRequest,
+            RespondActionQuestionRequest, SessionRecoveryAction, SessionRecoveryRequest,
+            StartActionRequest, TrustedActionUpdate, WorkflowLink, WorkflowMessageCommitSummary,
+            WorkflowMessageFileChip, WorkflowMessageOption, WorkflowMessageProgress,
+            WorkflowTimelineItem, WorkflowUiMessage,
         },
     },
     error::{AppError, AppErrorCode, ErrorCategory},
@@ -45,13 +43,21 @@ use crate::{
         WindowPosition, WindowSize, WorkbenchRestoreReply, WorkbenchSaveRequest, WorkbenchTab,
         WorktreeSnapshot,
     },
+    runner::{
+        ClearRunLogsRequest, DiscoverRunCommandsProgressEvent, DiscoverRunCommandsReply,
+        DiscoverRunCommandsRequest, DiscoveredRunCommand, GetRunLogsRequest,
+        OpenRunLocalUrlRequest, OpenRunLogsWindowRequest, PersistedRunCommand,
+        RestartRunCommandRequest, RunEnvEntry, RunLogBatchEvent, RunLogLine, RunLogStream,
+        RunProcessLogsReply, RunProcessSnapshot, RunProcessStatus, StartRunCommandRequest,
+        StopRunCommandRequest, UserEnvSummary,
+    },
     skills::sync::{
         GetSkillsStateRequest, ResetSkillsRequest, SkillCatalogItem, SkillsStateSnapshot,
         SyncSkillsRequest, UpdateEnabledSkillsRequest,
     },
     tray::state::{
-        TrayMainWindowAction, TrayRepositorySummary, TraySessionStatus, TrayStateSnapshot,
-        TrayUiContextUpdate,
+        TrayMainWindowAction, TrayRepositorySummary, TrayRunningServiceSummary, TraySessionStatus,
+        TrayStateSnapshot, TrayUiContextUpdate,
     },
     updater::types::{
         CancelUpdateRequest, CheckUpdateRequest, InstallUpdateRequest, OpenReleasePageRequest,
@@ -138,9 +144,30 @@ fn export_all_bindings(dir: &Path) {
     OpenReleasePageRequest::export_all(&cfg).unwrap();
     TraySessionStatus::export_all(&cfg).unwrap();
     TrayRepositorySummary::export_all(&cfg).unwrap();
+    TrayRunningServiceSummary::export_all(&cfg).unwrap();
     TrayStateSnapshot::export_all(&cfg).unwrap();
     TrayUiContextUpdate::export_all(&cfg).unwrap();
     TrayMainWindowAction::export_all(&cfg).unwrap();
+    RunEnvEntry::export_all(&cfg).unwrap();
+    PersistedRunCommand::export_all(&cfg).unwrap();
+    RunProcessStatus::export_all(&cfg).unwrap();
+    RunLogStream::export_all(&cfg).unwrap();
+    RunLogLine::export_all(&cfg).unwrap();
+    RunProcessSnapshot::export_all(&cfg).unwrap();
+    RunLogBatchEvent::export_all(&cfg).unwrap();
+    UserEnvSummary::export_all(&cfg).unwrap();
+    StartRunCommandRequest::export_all(&cfg).unwrap();
+    StopRunCommandRequest::export_all(&cfg).unwrap();
+    RestartRunCommandRequest::export_all(&cfg).unwrap();
+    GetRunLogsRequest::export_all(&cfg).unwrap();
+    RunProcessLogsReply::export_all(&cfg).unwrap();
+    ClearRunLogsRequest::export_all(&cfg).unwrap();
+    OpenRunLogsWindowRequest::export_all(&cfg).unwrap();
+    OpenRunLocalUrlRequest::export_all(&cfg).unwrap();
+    DiscoveredRunCommand::export_all(&cfg).unwrap();
+    DiscoverRunCommandsRequest::export_all(&cfg).unwrap();
+    DiscoverRunCommandsProgressEvent::export_all(&cfg).unwrap();
+    DiscoverRunCommandsReply::export_all(&cfg).unwrap();
     MessageTone::export_all(&cfg).unwrap();
     MessageCalloutTone::export_all(&cfg).unwrap();
     MessageFactTone::export_all(&cfg).unwrap();
@@ -159,7 +186,9 @@ fn export_all_bindings(dir: &Path) {
     MessageUserRequest::export_all(&cfg).unwrap();
     MessageUserAnswer::export_all(&cfg).unwrap();
     MessageUserResponse::export_all(&cfg).unwrap();
-    CPushSessionStatus::export_all(&cfg).unwrap();
+    ActionApprovalMode::export_all(&cfg).unwrap();
+    ActionProfileKind::export_all(&cfg).unwrap();
+    ActionSessionStatus::export_all(&cfg).unwrap();
     CPushQaItem::export_all(&cfg).unwrap();
     CPushLandedCommit::export_all(&cfg).unwrap();
     WorkflowMessageOption::export_all(&cfg).unwrap();
@@ -171,22 +200,18 @@ fn export_all_bindings(dir: &Path) {
     WorkflowUiMessage::export_all(&cfg).unwrap();
     TrustedActionUpdate::export_all(&cfg).unwrap();
     CustomActionDraft::export_all(&cfg).unwrap();
-    StartCustomActionRequest::export_all(&cfg).unwrap();
-    RespondCustomActionRequest::export_all(&cfg).unwrap();
-    CustomActionProgressEvent::export_all(&cfg).unwrap();
-    CustomActionCommandReply::export_all(&cfg).unwrap();
+    StartActionRequest::export_all(&cfg).unwrap();
+    RespondActionQuestionRequest::export_all(&cfg).unwrap();
+    SessionRecoveryAction::export_all(&cfg).unwrap();
+    SessionRecoveryRequest::export_all(&cfg).unwrap();
+    ReconcileSessionRequest::export_all(&cfg).unwrap();
+    ActionSessionSnapshot::export_all(&cfg).unwrap();
+    ActionProgressEvent::export_all(&cfg).unwrap();
+    ActionCommandReply::export_all(&cfg).unwrap();
     GenerateCustomActionRequest::export_all(&cfg).unwrap();
     GenerateCustomActionProgressEvent::export_all(&cfg).unwrap();
     GenerateCustomActionReply::export_all(&cfg).unwrap();
-    StartCPushRequest::export_all(&cfg).unwrap();
-    PullRebaseRequest::export_all(&cfg).unwrap();
-    ReconcileCPushRequest::export_all(&cfg).unwrap();
-    RespondCPushRequest::export_all(&cfg).unwrap();
-    CPushProgressEvent::export_all(&cfg).unwrap();
-    CPushCommandReply::export_all(&cfg).unwrap();
     DismissSessionDoneRequest::export_all(&cfg).unwrap();
-    CPushSessionSnapshot::export_all(&cfg).unwrap();
-    ActionSessionSnapshot::export_all(&cfg).unwrap();
 
     // Generate deterministic barrel file for convenient imports:
     let mut names: Vec<String> = fs::read_dir(dir)

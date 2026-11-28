@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import {
-  isCustomActionWriteTrusted,
-  type CustomActionConfig,
-  type CustomActionSyncResult,
+import type {
+  CustomActionConfig,
+  CustomActionSyncResult,
 } from '../../../shared/custom-action-protocol';
 import { useI18n } from '../../i18n';
 import { Icon, IconButton, Overlay } from '../../ui/controls';
@@ -99,7 +98,6 @@ export function CustomActionsManagerModal(props: Props) {
             <div className="custom-action-list">
               {props.actions.map((item) => {
                 const isActive = props.activeActionId === item.id;
-                const trusted = isCustomActionWriteTrusted(item);
                 return (
                   <div className={`custom-action-item ${isActive ? 'is-active' : ''}`} key={item.id}>
                     <button
@@ -114,10 +112,9 @@ export function CustomActionsManagerModal(props: Props) {
                       <div className="custom-action-item-head">
                         <strong className="truncate" title={item.label}>{item.label}</strong>
                       </div>
-                      {(isActive || trusted) && (
+                      {isActive && (
                         <div className="custom-action-item-badges">
-                          {isActive && <span className="model-active-badge">{t.actions.activeBadge}</span>}
-                          {trusted && <span className="action-meta-badge is-amber">{t.actions.autoApproveBadge}</span>}
+                          <span className="model-active-badge">{t.actions.activeBadge}</span>
                         </div>
                       )}
                       <p className="mono muted small custom-action-item-prompt">{item.prompt}</p>

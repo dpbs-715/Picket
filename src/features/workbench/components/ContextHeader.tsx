@@ -6,12 +6,17 @@ import { Collapse, MotionPresence } from '../../../ui/motion';
 import { isActiveSession, isProtected, orderedMessages } from '../state/workbench';
 import type { Repository, WorkbenchState, Worktree } from '../state/workbench';
 
+export type WorkbenchMainView = 'git' | 'run';
+
 type Menu = 'repository' | 'history' | 'branch' | 'remote' | null;
 type BranchSection = 'local' | 'remote' | 'worktree';
+
 interface Props {
   state: WorkbenchState;
   worktree?: Worktree;
   repository?: Repository;
+  activeMainView?: WorkbenchMainView;
+  activeRunCount?: number;
   pinned: boolean;
   hasUpdate?: boolean;
   opening: boolean;
@@ -25,6 +30,7 @@ interface Props {
   onSwitch(worktreeId: string, expand?: boolean): void;
   onBranch(kind: GitBranchAction, branch: string): Promise<boolean>;
   onPull(): void;
+  onSelectMainView?(view: WorkbenchMainView): void;
 }
 
 export function ContextHeader(props: Props) {
@@ -40,6 +46,9 @@ export function ContextHeader(props: Props) {
   const remoteBranches = repository?.remoteBranches ?? [];
   const pending = state.worktrees.some(isActiveSession);
   const branchDisabled = props.branchBusy || !!worktree?.readError || repoWorktrees.some(isActiveSession);
+  const activeView: WorkbenchMainView = props.activeMainView ?? 'git';
+  const activeRunCount = props.activeRunCount ?? 0;
+
   async function submitBranch(kind: GitBranchAction, branch: string) {
     const accepted = await props.onBranch(kind, branch);
     if (accepted) setMenu(null);
@@ -166,17 +175,56 @@ export function ContextHeader(props: Props) {
             </Popover>}
           </MotionPresence>
         </div>
+        <div className="menu-anchor remote-anchor">
+          <button
+            type="button"
+            className={`context-button remote-button mono ${worktree?.remote.kind === 'tracked' && worktree.remote.behind ? 'warning' : ''}`}
+            disabled={!worktree}
+            data-popover-trigger
+            aria-expanded={menu === 'remote'}
+            onClick={() => toggle('remote')}
+            aria-label={t.header.remoteDetails}
+          >
+            {worktree?.remote.kind === 'tracked' ? <><span>↑ {worktree.remote.ahead}</span><span>↓ {worktree.remote.behind}</span></> : t.header.untracked}
+          </button>
+          <MotionPresence>
+            {menu === 'remote' && worktree && <Popover key="remote-popover" title={t.header.remoteDetails} onClose={close} className="remote-menu remote-menu-inline"><div className="menu-title muted"><span>{t.header.trackedRemoteBranch}</span>{worktree.remote.kind === 'tracked' && worktree.remote.localOnly && <HelpTip placement="bottom" align="end" label={t.header.remoteCountTipLabel} text={t.header.remoteCountTipText} />}</div>
+              {worktree.remote.kind === 'tracked' ? <><p className="mono">{worktree.remote.branch}</p><p className="muted small">{t.header.aheadBehind(worktree.remote.ahead, worktree.remote.behind)}</p></> : <p className="warning help">{worktree.remote.reason}</p>}
+              <div className="menu-divider"><button type="button" className="secondary" disabled={props.pullBusy || repoWorktrees.some(isActiveSession)} onClick={() => { close(); props.onPull(); }}>{props.pullBusy ? t.header.syncing : t.header.pullAndRebase}</button></div>
+            </Popover>}
+          </MotionPresence>
+        </div>
       </div>
-      <div className="menu-anchor remote-anchor"><button type="button" className={`context-button remote-button mono ${worktree?.remote.kind === 'tracked' && worktree.remote.behind ? 'warning' : ''}`} disabled={!worktree} data-popover-trigger aria-expanded={menu === 'remote'} onClick={() => toggle('remote')} aria-label={t.header.remoteDetails}>
-        {worktree?.remote.kind === 'tracked' ? <><span>↑ {worktree.remote.ahead}</span><span>↓ {worktree.remote.behind}</span></> : t.header.untracked}
-      </button>
-        <MotionPresence>
-          {menu === 'remote' && worktree && <Popover key="remote-popover" title={t.header.remoteDetails} onClose={close} className="remote-menu"><div className="menu-title muted"><span>{t.header.trackedRemoteBranch}</span>{worktree.remote.kind === 'tracked' && worktree.remote.localOnly && <HelpTip placement="bottom" align="end" label={t.header.remoteCountTipLabel} text={t.header.remoteCountTipText} />}</div>
-            {worktree.remote.kind === 'tracked' ? <><p className="mono">{worktree.remote.branch}</p><p className="muted small">{t.header.aheadBehind(worktree.remote.ahead, worktree.remote.behind)}</p></> : <p className="warning help">{worktree.remote.reason}</p>}
-            <div className="menu-divider"><button type="button" className="secondary" disabled={props.pullBusy || repoWorktrees.some(isActiveSession)} onClick={() => { close(); props.onPull(); }}>{props.pullBusy ? t.header.syncing : t.header.pullAndRebase}</button></div>
-          </Popover>}
-        </MotionPresence>
-      </div>
+      {worktree && (
+        <div className="main-view-switch" role="group" aria-label={t.run.viewSwitchLabel}>
+          <button
+            type="button"
+            className={`main-view-tab ${activeView === 'git' ? 'is-active' : ''}`}
+            aria-pressed={activeView === 'git'}
+            data-main-view="git"
+            onClick={() => { close(); props.onSelectMainView?.('git'); }}
+          >
+            {t.run.gitTabLabel}
+          </button>
+          <button
+            type="button"
+            className={`main-view-tab ${activeView === 'run' ? 'is-active' : ''} ${activeRunCount > 0 ? 'has-running' : ''}`}
+            aria-pressed={activeView === 'run'}
+            data-main-view="run"
+            data-run-trigger
+            title={activeRunCount > 0 ? t.run.runningBadgeTitle(activeRunCount) : t.run.runTabLabel}
+            onClick={() => { close(); props.onSelectMainView?.('run'); }}
+          >
+            <span>{t.run.runTabLabel}</span>
+            {activeRunCount > 0 && (
+              <span className="main-view-run-pill" aria-hidden="true">
+                <span className="main-view-run-dot" />
+                <span>{activeRunCount}</span>
+              </span>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   </header>;
 }

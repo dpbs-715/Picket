@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
+import { BUILTIN_CPUSH_ACTION_ID, type ActionSessionSnapshot } from '../../../../shared/custom-action-protocol';
 import { repositoryReply } from '../testing/repository-fixture';
 import { emptyWorkbench, orderedMessages, primaryAction, targetOf, workbenchReducer } from './workbench';
 
@@ -14,18 +14,22 @@ function openedWorkbench() {
   });
 }
 
-function makeM5Session(overrides: Partial<CPushSessionSnapshot> = {}): CPushSessionSnapshot {
+function makeM5Session(overrides: Partial<ActionSessionSnapshot> = {}): ActionSessionSnapshot {
   return {
     runId: 'push-run-1',
     repositoryId: 'orders',
     worktreeId: 'pay-tree',
     sessionId: 'sess-m5',
+    actionId: BUILTIN_CPUSH_ACTION_ID,
+    actionLabel: 'C-Push',
+    profile: 'cpush',
     frozenScopeVersion: 'scope-m5',
     modelId: 'model-1',
     frozenFileIds: ['order'],
     committedFileIds: ['order'],
     skippedFileIds: [],
-    sessionStatus: 'pushFailed',
+    status: 'pushFailed',
+    summary: '',
     message: {
       id: 'push-failed-1',
       kind: 'pushFailed',
@@ -40,12 +44,13 @@ function makeM5Session(overrides: Partial<CPushSessionSnapshot> = {}): CPushSess
     ],
     qaLog: [],
     commits: [{ oid: 'commit-oid-1', shortOid: 'commit-1', title: 'feat(order): push commit', branch: 'feat/pay', fileIds: ['order'] }],
+    links: [],
     canRetryRemaining: false,
     ...overrides,
   };
 }
 
-describe('M5 remote sync, push-failure preservation, manual merge reconciliation, and recovery', () => {
+describe('M5 remote sync, push-failure preservation, manual merge reconciliation, and unified recovery', () => {
   it('preserves user prompt during pushFailed retry state and clears prompt only after Retry Push succeeds (R02)', () => {
     let state = openedWorkbench();
     state = workbenchReducer(state, { type: 'prompt', worktreeId: 'pay-tree', text: 'split lockfile separately' });
@@ -53,9 +58,12 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     const frozenTarget = targetOf(tree);
 
     state = workbenchReducer(state, {
-      type: 'cPushStarted',
+      type: 'actionStarted',
       worktreeId: 'pay-tree',
+      profile: 'cpush',
       runId: 'push-run-1',
+      actionId: BUILTIN_CPUSH_ACTION_ID,
+      actionLabel: 'C-Push',
       frozenTarget,
       frozenFileIds: ['order'],
       modelId: 'model-1',
@@ -67,11 +75,11 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     snapAfterCommit.worktrees[0].remote = { kind: 'tracked', branch: 'origin/feat/pay', ahead: 1, behind: 0, localOnly: true };
 
     state = workbenchReducer(state, {
-      type: 'cPushSettled',
+      type: 'actionSettled',
       expandDock: true,
       reply: {
-        protocolVersion: 1,
-        kind: 'cPush',
+        protocolVersion: 2,
+        kind: 'action',
         requestId: 'push-run-1',
         repositorySnapshot: snapAfterCommit,
         session: makeM5Session({ sessionId: frozenTarget.sessionId, frozenScopeVersion: frozenTarget.scopeVersion }),
@@ -84,7 +92,7 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     expect(failedTree.dockExpanded).toBe(true);
     // Prompt MUST remain intact while pushFailed is retryable:
     expect(failedTree.prompt.text).toBe('split lockfile separately');
-    expect(failedTree.activeRun?.kind).toBe('cpush');
+    expect(failedTree.activeRun?.profile).toBe('cpush');
     expect(failedTree.activeRun?.commits).toHaveLength(1);
     expect(orderedMessages(failedTree.messages)[0].title).toBe('Committed locally, push failed');
 
@@ -93,16 +101,16 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     snapAfterPush.worktrees[0].remote = { kind: 'tracked', branch: 'origin/feat/pay', ahead: 0, behind: 0, localOnly: false };
 
     state = workbenchReducer(state, {
-      type: 'cPushSettled',
+      type: 'actionSettled',
       reply: {
-        protocolVersion: 1,
-        kind: 'cPush',
+        protocolVersion: 2,
+        kind: 'action',
         requestId: 'retry-push-1',
         repositorySnapshot: snapAfterPush,
         session: makeM5Session({
           sessionId: frozenTarget.sessionId,
           frozenScopeVersion: frozenTarget.scopeVersion,
-          sessionStatus: 'done',
+          status: 'done',
           message: { id: 'done-push-1', kind: 'done', title: '1 commit pushed to origin/feat/pay', description: 'Completed' },
         }),
       },
@@ -120,16 +128,16 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     const target = targetOf(tree);
 
     state = workbenchReducer(state, {
-      type: 'cPushSettled',
+      type: 'actionSettled',
       expandDock: true,
       reply: {
-        protocolVersion: 1,
-        kind: 'cPush',
+        protocolVersion: 2,
+        kind: 'action',
         requestId: 'conflict-1',
         session: makeM5Session({
           sessionId: target.sessionId,
           frozenScopeVersion: target.scopeVersion,
-          sessionStatus: 'waitingManual',
+          status: 'waitingManual',
           message: {
             id: 'manual-wait-1',
             kind: 'waitingManual',
@@ -147,13 +155,13 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     state = workbenchReducer(state, {
       type: 'event',
       event: {
-        type: 'cPushProgress',
+        type: 'actionProgress',
         progress: {
-          protocolVersion: 1,
+          protocolVersion: 2,
           session: makeM5Session({
             sessionId: target.sessionId,
             frozenScopeVersion: target.scopeVersion,
-            sessionStatus: 'needsDecision',
+            status: 'needsDecision',
             message: {
               id: 'resolved-ask-1',
               kind: 'resolved',
@@ -172,13 +180,13 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     state = workbenchReducer(state, {
       type: 'event',
       event: {
-        type: 'cPushProgress',
+        type: 'actionProgress',
         progress: {
-          protocolVersion: 1,
+          protocolVersion: 2,
           session: makeM5Session({
             sessionId: target.sessionId,
             frozenScopeVersion: target.scopeVersion,
-            sessionStatus: 'done',
+            status: 'done',
             autoCollapse: true,
             message: {
               id: 'terminal-pushed-1',
@@ -194,6 +202,50 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
     expect(state.worktrees[0].dockExpanded).toBe(false);
   });
 
+  it('supports zero-token recovery handoff states on Custom Action sessions identically to C-Push', () => {
+    let state = openedWorkbench();
+    const tree = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    const target = targetOf(tree);
+
+    state = workbenchReducer(state, {
+      type: 'actionStarted',
+      worktreeId: 'pay-tree',
+      profile: 'customAction',
+      runId: 'custom-handoff-1',
+      actionId: 'act-release',
+      actionLabel: 'Release Push',
+      frozenTarget: target,
+      frozenFileIds: ['order'],
+      modelId: 'model-1',
+      expandDock: true,
+    });
+
+    state = workbenchReducer(state, {
+      type: 'actionSettled',
+      expandDock: true,
+      reply: {
+        protocolVersion: 2,
+        kind: 'action',
+        requestId: 'custom-handoff-1',
+        session: makeM5Session({
+          runId: 'custom-handoff-1',
+          actionId: 'act-release',
+          actionLabel: 'Release Push',
+          profile: 'customAction',
+          sessionId: target.sessionId,
+          frozenScopeVersion: target.scopeVersion,
+          status: 'pushFailed',
+        }),
+      },
+    });
+
+    const handedOff = state.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
+    expect(handedOff.sessionStatus).toBe('pushFailed');
+    expect(handedOff.activeRun?.profile).toBe('customAction');
+    expect(handedOff.activeRun?.runId).toBe('custom-handoff-1');
+    expect(primaryAction(handedOff, true).label).toBe('Retry Push');
+  });
+
   it('hydrates pushFailed/conflict session on cold start with collapsed dock without auto-rerunning writes (W04)', () => {
     const snap = repositoryReply('restore-m5', 1).snapshot!;
     const hydrated = workbenchReducer(emptyWorkbench(), {
@@ -205,14 +257,14 @@ describe('M5 remote sync, push-failure preservation, manual merge reconciliation
         emptyPrompt: '',
         worktrees: [],
         snapshots: [snap],
-        cPushSessions: [makeM5Session({ sessionStatus: 'conflict' })],
+        actionSessions: [makeM5Session({ status: 'conflict' })],
         warning: null,
       },
     });
     const pay = hydrated.worktrees.find((w) => w.worktreeId === 'pay-tree')!;
     expect(pay.sessionStatus).toBe('conflict');
     expect(pay.dockExpanded).toBe(false);
-    expect(pay.activeRun?.kind).toBe('cpush');
+    expect(pay.activeRun?.profile).toBe('cpush');
     expect(pay.activeRun?.commits).toHaveLength(1);
   });
 });

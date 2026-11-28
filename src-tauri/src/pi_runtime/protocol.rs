@@ -1,4 +1,6 @@
-use crate::{i18n::LanguageKind, skills::RuntimeSkillOverrideCatalog};
+use crate::{
+    actions::types::ActionApprovalMode, i18n::LanguageKind, skills::RuntimeSkillOverrideCatalog,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -108,6 +110,8 @@ pub enum PiCommand {
         locale: LanguageKind,
         commit_language: LanguageKind,
         #[serde(skip_serializing_if = "Option::is_none")]
+        approval_mode: Option<ActionApprovalMode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         previous_checkpoint: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         follow_up_prompt: Option<String>,
@@ -124,6 +128,17 @@ pub enum PiCommand {
         locale: LanguageKind,
         #[serde(skip_serializing_if = "Option::is_none")]
         skill_overrides: Option<RuntimeSkillOverrideCatalog>,
+    },
+    DiscoverRunCommands {
+        request_id: String,
+        context: RequestContext,
+        model: PiProviderSpec,
+        repository_name: String,
+        project_files: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        workspace_modules: Vec<String>,
+        existing_commands: Vec<String>,
+        locale: LanguageKind,
     },
     ToolResult {
         request_id: String,
@@ -146,7 +161,8 @@ impl PiCommand {
         match self {
             Self::TestConnection { locale, .. }
             | Self::RunCustomAction { locale, .. }
-            | Self::GenerateCustomAction { locale, .. } => *locale,
+            | Self::GenerateCustomAction { locale, .. }
+            | Self::DiscoverRunCommands { locale, .. } => *locale,
             Self::ToolResult { .. } | Self::Cancel { .. } | Self::Shutdown => LanguageKind::En,
             #[cfg(any(test, feature = "smoke-harness"))]
             Self::Probe { .. } => LanguageKind::En,
@@ -195,6 +211,23 @@ pub struct PiCustomActionDraft {
     pub label: String,
     pub prompt: String,
     pub summary: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PiDiscoveredRunCommand {
+    pub label: String,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub category: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -254,6 +287,14 @@ pub enum PiEvent {
         context: RequestContext,
         draft: PiCustomActionDraft,
     },
+    RunCommandsDiscovered {
+        request_id: String,
+        context: RequestContext,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        commands: Vec<PiDiscoveredRunCommand>,
+    },
     Cancelled {
         request_id: String,
         context: RequestContext,
@@ -311,6 +352,11 @@ impl PiEvent {
                 context,
                 ..
             }
+            | Self::RunCommandsDiscovered {
+                request_id,
+                context,
+                ..
+            }
             | Self::Cancelled {
                 request_id,
                 context,
@@ -336,6 +382,10 @@ pub enum PiTaskOutcome {
     },
     CustomActionDrafted {
         draft: PiCustomActionDraft,
+    },
+    RunCommandsDiscovered {
+        summary: String,
+        commands: Vec<PiDiscoveredRunCommand>,
     },
     Cancelled,
 }

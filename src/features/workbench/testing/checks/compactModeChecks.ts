@@ -86,7 +86,7 @@ export async function runCompactModeChecks(harness: BrowserCheckHarness) {
       ...disconnectedBackend,
       async execute(command) {
         compactCommands.push(command);
-        if (command.kind === 'pull') {
+        if (command.kind === 'runRecovery' && command.action.kind === 'pullRebase') {
           return undefined;
         }
         return disconnectedBackend.execute(command);
@@ -230,7 +230,7 @@ export async function runCompactModeChecks(harness: BrowserCheckHarness) {
   await tick();
   assert(
     !document.querySelector('.compact-drawer')
-      && compactCommands.some((command) => command.kind === 'pull' && command.target.worktreeId === 'pay-tree')
+      && compactCommands.some((command) => command.kind === 'runRecovery' && command.action.kind === 'pullRebase' && command.target.worktreeId === 'pay-tree')
       && winMock2.getSize().height <= 94,
     'Clicking Pull & Rebase in Compact Remote Drawer must trigger pull command and auto-collapse back to ~86px',
   );
@@ -510,26 +510,31 @@ export async function runCompactModeChecks(harness: BrowserCheckHarness) {
       {
         ...disconnectedBackend,
         async execute(command) {
-          if (command.kind === 'pull') {
+          if (command.kind === 'runRecovery' && command.action.kind === 'pullRebase') {
             return {
-              protocolVersion: 1,
-              kind: 'cPush',
+              protocolVersion: 2,
+              kind: 'action',
               requestId: command.requestId,
               session: {
                 runId: 'pull-compact-1',
                 repositoryId: command.target.repositoryId,
                 worktreeId: command.target.worktreeId,
                 sessionId: command.target.sessionId,
+                actionId: 'builtin:pull-rebase',
+                actionLabel: 'Pull & Rebase',
+                profile: 'pullRebase',
                 frozenScopeVersion: command.target.scopeVersion,
                 modelId: command.modelId ?? '',
                 frozenFileIds: [],
                 committedFileIds: [],
                 skippedFileIds: [],
-                sessionStatus: 'idle',
+                status: 'idle',
+                summary: '',
                 message: null,
                 timeline: [],
                 qaLog: [],
                 commits: [],
+                links: [],
                 canRetryRemaining: false,
                 autoCollapse: true,
               },

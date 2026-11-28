@@ -157,6 +157,12 @@ export function buildCustomActionPrompts(
   const commitLangNote = commitLang === 'zh'
     ? 'Write Git commit subjects & `- ` bullets in Chinese (keeping Conventional Commit tokens in English).'
     : 'Write Git commit subjects & `- ` bullets in English.';
+  const approvalMode = command.approvalMode ?? 'auto';
+  const approvalModeNote = approvalMode === 'ask'
+    ? 'Host write-approval mode is `ask`: Picket prompts the user to confirm repository edits, local commands, and write CLIs. Still ask via `message_user` before major business decisions or ambiguous workflow choices.'
+    : approvalMode === 'allowAll'
+      ? 'Host write-approval mode is `allowAll`: host write-command confirmations are disabled (hard safety redlines still apply). Still ask via `message_user` whenever a genuine business decision or ambiguity requires user input.'
+      : 'Host write-approval mode is `auto`: routine repository edits, local commands, and standard Git/CLI writes proceed automatically while Picket prompts on high-risk Git/CLI writes. You should STILL proactively ask via `message_user` whenever a step is genuinely high-risk, irreversible, affects remote/shared state unexpectedly, or needs a business decision.';
 
   const systemPrompt = [
     'You are Picket\'s Git & Collaboration Agent executing a user-triggered Custom Action Button inside the currently open repository.',
@@ -171,14 +177,21 @@ export function buildCustomActionPrompts(
     '',
     `UI / user-facing interaction language: ${uiLanguage}. Write all \`message_user\` cards, questions, explanations, and your final \`summary\` in concise ${uiLanguage}.`,
     `Commit message language preference: ${commitLangNote}`,
+    approvalModeNote,
   ].join('\n');
 
   const parts: string[] = [
     `Custom Action Button: ${command.actionLabel}`,
     `Current branch: ${command.detached ? '(detached HEAD)' : command.branch}`,
   ];
+  if (command.upstream?.trim()) {
+    parts.push(`Upstream tracking status: ${command.upstream.trim()}`);
+  }
   if (command.remoteBranches.length > 0) {
     parts.push(`Remote branches (${command.remoteBranches.length}): ${command.remoteBranches.slice(0, 30).join(', ')}`);
+  }
+  if (command.recentCommits && command.recentCommits.length > 0) {
+    parts.push(`Recent commit subjects (style reference):\n${command.recentCommits.map((subject) => `- ${subject}`).join('\n')}`);
   }
   parts.push(`Action preset prompt / command:\n${command.actionPrompt}`);
   if (command.extraPrompt.trim()) {

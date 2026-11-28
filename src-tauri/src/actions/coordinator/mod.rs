@@ -1,29 +1,23 @@
-//! Unified Agent Action & C-Push coordinator:
-//! manages same-repo write exclusion, real-time bidirectional `message_user` cards & oneshot
-//! Q&A round-trips, unified C-Push / Pull-Rebase / tool-driven conflict resolution,
-//! Rust-verified `install_platform_cli` grants, 3-tier controlled CLI policy enforcement,
-//! and direct reuse of `RepositoryStore::commit` / `push_branch` / `sync_rebase_onto_upstream`.
+//! Unified Agent Action & Built-in Workflow coordinator:
+//! manages same-repo write exclusion, profile-gated tool dispatch, real-time bidirectional
+//! `message_user` cards & oneshot Q&A round-trips, unified `commit_exact_scope` / `sync_and_push`,
+//! `agentFirst` verified `handoff_to_recovery`, zero-token Host Recovery, Pull & Rebase, and
+//! tool-driven conflict resolution on a single `StoredActionSession` state machine.
 
 mod conflict_flow;
 mod context;
-mod cpush_commit_exec;
-mod cpush_commit_tool;
-mod cpush_flow;
-pub(super) mod cpush_helpers;
-mod cpush_push_retry;
-mod cpush_response;
-mod cpush_sensitive;
-mod cpush_tools;
 mod generator;
-mod pull_rebase;
 mod questions;
 mod reconcile;
+mod recovery;
 mod runner;
+pub(super) mod session_helpers;
 mod sessions;
 mod tools_cli;
 mod tools_command;
-mod tools_git_ops;
+mod tools_commit;
 mod tools_submit;
+mod tools_sync;
 mod tools_workspace;
 #[cfg(test)]
 mod workspace_tests;
@@ -31,12 +25,7 @@ mod workspace_tests;
 pub(super) use questions::SessionAuthGrants;
 
 use super::types::*;
-use crate::{
-    bounded_cache::BoundedMap,
-    error::AppError,
-    i18n::LanguageKind,
-    repo_lock::{RepoWriteCoordinator, RepoWriteKind, RepoWriteLease},
-};
+use crate::{bounded_cache::BoundedMap, repo_lock::RepoWriteCoordinator};
 use questions::PendingQuestion;
 use std::{
     collections::HashMap,
@@ -50,18 +39,18 @@ use std::{
 
 pub(super) const CUSTOM_ACTION_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 pub(super) const CPUSH_AI_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-const MAX_PROCESSED_CPUSH_REQUESTS: usize = 128;
+const MAX_PROCESSED_REQUESTS: usize = 128;
 
 pub(super) struct CoordinatorInner {
     pub(super) write_coordinator: RepoWriteCoordinator,
     pub(super) active_operations: AtomicUsize,
     pending_questions: Mutex<HashMap<(String, String), PendingQuestion>>,
+    active_pi_requests: Mutex<HashMap<String, String>>,
     override_cli_dirs: Mutex<Option<Vec<PathBuf>>>,
     pub(super) seq: AtomicU64,
     worktree_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    pub(super) cpush_sessions: Mutex<HashMap<String, StoredCPushSession>>,
-    pub(super) active_action_tray: Mutex<HashMap<String, crate::tray::TrayWorktreeSessionInfo>>,
-    pub(super) processed_cpush_requests: Mutex<BoundedMap<String, CPushCommandReply>>,
+    pub(super) active_sessions: Mutex<HashMap<String, StoredActionSession>>,
+    pub(super) processed_requests: Mutex<BoundedMap<String, ActionCommandReply>>,
 }
 
 impl Default for CoordinatorInner {
@@ -76,14 +65,12 @@ impl CoordinatorInner {
             write_coordinator,
             active_operations: AtomicUsize::default(),
             pending_questions: Mutex::default(),
+            active_pi_requests: Mutex::default(),
             override_cli_dirs: Mutex::default(),
             seq: AtomicU64::default(),
             worktree_gates: Mutex::default(),
-            cpush_sessions: Mutex::default(),
-            active_action_tray: Mutex::default(),
-            processed_cpush_requests: Mutex::new(BoundedMap::with_capacity(
-                MAX_PROCESSED_CPUSH_REQUESTS,
-            )),
+            active_sessions: Mutex::default(),
+            processed_requests: Mutex::new(BoundedMap::with_capacity(MAX_PROCESSED_REQUESTS)),
         }
     }
 }
@@ -103,14 +90,19 @@ impl Drop for ActiveOperationGuard {
     }
 }
 
-pub(super) struct ActiveWriteRepoGuard {
+pub(super) struct ActivePiRequestGuard {
     inner: Arc<CoordinatorInner>,
-    _repo_lease: RepoWriteLease,
+    run_id: String,
+    pi_request_id: String,
 }
 
-impl Drop for ActiveWriteRepoGuard {
+impl Drop for ActivePiRequestGuard {
     fn drop(&mut self) {
-        self.inner.active_operations.fetch_sub(1, Ordering::SeqCst);
+        if let Ok(mut map) = self.inner.active_pi_requests.lock()
+            && map.get(&self.run_id).map(String::as_str) == Some(self.pi_request_id.as_str())
+        {
+            map.remove(&self.run_id);
+        }
     }
 }
 
@@ -130,6 +122,30 @@ impl CustomActionCoordinator {
         ActiveOperationGuard {
             inner: Arc::clone(&self.inner),
         }
+    }
+
+    pub(super) fn register_active_pi_request(
+        &self,
+        run_id: &str,
+        pi_request_id: &str,
+    ) -> ActivePiRequestGuard {
+        if let Ok(mut map) = self.inner.active_pi_requests.lock() {
+            map.insert(run_id.to_owned(), pi_request_id.to_owned());
+        }
+        ActivePiRequestGuard {
+            inner: Arc::clone(&self.inner),
+            run_id: run_id.to_owned(),
+            pi_request_id: pi_request_id.to_owned(),
+        }
+    }
+
+    pub fn resolve_active_pi_request_id(&self, run_id: &str) -> String {
+        self.inner
+            .active_pi_requests
+            .lock()
+            .ok()
+            .and_then(|map| map.get(run_id).cloned())
+            .unwrap_or_else(|| run_id.to_owned())
     }
 
     pub(super) fn worktree_gate(
@@ -159,22 +175,5 @@ impl CustomActionCoordinator {
         if let Ok(mut guard) = self.inner.override_cli_dirs.lock() {
             *guard = dirs;
         }
-    }
-
-    pub(super) fn acquire_repo_write(
-        &self,
-        repository_id: &str,
-        locale: LanguageKind,
-    ) -> Result<ActiveWriteRepoGuard, AppError> {
-        let lease = self.inner.write_coordinator.try_acquire(
-            repository_id,
-            RepoWriteKind::CustomAction,
-            locale,
-        )?;
-        self.inner.active_operations.fetch_add(1, Ordering::SeqCst);
-        Ok(ActiveWriteRepoGuard {
-            inner: Arc::clone(&self.inner),
-            _repo_lease: lease,
-        })
     }
 }

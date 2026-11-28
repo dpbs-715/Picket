@@ -1,6 +1,7 @@
 import { DEFAULT_APP_LOCALE, type AppLocale } from '../../shared/language-protocol';
 import { commonEn, commonZh, type CommonMessages } from './catalog/common';
 import { desktopEn, desktopZh, type DesktopMessages } from './catalog/desktop';
+import { runnerEn, runnerZh, type RunnerMessages } from './catalog/runner';
 import { settingsEn, settingsZh, type SettingsMessages } from './catalog/settings';
 import { workbenchEn, workbenchZh, type WorkbenchMessages } from './catalog/workbench';
 import { workflowsEn, workflowsZh, type WorkflowMessages } from './catalog/workflows';
@@ -14,7 +15,8 @@ export type Messages = CommonMessages
   & WorkbenchMessages
   & WorkflowMessages
   & SettingsMessages
-  & DesktopMessages;
+  & DesktopMessages
+  & RunnerMessages;
 
 const en: Messages = {
   ...commonEn,
@@ -22,6 +24,7 @@ const en: Messages = {
   ...workflowsEn,
   ...settingsEn,
   ...desktopEn,
+  ...runnerEn,
 };
 
 const zh: Messages = {
@@ -30,6 +33,7 @@ const zh: Messages = {
   ...workflowsZh,
   ...settingsZh,
   ...desktopZh,
+  ...runnerZh,
 };
 
 const CATALOG: Record<AppLocale, Messages> = { en, zh };

@@ -147,14 +147,6 @@ pub const fn action_tier2_cancel_desc(locale: LanguageKind) -> &'static str {
     )
 }
 
-pub const fn action_tier2_dont_ask_label(locale: LanguageKind) -> &'static str {
-    tr(
-        locale,
-        "Don't ask again for this button (resets if prompt is edited)",
-        "此按钮不再提示（修改指令后自动失效）",
-    )
-}
-
 pub fn action_preparing_label(locale: LanguageKind, action_label: &str) -> String {
     match locale {
         LanguageKind::En => format!("Preparing \"{action_label}\""),
@@ -293,6 +285,10 @@ pub fn action_tool_status_label(locale: LanguageKind, tool_name: &str, detail: &
         (LanguageKind::Zh, "cleanup_submit_duplicates") => "备份并清理已验证的本地重复改动".into(),
         (LanguageKind::En, "record_action_checkpoint") => "Saving submission checkpoint".into(),
         (LanguageKind::Zh, "record_action_checkpoint") => "记录断点进度".into(),
+        (LanguageKind::En, "read_scope_diff") => format!("Reading diff for {detail}"),
+        (LanguageKind::Zh, "read_scope_diff") => format!("读取 {detail} 的变更片段"),
+        (LanguageKind::En, "handoff_to_recovery") => "Handing off to recovery controls".into(),
+        (LanguageKind::Zh, "handoff_to_recovery") => "移交至宿主恢复面板".into(),
         (LanguageKind::En, "read_repo_file") => format!("Reading {detail}"),
         (LanguageKind::Zh, "read_repo_file") => format!("读取 {detail}"),
         (LanguageKind::En, "search_repo") => "Searching repository".into(),

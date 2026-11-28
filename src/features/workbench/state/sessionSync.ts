@@ -1,126 +1,59 @@
-import type { CPushCommandReply, CPushProgressEvent, CPushSessionSnapshot } from '../../../../shared/cpush-protocol';
 import {
   computeCustomActionPromptHash,
-  type CustomActionCommandReply,
-  type CustomActionProgressEvent,
+  type ActionCommandReply,
+  type ActionProgressEvent,
+  type ActionSessionSnapshot,
+  type ActionSessionStatus,
   type TrustedActionUpdate,
 } from '../../../../shared/custom-action-protocol';
 import type { GitRepositorySnapshot } from '../../../../shared/git-read-protocol';
 import { mergeSnapshot } from './snapshotMerge';
-import type { Message, WorkbenchState, Worktree } from './types';
+import type { ActiveActionRun, Message, WorkbenchState, Worktree } from './types';
 
-export function applyCPushSnapshot(
-  state: WorkbenchState,
-  session: CPushSessionSnapshot,
-  repositorySnapshot?: GitRepositorySnapshot,
-  expandDockOnSettle?: boolean,
-  suppressExpand = false,
-): WorkbenchState {
-  const previousTree = state.worktrees.find(
-    (tree) => tree.repositoryId === session.repositoryId && tree.worktreeId === session.worktreeId,
-  );
-  if (!previousTree) return state;
-  const previousCPush = previousTree.activeRun?.kind === 'cpush' ? previousTree.activeRun : undefined;
-  if (
-    previousCPush
-    && previousCPush.runId !== session.runId
-    && previousTree.sessionStatus !== 'idle'
-    && previousTree.sessionStatus !== 'done'
-  ) {
-    return state;
+export function toWorktreeSessionStatus(status: ActionSessionStatus): Worktree['sessionStatus'] {
+  switch (status) {
+    case 'running':
+    case 'needsDecision':
+    case 'conflict':
+    case 'waitingManual':
+    case 'pushFailed':
+    case 'done':
+      return status;
+    case 'idle':
+    case 'interrupted':
+    case 'cancelled':
+    case 'failed':
+      return 'idle';
   }
+}
 
-  const promptRevAtStart = previousCPush?.promptRevisionAtStart ?? previousTree.prompt.revision;
-  const isCPushCompleted = session.sessionStatus === 'done'
-    && !session.message?.id.startsWith('done-local-')
-    && !session.message?.id.startsWith('done-merge-pull-')
-    && !session.message?.id.startsWith('done-manual-rebase-')
-    && (session.commits.length > 0 || session.skippedFileIds.length > 0);
-
-  let nextState = repositorySnapshot
-    ? mergeSnapshot(
-        state,
-        repositorySnapshot,
-        false,
-        session.committedFileIds.length > 0 || isCPushCompleted
-          ? {
-              worktreeId: session.worktreeId,
-              promptRevision: promptRevAtStart,
-              clearPrompt: isCPushCompleted,
-              committedFileIds: session.committedFileIds,
-            }
-          : undefined,
-      )
-    : state;
-
-  nextState = {
-    ...nextState,
-    worktrees: nextState.worktrees.map((tree) => {
-      if (tree.repositoryId !== session.repositoryId || tree.worktreeId !== session.worktreeId) {
-        return tree;
-      }
-      const nextMessages: Message[] = session.message ? [session.message] : [];
-      const nextPrompt = isCPushCompleted && !repositorySnapshot && tree.prompt.revision === promptRevAtStart
-        ? { text: '', revision: tree.prompt.revision + 1 }
-        : tree.prompt;
-      const shouldAutoExpandLiveQuestion = session.sessionStatus === 'needsDecision'
-        && Boolean(session.pendingCallId)
-        && tree.worktreeId === nextState.activeWorktreeId
-        && !suppressExpand;
-      const nextDockExpanded = session.autoCollapse || session.sessionStatus === 'idle'
-        ? false
-        : shouldAutoExpandLiveQuestion
-          ? true
-          : expandDockOnSettle
-            ? true
-            : tree.dockExpanded;
-      const existingCPush = tree.activeRun?.kind === 'cpush' ? tree.activeRun : undefined;
-      return {
-        ...tree,
-        sessionStatus: session.sessionStatus,
-        dockExpanded: nextDockExpanded,
-        messages: nextMessages,
-        prompt: nextPrompt,
-        activeRun: session.sessionStatus === 'idle'
-          ? undefined
-          : {
-              kind: 'cpush',
-              runId: session.runId,
-              frozenTarget: {
-                repositoryId: session.repositoryId,
-                worktreeId: session.worktreeId,
-                sessionId: session.sessionId,
-                scopeVersion: session.frozenScopeVersion,
-              },
-              frozenFileIds: session.frozenFileIds,
-              promptRevisionAtStart: existingCPush?.promptRevisionAtStart ?? promptRevAtStart,
-              modelId: session.modelId,
-              ...(session.pendingCallId ? { pendingCallId: session.pendingCallId } : {}),
-              timeline: session.timeline,
-              qaLog: session.qaLog,
-              commits: session.commits,
-              canRetryRemaining: session.canRetryRemaining,
-            },
-      };
-    }),
+export function toActiveActionRun(
+  session: ActionSessionSnapshot,
+  fallbackSessionId: string,
+  fallbackScopeVersion: string,
+  promptRevisionAtStart: number,
+): ActiveActionRun {
+  return {
+    profile: session.profile,
+    runId: session.runId,
+    actionId: session.actionId,
+    actionLabel: session.actionLabel,
+    frozenTarget: {
+      repositoryId: session.repositoryId,
+      worktreeId: session.worktreeId,
+      sessionId: session.sessionId || fallbackSessionId,
+      scopeVersion: session.frozenScopeVersion || fallbackScopeVersion,
+    },
+    frozenFileIds: session.frozenFileIds,
+    promptRevisionAtStart,
+    modelId: session.modelId,
+    ...(session.pendingCallId ? { pendingCallId: session.pendingCallId } : {}),
+    timeline: session.timeline,
+    qaLog: session.qaLog,
+    commits: session.commits,
+    links: session.links,
+    canRetryRemaining: session.canRetryRemaining,
   };
-  return nextState;
-}
-
-export function finishCPushCommand(
-  state: WorkbenchState,
-  reply: CPushCommandReply,
-  expandDockOnSettle?: boolean,
-): WorkbenchState {
-  return applyCPushSnapshot(state, reply.session, reply.repositorySnapshot, expandDockOnSettle);
-}
-
-export function receiveCPushProgress(
-  state: WorkbenchState,
-  progress: CPushProgressEvent,
-  suppressExpand = false,
-): WorkbenchState {
-  return applyCPushSnapshot(state, progress.session, progress.repositorySnapshot, undefined, suppressExpand);
 }
 
 function applyTrustedUpdate(state: WorkbenchState, update?: TrustedActionUpdate): WorkbenchState {
@@ -153,96 +86,141 @@ function applyTrustedUpdate(state: WorkbenchState, update?: TrustedActionUpdate)
   };
 }
 
-export function applyCustomActionProgress(
+export interface ApplyActionSnapshotOptions {
+  repositorySnapshot?: GitRepositorySnapshot;
+  trustedActionUpdate?: TrustedActionUpdate;
+  expandDockOnSettle?: boolean;
+  suppressExpand?: boolean;
+  isSettledReply?: boolean;
+  expectedRunId?: string;
+}
+
+export function applyActionSnapshot(
   state: WorkbenchState,
-  progress: CustomActionProgressEvent,
-  suppressExpand = false,
+  session: ActionSessionSnapshot,
+  options: ApplyActionSnapshotOptions = {},
 ): WorkbenchState {
-  let nextState = progress.repositorySnapshot
-    ? mergeSnapshot(state, progress.repositorySnapshot, false)
+  const {
+    repositorySnapshot,
+    trustedActionUpdate,
+    expandDockOnSettle,
+    suppressExpand = false,
+    isSettledReply = false,
+    expectedRunId,
+  } = options;
+  const previousTree = state.worktrees.find(
+    (tree) => tree.repositoryId === session.repositoryId && tree.worktreeId === session.worktreeId,
+  );
+  if (!previousTree) return state;
+  const previousRun = previousTree.activeRun;
+  if (expectedRunId && previousRun?.runId !== expectedRunId) {
+    return state;
+  }
+  if (
+    previousRun
+    && previousRun.runId !== session.runId
+    && previousTree.sessionStatus !== 'idle'
+    && previousTree.sessionStatus !== 'done'
+  ) {
+    return state;
+  }
+
+  const promptRevAtStart = previousRun?.promptRevisionAtStart ?? previousTree.prompt.revision;
+  const isCPushCompleted = session.profile === 'cpush'
+    && session.status === 'done'
+    && !session.message?.id.startsWith('done-local-')
+    && !session.message?.id.startsWith('done-merge-pull-')
+    && !session.message?.id.startsWith('done-manual-rebase-')
+    && (session.commits.length > 0 || session.skippedFileIds.length > 0);
+
+  let nextState = repositorySnapshot
+    ? mergeSnapshot(
+        state,
+        repositorySnapshot,
+        false,
+        session.committedFileIds.length > 0 || isCPushCompleted
+          ? {
+              worktreeId: session.worktreeId,
+              promptRevision: promptRevAtStart,
+              clearPrompt: isCPushCompleted,
+              committedFileIds: session.committedFileIds,
+            }
+          : undefined,
+      )
     : state;
-  nextState = applyTrustedUpdate(nextState, progress.trustedActionUpdate);
-  const nextStatus: Worktree['sessionStatus'] =
-    progress.status === 'running'
-      ? 'running'
-      : progress.status === 'needsDecision'
-        ? 'needsDecision'
-        : progress.status === 'done'
-          ? 'done'
-          : 'idle';
+
+  nextState = applyTrustedUpdate(nextState, trustedActionUpdate);
+  const nextSessionStatus = toWorktreeSessionStatus(session.status);
+
   return {
     ...nextState,
     worktrees: nextState.worktrees.map((tree) => {
-      if (tree.repositoryId !== progress.repositoryId || tree.worktreeId !== progress.worktreeId) {
+      if (tree.repositoryId !== session.repositoryId || tree.worktreeId !== session.worktreeId) {
         return tree;
       }
-      const nextMessages: Message[] = progress.message ? [progress.message] : [];
-      const shouldExpand = progress.status === 'needsDecision'
-        ? (suppressExpand ? tree.dockExpanded : true)
-        : progress.status === 'cancelled'
-          ? false
-          : tree.dockExpanded;
+      const nextMessages: Message[] = session.message ? [session.message] : [];
+      const nextPrompt = isCPushCompleted && !repositorySnapshot && tree.prompt.revision === promptRevAtStart
+        ? { text: '', revision: tree.prompt.revision + 1 }
+        : tree.prompt;
+      const shouldAutoExpandLiveQuestion = session.status === 'needsDecision'
+        && Boolean(session.pendingCallId)
+        && !suppressExpand
+        && (tree.worktreeId === nextState.activeWorktreeId || session.profile === 'customAction');
+      const shouldExpandSettledFailure = isSettledReply
+        && session.status === 'failed'
+        && Boolean(session.message)
+        && !suppressExpand;
+      const nextDockExpanded = session.autoCollapse || session.status === 'idle' || session.status === 'cancelled'
+        ? false
+        : shouldAutoExpandLiveQuestion || shouldExpandSettledFailure
+          ? true
+          : expandDockOnSettle
+            ? true
+            : tree.dockExpanded;
+
+      const keepActiveRun = session.status !== 'idle'
+        && session.status !== 'cancelled'
+        && !(session.status === 'failed' && !session.message);
+      const existingPromptRev = tree.activeRun?.promptRevisionAtStart ?? promptRevAtStart;
       return {
         ...tree,
-        sessionStatus: nextStatus,
-        dockExpanded: shouldExpand,
+        sessionStatus: nextSessionStatus,
+        dockExpanded: nextDockExpanded,
         messages: nextMessages,
-        activeRun: progress.status === 'cancelled' || progress.status === 'failed'
-          ? undefined
-          : {
-              kind: 'customAction',
-              runId: progress.runId,
-              actionId: progress.actionId,
-              actionLabel: progress.actionLabel,
-              ...(progress.pendingCallId ? { pendingCallId: progress.pendingCallId } : {}),
-              timeline: progress.timeline,
-              commits: progress.commits,
-              links: progress.links,
-            },
+        prompt: nextPrompt,
+        activeRun: keepActiveRun
+          ? toActiveActionRun(session, tree.sessionId, tree.scopeVersion, existingPromptRev)
+          : undefined,
       };
     }),
   };
 }
 
-export function finishCustomActionCommand(
+export function finishActionCommand(
   state: WorkbenchState,
-  reply: CustomActionCommandReply,
+  reply: ActionCommandReply,
   expandDockOnSettle?: boolean,
+  suppressExpand = false,
 ): WorkbenchState {
-  let nextState = reply.repositorySnapshot
-    ? mergeSnapshot(state, reply.repositorySnapshot, false)
-    : state;
-  nextState = applyTrustedUpdate(nextState, reply.trustedActionUpdate);
-  const nextStatus: Worktree['sessionStatus'] = reply.status === 'done' ? 'done' : 'idle';
-  return {
-    ...nextState,
-    worktrees: nextState.worktrees.map((tree) => {
-      if (tree.repositoryId !== reply.repositoryId || tree.worktreeId !== reply.worktreeId) {
-        return tree;
-      }
-      const nextMessages: Message[] = reply.message ? [reply.message] : [];
-      const nextDockExpanded = reply.status === 'cancelled'
-        ? false
-        : reply.status === 'done'
-          ? Boolean(expandDockOnSettle)
-          : Boolean(reply.message);
-      return {
-        ...tree,
-        sessionStatus: nextStatus,
-        dockExpanded: nextDockExpanded,
-        messages: nextMessages,
-        activeRun: reply.status === 'done' || (reply.status === 'failed' && Boolean(reply.message))
-          ? {
-              kind: 'customAction',
-              runId: reply.runId,
-              actionId: reply.actionId,
-              actionLabel: reply.actionLabel,
-              timeline: reply.timeline,
-              commits: reply.commits,
-              links: reply.links,
-            }
-          : undefined,
-      };
-    }),
-  };
+  return applyActionSnapshot(state, reply.session, {
+    repositorySnapshot: reply.repositorySnapshot,
+    trustedActionUpdate: reply.trustedActionUpdate,
+    expandDockOnSettle,
+    suppressExpand,
+    isSettledReply: true,
+  });
+}
+
+export function receiveActionProgress(
+  state: WorkbenchState,
+  progress: ActionProgressEvent,
+  suppressExpand = false,
+  expectedRunId?: string,
+): WorkbenchState {
+  return applyActionSnapshot(state, progress.session, {
+    repositorySnapshot: progress.repositorySnapshot,
+    trustedActionUpdate: progress.trustedActionUpdate,
+    suppressExpand,
+    expectedRunId,
+  });
 }

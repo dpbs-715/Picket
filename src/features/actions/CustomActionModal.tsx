@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import {
   CUSTOM_ACTION_LIMITS,
-  isCustomActionWriteTrusted,
   normalizeCustomActionPrompt,
   sanitizeCustomActionConfig,
   type CustomActionConfig,
@@ -62,7 +61,6 @@ export function CustomActionModal(props: Props) {
   const [draftSummary, setDraftSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedSyncRepoIds, setSelectedSyncRepoIds] = useState<string[]>([]);
-  const [trustReset, setTrustReset] = useState(false);
   const cancelGenerateRef = useRef<() => void>(() => {});
 
   const syncTargets = props.otherRepositories.map((repo) => ({
@@ -90,12 +88,6 @@ export function CustomActionModal(props: Props) {
     );
   }
 
-  const promptUnchanged = isEditing
-    && normalizeCustomActionPrompt(prompt) === normalizeCustomActionPrompt(props.initialAction?.prompt ?? '');
-  const hasActiveWriteTrust = !trustReset
-    && promptUnchanged
-    && Boolean(props.initialAction && isCustomActionWriteTrusted(props.initialAction));
-
   function handleSave(event: React.FormEvent) {
     event.preventDefault();
     const cleanLabel = label.trim();
@@ -121,12 +113,6 @@ export function CustomActionModal(props: Props) {
       ...(props.initialAction?.templateKey ? { templateKey: props.initialAction.templateKey } : {}),
       label: cleanLabel,
       prompt: cleanPrompt,
-      ...(hasActiveWriteTrust && props.initialAction?.trustedPromptHash
-        ? {
-            skipWriteConfirm: true,
-            trustedPromptHash: props.initialAction.trustedPromptHash,
-          }
-        : {}),
     });
     setError(null);
     props.onSave(built, selectAfterSave, effectiveSelectedSyncIds);
@@ -250,22 +236,6 @@ export function CustomActionModal(props: Props) {
                   />
                   <span>{t.actions.selectAfterSaveLabel}</span>
                 </label>
-              )}
-
-              {hasActiveWriteTrust && props.initialAction && (
-                <div className="action-trust-card">
-                  <span className="muted small">{t.actions.writeTrustActiveNote}</span>
-                  <button
-                    type="button"
-                    className="secondary compact"
-                    onClick={() => {
-                      setTrustReset(true);
-                      props.onResetWriteTrust?.(props.initialAction!.id);
-                    }}
-                  >
-                    {t.actions.resetWriteTrustButton}
-                  </button>
-                </div>
               )}
 
               <ActionSyncRepoPicker

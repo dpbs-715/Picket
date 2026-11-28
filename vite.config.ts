@@ -46,6 +46,7 @@ export default defineConfig({
         main: resolve(rootDir, 'index.html'),
         splash: resolve(rootDir, 'splash.html'),
         tray: resolve(rootDir, 'tray.html'),
+        runLogs: resolve(rootDir, 'run-logs.html'),
       },
     },
   },

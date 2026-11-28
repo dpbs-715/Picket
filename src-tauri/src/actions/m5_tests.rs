@@ -38,6 +38,29 @@ fn text_git(root: &Path, args: &[&str]) -> String {
         .to_owned()
 }
 
+fn cpush_req(
+    request_id: &str,
+    target: ReadTarget,
+    model_id: &str,
+    selections: Vec<CommitSelection>,
+) -> StartActionRequest {
+    StartActionRequest {
+        request_id: request_id.into(),
+        target,
+        model_id: model_id.into(),
+        profile: ActionProfileKind::Cpush,
+        action: None,
+        selections,
+        extra_prompt: String::new(),
+        push: None,
+        follow_up_prompt: None,
+        resume_from_run_id: None,
+        locale: LanguageKind::En,
+        commit_language: LanguageKind::En,
+        approval_mode: ActionApprovalMode::Auto,
+    }
+}
+
 impl BareRemotePair {
     fn new(remote_name: &str, branch: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -152,34 +175,27 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
     };
 
     let asked = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cp-no-upstream-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cp-no-upstream-1",
+                target.clone(),
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: part.id.clone(),
                     commit_token: part.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+            ),
+            |_| {},
         )
         .await
         .unwrap();
 
-    assert_eq!(
-        asked.session.session_status,
-        CPushSessionStatus::NeedsDecision
-    );
+    assert_eq!(asked.session.status, ActionSessionStatus::NeedsDecision);
     assert_eq!(asked.session.commits.len(), 1);
     assert_eq!(
         text_git(&pair.clone_a, &["rev-list", "--count", "HEAD"]),
@@ -200,19 +216,20 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
     assert!(!opts.iter().any(|o| o.label.contains("origin")));
 
     let pushed = coordinator
-        .respond_cpush(
+        .run_session_recovery(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &RespondCPushRequest {
+            &SessionRecoveryRequest {
                 request_id: "cp-confirm-corp".into(),
                 target: target.clone(),
-                run_id: asked.session.run_id.clone(),
-                message_id: asked.session.message.unwrap().id,
-                option_id: Some("push-set-upstream:corp".into()),
-                text: None,
+                run_id: Some(asked.session.run_id.clone()),
+                message_id: Some(asked.session.message.unwrap().id),
+                action: SessionRecoveryAction::RetryPush {
+                    set_upstream_remote: Some("corp".into()),
+                },
                 model_id: None,
                 locale: None,
             },
@@ -220,7 +237,7 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
         )
         .await
         .unwrap();
-    assert_eq!(pushed.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(pushed.session.status, ActionSessionStatus::Done);
     assert_eq!(
         text_git(&pair.bare, &["rev-parse", "refs/heads/feat/no-upstream"]),
         pushed.session.commits[0].oid
@@ -245,34 +262,27 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
     };
 
     let failed = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cp-push-fail-1".into(),
-                target: target2.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cp-push-fail-1",
+                target2.clone(),
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: part2.id.clone(),
                     commit_token: part2.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+            ),
+            |_| {},
         )
         .await
         .unwrap();
 
-    assert_eq!(
-        failed.session.session_status,
-        CPushSessionStatus::PushFailed
-    );
+    assert_eq!(failed.session.status, ActionSessionStatus::PushFailed);
     assert_eq!(
         failed.session.message.as_ref().unwrap().title,
         "Committed locally, push failed"
@@ -285,19 +295,20 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
 
     fs::remove_file(&pre_receive).unwrap();
     let retried = coordinator
-        .respond_cpush(
+        .run_session_recovery(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &RespondCPushRequest {
+            &SessionRecoveryRequest {
                 request_id: "cp-push-retry-1".into(),
                 target: target2.clone(),
-                run_id: failed.session.run_id.clone(),
-                message_id: failed.session.message.unwrap().id,
-                option_id: Some("retry-push".into()),
-                text: None,
+                run_id: Some(failed.session.run_id.clone()),
+                message_id: Some(failed.session.message.unwrap().id),
+                action: SessionRecoveryAction::RetryPush {
+                    set_upstream_remote: None,
+                },
                 model_id: None,
                 locale: None,
             },
@@ -306,7 +317,7 @@ async fn cpush_confirmed_plan_handles_missing_upstream_push_failure_and_retry_wi
         .await
         .unwrap();
 
-    assert_eq!(retried.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(retried.session.status, ActionSessionStatus::Done);
     assert_eq!(
         text_git(&pair.clone_a, &["rev-list", "--count", "HEAD"]),
         "3"
@@ -360,13 +371,22 @@ async fn dirty_worktree_pull_rebase_preserves_partial_staging_pauses_on_overlap_
         scope_version: wt.status_version.clone(),
     };
 
+    let paths = PiPaths::development();
+    let supervisor = PiSupervisor::default();
+    let models = ModelStore::default();
     let pulled = coordinator
-        .pull_rebase(
+        .run_session_recovery(
             temp.path(),
+            &paths,
+            &supervisor,
+            &models,
             &repo_store,
-            &PullRebaseRequest {
+            &SessionRecoveryRequest {
                 request_id: "pull-disjoint-1".into(),
                 target: target.clone(),
+                run_id: None,
+                message_id: None,
+                action: SessionRecoveryAction::PullRebase,
                 model_id: None,
                 locale: None,
             },
@@ -375,7 +395,7 @@ async fn dirty_worktree_pull_rebase_preserves_partial_staging_pauses_on_overlap_
         .await
         .unwrap();
 
-    assert_eq!(pulled.session.session_status, CPushSessionStatus::Idle);
+    assert_eq!(pulled.session.status, ActionSessionStatus::Idle);
     let updated_wt = &pulled.repository_snapshot.as_ref().unwrap().worktrees[0];
     match &updated_wt.remote {
         Remote::Tracked {
@@ -419,12 +439,18 @@ async fn dirty_worktree_pull_rebase_preserves_partial_staging_pauses_on_overlap_
     git(&pair.clone_b, &["push", "origin", "feat/sync"]).unwrap();
 
     let overlap_err = coordinator
-        .pull_rebase(
+        .run_session_recovery(
             temp.path(),
+            &paths,
+            &supervisor,
+            &models,
             &repo_store,
-            &PullRebaseRequest {
+            &SessionRecoveryRequest {
                 request_id: "pull-overlap-1".into(),
                 target: target.clone(),
+                run_id: None,
+                message_id: None,
+                action: SessionRecoveryAction::PullRebase,
                 model_id: None,
                 locale: None,
             },
@@ -524,34 +550,27 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     };
 
     let conflicted = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-conflict-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-conflict-1",
+                target.clone(),
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: order_file.id.clone(),
                     commit_token: order_file.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+            ),
+            |_| {},
         )
         .await
         .unwrap();
 
-    assert_eq!(
-        conflicted.session.session_status,
-        CPushSessionStatus::Conflict
-    );
+    assert_eq!(conflicted.session.status, ActionSessionStatus::Conflict);
     let c_msg = conflicted.session.message.as_ref().unwrap();
     assert_eq!(c_msg.kind, "conflict");
     assert_eq!(
@@ -561,19 +580,20 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
 
     // R03 validation failure guard: leftover conflict markers are rejected and pause back in `Conflict`!
     let marker_rejected = coordinator
-        .respond_cpush(
+        .run_session_recovery(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &RespondCPushRequest {
+            &SessionRecoveryRequest {
                 request_id: "cpush-merge-bad-markers".into(),
                 target: target.clone(),
-                run_id: conflicted.session.run_id.clone(),
-                message_id: c_msg.id.clone(),
-                option_id: None,
-                text: Some("simulate leftover conflict markers".into()),
+                run_id: Some(conflicted.session.run_id.clone()),
+                message_id: Some(c_msg.id.clone()),
+                action: SessionRecoveryAction::AgentConflictMerge {
+                    instruction: Some("simulate leftover conflict markers".into()),
+                },
                 model_id: Some(saved.model.id.clone()),
                 locale: None,
             },
@@ -582,8 +602,8 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .await
         .unwrap();
     assert_eq!(
-        marker_rejected.session.session_status,
-        CPushSessionStatus::Conflict
+        marker_rejected.session.status,
+        ActionSessionStatus::Conflict
     );
     let rej_desc = &marker_rejected
         .session
@@ -595,19 +615,20 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
 
     // R03 authorized Agent merge with custom requirement -> tool-driven read_conflict_file + write_conflict_resolution -> merges & pushes!
     let merged_and_pushed = coordinator
-        .respond_cpush(
+        .run_session_recovery(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &RespondCPushRequest {
+            &SessionRecoveryRequest {
                 request_id: "cpush-merge-good".into(),
                 target: target.clone(),
-                run_id: conflicted.session.run_id.clone(),
-                message_id: marker_rejected.session.message.unwrap().id,
-                option_id: None,
-                text: Some("append merge note comment".into()),
+                run_id: Some(conflicted.session.run_id.clone()),
+                message_id: Some(marker_rejected.session.message.unwrap().id),
+                action: SessionRecoveryAction::AgentConflictMerge {
+                    instruction: Some("append merge note comment".into()),
+                },
                 model_id: Some(saved.model.id.clone()),
                 locale: None,
             },
@@ -616,10 +637,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .await
         .unwrap();
 
-    assert_eq!(
-        merged_and_pushed.session.session_status,
-        CPushSessionStatus::Done
-    );
+    assert_eq!(merged_and_pushed.session.status, ActionSessionStatus::Done);
     let head_order = text_git(&pair.clone_a, &["show", "HEAD:src/service/Order.ts"]);
     assert!(head_order.contains("logRemoteTrace()"));
     assert!(head_order.contains("acquireIdempotentLock()"));
@@ -663,45 +681,40 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     };
 
     let conf2 = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-manual-1".into(),
-                target: target2.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-manual-1",
+                target2.clone(),
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: order2.id.clone(),
                     commit_token: order2.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+            ),
+            |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(conf2.session.session_status, CPushSessionStatus::Conflict);
+    assert_eq!(conf2.session.status, ActionSessionStatus::Conflict);
 
     let waiting = coordinator
-        .respond_cpush(
+        .run_session_recovery(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &RespondCPushRequest {
+            &SessionRecoveryRequest {
                 request_id: "cpush-choose-manual".into(),
                 target: target2.clone(),
-                run_id: conf2.session.run_id.clone(),
-                message_id: conf2.session.message.unwrap().id,
-                option_id: Some("manual-merge".into()),
-                text: None,
+                run_id: Some(conf2.session.run_id.clone()),
+                message_id: Some(conf2.session.message.unwrap().id),
+                action: SessionRecoveryAction::ManualMerge,
                 model_id: None,
                 locale: None,
             },
@@ -709,16 +722,13 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         )
         .await
         .unwrap();
-    assert_eq!(
-        waiting.session.session_status,
-        CPushSessionStatus::WaitingManual
-    );
+    assert_eq!(waiting.session.status, ActionSessionStatus::WaitingManual);
 
     let still_waiting = coordinator
         .reconcile_worktree(
             temp.path(),
             &repo_store,
-            &ReconcileCPushRequest {
+            &ReconcileSessionRequest {
                 request_id: "reconcile-still-conflicted".into(),
                 target: target2.clone(),
                 locale: None,
@@ -728,8 +738,8 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .unwrap()
         .unwrap();
     assert_eq!(
-        still_waiting.session.session_status,
-        CPushSessionStatus::WaitingManual
+        still_waiting.session.status,
+        ActionSessionStatus::WaitingManual
     );
 
     fs::write(
@@ -748,7 +758,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .reconcile_worktree(
             temp.path(),
             &repo_store,
-            &ReconcileCPushRequest {
+            &ReconcileSessionRequest {
                 request_id: "reconcile-resolved-unpushed".into(),
                 target: target2.clone(),
                 locale: None,
@@ -758,8 +768,8 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .unwrap()
         .unwrap();
     assert_eq!(
-        resolved_unpushed.session.session_status,
-        CPushSessionStatus::NeedsDecision
+        resolved_unpushed.session.status,
+        ActionSessionStatus::NeedsDecision
     );
     assert_eq!(
         resolved_unpushed.session.message.as_ref().unwrap().kind,
@@ -772,7 +782,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         &fs::read_to_string(temp.path().join("action-sessions.json")).unwrap(),
     )
     .unwrap();
-    raw_file["sessions"][0]["sessionStatus"] = serde_json::json!("waitingManual");
+    raw_file["sessions"][0]["status"] = serde_json::json!("waitingManual");
     fs::write(
         temp.path().join("action-sessions.json"),
         serde_json::to_vec_pretty(&raw_file).unwrap(),
@@ -789,7 +799,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .reconcile_worktree(
             temp.path(),
             &repo_store,
-            &ReconcileCPushRequest {
+            &ReconcileSessionRequest {
                 request_id: "reconcile-terminal-pushed".into(),
                 target: target2.clone(),
                 locale: None,
@@ -798,7 +808,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(ext_pushed.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(ext_pushed.session.status, ActionSessionStatus::Done);
     assert_eq!(ext_pushed.session.auto_collapse, Some(true));
     assert!(
         ext_pushed
@@ -811,7 +821,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
     );
 
     // 3. W04: Simulated app crash during `Running` push phase restores as `PushFailed`, NEVER auto-pushing!
-    raw_file["sessions"][0]["sessionStatus"] = serde_json::json!("running");
+    raw_file["sessions"][0]["status"] = serde_json::json!("running");
     raw_file["sessions"][0]["pushAuthorized"] = serde_json::json!(true);
     fs::write(
         temp.path().join("action-sessions.json"),
@@ -825,10 +835,7 @@ async fn conflict_agent_merge_validation_manual_ide_return_and_crash_recovery_wo
         .await
         .unwrap();
     assert_eq!(warn, None);
-    assert_eq!(
-        recovered_list[0].session_status,
-        CPushSessionStatus::PushFailed
-    );
+    assert_eq!(recovered_list[0].status, ActionSessionStatus::PushFailed);
     assert!(
         recovered_list[0]
             .message

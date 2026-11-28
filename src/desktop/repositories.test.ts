@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { decodeCPushCommandReply, type CPushCommandReply } from '../../shared/cpush-protocol';
+import { decodeActionCommandReply, type ActionCommandReply } from '../../shared/custom-action-protocol';
 import { decodeGitBranchReply } from '../../shared/git-branch-protocol';
 import type { GitBranchReply } from '../../shared/git-branch-protocol';
 import { decodeGitOpenFileReply } from '../../shared/ide-protocol';
@@ -20,11 +20,11 @@ function branchReply(): GitBranchReply {
   return { ...reply, snapshot: reply.snapshot!, kind: 'branch', target, action: 'switchBranch', outcome: 'completed' };
 }
 
-function cPushReply(requestId: string): CPushCommandReply {
+function actionReply(requestId: string): ActionCommandReply {
   const reply = repositoryReply(requestId, 2);
   return {
-    protocolVersion: 1,
-    kind: 'cPush',
+    protocolVersion: 2,
+    kind: 'action',
     requestId,
     repositorySnapshot: reply.snapshot!,
     session: {
@@ -32,16 +32,21 @@ function cPushReply(requestId: string): CPushCommandReply {
       repositoryId: target.repositoryId,
       worktreeId: target.worktreeId,
       sessionId: target.sessionId,
+      actionId: 'builtin:cpush',
+      actionLabel: 'C-Push',
+      profile: 'cpush',
       frozenScopeVersion: target.scopeVersion,
       modelId: 'm1',
       frozenFileIds: ['order'],
       committedFileIds: ['order'],
       skippedFileIds: [],
-      sessionStatus: 'done',
+      status: 'done',
+      summary: '1 commit pushed to origin/feat/pay',
       message: { id: `done-${requestId}`, kind: 'done', title: '1 commit pushed to origin/feat/pay', description: 'Completed' },
       timeline: [{ state: 'done', label: '1 commit pushed to origin/feat/pay' }],
       qaLog: [],
       commits: [{ oid: 'commit-oid-2', shortOid: 'commit-', title: 'feat: push commit', branch: 'feat/pay', fileIds: ['order'] }],
+      links: [],
       canRetryRemaining: false,
     },
   };
@@ -169,44 +174,51 @@ describe('Desktop Git adapter and shared protocols', () => {
     expect(() => decodeGitReadReply(readMissingCommit)).toThrow('protocol mismatch');
   });
 
-  it('start_cpush, pull_rebase, and session reconciliation bind controlled IPC commands', async () => {
+  it('start_action, run_session_recovery, and reconcile_action_session bind unified IPC commands', async () => {
     const selections = [{ fileId: 'order', commitToken: 'commit-order' }];
     mockIPC((command, args) => {
-      if (command === 'start_cpush') {
+      if (command === 'start_action') {
         expect((args as { request: unknown }).request).toEqual({
           requestId: 'cpush-direct-1',
           target,
           modelId: 'm1',
+          profile: 'cpush',
           selections,
-          prompt: 'keep concise',
+          extraPrompt: 'keep concise',
         });
-        return cPushReply('cpush-direct-1');
+        return actionReply('cpush-direct-1');
       }
-      if (command === 'pull_rebase_repository') {
+      if (command === 'run_session_recovery') {
         expect((args as { request: unknown }).request).toEqual({
           requestId: 'pull-1',
           target,
+          action: { kind: 'pullRebase' },
           modelId: 'm1',
         });
-        return cPushReply('pull-1');
+        return actionReply('pull-1');
       }
-      expect(command).toBe('reconcile_cpush_session');
-      return { protocolVersion: 1, session: cPushReply('reconcile-1').session };
+      expect(command).toBe('reconcile_action_session');
+      return { protocolVersion: 2, session: actionReply('reconcile-1').session };
     });
 
     await expect(desktopWorkbenchBackend.execute({
-      kind: 'cPush',
+      kind: 'startAction',
+      profile: 'cpush',
       requestId: 'cpush-direct-1',
       target,
       fileIds: ['order'],
       selections,
       modelId: 'm1',
-      prompt: 'keep concise',
-    })).resolves.toMatchObject({ kind: 'cPush', requestId: 'cpush-direct-1' });
+      extraPrompt: 'keep concise',
+    })).resolves.toMatchObject({ kind: 'action', requestId: 'cpush-direct-1' });
 
     await expect(desktopWorkbenchBackend.execute({
-      kind: 'pull', requestId: 'pull-1', target, modelId: 'm1',
-    })).resolves.toMatchObject({ kind: 'cPush', requestId: 'pull-1' });
+      kind: 'runRecovery',
+      requestId: 'pull-1',
+      target,
+      action: { kind: 'pullRebase' },
+      modelId: 'm1',
+    })).resolves.toMatchObject({ kind: 'action', requestId: 'pull-1' });
 
     const observedEvents: unknown[] = [];
     const unsubscribe = desktopWorkbenchBackend.subscribe!((event) => observedEvents.push(event));
@@ -214,13 +226,27 @@ describe('Desktop Git adapter and shared protocols', () => {
     unsubscribe();
     expect(observedEvents).toHaveLength(1);
 
-    expect(decodeCPushCommandReply(cPushReply('ok-plan')).requestId).toBe('ok-plan');
+    expect(decodeActionCommandReply(actionReply('ok-plan')).requestId).toBe('ok-plan');
   });
 
-  it('rejects missing commitTokens or C-Push runId before invoking desktop IPC', async () => {
+  it('rejects missing commitTokens or recovery runId before invoking desktop IPC', async () => {
     const called = vi.fn(); mockIPC(called);
-    await expect(desktopWorkbenchBackend.execute({ kind: 'cPush', requestId: 'cpush-1', target, fileIds: ['order'], modelId: 'm1', prompt: '' })).rejects.toThrow('scope tokens');
-    await expect(desktopWorkbenchBackend.execute({ kind: 'respond', requestId: 'resp-1', target, messageId: 'q-1', optionId: 'split' })).rejects.toThrow('session identifier');
+    await expect(desktopWorkbenchBackend.execute({
+      kind: 'startAction',
+      profile: 'cpush',
+      requestId: 'cpush-1',
+      target,
+      fileIds: ['order'],
+      modelId: 'm1',
+      extraPrompt: '',
+    })).rejects.toThrow('scope tokens');
+    await expect(desktopWorkbenchBackend.execute({
+      kind: 'runRecovery',
+      requestId: 'resp-1',
+      target,
+      messageId: 'q-1',
+      action: { kind: 'retryPush' },
+    })).rejects.toThrow('session identifier');
     expect(called).not.toHaveBeenCalled();
   });
 

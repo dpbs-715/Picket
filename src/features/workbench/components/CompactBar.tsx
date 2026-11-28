@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
 import type { GitBranchAction } from '../../../../shared/git-branch-protocol';
+import {
+  isRunProcessActive,
+  makeRunProcessId,
+  type RunCommandConfig,
+  type RunProcessSnapshot,
+} from '../../../../shared/run-protocol';
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { useI18n } from '../../../i18n';
 import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
 import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../../ui/motion';
+import { RunCommandIcon } from '../../runner/RunCommandIcon';
+import { resolveRunCommandIcon } from '../../runner/runIcon';
 import {
   compactStatusSummary,
   isActiveSession,
@@ -24,6 +32,7 @@ import {
   CompactFilesDrawer,
   CompactProjectsDrawer,
   CompactRemoteDrawer,
+  CompactRunDrawer,
   type CompactDrawer,
 } from './CompactDrawers';
 
@@ -40,6 +49,10 @@ interface Props {
   hasModel: boolean;
   customActions: CustomActionConfig[];
   activeAction?: CustomActionConfig;
+  runCommands?: RunCommandConfig[];
+  runProcesses?: RunProcessSnapshot[];
+  runBusyIds?: string[];
+  activeRunCount?: number;
   opening: boolean;
   branchBusy: boolean;
   pullBusy: boolean;
@@ -58,6 +71,11 @@ interface Props {
   onSelectAction(actionId: string | null): void;
   onNewAction(mode: 'manual' | 'create'): void;
   onManageActions(): void;
+  onStartRunCommand?(command: RunCommandConfig): void;
+  onStopRunCommand?(processId: string, label: string): void;
+  onRestartRunCommand?(command: RunCommandConfig): void;
+  onOpenRunLogs?(processId: string): void;
+  onManageRunFromCompact?(mode: 'create' | 'discover' | 'panel'): void;
   onExpand(): void;
   onExpandTarget(target: CompactExpandTarget): void;
   onPin(): void;
@@ -77,6 +95,7 @@ export function CompactBar(props: Props) {
   const selectAllRef = useRef<HTMLInputElement>(null);
   const lastReportedHeightRef = useRef<{ height: number; transientExpanded: boolean } | null>(null);
   const [drawer, setDrawer] = useState<CompactDrawer>('none');
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [localKeepOpen, setLocalKeepOpen] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<BranchSection, boolean>>({
     local: true,
@@ -100,7 +119,7 @@ export function CompactBar(props: Props) {
 
   const effectiveDrawer: CompactDrawer =
     (drawer === 'files' && !canShowSelectionTrigger)
-    || ((drawer === 'branches' || drawer === 'remote' || drawer === 'actions') && !worktree)
+    || ((drawer === 'branches' || drawer === 'remote' || drawer === 'actions' || drawer === 'run') && !worktree)
       ? 'none'
       : drawer;
 
@@ -191,6 +210,8 @@ export function CompactBar(props: Props) {
     normalFiles.length,
     props.customActions.length,
     props.activeAction?.id,
+    props.runCommands?.length,
+    props.activeRunCount,
     props.notice?.text,
     props.notice?.showModelSettings,
     remoteBranches.length,
@@ -408,6 +429,34 @@ export function CompactBar(props: Props) {
         />
       )}
 
+      {effectiveDrawer === 'run' && worktree && (
+        <CompactRunDrawer
+          worktreeId={worktree.worktreeId}
+          commands={props.runCommands ?? []}
+          processes={props.runProcesses ?? []}
+          busyIds={props.runBusyIds ?? []}
+          selectedCommandId={selectedRunId}
+          onSelectCommand={(id) => setSelectedRunId(id)}
+          onStart={(cmd) => {
+            setSelectedRunId(cmd.id);
+            props.onStartRunCommand?.(cmd);
+          }}
+          onStop={(pid, label) => props.onStopRunCommand?.(pid, label)}
+          onRestart={(cmd) => {
+            setSelectedRunId(cmd.id);
+            props.onRestartRunCommand?.(cmd);
+          }}
+          onOpenLogs={(pid) => {
+            setDrawer('none');
+            props.onOpenRunLogs?.(pid);
+          }}
+          onManageInMain={(mode) => {
+            setDrawer('none');
+            props.onManageRunFromCompact?.(mode);
+          }}
+        />
+      )}
+
       <footer className="compact-bottom">
         {!worktree ? (
           <button
@@ -478,35 +527,120 @@ export function CompactBar(props: Props) {
           </div>
         )}
 
-        <div className={`primary-button-group compact-primary-group ${showSplitToggle ? 'is-split' : ''} ${action.resume ? `resume-button-group resume-${worktree?.sessionStatus ?? 'running'}` : ''}`}>
-          <button
-            type="button"
-            className="primary action-split-main"
-            disabled={primaryDisabled}
-            title={action.label}
-            onClick={
-              action.configureModel
-                ? props.onConfigureModel
-                : action.resume
-                  ? () => props.onExpandTarget('dock')
-                  : props.onPrimary
+        <div className="compact-bottom-right">
+          {worktree && (() => {
+            const cmds = props.runCommands ?? [];
+            const procs = props.runProcesses ?? [];
+            const busySet = props.runBusyIds ?? [];
+            const runningCmd = cmds.find((c) => {
+              const pid = makeRunProcessId(worktree.worktreeId, c.id);
+              const proc = procs.find((p) => p.processId === pid);
+              return isRunProcessActive(proc?.status);
+            });
+            const quickCmd = cmds.find((c) => c.id === selectedRunId) ?? runningCmd ?? cmds[0];
+            const quickPid = quickCmd ? makeRunProcessId(worktree.worktreeId, quickCmd.id) : null;
+            const quickProc = quickPid ? procs.find((p) => p.processId === quickPid) : undefined;
+            const quickRunning = isRunProcessActive(quickProc?.status);
+            const quickStopping = quickProc?.status === 'stopping' || Boolean(quickPid && busySet.includes(`stopping:${quickPid}`));
+            const quickRestarting = Boolean(quickPid && busySet.includes(`restarting:${quickPid}`));
+            const quickStartBusy = Boolean(quickPid && busySet.includes(quickPid)) || quickStopping || quickRestarting;
+            const activeCount = props.activeRunCount ?? 0;
+
+            if (!quickCmd) {
+              return (
+                <button
+                  type="button"
+                  className="compact-idea-picker is-empty"
+                  aria-label={t.run.buttonLabel}
+                  title={t.run.buttonLabel}
+                  aria-expanded={effectiveDrawer === 'run'}
+                  data-compact-run-trigger
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setDrawer(effectiveDrawer === 'run' ? 'none' : 'run')}
+                >
+                  <Icon name="play" className="run-start-icon" />
+                  <RotatingChevron open={effectiveDrawer === 'run'} direction="down-up" className="compact-chevron" />
+                </button>
+              );
             }
-          >
-            <Icon name={primaryIcon} />
-            <span className="truncate">{action.label}</span>
-          </button>
-          {showSplitToggle && (
+
+            const iconId = resolveRunCommandIcon(quickCmd.icon, quickCmd.command, quickCmd.label);
+            return (
+              <div className="compact-idea-run">
+                <button
+                  type="button"
+                  className={`compact-idea-picker ${activeCount > 0 ? 'has-running' : ''}`}
+                  aria-label={activeCount > 0 ? t.run.runningBadgeTitle(activeCount) : `${quickCmd.label} · ${t.run.buttonLabel}`}
+                  title={quickCmd.label}
+                  aria-expanded={effectiveDrawer === 'run'}
+                  data-compact-run-trigger
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setDrawer(effectiveDrawer === 'run' ? 'none' : 'run')}
+                >
+                  <RunCommandIcon icon={iconId} size="sm" running={quickRunning} />
+                  {activeCount > 1 && (
+                    <span className="compact-run-multi" aria-hidden="true">{activeCount}</span>
+                  )}
+                  <RotatingChevron open={effectiveDrawer === 'run'} direction="down-up" className="compact-chevron" />
+                </button>
+                {quickRunning && quickPid ? (
+                  <button
+                    type="button"
+                    className="icon-button compact-idea-act run-stop-icon"
+                    aria-label={`${t.run.stopAction} ${quickCmd.label}`}
+                    title={`${t.run.stopAction} ${quickCmd.label}`}
+                    disabled={quickStopping}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => props.onStopRunCommand?.(quickPid, quickCmd.label)}
+                  >
+                    <Icon name="square" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="icon-button compact-idea-act run-start-icon"
+                    aria-label={`${t.run.startAction} ${quickCmd.label}`}
+                    title={`${t.run.startAction} ${quickCmd.label}`}
+                    disabled={quickStartBusy}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => props.onStartRunCommand?.(quickCmd)}
+                  >
+                    <Icon name="play" />
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+          <div className={`primary-button-group compact-primary-group ${showSplitToggle ? 'is-split' : ''} ${action.resume ? `resume-button-group resume-${worktree?.sessionStatus ?? 'running'}` : ''}`}>
             <button
               type="button"
-              className="primary action-split-toggle"
-              aria-label={t.footer.switchActionAriaLabel}
-              aria-expanded={effectiveDrawer === 'actions'}
-              disabled={props.busy}
-              onClick={() => setDrawer(effectiveDrawer === 'actions' ? 'none' : 'actions')}
+              className="primary action-split-main"
+              disabled={primaryDisabled}
+              title={action.label}
+              onClick={
+                action.configureModel
+                  ? props.onConfigureModel
+                  : action.resume
+                    ? () => props.onExpandTarget('dock')
+                    : props.onPrimary
+              }
             >
-              <RotatingChevron open={effectiveDrawer === 'actions'} direction="down-up" />
+              <Icon name={primaryIcon} />
+              <span className="truncate">{action.label}</span>
             </button>
-          )}
+            {showSplitToggle && (
+              <button
+                type="button"
+                className="primary action-split-toggle"
+                aria-label={t.footer.switchActionAriaLabel}
+                aria-expanded={effectiveDrawer === 'actions'}
+                disabled={props.busy}
+                onClick={() => setDrawer(effectiveDrawer === 'actions' ? 'none' : 'actions')}
+              >
+                <RotatingChevron open={effectiveDrawer === 'actions'} direction="down-up" />
+              </button>
+            )}
+          </div>
         </div>
       </footer>
     </div>

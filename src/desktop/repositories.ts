@@ -8,18 +8,14 @@ import { disconnectedBackend } from '../features/workbench/commands';
 import type { WorkbenchEvent } from '../features/workbench/state/workbench';
 import { getMessages } from '../i18n/messages';
 import {
-  cancelDesktopCustomAction,
+  cancelDesktopAction,
   dismissDesktopSessionDone,
   generateDesktopCustomAction,
-  respondDesktopCustomAction,
-  startDesktopCustomAction,
+  reconcileDesktopActionSession,
+  respondDesktopActionQuestion,
+  runDesktopSessionRecovery,
+  startDesktopAction,
 } from './actions';
-import {
-  pullRebaseDesktop,
-  reconcileDesktopCPush,
-  respondDesktopCPush,
-  startDesktopCPush,
-} from './cpush';
 import {
   cancelDesktopModelRequest,
   createDesktopProviderConnection,
@@ -32,6 +28,18 @@ import {
   testDesktopModelConnection,
   updateDesktopProviderConnection,
 } from './models';
+import {
+  cancelDesktopDiscoverRunCommands,
+  discoverDesktopRunCommands,
+  listDesktopRunProcesses,
+  openDesktopRunLocalUrl,
+  openDesktopRunLogsWindow,
+  refreshDesktopUserShellEnv,
+  restartDesktopRunCommand,
+  startDesktopRunCommand,
+  stopDesktopRunCommand,
+  subscribeDesktopRunState,
+} from './runner';
 import {
   getDesktopSkillsState,
   resetDesktopSkills,
@@ -71,22 +79,36 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
   syncSkills: syncDesktopSkills,
   setEnabledSkills: setDesktopEnabledSkills,
   resetSkills: resetDesktopSkills,
+  listRunProcesses: listDesktopRunProcesses,
+  startRunCommand: startDesktopRunCommand,
+  stopRunCommand: stopDesktopRunCommand,
+  restartRunCommand: restartDesktopRunCommand,
+  openRunLogsWindow: openDesktopRunLogsWindow,
+  openRunLocalUrl: openDesktopRunLocalUrl,
+  refreshUserShellEnv: refreshDesktopUserShellEnv,
+  subscribeRunState: subscribeDesktopRunState,
+  discoverRunCommands: discoverDesktopRunCommands,
+  cancelDiscoverRunCommands: cancelDesktopDiscoverRunCommands,
   cancelRequest: cancelDesktopModelRequest,
-  respondCustomAction: respondDesktopCustomAction,
+  respondActionQuestion: respondDesktopActionQuestion,
   generateCustomAction: generateDesktopCustomAction,
-  cancelCustomAction: cancelDesktopCustomAction,
+  cancelAction: cancelDesktopAction,
   subscribe(receive) {
     eventSubscribers.add(receive);
     return () => { eventSubscribers.delete(receive); };
   },
-  async reconcileSession(target, locale) {
-    const progress = await reconcileDesktopCPush({
+  async reconcileSession(target, locale, expectedRunId) {
+    const progress = await reconcileDesktopActionSession({
       requestId: crypto.randomUUID(),
       target,
       ...(locale ? { locale } : {}),
     });
-    if (progress) {
-      emitWorkbenchEvent({ type: 'cPushProgress', progress });
+    if (progress && (!expectedRunId || progress.session.runId === expectedRunId)) {
+      emitWorkbenchEvent({
+        type: 'actionProgress',
+        progress,
+        ...(expectedRunId ? { expectedRunId } : {}),
+      });
     }
   },
   async dismissSessionDone(target, runId, messageId, locale) {
@@ -115,69 +137,47 @@ export const desktopWorkbenchBackend: WorkbenchBackend = {
     if (command.kind === 'deleteProviderConnection') {
       return deleteDesktopProviderConnection(command.connectionId, command.locale);
     }
-    if (command.kind === 'cPush') {
-      if (!command.selections?.length || command.selections.length !== command.fileIds.length
-        || command.selections.some((item, index) => item.fileId !== command.fileIds[index] || !item.commitToken)) {
-        throw new Error(t.missingCPushScopeTokens);
+    if (command.kind === 'startAction') {
+      if (command.profile === 'cpush') {
+        if (!command.selections?.length || command.selections.length !== command.fileIds.length
+          || command.selections.some((item, index) => item.fileId !== command.fileIds[index] || !item.commitToken)) {
+          throw new Error(t.missingCPushScopeTokens);
+        }
       }
-      return startDesktopCPush(
+      return startDesktopAction(
         {
           requestId: command.requestId,
           target: command.target,
           modelId: command.modelId,
-          selections: command.selections,
-          prompt: command.prompt,
-          ...(command.push !== undefined ? { push: command.push } : {}),
-          ...(command.locale ? { locale: command.locale } : {}),
-          ...(command.commitLanguage ? { commitLanguage: command.commitLanguage } : {}),
-        },
-        (progress) => emitWorkbenchEvent({ type: 'cPushProgress', progress }),
-      );
-    }
-    if (command.kind === 'runCustomAction') {
-      return startDesktopCustomAction(
-        {
-          requestId: command.requestId,
-          target: command.target,
-          modelId: command.modelId,
-          action: command.action,
+          profile: command.profile,
+          ...(command.action ? { action: command.action } : {}),
           selections: command.selections ?? [],
           extraPrompt: command.extraPrompt,
+          ...(command.push !== undefined ? { push: command.push } : {}),
           ...(command.followUpPrompt ? { followUpPrompt: command.followUpPrompt } : {}),
           ...(command.resumeFromRunId ? { resumeFromRunId: command.resumeFromRunId } : {}),
           ...(command.locale ? { locale: command.locale } : {}),
           ...(command.commitLanguage ? { commitLanguage: command.commitLanguage } : {}),
+          ...(command.approvalMode ? { approvalMode: command.approvalMode } : {}),
         },
-        (progress) => emitWorkbenchEvent({ type: 'customActionProgress', progress }),
+        (progress) => emitWorkbenchEvent({ type: 'actionProgress', progress }),
       );
     }
-    if (command.kind === 'pull') {
-      return pullRebaseDesktop(
-        {
-          requestId: command.requestId,
-          target: command.target,
-          ...(command.modelId ? { modelId: command.modelId } : {}),
-          ...(command.locale ? { locale: command.locale } : {}),
-        },
-        (progress) => emitWorkbenchEvent({ type: 'cPushProgress', progress }),
-      );
-    }
-    if (command.kind === 'respond') {
-      if (!command.runId) {
+    if (command.kind === 'runRecovery') {
+      if (command.action.kind !== 'pullRebase' && !command.runId) {
         throw new Error(t.missingCPushRunId);
       }
-      return respondDesktopCPush(
+      return runDesktopSessionRecovery(
         {
           requestId: command.requestId,
           target: command.target,
-          runId: command.runId,
-          messageId: command.messageId,
-          ...(command.optionId !== undefined ? { optionId: command.optionId } : {}),
-          ...(command.text !== undefined ? { text: command.text } : {}),
+          ...(command.runId ? { runId: command.runId } : {}),
+          ...(command.messageId ? { messageId: command.messageId } : {}),
+          action: command.action,
           ...(command.modelId !== undefined ? { modelId: command.modelId } : {}),
           ...(command.locale ? { locale: command.locale } : {}),
         },
-        (progress) => emitWorkbenchEvent({ type: 'cPushProgress', progress }),
+        (progress) => emitWorkbenchEvent({ type: 'actionProgress', progress }),
       );
     }
     if (command.kind === 'openFile') {

@@ -1,10 +1,12 @@
 import {
   CUSTOM_ACTION_LIMITS,
+  DEFAULT_ACTION_APPROVAL_MODE,
   sanitizeCustomActionConfig,
   type CustomActionConfig,
   type CustomActionSyncResult,
 } from '../../../../shared/custom-action-protocol';
 import { DEFAULT_APP_LOCALE, DEFAULT_COMMIT_LANGUAGE, type AppLocale, type CommitLanguage } from '../../../../shared/language-protocol';
+import type { RunCommandConfig, RunEnvEntry } from '../../../../shared/run-protocol';
 import { DEFAULT_APP_THEME } from '../../../../shared/theme-protocol';
 import {
   WINDOW_DIMENSIONS,
@@ -95,6 +97,7 @@ export function emptyWorkbench(): WorkbenchState {
     activeModelId: null,
     locale: DEFAULT_APP_LOCALE,
     theme: DEFAULT_APP_THEME,
+    actionApprovalMode: DEFAULT_ACTION_APPROVAL_MODE,
     editor: 'idea',
     defaultCommitLanguage: DEFAULT_COMMIT_LANGUAGE,
     repositorySettings: {},
@@ -131,6 +134,16 @@ export function localKeepPathsFor(state: WorkbenchState, repositoryId?: string |
 export function customActionsFor(state: WorkbenchState, repositoryId?: string | null): CustomActionConfig[] {
   if (!repositoryId) return [];
   return state.repositorySettings[repositoryId]?.customActions ?? [];
+}
+
+export function runCommandsFor(state: WorkbenchState, repositoryId?: string | null): RunCommandConfig[] {
+  if (!repositoryId) return [];
+  return state.repositorySettings[repositoryId]?.runCommands ?? [];
+}
+
+export function runSharedEnvFor(state: WorkbenchState, repositoryId?: string | null): RunEnvEntry[] {
+  if (!repositoryId) return [];
+  return state.repositorySettings[repositoryId]?.runSharedEnv ?? [];
 }
 
 export function activeCustomActionFor(state: WorkbenchState, repositoryId?: string | null): CustomActionConfig | undefined {
@@ -225,6 +238,8 @@ export function computeSyncCustomActionAcrossRepos(
         ...(prev?.localKeepPaths?.length ? { localKeepPaths: prev.localKeepPaths } : {}),
         customActions: updatedList,
         ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+        ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+        ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
       };
       updated += 1;
       continue;
@@ -245,6 +260,8 @@ export function computeSyncCustomActionAcrossRepos(
       ...(prev?.localKeepPaths?.length ? { localKeepPaths: prev.localKeepPaths } : {}),
       customActions: [...existingList, copy],
       ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+      ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+      ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
     };
     added += 1;
   }

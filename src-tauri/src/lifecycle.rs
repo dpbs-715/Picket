@@ -1,8 +1,9 @@
-use crate::pi_runtime::PiSupervisor;
 #[cfg(feature = "smoke-harness")]
 use crate::pi_runtime::{PiEvent, ProbeReport};
+use crate::{i18n, pi_runtime::PiSupervisor, runner::RunProcessManager, tray::TrayCoordinator};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(feature = "smoke-harness")]
 pub struct DesktopLifecycle {
@@ -11,6 +12,7 @@ pub struct DesktopLifecycle {
     pub keep_smoke_repo: bool,
     triggered: AtomicBool,
     exiting: AtomicBool,
+    quit_prompt_open: AtomicBool,
     pi_verified: AtomicBool,
     git_verified: AtomicBool,
     close_probe_active: AtomicBool,
@@ -22,6 +24,7 @@ pub struct DesktopLifecycle {
 #[derive(Default)]
 pub struct DesktopLifecycle {
     exiting: AtomicBool,
+    quit_prompt_open: AtomicBool,
 }
 
 #[cfg(feature = "smoke-harness")]
@@ -33,6 +36,7 @@ impl DesktopLifecycle {
             keep_smoke_repo,
             triggered: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
+            quit_prompt_open: AtomicBool::new(false),
             pi_verified: AtomicBool::new(false),
             git_verified: AtomicBool::new(false),
             close_probe_active: AtomicBool::new(false),
@@ -104,14 +108,16 @@ pub async fn cleanup_for_restart(app: &tauri::AppHandle) {
     app.state::<DesktopLifecycle>()
         .exiting
         .store(true, Ordering::SeqCst);
-    app.state::<crate::tray::TrayCoordinator>().teardown(app);
+    app.state::<TrayCoordinator>().teardown(app);
     app.state::<crate::models::store::ModelStore>()
         .cancel_all_list_requests();
+    let runner = app.state::<RunProcessManager>().inner().clone();
     let supervisor = app.state::<PiSupervisor>().inner().clone();
     let repositories = app
         .state::<crate::repository::RepositoryStore>()
         .inner()
         .clone();
+    runner.shutdown_all().await;
     repositories.shutdown().await;
     if let Err(error) = app
         .state::<crate::repository::editor::EditorLauncher>()
@@ -132,6 +138,55 @@ pub async fn cleanup_for_restart(app: &tauri::AppHandle) {
     }
 }
 
+/// Checks for active local Run processes before quitting. If none are active (or in smoke mode),
+/// proceeds directly to `exit_after_cleanup`. Otherwise shows a native confirmation dialog and
+/// cleanly stops every Run process group upon confirmation.
+pub fn request_app_quit(app: &tauri::AppHandle) {
+    let lifecycle = app.state::<DesktopLifecycle>();
+    if lifecycle.exiting.load(Ordering::SeqCst) {
+        return;
+    }
+    if lifecycle.is_ui_smoke() {
+        exit_after_cleanup(app);
+        return;
+    }
+    let active = app.state::<RunProcessManager>().active_snapshots();
+    if active.is_empty() {
+        exit_after_cleanup(app);
+        return;
+    }
+    if lifecycle.quit_prompt_open.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let locale = app.state::<TrayCoordinator>().current_locale();
+    let names: Vec<String> = active
+        .iter()
+        .map(|svc| format!("{} · {}", svc.repository_name, svc.label))
+        .collect();
+    let title = i18n::runner::quit_confirm_title(locale);
+    let message = i18n::runner::quit_confirm_message(locale, &names);
+    let ok_label = i18n::runner::quit_confirm_ok_button(locale);
+    let cancel_label = i18n::runner::quit_confirm_cancel_button(locale);
+    let app_clone = app.clone();
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            ok_label.to_owned(),
+            cancel_label.to_owned(),
+        ))
+        .show(move |confirmed| {
+            app_clone
+                .state::<DesktopLifecycle>()
+                .quit_prompt_open
+                .store(false, Ordering::SeqCst);
+            if confirmed {
+                exit_after_cleanup(&app_clone);
+            }
+        });
+}
+
 pub fn exit_after_cleanup(app: &tauri::AppHandle) {
     if app
         .state::<DesktopLifecycle>()
@@ -140,16 +195,18 @@ pub fn exit_after_cleanup(app: &tauri::AppHandle) {
     {
         return;
     }
+    let runner = app.state::<RunProcessManager>().inner().clone();
     let supervisor = app.state::<PiSupervisor>().inner().clone();
     let repositories = app
         .state::<crate::repository::RepositoryStore>()
         .inner()
         .clone();
-    app.state::<crate::tray::TrayCoordinator>().teardown(app);
+    app.state::<TrayCoordinator>().teardown(app);
     app.state::<crate::models::store::ModelStore>()
         .cancel_all_list_requests();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        runner.shutdown_all().await;
         repositories.shutdown().await;
         let mut editor_cleanup_failed = false;
         if let Err(error) = app

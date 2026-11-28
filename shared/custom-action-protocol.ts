@@ -1,15 +1,23 @@
 import type {
+  ActionApprovalMode,
+  ActionCommandReply,
+  ActionProfileKind,
+  ActionProgressEvent,
   ActionSessionSnapshot,
-  CustomActionCommandReply,
+  ActionSessionStatus,
+  CPushLandedCommit,
+  CPushQaItem,
   CustomActionDraft,
-  CustomActionProgressEvent,
   DismissSessionDoneRequest,
   GenerateCustomActionProgressEvent,
   GenerateCustomActionReply,
   GenerateCustomActionRequest,
   PersistedCustomAction as CustomActionConfig,
-  RespondCustomActionRequest,
-  StartCustomActionRequest,
+  ReconcileSessionRequest,
+  RespondActionQuestionRequest,
+  SessionRecoveryAction,
+  SessionRecoveryRequest,
+  StartActionRequest,
   TrustedActionUpdate,
 } from './generated';
 import {
@@ -17,18 +25,30 @@ import {
   type MessageUserRequest,
 } from './message-user-protocol';
 import { decodeGitReadReply, GIT_READ_PROTOCOL_VERSION } from './git-read-protocol';
-import type { GitRepositorySnapshot } from './git-read-protocol';
+import type { GitReadTarget, GitRepositorySnapshot } from './git-read-protocol';
 import {
   decodeWorkflowCommits,
   decodeWorkflowLinks,
   decodeWorkflowTimeline,
   decodeWorkflowUiMessage,
+  type WorkflowLandedCommit,
   type WorkflowLink,
+  type WorkflowMessageKind,
   type WorkflowTimelineItem,
   type WorkflowUiMessage,
 } from './workflow-message-protocol';
 
+export const ACTION_PROTOCOL_VERSION = 2;
 export const CUSTOM_ACTION_PROTOCOL_VERSION = 1;
+export const BUILTIN_CPUSH_ACTION_ID = 'builtin:cpush';
+export const BUILTIN_PULL_REBASE_ACTION_ID = 'builtin:pull-rebase';
+
+export const ACTION_APPROVAL_MODES: readonly ActionApprovalMode[] = ['ask', 'auto', 'allowAll'];
+export const DEFAULT_ACTION_APPROVAL_MODE: ActionApprovalMode = 'auto';
+
+export function isActionApprovalMode(value: unknown): value is ActionApprovalMode {
+  return value === 'ask' || value === 'auto' || value === 'allowAll';
+}
 
 export const CUSTOM_ACTION_LIMITS = {
   maxPerRepo: 30,
@@ -41,20 +61,33 @@ export const CUSTOM_ACTION_LIMITS = {
 export type CustomActionLink = WorkflowLink;
 export type CustomActionTimelineItem = WorkflowTimelineItem;
 export type CustomActionUiMessage = WorkflowUiMessage;
+export type ActionLandedCommit = WorkflowLandedCommit;
+export type ActionMessageKind = WorkflowMessageKind;
 
 export type {
+  ActionApprovalMode,
+  ActionCommandReply,
+  ActionProfileKind,
+  ActionProgressEvent,
   ActionSessionSnapshot,
-  CustomActionCommandReply,
+  ActionSessionStatus,
+  CPushLandedCommit,
+  CPushQaItem,
   CustomActionConfig,
   CustomActionDraft,
-  CustomActionProgressEvent,
   DismissSessionDoneRequest,
   GenerateCustomActionProgressEvent,
   GenerateCustomActionReply,
   GenerateCustomActionRequest,
-  RespondCustomActionRequest,
-  StartCustomActionRequest,
+  ReconcileSessionRequest,
+  RespondActionQuestionRequest,
+  SessionRecoveryAction,
+  SessionRecoveryRequest,
+  StartActionRequest,
   TrustedActionUpdate,
+  WorkflowLink,
+  WorkflowTimelineItem,
+  WorkflowUiMessage,
 };
 
 export interface CustomActionSyncResult {
@@ -62,6 +95,26 @@ export interface CustomActionSyncResult {
   updated: number;
   skipped: number;
 }
+
+const VALID_PROFILES: readonly ActionProfileKind[] = [
+  'cpush',
+  'customAction',
+  'resolveConflict',
+  'pullRebase',
+];
+
+const VALID_SESSION_STATUSES: readonly ActionSessionStatus[] = [
+  'idle',
+  'running',
+  'needsDecision',
+  'conflict',
+  'waitingManual',
+  'pushFailed',
+  'interrupted',
+  'done',
+  'cancelled',
+  'failed',
+];
 
 // Pure synchronous SHA-256 (UTF-8) producing lowercase hex matching Rust `sha2::Sha256`.
 const SHA256_K = new Uint32Array([
@@ -186,6 +239,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 export function decodeCustomActionConfig(value: unknown): CustomActionConfig {
   if (!isRecord(value)
     || typeof value.id !== 'string' || !value.id.trim() || value.id.trim().length > CUSTOM_ACTION_LIMITS.maxIdChars
@@ -210,10 +267,10 @@ function decodeOptionalSnapshot(raw: unknown): GitRepositorySnapshot | undefined
   if (raw === undefined || raw === null) return undefined;
   const decoded = decodeGitReadReply({
     protocolVersion: GIT_READ_PROTOCOL_VERSION,
-    requestId: 'custom-action-snapshot',
+    requestId: 'action-snapshot',
     snapshot: raw,
   });
-  if (!decoded.snapshot) throw new Error('Invalid custom action repository snapshot.');
+  if (!decoded.snapshot) throw new Error('Invalid action repository snapshot.');
   return decoded.snapshot;
 }
 
@@ -232,80 +289,118 @@ function decodeTrustedActionUpdate(raw: unknown): TrustedActionUpdate | undefine
   };
 }
 
-function decodeOptionalUiMessage(raw: unknown): CustomActionUiMessage | null {
+function decodeOptionalUiMessage(raw: unknown): WorkflowUiMessage | null {
   if (raw === undefined || raw === null) return null;
-  return decodeWorkflowUiMessage(raw, 'custom action');
+  return decodeWorkflowUiMessage(raw, 'action session');
 }
 
-export function decodeCustomActionProgressEvent(value: unknown): CustomActionProgressEvent {
+export function decodeActionSessionSnapshot(value: unknown): ActionSessionSnapshot {
   if (!isRecord(value)
-    || value.protocolVersion !== CUSTOM_ACTION_PROTOCOL_VERSION
+    || 'apiKey' in value || 'credentialRef' in value
     || typeof value.runId !== 'string' || !value.runId
     || typeof value.repositoryId !== 'string' || !value.repositoryId
     || typeof value.worktreeId !== 'string' || !value.worktreeId
-    || typeof value.sessionId !== 'string' || !value.sessionId
+    || typeof value.sessionId !== 'string'
     || typeof value.actionId !== 'string' || !value.actionId
     || typeof value.actionLabel !== 'string'
-    || !['running', 'needsDecision', 'done', 'cancelled', 'failed'].includes(String(value.status))) {
-    throw new Error('Custom action progress event protocol mismatch.');
-  }
-  const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
-  const trustedActionUpdate = decodeTrustedActionUpdate(value.trustedActionUpdate);
-  return {
-    protocolVersion: CUSTOM_ACTION_PROTOCOL_VERSION,
-    runId: value.runId,
-    repositoryId: value.repositoryId,
-    worktreeId: value.worktreeId,
-    sessionId: value.sessionId,
-    actionId: value.actionId,
-    actionLabel: value.actionLabel,
-    status: value.status as CustomActionProgressEvent['status'],
-    ...(typeof value.pendingCallId === 'string' && value.pendingCallId ? { pendingCallId: value.pendingCallId } : {}),
-    message: decodeOptionalUiMessage(value.message),
-    timeline: decodeWorkflowTimeline(value.timeline, 'custom action'),
-    commits: decodeWorkflowCommits(value.commits, 'custom action'),
-    links: decodeWorkflowLinks(value.links),
-    ...(trustedActionUpdate ? { trustedActionUpdate } : {}),
-    ...(repositorySnapshot ? { repositorySnapshot } : {}),
-  };
-}
-
-export function decodeCustomActionCommandReply(value: unknown): CustomActionCommandReply {
-  if (!isRecord(value)
-    || value.protocolVersion !== CUSTOM_ACTION_PROTOCOL_VERSION
-    || value.kind !== 'customAction'
-    || typeof value.requestId !== 'string' || !value.requestId
-    || typeof value.runId !== 'string' || !value.runId
-    || typeof value.repositoryId !== 'string' || !value.repositoryId
-    || typeof value.worktreeId !== 'string' || !value.worktreeId
-    || typeof value.sessionId !== 'string' || !value.sessionId
-    || typeof value.actionId !== 'string' || !value.actionId
-    || typeof value.actionLabel !== 'string'
+    || !VALID_PROFILES.includes(value.profile as ActionProfileKind)
+    || typeof value.frozenScopeVersion !== 'string'
+    || typeof value.modelId !== 'string'
+    || !isStringArray(value.frozenFileIds)
+    || !isStringArray(value.committedFileIds)
+    || !isStringArray(value.skippedFileIds)
+    || !VALID_SESSION_STATUSES.includes(value.status as ActionSessionStatus)
+    || !(value.pendingCallId === undefined || value.pendingCallId === null || typeof value.pendingCallId === 'string')
     || typeof value.summary !== 'string'
-    || !['done', 'cancelled', 'failed'].includes(String(value.status))) {
-    throw new Error('Custom action reply protocol mismatch.');
+    || typeof value.canRetryRemaining !== 'boolean'
+    || !(value.autoCollapse === undefined || value.autoCollapse === null || typeof value.autoCollapse === 'boolean')
+    || !Array.isArray(value.timeline)
+    || !Array.isArray(value.qaLog)
+    || !Array.isArray(value.commits)
+    || !Array.isArray(value.links)) {
+    throw new Error('Desktop returned an invalid or unexpected action session snapshot.');
   }
-  const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
-  const trustedActionUpdate = decodeTrustedActionUpdate(value.trustedActionUpdate);
+  const qaLog: CPushQaItem[] = value.qaLog.map((entry) => {
+    if (!isRecord(entry)
+      || typeof entry.questionId !== 'string'
+      || typeof entry.question !== 'string'
+      || typeof entry.answer !== 'string') {
+      throw new Error('Invalid action Q&A log entry.');
+    }
+    return {
+      questionId: entry.questionId,
+      question: entry.question,
+      answer: entry.answer,
+      ...(typeof entry.optionId === 'string' && entry.optionId ? { optionId: entry.optionId } : {}),
+    };
+  });
   return {
-    protocolVersion: CUSTOM_ACTION_PROTOCOL_VERSION,
-    kind: 'customAction',
-    requestId: value.requestId,
     runId: value.runId,
     repositoryId: value.repositoryId,
     worktreeId: value.worktreeId,
     sessionId: value.sessionId,
     actionId: value.actionId,
     actionLabel: value.actionLabel,
-    status: value.status as CustomActionCommandReply['status'],
+    profile: value.profile as ActionProfileKind,
+    frozenScopeVersion: value.frozenScopeVersion,
+    modelId: value.modelId,
+    frozenFileIds: value.frozenFileIds,
+    committedFileIds: value.committedFileIds,
+    skippedFileIds: value.skippedFileIds,
+    status: value.status as ActionSessionStatus,
+    ...(typeof value.pendingCallId === 'string' && value.pendingCallId ? { pendingCallId: value.pendingCallId } : {}),
     summary: value.summary,
     message: decodeOptionalUiMessage(value.message),
-    timeline: decodeWorkflowTimeline(value.timeline, 'custom action'),
-    commits: decodeWorkflowCommits(value.commits, 'custom action'),
+    timeline: decodeWorkflowTimeline(value.timeline, 'action'),
+    qaLog,
+    commits: decodeWorkflowCommits(value.commits, 'action'),
     links: decodeWorkflowLinks(value.links),
+    canRetryRemaining: value.canRetryRemaining,
+    ...(typeof value.autoCollapse === 'boolean' ? { autoCollapse: value.autoCollapse } : {}),
+  };
+}
+
+export function decodeActionProgressEvent(value: unknown): ActionProgressEvent {
+  if (!isRecord(value) || value.protocolVersion !== ACTION_PROTOCOL_VERSION) {
+    throw new Error('Action progress event protocol version mismatch.');
+  }
+  const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
+  const trustedActionUpdate = decodeTrustedActionUpdate(value.trustedActionUpdate);
+  return {
+    protocolVersion: ACTION_PROTOCOL_VERSION,
+    session: decodeActionSessionSnapshot(value.session),
     ...(trustedActionUpdate ? { trustedActionUpdate } : {}),
     ...(repositorySnapshot ? { repositorySnapshot } : {}),
   };
+}
+
+export function decodeActionCommandReply(value: unknown): ActionCommandReply {
+  if (!isRecord(value)
+    || value.protocolVersion !== ACTION_PROTOCOL_VERSION
+    || value.kind !== 'action'
+    || typeof value.requestId !== 'string' || !value.requestId) {
+    throw new Error('Action command reply protocol mismatch.');
+  }
+  const repositorySnapshot = decodeOptionalSnapshot(value.repositorySnapshot);
+  const trustedActionUpdate = decodeTrustedActionUpdate(value.trustedActionUpdate);
+  return {
+    protocolVersion: ACTION_PROTOCOL_VERSION,
+    kind: 'action',
+    requestId: value.requestId,
+    session: decodeActionSessionSnapshot(value.session),
+    ...(trustedActionUpdate ? { trustedActionUpdate } : {}),
+    ...(repositorySnapshot ? { repositorySnapshot } : {}),
+  };
+}
+
+export function isMatchingActionTarget(session: ActionSessionSnapshot, target: GitReadTarget): boolean {
+  return !!target.repositoryId
+    && !!target.worktreeId
+    && !!target.sessionId
+    && session.repositoryId === target.repositoryId
+    && session.worktreeId === target.worktreeId
+    && session.sessionId === target.sessionId
+    && session.frozenScopeVersion === target.scopeVersion;
 }
 
 export function decodeGenerateCustomActionProgressEvent(value: unknown): GenerateCustomActionProgressEvent {
@@ -358,31 +453,5 @@ export function decodeGenerateCustomActionReply(value: unknown): GenerateCustomA
     requestId: value.requestId,
     status: value.status,
     ...(draft ? { draft } : {}),
-  };
-}
-
-export function decodeActionSessionSnapshot(value: unknown): ActionSessionSnapshot {
-  if (!isRecord(value)
-    || typeof value.runId !== 'string' || !value.runId
-    || typeof value.repositoryId !== 'string' || !value.repositoryId
-    || typeof value.worktreeId !== 'string' || !value.worktreeId
-    || typeof value.actionId !== 'string' || !value.actionId
-    || typeof value.actionLabel !== 'string'
-    || typeof value.summary !== 'string'
-    || !['interrupted', 'done', 'cancelled', 'failed'].includes(String(value.status))) {
-    throw new Error('Action session snapshot protocol mismatch.');
-  }
-  return {
-    runId: value.runId,
-    repositoryId: value.repositoryId,
-    worktreeId: value.worktreeId,
-    actionId: value.actionId,
-    actionLabel: value.actionLabel,
-    status: value.status as ActionSessionSnapshot['status'],
-    summary: value.summary,
-    message: decodeOptionalUiMessage(value.message),
-    timeline: decodeWorkflowTimeline(value.timeline, 'custom action'),
-    commits: decodeWorkflowCommits(value.commits, 'custom action'),
-    links: decodeWorkflowLinks(value.links),
   };
 }

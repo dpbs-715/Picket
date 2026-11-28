@@ -7,10 +7,10 @@ export {
   readScopeVersion,
 } from './snapshotMerge';
 export {
-  applyCPushSnapshot,
-  applyCustomActionProgress,
-  finishCPushCommand,
-  finishCustomActionCommand,
-  receiveCPushProgress,
+  applyActionSnapshot,
+  finishActionCommand,
+  receiveActionProgress,
+  toActiveActionRun,
+  toWorktreeSessionStatus,
 } from './sessionSync';
 export { hydrateWorkbench, resolvePersistenceKeys, serializeWorkbenchPersistence } from './persistence';

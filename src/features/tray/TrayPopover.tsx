@@ -19,6 +19,8 @@ export interface TrayPopoverProps {
   onRefresh: () => void;
   onOpenSettings: () => void;
   onOpenMainWindow: (action?: TrayMainWindowAction) => void;
+  onStopRunService?: (processId: string) => void;
+  onOpenRunLogs?: (processId: string) => void;
   onQuit: () => void;
   onDismiss: () => void;
   onHeightChange?: (height: number) => void;
@@ -116,6 +118,8 @@ export function TrayPopover({
   onRefresh,
   onOpenSettings,
   onOpenMainWindow,
+  onStopRunService,
+  onOpenRunLogs,
   onQuit,
   onDismiss,
   onHeightChange,
@@ -123,6 +127,8 @@ export function TrayPopover({
 }: TrayPopoverProps) {
   const t = getMessages(snapshot.locale);
   const trayText = t.tray;
+  const runText = t.run;
+  const runningServices = snapshot.runningServices ?? [];
   useResolvedTheme(snapshot.theme ?? DEFAULT_APP_THEME);
   const [cleanExpanded, setCleanExpanded] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -171,7 +177,7 @@ export function TrayPopover({
     const observer = new ResizeObserver(report);
     observer.observe(card);
     return () => observer.disconnect();
-  }, [primary.length, foldedClean.length, cleanExpanded, snapshot.repositories.length]);
+  }, [primary.length, foldedClean.length, cleanExpanded, snapshot.repositories.length, runningServices.length]);
 
   const handleSelectRepo = (repo: TrayRepositorySummary) => {
     onOpenMainWindow({
@@ -219,6 +225,46 @@ export function TrayPopover({
           </header>
 
           <div className="tray-body-scroll" data-tray-list>
+            {runningServices.length > 0 && (
+              <div className="tray-running-section" data-tray-running-services>
+                <div className="tray-running-heading">
+                  <span className="tray-status-dot tone-success" aria-hidden="true" />
+                  <span>{runText.trayRunningSectionTitle(runningServices.length)}</span>
+                </div>
+                <div className="tray-running-list">
+                  {runningServices.map((svc) => (
+                    <div key={svc.processId} className="tray-running-row">
+                      <button
+                        type="button"
+                        className="tray-running-info"
+                        title={runText.trayOpenLogsTitle}
+                        onClick={() => onOpenRunLogs?.(svc.processId)}
+                      >
+                        <span className="tray-running-label truncate">{svc.label}</span>
+                        <span className="tray-running-repo mono truncate">{svc.repositoryName}</span>
+                      </button>
+                      <div className="tray-running-actions">
+                        <IconButton
+                          icon="terminal"
+                          className="tray-icon-btn tray-run-btn"
+                          label={runText.trayOpenLogsTitle}
+                          onClick={() => onOpenRunLogs?.(svc.processId)}
+                        />
+                        <button
+                          type="button"
+                          className="tray-stop-btn"
+                          disabled={svc.status === 'stopping'}
+                          onClick={() => onStopRunService?.(svc.processId)}
+                        >
+                          <Icon name="square" />
+                          <span>{runText.trayStopButton}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {snapshot.repositories.length === 0 ? (
               <div className="tray-empty">
                 <p className="tray-empty-title">{trayText.emptyTitle}</p>

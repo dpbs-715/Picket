@@ -1,17 +1,20 @@
-//! Shared runtime state, tool execution context, Tier-2 confirmation helper, and timeline formatters.
+//! Unified runtime state, host-verified recovery handles, tool execution context,
+//! Tier-2 confirmation helper, and timeline formatters shared across all action profiles.
 
 use super::{CustomActionCoordinator, SessionAuthGrants};
 use crate::{
-    actions::{session_store::SubmitSessionLedger, types::*},
+    actions::{profile::ExecutionProfile, session_store::SubmitSessionLedger, types::*},
     i18n::{self, LanguageKind},
     pi_runtime::PiToolExecutionResult,
     repository::{
         RepositoryStore,
+        ai_context::FrozenCPushFile,
+        remote::ConflictedFileSummary,
         types::{Change, CommitSelection, ReadTarget, RepositorySnapshot},
     },
     skills::RuntimeSkillSnapshot,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -19,10 +22,12 @@ use std::{
 };
 
 pub(super) type ProgressEmitFn = Arc<
-    dyn Fn(&'static str, Option<String>, Option<CustomActionUiMessage>, Option<RepositorySnapshot>)
+    dyn Fn(&'static str, Option<String>, Option<WorkflowUiMessage>, Option<RepositorySnapshot>)
         + Send
         + Sync,
 >;
+
+pub(super) type RawEventEmitFn = Arc<dyn Fn(ActionProgressEvent) + Send + Sync>;
 
 #[derive(Clone, Copy)]
 pub(super) enum Tier2ConfirmKind {
@@ -31,25 +36,155 @@ pub(super) enum Tier2ConfirmKind {
     FileCreate,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Tier2RiskLevel {
+    /// Routine in-scope repository edits, local commands, and standard Git/platform CLI writes.
+    /// Prompted in `Ask`, auto-allowed in `Auto` and `AllowAll`.
+    RoutineWrite,
+    /// High-risk or unconventional Git/platform CLI writes (`RequireConfirmTier2`).
+    /// Prompted in `Ask` and `Auto`, auto-allowed in `AllowAll`.
+    HighRiskWrite,
+}
+
+/// Host-verified recovery snapshot issued ONLY when a real Git sync/push/rebase boundary occurs
+/// under `RecoveryHandoffPolicy::AgentFirst`. Validated on `handoff_to_recovery({ handleId })`
+/// so models can never fabricate fake recovery states.
+#[derive(Clone, Debug)]
+pub(super) enum RecoveryHandlePayload {
+    PushFailed {
+        remote_target: String,
+        reason: String,
+        title_override: Option<String>,
+    },
+    MissingUpstream {
+        remotes: Vec<String>,
+    },
+    Conflict {
+        upstream: String,
+        conflicted_files: Vec<ConflictedFileSummary>,
+    },
+}
+
 #[derive(Default)]
 pub(super) struct ActionRunState {
-    pub(super) timeline: Vec<CustomActionTimelineItem>,
+    pub(super) status: ActionSessionStatus,
+    pub(super) pending_call_id: Option<String>,
+    pub(super) message: Option<WorkflowUiMessage>,
+    pub(super) summary: String,
+    pub(super) timeline: Vec<WorkflowTimelineItem>,
+    pub(super) qa_log: Vec<CPushQaItem>,
     pub(super) commits: Vec<CPushLandedCommit>,
-    pub(super) links: Vec<CustomActionLink>,
+    pub(super) links: Vec<WorkflowLink>,
     pub(super) published_card: Option<MessageUserCard>,
+    pub(super) frozen_files: Vec<FrozenCPushFile>,
+    pub(super) planned_groups: Vec<CPushCommitGroup>,
+    pub(super) skipped_file_ids: Vec<String>,
+    pub(super) next_step_index: usize,
     pub(super) committed_file_ids: HashSet<String>,
+    pub(super) committed_file_order: Vec<String>,
     pub(super) action_edited_hashes: HashMap<String, String>,
     pub(super) committed_edited_paths: HashSet<String>,
-    pub(super) skip_write_confirm: bool,
     pub(super) trusted_action_update: Option<TrustedActionUpdate>,
     pub(super) wrote_repo: bool,
     pub(super) submit_ledger: SubmitSessionLedger,
+    pub(super) branch: String,
+    pub(super) initial_head: Option<String>,
+    pub(super) prompt: String,
+    pub(super) recent_commits: Vec<String>,
+    pub(super) unselected_paths: Vec<String>,
+    pub(super) model_id: String,
+    pub(super) push_authorized: bool,
+    pub(super) can_retry_remaining: bool,
+    pub(super) auto_collapse: bool,
+    pub(super) qa_confirmed: bool,
+    pub(super) user_cancelled: bool,
+    pub(super) settled_reply: Option<ActionCommandReply>,
+    pub(super) recovery_handles: HashMap<String, RecoveryHandlePayload>,
+    pub(super) next_recovery_seq: u32,
+}
+
+impl ActionRunState {
+    pub(super) fn to_stored_session(&self, meta: &SessionPersistMeta<'_>) -> StoredActionSession {
+        StoredActionSession {
+            run_id: meta.run_id.to_owned(),
+            repository_id: meta.repository_id.to_owned(),
+            worktree_id: meta.worktree_id.to_owned(),
+            session_id: meta.session_id.to_owned(),
+            action_id: meta.action_id.to_owned(),
+            action_label: meta.action_label.to_owned(),
+            profile: meta.profile,
+            action_prompt_hash: meta.action_prompt_hash.to_owned(),
+            frozen_scope_version: meta.frozen_scope_version.to_owned(),
+            model_id: self.model_id.clone(),
+            branch: self.branch.clone(),
+            initial_head: self.initial_head.clone(),
+            prompt: self.prompt.clone(),
+            recent_commits: self.recent_commits.clone(),
+            unselected_paths: self.unselected_paths.clone(),
+            frozen_files: self.frozen_files.clone(),
+            planned_groups: self.planned_groups.clone(),
+            skipped_file_ids: self.skipped_file_ids.clone(),
+            next_step_index: self.next_step_index,
+            committed_file_ids: self.committed_file_order.clone(),
+            status: self.status,
+            pending_call_id: self.pending_call_id.clone(),
+            updated_at_ms: crate::actions::session_store::now_millis(),
+            summary: self.summary.clone(),
+            card: self.published_card.clone(),
+            message: self.message.clone(),
+            timeline: self.timeline.clone(),
+            qa_log: self.qa_log.clone(),
+            commits: self.commits.clone(),
+            links: self.links.clone(),
+            can_retry_remaining: self.can_retry_remaining,
+            push_authorized: self.push_authorized,
+            auto_collapse: self.auto_collapse,
+            notice_dismissed: false,
+            dismissed_message_id: None,
+            edited_file_hashes: self
+                .action_edited_hashes
+                .iter()
+                .filter(|(path, _)| !self.committed_edited_paths.contains(*path))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            submit_ledger: self.submit_ledger.clone(),
+            locale: meta.locale,
+            commit_language: meta.commit_language,
+        }
+    }
+
+    pub(super) fn sync_from_stored(&mut self, session: &StoredActionSession) {
+        self.status = session.status;
+        self.pending_call_id = session.pending_call_id.clone();
+        self.message = session.message.clone();
+        self.summary = session.summary.clone();
+        self.timeline = session.timeline.clone();
+        self.qa_log = session.qa_log.clone();
+        self.commits = session.commits.clone();
+        self.links = session.links.clone();
+        self.planned_groups = session.planned_groups.clone();
+        self.skipped_file_ids = session.skipped_file_ids.clone();
+        self.next_step_index = session.next_step_index;
+        self.committed_file_order = session.committed_file_ids.clone();
+        self.committed_file_ids = session.committed_file_ids.iter().cloned().collect();
+        self.can_retry_remaining = session.can_retry_remaining;
+        self.push_authorized = session.push_authorized;
+        self.auto_collapse = session.auto_collapse;
+    }
+
+    pub(super) fn record_committed_file_id(&mut self, file_id: String) {
+        if self.committed_file_ids.insert(file_id.clone()) {
+            self.committed_file_order.push(file_id);
+        }
+    }
 }
 
 pub(super) struct ActionToolContext {
     pub(super) coordinator: CustomActionCoordinator,
     pub(super) store: RepositoryStore,
+    pub(super) profile: ExecutionProfile,
     pub(super) emit: ProgressEmitFn,
+    pub(super) raw_emit: RawEventEmitFn,
     pub(super) run_state: Arc<Mutex<ActionRunState>>,
     pub(super) grants: Arc<Mutex<SessionAuthGrants>>,
     pub(super) skills: Arc<RuntimeSkillSnapshot>,
@@ -61,85 +196,137 @@ pub(super) struct ActionToolContext {
     pub(super) live_changes: Vec<Change>,
     pub(super) local_keep_paths: HashSet<String>,
     pub(super) target: ReadTarget,
+    pub(super) request_id: String,
     pub(super) run_id: String,
     pub(super) action_id: String,
     pub(super) action_label: String,
     pub(super) expected_hash: String,
     pub(super) locale: LanguageKind,
+    pub(super) commit_language: LanguageKind,
+    pub(super) approval_mode: ActionApprovalMode,
 }
 
 pub(super) struct SessionPersistMeta<'a> {
     pub(super) run_id: &'a str,
     pub(super) repository_id: &'a str,
     pub(super) worktree_id: &'a str,
+    pub(super) session_id: &'a str,
     pub(super) action_id: &'a str,
     pub(super) action_label: &'a str,
+    pub(super) profile: ActionProfileKind,
     pub(super) action_prompt_hash: &'a str,
+    pub(super) frozen_scope_version: &'a str,
+    pub(super) locale: LanguageKind,
+    pub(super) commit_language: LanguageKind,
 }
 
-pub(super) fn snapshot_persisted_session(
-    run_state: &Mutex<ActionRunState>,
-    meta: &SessionPersistMeta<'_>,
-    status: &str,
-    summary: String,
-) -> Option<crate::actions::session_store::PersistedActionSession> {
-    let st = run_state.lock().ok()?;
-    Some(crate::actions::session_store::PersistedActionSession {
-        run_id: meta.run_id.to_owned(),
-        repository_id: meta.repository_id.to_owned(),
-        worktree_id: meta.worktree_id.to_owned(),
-        action_id: meta.action_id.to_owned(),
-        action_label: meta.action_label.to_owned(),
-        action_prompt_hash: meta.action_prompt_hash.to_owned(),
-        status: status.to_owned(),
-        updated_at_ms: crate::actions::session_store::now_millis(),
-        summary,
-        card: st.published_card.clone(),
-        dismissed_message_id: None,
-        timeline: st.timeline.clone(),
-        commits: st.commits.clone(),
-        links: st.links.clone(),
-        edited_file_hashes: st
-            .action_edited_hashes
-            .iter()
-            .filter(|(path, _)| !st.committed_edited_paths.contains(*path))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        submit_ledger: st.submit_ledger.clone(),
-    })
+pub(super) fn parse_status_str(status: &str) -> ActionSessionStatus {
+    match status {
+        "running" => ActionSessionStatus::Running,
+        "needsDecision" => ActionSessionStatus::NeedsDecision,
+        "conflict" => ActionSessionStatus::Conflict,
+        "waitingManual" => ActionSessionStatus::WaitingManual,
+        "pushFailed" => ActionSessionStatus::PushFailed,
+        "interrupted" => ActionSessionStatus::Interrupted,
+        "done" => ActionSessionStatus::Done,
+        "cancelled" => ActionSessionStatus::Cancelled,
+        "failed" => ActionSessionStatus::Failed,
+        _ => ActionSessionStatus::Idle,
+    }
 }
 
 impl ActionToolContext {
-    pub(super) async fn persist(&self, status: &str, summary: String) {
-        let meta = SessionPersistMeta {
+    pub(super) fn persist_meta(&self) -> SessionPersistMeta<'_> {
+        SessionPersistMeta {
             run_id: &self.run_id,
             repository_id: &self.target.repository_id,
             worktree_id: &self.target.worktree_id,
+            session_id: &self.target.session_id,
             action_id: &self.action_id,
             action_label: &self.action_label,
+            profile: self.profile.kind,
             action_prompt_hash: &self.expected_hash,
+            frozen_scope_version: &self.target.scope_version,
+            locale: self.locale,
+            commit_language: self.commit_language,
+        }
+    }
+
+    pub(super) async fn persist(&self, status: &str, summary: String) {
+        let parsed = parse_status_str(status);
+        let record = {
+            let meta = self.persist_meta();
+            let Ok(mut st) = self.run_state.lock() else {
+                return;
+            };
+            st.status = parsed;
+            if !summary.is_empty() {
+                st.summary = summary;
+            }
+            st.to_stored_session(&meta)
         };
-        let Some(record) = snapshot_persisted_session(&self.run_state, &meta, status, summary)
-        else {
-            return;
-        };
+        let _ = self.coordinator.save_session_in_memory(&record);
         let _ =
             crate::actions::session_store::upsert_session_async(&self.storage_dir, record).await;
     }
+
+    pub(super) fn register_recovery_handle(&self, payload: RecoveryHandlePayload) -> Value {
+        let (handle_id, kind, reason, actions): (String, &str, String, Vec<&str>) = {
+            let Ok(mut st) = self.run_state.lock() else {
+                return json!(null);
+            };
+            st.next_recovery_seq = st.next_recovery_seq.saturating_add(1);
+            let id = format!("rh-{}", st.next_recovery_seq);
+            let (kind, reason, actions) = match &payload {
+                RecoveryHandlePayload::PushFailed { reason, .. } => (
+                    "pushFailed",
+                    reason.clone(),
+                    vec!["retryPush", "dismissSession"],
+                ),
+                RecoveryHandlePayload::MissingUpstream { remotes, .. } => (
+                    "missingUpstream",
+                    format!("Branch has no upstream configured (remotes: {remotes:?})."),
+                    vec!["retryPush", "setUpstreamFreeText", "dismissSession"],
+                ),
+                RecoveryHandlePayload::Conflict {
+                    upstream,
+                    conflicted_files,
+                    ..
+                } => (
+                    "conflict",
+                    format!(
+                        "Rebase onto {upstream} hit conflicts in {} file(s).",
+                        conflicted_files.len()
+                    ),
+                    vec!["agentConflictMerge", "manualMerge", "abortRebase"],
+                ),
+            };
+            st.recovery_handles.insert(id.clone(), payload);
+            (id, kind, reason, actions)
+        };
+        json!({
+            "handleId": handle_id,
+            "kind": kind,
+            "reason": reason,
+            "availableRecoveryActions": actions,
+            "hint": "You may handle this yourself per the button instructions OR call handoff_to_recovery({ handleId }) to hand control to Picket's zero-token recovery UI."
+        })
+    }
+
     pub(super) async fn confirm_tier2_write(
         &self,
         call_id: &str,
+        risk: Tier2RiskLevel,
         reason: &str,
         preview: &str,
-        allow_dont_ask_again: bool,
         declined_error: &'static str,
     ) -> Result<(), PiToolExecutionResult> {
         self.confirm_tier2_operation(
             Tier2ConfirmKind::Command,
+            risk,
             call_id,
             reason,
             preview,
-            allow_dont_ask_again,
             declined_error,
         )
         .await
@@ -148,17 +335,17 @@ impl ActionToolContext {
     pub(super) async fn confirm_tier2_edit(
         &self,
         call_id: &str,
+        risk: Tier2RiskLevel,
         reason: &str,
         preview: &str,
-        allow_dont_ask_again: bool,
         declined_error: &'static str,
     ) -> Result<(), PiToolExecutionResult> {
         self.confirm_tier2_operation(
             Tier2ConfirmKind::FileEdit,
+            risk,
             call_id,
             reason,
             preview,
-            allow_dont_ask_again,
             declined_error,
         )
         .await
@@ -167,17 +354,17 @@ impl ActionToolContext {
     pub(super) async fn confirm_tier2_create(
         &self,
         call_id: &str,
+        risk: Tier2RiskLevel,
         reason: &str,
         preview: &str,
-        allow_dont_ask_again: bool,
         declined_error: &'static str,
     ) -> Result<(), PiToolExecutionResult> {
         self.confirm_tier2_operation(
             Tier2ConfirmKind::FileCreate,
+            risk,
             call_id,
             reason,
             preview,
-            allow_dont_ask_again,
             declined_error,
         )
         .await
@@ -186,20 +373,17 @@ impl ActionToolContext {
     async fn confirm_tier2_operation(
         &self,
         kind: Tier2ConfirmKind,
+        risk: Tier2RiskLevel,
         call_id: &str,
         reason: &str,
         preview: &str,
-        allow_dont_ask_again: bool,
         declined_error: &'static str,
     ) -> Result<(), PiToolExecutionResult> {
-        let already_trusted = allow_dont_ask_again
-            && self
-                .run_state
-                .lock()
-                .map(|st| st.skip_write_confirm)
-                .unwrap_or(false);
-        if already_trusted {
-            return Ok(());
+        match (self.approval_mode, risk) {
+            (ActionApprovalMode::AllowAll, _) => return Ok(()),
+            (ActionApprovalMode::Auto, Tier2RiskLevel::RoutineWrite) => return Ok(()),
+            (ActionApprovalMode::Auto, Tier2RiskLevel::HighRiskWrite)
+            | (ActionApprovalMode::Ask, _) => {}
         }
         let confirm_call_id = format!("confirm-{call_id}");
         let q = build_tier2_confirm_questionnaire(
@@ -207,7 +391,6 @@ impl ActionToolContext {
             kind,
             reason,
             preview,
-            allow_dont_ask_again,
             &self.action_label,
         );
         let first_q = &q.questions_slice()[0];
@@ -219,7 +402,7 @@ impl ActionToolContext {
         (self.emit)(
             "needsDecision",
             Some(confirm_call_id.clone()),
-            Some(CustomActionUiMessage {
+            Some(WorkflowUiMessage {
                 id: format!("ask-{}-{confirm_call_id}", self.run_id),
                 kind: "question".into(),
                 title: first_q.header.clone(),
@@ -246,17 +429,6 @@ impl ActionToolContext {
                 if !approved {
                     return Err(PiToolExecutionResult::error(declined_error));
                 }
-                if allow_dont_ask_again
-                    && resp.dont_ask_again == Some(true)
-                    && let Ok(mut st) = self.run_state.lock()
-                {
-                    st.skip_write_confirm = true;
-                    st.trusted_action_update = Some(TrustedActionUpdate {
-                        repository_id: self.target.repository_id.clone(),
-                        action_id: self.action_id.clone(),
-                        trusted_prompt_hash: self.expected_hash.clone(),
-                    });
-                }
                 Ok(())
             }
             Err(err) => Err(PiToolExecutionResult::error(err)),
@@ -269,7 +441,6 @@ fn build_tier2_confirm_questionnaire(
     kind: Tier2ConfirmKind,
     reason: &str,
     preview: &str,
-    allow_dont_ask_again: bool,
     action_label: &str,
 ) -> MessageUserRequest {
     let (header, question, approve_label, approve_desc) = match kind {
@@ -324,9 +495,8 @@ fn build_tier2_confirm_questionnaire(
             scope: Some(action_label.to_owned()),
             affected_file_ids: None,
             links: None,
-            allow_dont_ask_again: allow_dont_ask_again.then_some(true),
-            dont_ask_again_label: allow_dont_ask_again
-                .then(|| i18n::actions::action_tier2_dont_ask_label(locale).into()),
+            allow_dont_ask_again: None,
+            dont_ask_again_label: None,
         }),
     }
 }
@@ -335,7 +505,7 @@ const TIMELINE_MAX_ITEMS: usize = 60;
 const TIMELINE_DETAIL_MAX_CHARS: usize = 48;
 
 pub(super) fn push_timeline_step(
-    timeline: &mut Vec<CustomActionTimelineItem>,
+    timeline: &mut Vec<WorkflowTimelineItem>,
     state: &str,
     label: String,
 ) {
@@ -358,16 +528,13 @@ pub(super) fn push_timeline_step(
         let excess = timeline.len() + 1 - TIMELINE_MAX_ITEMS;
         timeline.drain(..excess);
     }
-    timeline.push(CustomActionTimelineItem {
+    timeline.push(WorkflowTimelineItem {
         state: state.to_owned(),
         label,
     });
 }
 
-pub(super) fn append_unique_links(
-    target: &mut Vec<CustomActionLink>,
-    incoming: Vec<CustomActionLink>,
-) {
+pub(super) fn append_unique_links(target: &mut Vec<WorkflowLink>, incoming: Vec<WorkflowLink>) {
     for link in incoming {
         if !target.iter().any(|existing| existing.url == link.url) {
             target.push(link);
@@ -539,7 +706,7 @@ pub(super) fn format_tool_status_label(
             let detail = format_platform_cli_detail(cli, &arg_list);
             i18n::actions::action_tool_status_label(locale, tool_name, detail.trim())
         }
-        "read_repo_file" | "edit_repo_file" | "write_repo_file" => {
+        "read_repo_file" | "read_scope_diff" | "edit_repo_file" | "write_repo_file" => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or("file");
             i18n::actions::action_tool_status_label(locale, tool_name, path)
         }

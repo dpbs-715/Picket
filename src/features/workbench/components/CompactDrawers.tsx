@@ -1,7 +1,15 @@
 import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
+import {
+  isRunProcessActive,
+  makeRunProcessId,
+  type RunCommandConfig,
+  type RunProcessSnapshot,
+} from '../../../../shared/run-protocol';
 import { useI18n } from '../../../i18n';
-import { Icon, RotatingChevron } from '../../../ui/controls';
+import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
 import { MOTION_DURATION, MOTION_EASE, m, useInstantMotion } from '../../../ui/motion';
+import { RunCommandIcon } from '../../runner/RunCommandIcon';
+import { resolveRunCommandIcon } from '../../runner/runIcon';
 import {
   isActiveSession,
   splitPath,
@@ -13,7 +21,7 @@ import {
 } from '../state/workbench';
 import { FileName } from './ChangeFileRow';
 
-export type CompactDrawer = 'none' | 'projects' | 'branches' | 'remote' | 'files' | 'actions';
+export type CompactDrawer = 'none' | 'projects' | 'branches' | 'remote' | 'files' | 'actions' | 'run';
 
 export function CompactProjectsDrawer({
   state,
@@ -338,6 +346,150 @@ export function CompactActionsDrawer({
           {t.footer.manageActionsMenuItem}
         </button>
       </div>
+    </m.div>
+  );
+}
+
+export function CompactRunDrawer({
+  worktreeId,
+  commands,
+  processes,
+  busyIds,
+  selectedCommandId,
+  onSelectCommand,
+  onStart,
+  onStop,
+  onRestart,
+  onOpenLogs,
+  onManageInMain,
+}: {
+  worktreeId: string;
+  commands: RunCommandConfig[];
+  processes: RunProcessSnapshot[];
+  busyIds: string[];
+  selectedCommandId?: string | null;
+  onSelectCommand?(commandId: string): void;
+  onStart(command: RunCommandConfig): void;
+  onStop(processId: string, label: string): void;
+  onRestart(command: RunCommandConfig): void;
+  onOpenLogs(processId: string): void;
+  onManageInMain(mode: 'create' | 'discover' | 'panel'): void;
+}) {
+  const { t } = useI18n();
+  const instantMotion = useInstantMotion();
+
+  return (
+    <m.div
+      key="drawer-run"
+      className="compact-drawer compact-run-drawer scroll-area"
+      role="region"
+      aria-label={t.run.popoverTitle}
+      initial={instantMotion ? false : { opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: MOTION_DURATION.fast, ease: MOTION_EASE }}
+    >
+      {commands.length === 0 ? (
+        <div className="compact-run-empty">
+          <p className="muted small">{t.run.compactEmptyHint}</p>
+          <div className="row">
+            <button
+              type="button"
+              className="primary compact"
+              onClick={() => onManageInMain('discover')}
+            >
+              <Icon name="sparkles" />
+              <span>{t.run.aiDiscoverButton}</span>
+            </button>
+            <button
+              type="button"
+              className="secondary compact"
+              onClick={() => onManageInMain('create')}
+            >
+              <Icon name="plus" />
+              <span>{t.run.addManualButton}</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {commands.map((cmd) => {
+            const processId = makeRunProcessId(worktreeId, cmd.id);
+            const proc = processes.find((item) => item.processId === processId);
+            const active = isRunProcessActive(proc?.status);
+            const isStarting = proc?.status === 'starting';
+            const isStopping = proc?.status === 'stopping' || busyIds.includes(`stopping:${processId}`);
+            const isRestarting = busyIds.includes(`restarting:${processId}`);
+            const actionBusy = busyIds.includes(processId) || isStopping || isRestarting;
+            const hasLogs = Boolean(proc && (proc.logLineCount > 0 || active));
+            const iconId = resolveRunCommandIcon(cmd.icon, cmd.command, cmd.label);
+            return (
+              <div
+                key={cmd.id}
+                className={`run-command-row compact-run-row ${active ? 'is-running' : ''} ${selectedCommandId === cmd.id ? 'is-selected' : ''}`}
+              >
+                <button
+                  type="button"
+                  className="run-command-info compact-run-select"
+                  onClick={() => onSelectCommand?.(cmd.id)}
+                >
+                  <div className="run-command-title-line">
+                    <RunCommandIcon icon={iconId} size="sm" running={active} />
+                    <span className="run-command-label truncate" title={cmd.label}>{cmd.label}</span>
+                  </div>
+                  <span className="run-command-preview mono muted small truncate" title={cmd.command}>
+                    {cmd.command}
+                  </span>
+                </button>
+                <div className="run-command-controls">
+                  {hasLogs && (
+                    <IconButton
+                      icon="terminal"
+                      label={t.run.logsAction}
+                      onClick={() => onOpenLogs(processId)}
+                    />
+                  )}
+                  {active ? (
+                    <>
+                      <IconButton
+                        icon="refresh"
+                        label={t.run.restartAction}
+                        className="run-restart-icon"
+                        disabled={actionBusy || isStarting}
+                        onClick={() => onRestart(cmd)}
+                      />
+                      <IconButton
+                        icon="square"
+                        label={t.run.stopAction}
+                        className="run-stop-icon"
+                        disabled={isStopping}
+                        onClick={() => onStop(processId, cmd.label)}
+                      />
+                    </>
+                  ) : (
+                    <IconButton
+                      icon="play"
+                      label={t.run.startAction}
+                      className="run-start-icon"
+                      disabled={actionBusy}
+                      onClick={() => onStart(cmd)}
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          <div className="menu-divider compact-run-footer">
+            <button type="button" onClick={() => onManageInMain('panel')}>
+              <Icon name="expand" />
+              <span>{t.run.compactManageInMain}</span>
+            </button>
+            <button type="button" onClick={() => onManageInMain('discover')}>
+              <Icon name="sparkles" />
+              <span>{t.run.aiRediscoverButton}</span>
+            </button>
+          </div>
+        </>
+      )}
     </m.div>
   );
 }

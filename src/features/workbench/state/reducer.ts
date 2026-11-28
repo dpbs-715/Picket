@@ -1,17 +1,17 @@
 import { WINDOW_DIMENSIONS } from '../../../../shared/workbench-persistence-protocol';
 import { getMessages } from '../../../i18n/messages';
 import { isCustomActionWorkbenchAction, reduceCustomAction } from './reducerCustomActions';
+import { isRunCommandWorkbenchAction, reduceRunCommands } from './reducerRunCommands';
 import { receiveEvent, updateWorktreeSelection } from './reducerEvents';
 import {
-  applyCustomActionProgress,
   applyLocalKeepUpdate,
-  finishCPushCommand,
+  finishActionCommand,
   finishRepositoryBranch,
   finishRepositoryLocalKeep,
   finishRepositoryRead,
   hydrateWorkbench,
   mergeSnapshot,
-  receiveCPushProgress,
+  receiveActionProgress,
 } from './repositories';
 import {
   effectiveCommitLanguageFor,
@@ -89,16 +89,20 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   if (action.type === 'traySnapshotsSynced') {
     return action.snapshots.reduce((acc, snap) => mergeSnapshot(acc, snap, false), state);
   }
-  if (action.type === 'event' && action.event.type === 'cPushProgress') {
-    return receiveCPushProgress(state, action.event.progress, Boolean(action.suppressExpand));
-  }
-  if (action.type === 'event' && action.event.type === 'customActionProgress') {
-    return applyCustomActionProgress(state, action.event.progress, Boolean(action.suppressExpand));
+  if (action.type === 'event' && action.event.type === 'actionProgress') {
+    return receiveActionProgress(
+      state,
+      action.event.progress,
+      Boolean(action.suppressExpand),
+      action.event.expectedRunId,
+    );
   }
   if (isCustomActionWorkbenchAction(action)) return reduceCustomAction(state, action);
+  if (isRunCommandWorkbenchAction(action)) return reduceRunCommands(state, action);
 
-  if (action.type === 'cPushStarted') {
+  if (action.type === 'actionStarted') {
     const t = getMessages(state.locale).workbench;
+    const isCPush = action.profile === 'cpush';
     return {
       ...state,
       worktrees: state.worktrees.map((tree) => {
@@ -106,9 +110,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
         const progressMsg: Message = {
           id: `progress-${action.runId}`,
           kind: 'progress',
-          title: t.cPushInitialTitle,
+          title: isCPush ? t.cPushInitialTitle : action.actionLabel,
           description: t.cPushInitialDescription,
-          scope: t.cPushInitialScope(action.frozenFileIds.length),
+          ...(isCPush ? { scope: t.cPushInitialScope(action.frozenFileIds.length) } : {}),
           progress: { completed: 1, total: 3, label: t.cPushInitialProgressLabel },
         };
         return {
@@ -117,43 +121,62 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           dockExpanded: action.expandDock ? true : tree.dockExpanded,
           messages: [progressMsg],
           activeRun: {
-            kind: 'cpush',
+            profile: action.profile,
             runId: action.runId,
+            actionId: action.actionId,
+            actionLabel: action.actionLabel,
             frozenTarget: action.frozenTarget,
             frozenFileIds: action.frozenFileIds,
             promptRevisionAtStart: tree.prompt.revision,
             modelId: action.modelId,
-            timeline: [
-              { state: 'done', label: t.cPushTimelineFrozen(action.frozenFileIds.length) },
-              { state: 'active', label: t.cPushTimelinePlanning },
-            ],
+            timeline: isCPush
+              ? [
+                  { state: 'done', label: t.cPushTimelineFrozen(action.frozenFileIds.length) },
+                  { state: 'active', label: t.cPushTimelinePlanning },
+                ]
+              : [{ state: 'active', label: action.actionLabel }],
             qaLog: [],
             commits: [],
+            links: [],
             canRetryRemaining: false,
           },
         };
       }),
     };
   }
-  if (action.type === 'cPushSettled') return finishCPushCommand(state, action.reply, action.expandDock);
-  if (action.type === 'cPushStartFailed') {
+  if (action.type === 'actionSettled') {
+    return finishActionCommand(state, action.reply, action.expandDock, Boolean(action.suppressExpand));
+  }
+  if (action.type === 'actionStartFailed') {
     return {
       ...state,
       worktrees: state.worktrees.map((tree) => {
         if (
           tree.worktreeId !== action.worktreeId
-          || tree.activeRun?.kind !== 'cpush'
-          || tree.activeRun.runId !== action.runId
-          || tree.activeRun.commits.length > 0
+          || tree.activeRun?.runId !== action.runId
+          || (tree.activeRun.profile === 'cpush' && tree.activeRun.commits.length > 0)
         ) {
           return tree;
         }
+        const errorMsg: Message | undefined = tree.activeRun.profile === 'customAction' && action.message
+          ? {
+              id: `error-${action.runId}`,
+              kind: 'error',
+              title: tree.activeRun.actionLabel,
+              description: action.message,
+            }
+          : undefined;
         return {
           ...tree,
           sessionStatus: 'idle',
-          dockExpanded: false,
-          messages: [],
-          activeRun: undefined,
+          dockExpanded: errorMsg ? tree.dockExpanded : false,
+          messages: errorMsg ? [errorMsg] : [],
+          activeRun: errorMsg
+            ? {
+                ...tree.activeRun,
+                pendingCallId: undefined,
+              }
+            : undefined,
         };
       }),
     };
@@ -207,6 +230,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
   }
   if (action.type === 'theme') {
     return { ...state, theme: action.theme, settingsModified: true };
+  }
+  if (action.type === 'actionApprovalMode') {
+    return { ...state, actionApprovalMode: action.mode, settingsModified: true };
   }
   if (action.type === 'windowPreferencesUpdated') {
     return {
@@ -285,6 +311,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
             ...(prev?.customActions?.length ? { customActions: prev.customActions } : {}),
             ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+            ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+            ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
           },
         },
         settingsModified: true,
@@ -306,6 +334,8 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
             ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
             ...(prev?.customActions?.length ? { customActions: prev.customActions } : {}),
             ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+            ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+            ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
           },
         },
         settingsModified: true,

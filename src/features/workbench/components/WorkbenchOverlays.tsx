@@ -1,12 +1,23 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { CustomActionConfig, CustomActionSyncResult } from '../../../../shared/custom-action-protocol';
 import type { CommitLanguage } from '../../../../shared/language-protocol';
+import {
+  isRunProcessActive,
+  RUN_COMMAND_LIMITS,
+  sanitizeRunCommandConfig,
+  type RunCommandConfig,
+  type RunEnvEntry,
+  type RunProcessSnapshot,
+} from '../../../../shared/run-protocol';
 import type { SkillsStateSnapshot } from '../../../../shared/skills-protocol';
 import type { UpdateStateSnapshot } from '../../../../shared/update-protocol';
 import { getMessages } from '../../../i18n';
 import { MotionPresence } from '../../../ui/motion';
 import { CustomActionModal } from '../../actions/CustomActionModal';
 import { CustomActionsManagerModal } from '../../actions/CustomActionsManagerModal';
+import { DiscoverRunCommandsModal } from '../../runner/DiscoverRunCommandsModal';
+import { RunCommandModal } from '../../runner/RunCommandModal';
+import { RunSharedEnvModal } from '../../runner/RunSharedEnvModal';
 import { ModelEntryForm } from '../../settings/ModelEntryForm';
 import type { ModelConfiguration } from '../../settings/modelProviders';
 import { ProviderConnectionForm } from '../../settings/ProviderConnectionForm';
@@ -27,6 +38,7 @@ import type {
   ModelOverlayState,
   NoticeItem,
   NotifyFn,
+  RunOverlayState,
   SettingsSession,
   WorkbenchDispatch,
 } from '../types';
@@ -42,6 +54,12 @@ interface Props {
   setModelOverlay: Dispatch<SetStateAction<ModelOverlayState>>;
   actionStack: ActionOverlayItem[];
   setActionStack: Dispatch<SetStateAction<ActionOverlayItem[]>>;
+  runOverlay: RunOverlayState;
+  setRunOverlay: Dispatch<SetStateAction<RunOverlayState>>;
+  activeRepoRunCommands: RunCommandConfig[];
+  activeRepoRunSharedEnv: RunEnvEntry[];
+  runProcesses: RunProcessSnapshot[];
+  onStopAllForRunCommand: (repositoryId: string, commandId: string) => Promise<boolean>;
   worktree: Worktree | undefined;
   repository: Repository | undefined;
   viewKey: string;
@@ -86,6 +104,12 @@ export function WorkbenchOverlays({
   setModelOverlay,
   actionStack,
   setActionStack,
+  runOverlay,
+  setRunOverlay,
+  activeRepoRunCommands,
+  activeRepoRunSharedEnv,
+  runProcesses,
+  onStopAllForRunCommand,
   worktree,
   repository,
   viewKey,
@@ -121,6 +145,7 @@ export function WorkbenchOverlays({
   const t = getMessages(state.locale);
   const modelOverlayOpen = modelOverlay.kind !== 'closed';
   const actionOverlayOpen = actionStack.length > 0;
+  const runOverlayOpen = runOverlay.kind !== 'closed';
 
   return (
     <>
@@ -131,6 +156,7 @@ export function WorkbenchOverlays({
             overlayVariant={presentation.surface === 'standaloneSettings' ? 'standalone' : 'sheet'}
             locale={state.locale}
             theme={state.theme}
+            actionApprovalMode={state.actionApprovalMode}
             repositoryName={repository?.name}
             editor={activeEditor}
             commitLanguage={activeCommitLanguage}
@@ -140,6 +166,7 @@ export function WorkbenchOverlays({
             activeModelId={state.activeModelId}
             onLocale={(locale) => dispatch({ type: 'locale', locale })}
             onTheme={(theme) => dispatch({ type: 'theme', theme })}
+            onActionApprovalMode={(mode) => dispatch({ type: 'actionApprovalMode', mode })}
             onEditor={(nextEditor) => dispatch({ type: 'editor', editor: nextEditor, repositoryId: worktree?.repositoryId ?? null })}
             onCommitLanguage={(commitLanguage) => dispatch({ type: 'commitLanguage', commitLanguage, repositoryId: worktree?.repositoryId ?? null })}
             onSelectModel={(id) => void onSelectModel(id)}
@@ -270,8 +297,8 @@ export function WorkbenchOverlays({
                     onProgress,
                   )
                 : undefined}
-              onRespondGenerateQuestion={backend.respondCustomAction
-                ? (runId, callId, response) => backend.respondCustomAction!({
+              onRespondGenerateQuestion={backend.respondActionQuestion
+                ? (runId, callId, response) => backend.respondActionQuestion!({
                     requestId: crypto.randomUUID(),
                     runId,
                     callId,
@@ -280,27 +307,133 @@ export function WorkbenchOverlays({
                   })
                 : undefined}
               onCancelGenerate={(runId) => {
-                void backend.cancelCustomAction?.(runId).catch(() => {});
+                void backend.cancelAction?.(runId).catch(() => {});
               }}
             />
           );
         })}
       </MotionPresence>
       <MotionPresence>
+        {presentation.surface !== 'compact' && worktree && repository && (runOverlay.kind === 'create' || runOverlay.kind === 'edit') && (
+          <RunCommandModal
+            key={runOverlay.kind === 'edit' ? `edit-run:${runOverlay.command.id}` : `new-run:${repository.id}`}
+            repositoryName={repository.name}
+            existingCommands={activeRepoRunCommands}
+            initialCommand={runOverlay.kind === 'edit' ? runOverlay.command : undefined}
+            runningCount={
+              runOverlay.kind === 'edit'
+                ? runProcesses.filter(
+                    (proc) => proc.repositoryId === repository.id
+                      && proc.commandId === runOverlay.command.id
+                      && isRunProcessActive(proc.status),
+                  ).length
+                : 0
+            }
+            covered={modelOverlayOpen}
+            onClose={() => setRunOverlay({ kind: 'closed' })}
+            onSave={(command) => {
+              dispatch({ type: 'saveRunCommand', repositoryId: worktree.repositoryId, command });
+              setRunOverlay({ kind: 'closed' });
+              notify(t.run.savedNotice(command.label), viewKey, { tone: 'success' });
+            }}
+            onDelete={async (commandId) => {
+              const target = activeRepoRunCommands.find((c) => c.id === commandId);
+              const stopped = await onStopAllForRunCommand(worktree.repositoryId, commandId);
+              if (!stopped) return;
+              dispatch({ type: 'deleteRunCommand', repositoryId: worktree.repositoryId, commandId });
+              setRunOverlay({ kind: 'closed' });
+              if (target) notify(t.run.deletedNotice(target.label), viewKey, { tone: 'info' });
+            }}
+          />
+        )}
+        {presentation.surface !== 'compact' && worktree && repository && runOverlay.kind === 'discover' && (
+          <DiscoverRunCommandsModal
+            key={`discover-run:${repository.id}`}
+            repositoryName={repository.name}
+            existingCommands={activeRepoRunCommands}
+            hasModel={!!model}
+            canDiscover={Boolean(backend.discoverRunCommands && model)}
+            covered={modelOverlayOpen}
+            onClose={() => setRunOverlay({ kind: 'closed' })}
+            onConfigureModel={() => setModelOverlay({ kind: 'createProvider', keepActiveModel: state.models.length > 0 })}
+            onAddManual={() => setRunOverlay({ kind: 'create' })}
+            onDiscover={(requestId, onProgress) => backend.discoverRunCommands!(
+              {
+                requestId,
+                target: targetOf(worktree),
+                modelId: model!.id,
+                existingCommands: activeRepoRunCommands.map((c) => c.command),
+                locale: state.locale,
+              },
+              onProgress,
+            )}
+            onCancelDiscover={(requestId) => {
+              void backend.cancelDiscoverRunCommands?.(requestId).catch(() => {});
+            }}
+            onAddCommands={(commands) => {
+              const seenIds = new Set(activeRepoRunCommands.map((item) => item.id));
+              const seenKeys = new Set(activeRepoRunCommands.map((item) => `${item.cwd ?? '.'}::${item.command.trim()}`));
+              let addedCount = 0;
+              for (const raw of commands) {
+                if (activeRepoRunCommands.length + addedCount >= RUN_COMMAND_LIMITS.maxPerRepo) break;
+                try {
+                  const sanitized = sanitizeRunCommandConfig(raw);
+                  if (!sanitized.id || !sanitized.label || !sanitized.command) continue;
+                  const key = `${sanitized.cwd ?? '.'}::${sanitized.command}`;
+                  if (seenIds.has(sanitized.id) || seenKeys.has(key)) continue;
+                  seenIds.add(sanitized.id);
+                  seenKeys.add(key);
+                  addedCount += 1;
+                } catch {
+                  continue;
+                }
+              }
+              dispatch({ type: 'addRunCommands', repositoryId: worktree.repositoryId, commands });
+              if (addedCount > 0) {
+                notify(t.run.discoverAddedNotice(addedCount), viewKey, { tone: 'success' });
+              }
+            }}
+          />
+        )}
+        {presentation.surface !== 'compact' && worktree && repository && runOverlay.kind === 'sharedEnv' && (
+          <RunSharedEnvModal
+            key={`shared-env:${repository.id}`}
+            repositoryName={repository.name}
+            initialEnv={activeRepoRunSharedEnv}
+            covered={modelOverlayOpen}
+            onClose={() => setRunOverlay({ kind: 'closed' })}
+            onSave={(env) => {
+              dispatch({ type: 'setRunSharedEnv', repositoryId: worktree.repositoryId, env });
+              setRunOverlay({ kind: 'closed' });
+              notify(t.run.sharedEnvSavedNotice(env.length), viewKey, { tone: 'success' });
+            }}
+          />
+        )}
+      </MotionPresence>
+      <MotionPresence>
         {presentation.surface !== 'compact' && modelOverlay.kind === 'createProvider' && (
           <ProviderConnectionForm
             key="create-provider"
-            depth={settingsOpen ? 1 : actionStack.length}
-            overlayVariant={settingsOpen || actionOverlayOpen ? 'drill' : 'sheet'}
+            depth={settingsOpen ? 1 : actionOverlayOpen ? actionStack.length : runOverlayOpen ? 1 : 0}
+            overlayVariant={settingsOpen || actionOverlayOpen || runOverlayOpen ? 'drill' : 'sheet'}
             mode="create"
             keepActiveModel={modelOverlay.keepActiveModel}
-            onBack={settingsOpen || actionOverlayOpen ? () => setModelOverlay({ kind: 'closed' }) : undefined}
-            backLabel={settingsOpen ? t.settings.tabs.models : actionOverlayOpen ? t.actions.newModalTitle : undefined}
+            onBack={settingsOpen || actionOverlayOpen || runOverlayOpen ? () => setModelOverlay({ kind: 'closed' }) : undefined}
+            backLabel={
+              settingsOpen
+                ? t.settings.tabs.models
+                : actionOverlayOpen
+                  ? t.actions.newModalTitle
+                  : runOverlayOpen
+                    ? t.run.discoverModalTitle
+                    : undefined
+            }
             closeDisabled={settingsOpen && pinBusy && settingsSession?.returnTo === 'compact'}
             onClose={() => {
               setModelOverlay({ kind: 'closed' });
               if (settingsOpen) void onCloseSettings();
               else if (actionOverlayOpen) setActionStack([]);
+              else if (runOverlayOpen) setRunOverlay({ kind: 'closed' });
             }}
             test={(input) => backend.testModel({ ...input, locale: state.locale })}
             listModels={backend.listProviderModels

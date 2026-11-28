@@ -1,5 +1,6 @@
 import type { Dispatch } from 'react';
 import type { CustomActionConfig } from '../../../shared/custom-action-protocol';
+import type { RunCommandConfig } from '../../../shared/run-protocol';
 import type { WindowPosition, WindowSize } from '../../../shared/workbench-persistence-protocol';
 import type { ModelConfiguration, ProviderConnection } from '../settings/modelProviders';
 import type { CompactExpandTarget, SettingsReturnTarget, workbenchReducer } from './state/workbench';
@@ -44,3 +45,10 @@ export type ActionOverlayItem =
   | { kind: 'manage' }
   | { kind: 'create'; mode: 'manual' | 'create' }
   | { kind: 'edit'; action: CustomActionConfig };
+
+export type RunOverlayState =
+  | { kind: 'closed' }
+  | { kind: 'create' }
+  | { kind: 'edit'; command: RunCommandConfig }
+  | { kind: 'discover' }
+  | { kind: 'sharedEnv' };

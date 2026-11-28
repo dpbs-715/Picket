@@ -68,7 +68,7 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
           },
         };
       },
-      async respondCustomAction(request) {
+      async respondActionQuestion(request) {
         phase2QuestionResponses.push({
           runId: request.runId,
           callId: request.callId,
@@ -89,46 +89,57 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
       },
       async execute(command) {
         phase2Cmds.push(command);
-        if (command.kind === 'runCustomAction') {
+        if (command.kind === 'startAction' && command.profile === 'customAction' && command.action) {
           phase2Sub.receive?.({
-            type: 'customActionProgress',
+            type: 'actionProgress',
             progress: {
-              protocolVersion: 1,
-              runId: command.requestId,
-              repositoryId: command.target.repositoryId,
-              worktreeId: command.target.worktreeId,
-              sessionId: command.target.sessionId,
-              actionId: command.action.id,
-              actionLabel: command.action.label,
-              status: 'needsDecision',
-              pendingCallId: 'confirm-tc-1',
-              message: {
-                id: 'ask-tier2-1',
-                kind: 'question',
-                title: 'Confirm Write',
-                description: 'Confirm before running custom write command',
-                questionnaire: {
-                  questions: [{
-                    id: 'confirm-write',
-                    header: 'Confirm Write',
-                    question: 'Run custom Git command?',
-                    options: [
-                      {
-                        id: 'approve-write',
-                        label: 'Run command',
-                        description: 'Execute in current repository',
-                        recommended: true,
-                        preview: 'git tag -f v0.2.0',
-                      },
-                      { id: 'cancel-write', label: 'Cancel', description: 'Skip command' },
-                    ],
-                  }],
-                  context: { allowDontAskAgain: true },
+              protocolVersion: 2,
+              session: {
+                runId: command.requestId,
+                repositoryId: command.target.repositoryId,
+                worktreeId: command.target.worktreeId,
+                sessionId: command.target.sessionId,
+                actionId: command.action.id,
+                actionLabel: command.action.label,
+                profile: 'customAction',
+                frozenScopeVersion: command.target.scopeVersion,
+                modelId: command.modelId,
+                frozenFileIds: command.fileIds,
+                committedFileIds: [],
+                skippedFileIds: [],
+                status: 'needsDecision',
+                pendingCallId: 'confirm-tc-1',
+                summary: '',
+                message: {
+                  id: 'ask-tier2-1',
+                  kind: 'question',
+                  title: 'Confirm Write',
+                  description: 'Confirm before running custom write command',
+                  questionnaire: {
+                    questions: [{
+                      id: 'confirm-write',
+                      header: 'Confirm Write',
+                      question: 'Run custom Git command?',
+                      options: [
+                        {
+                          id: 'approve-write',
+                          label: 'Run command',
+                          description: 'Execute in current repository',
+                          recommended: true,
+                          preview: 'git tag -f v0.2.0',
+                        },
+                        { id: 'cancel-write', label: 'Cancel', description: 'Skip command' },
+                      ],
+                    }],
+                    context: { allowDontAskAgain: true },
+                  },
                 },
+                timeline: [{ state: 'active', label: 'Running git tag' }],
+                qaLog: [],
+                commits: [],
+                links: [],
+                canRetryRemaining: false,
               },
-              timeline: [{ state: 'active', label: 'Running git tag' }],
-              commits: [],
-              links: [],
             },
           });
           await new Promise<void>((resolve) => {
@@ -142,27 +153,37 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
             (r) => r.callId === 'confirm-tc-1' && r.dontAskAgain === true,
           );
           return {
-            protocolVersion: 1,
-            kind: 'customAction',
+            protocolVersion: 2,
+            kind: 'action',
             requestId: command.requestId,
-            runId: command.requestId,
-            repositoryId: command.target.repositoryId,
-            worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId,
-            actionId: command.action.id,
-            actionLabel: command.action.label,
-            status: 'done',
-            summary: 'Tagged v0.2.0 and pushed to origin.',
-            message: {
-              id: 'done-action-1',
-              kind: 'done',
-              title: 'Release Tag completed',
-              description: 'Tagged v0.2.0 and pushed to origin.',
+            session: {
+              runId: command.requestId,
+              repositoryId: command.target.repositoryId,
+              worktreeId: command.target.worktreeId,
+              sessionId: command.target.sessionId,
+              actionId: command.action.id,
+              actionLabel: command.action.label,
+              profile: 'customAction',
+              frozenScopeVersion: command.target.scopeVersion,
+              modelId: command.modelId,
+              frozenFileIds: command.fileIds,
+              committedFileIds: [],
+              skippedFileIds: [],
+              status: 'done',
+              summary: 'Tagged v0.2.0 and pushed to origin.',
+              message: {
+                id: 'done-action-1',
+                kind: 'done',
+                title: 'Release Tag completed',
+                description: 'Tagged v0.2.0 and pushed to origin.',
+                links: [{ label: 'Release v0.2.0', url: 'https://github.com/acme/demo/releases/tag/v0.2.0' }],
+              },
+              timeline: [{ state: 'done', label: 'Pushed v0.2.0' }],
+              qaLog: [],
+              commits: [],
               links: [{ label: 'Release v0.2.0', url: 'https://github.com/acme/demo/releases/tag/v0.2.0' }],
+              canRetryRemaining: false,
             },
-            timeline: [{ state: 'done', label: 'Pushed v0.2.0' }],
-            commits: [],
-            links: [{ label: 'Release v0.2.0', url: 'https://github.com/acme/demo/releases/tag/v0.2.0' }],
             ...(approvedDontAsk
               ? {
                   trustedActionUpdate: {
@@ -243,8 +264,6 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
     await clickElement(mainBtn);
     await tick();
     assert(Boolean(document.querySelector('.message-expanded')), 'Tier-2 write confirmation should open in MessageDock');
-    const tier2Checkbox = document.querySelector<HTMLInputElement>('.dont-ask-toggle input[type="checkbox"]')!;
-    await act(async () => { tier2Checkbox.click(); });
     const approveBtn = document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="approve-write"]')!;
     const cancelOptBtn = document.querySelector<HTMLButtonElement>('.d2-opt-btn[data-option-id="cancel-write"]')!;
     const primaryShell = approveBtn.closest<HTMLElement>('.d2-opt-shell.is-primary');
@@ -282,29 +301,27 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
       () => `phase2-custom-action-done (responses=${JSON.stringify(phase2QuestionResponses)}, dockText=${document.querySelector('.message-expanded, .message-collapsed')?.textContent ?? '<none>'})`,
     );
     assert(
-      phase2QuestionResponses.some((r) => r.callId === 'confirm-tc-1' && r.dontAskAgain === true),
-      `Expected Tier-2 response with dontAskAgain=true, got ${JSON.stringify(phase2QuestionResponses)}`,
+      phase2QuestionResponses.some((r) => r.callId === 'confirm-tc-1'),
+      `Expected Tier-2 approval response, got ${JSON.stringify(phase2QuestionResponses)}`,
     );
     await click('Dismiss completed notice');
 
-    // Trusted custom action context pill displays Auto-approve badge and expands drawer with single-line Edit / C-Push buttons:
+    // Custom action context pill stays clean without legacy per-button Auto-approve badge and keeps drawer actions single-line:
     {
-      const trustedPill = document.querySelector<HTMLButtonElement>('.action-context-pill')!;
-      assert(Boolean(trustedPill.querySelector('.action-meta-badge.is-amber')), 'Trusted custom action pill must show Auto-approve badge');
-      await clickElement(trustedPill);
+      const actionPill = document.querySelector<HTMLButtonElement>('.action-context-pill')!;
+      assert(!actionPill.querySelector('.action-meta-badge.is-amber'), 'Action pill must not show legacy per-button Auto-approve badge');
+      await clickElement(actionPill);
       const drawerRect = document.querySelector('.action-context-drawer')!.getBoundingClientRect();
-      const badges = [...document.querySelectorAll('.action-context-drawer .action-meta-badge')];
       const actionBtns = [...document.querySelectorAll<HTMLButtonElement>('.action-context-drawer .custom-action-preview-actions button')];
       assert(
-        badges.length === 2
-          && actionBtns.length === 2
+        actionBtns.length === 2
           && actionBtns.every((btn) => {
             const r = btn.getBoundingClientRect();
             return r.height <= 28 && r.right <= drawerRect.right + 1;
           }),
-        'Trusted custom action drawer header must display both badges and keep Edit / C-Push buttons single-line within drawer bounds',
+        'Custom action drawer header must keep Edit / C-Push buttons single-line within drawer bounds',
       );
-      await clickElement(trustedPill);
+      await clickElement(actionPill);
     }
 
     // Compact Mode (400 x 86) Split Button & top-left-anchored actions drawer:
@@ -384,14 +401,14 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
             },
           };
         },
-        async respondCustomAction(request) {
+        async respondActionQuestion(request) {
           if (request.callId === 'space-gen-tc-1') {
             resolveSpaceGen?.();
             resolveSpaceGen = null;
           }
           return true;
         },
-        async cancelCustomAction(requestId) {
+        async cancelAction(requestId) {
           cancelledGenRuns.push(requestId);
         },
       };
@@ -523,8 +540,15 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
                   runId: 'run-submit-restore-1',
                   repositoryId: 'orders',
                   worktreeId: 'pay-tree',
+                  sessionId: 'sess-submit-1',
                   actionId: 'act-submit',
                   actionLabel: 'Submit -> v1.9.0 -> test',
+                  profile: 'customAction',
+                  frozenScopeVersion: 'sv-1',
+                  modelId: 'test-claude',
+                  frozenFileIds: [],
+                  committedFileIds: [],
+                  skippedFileIds: [],
                   status: 'interrupted',
                   summary: 'Interrupted before final promotion; created PRs and isolated worktrees were preserved.',
                   message: {
@@ -541,6 +565,7 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
                     { state: 'done', label: 'Created isolated submit worktree' },
                     { state: 'failed', label: 'Running gh pr merge' },
                   ],
+                  qaLog: [],
                   commits: [{
                     oid: '1111111111111111111111111111111111111111',
                     shortOid: '1111111',
@@ -552,6 +577,7 @@ export async function runCustomActionsChecks(harness: BrowserCheckHarness) {
                     { label: 'Issue #42', url: 'https://github.com/acme/demo/issues/42' },
                     { label: 'PR #101', url: 'https://github.com/acme/demo/pull/101' },
                   ],
+                  canRetryRemaining: false,
                 }],
                 warning: null,
               };

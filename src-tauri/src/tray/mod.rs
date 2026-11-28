@@ -23,8 +23,9 @@ use crate::lifecycle::DesktopLifecycle;
 use crate::{
     actions::CustomActionCoordinator,
     i18n::LanguageKind,
-    lifecycle::exit_after_cleanup,
+    lifecycle::request_app_quit,
     repository::{RepositoryStore, types::ThemeKind},
+    runner::{RUN_LOGS_WINDOW_LABEL, RunProcessManager},
     updater::UpdateManager,
     window_motion::{self, MonitorWorkArea},
 };
@@ -88,6 +89,13 @@ pub struct TrayCoordinator {
 }
 
 impl TrayCoordinator {
+    pub fn current_locale(&self) -> LanguageKind {
+        self.state
+            .lock()
+            .map(|guard| guard.locale)
+            .unwrap_or_default()
+    }
+
     pub(super) fn current_theme(&self) -> ThemeKind {
         self.state
             .lock()
@@ -126,6 +134,10 @@ impl TrayCoordinator {
         let sessions = app
             .state::<CustomActionCoordinator>()
             .tray_session_statuses();
+        let running_services = app
+            .try_state::<RunProcessManager>()
+            .map(|m| m.tray_running_services())
+            .unwrap_or_default();
         let has_update = app.state::<UpdateManager>().has_update();
         let refreshing = self.refreshing.load(Ordering::SeqCst);
 
@@ -138,6 +150,7 @@ impl TrayCoordinator {
         let snapshot = build_tray_state_snapshot(
             &snapshots,
             &sessions,
+            running_services,
             active_worktree_id.as_deref(),
             locale,
             theme,
@@ -300,7 +313,23 @@ impl TrayCoordinator {
         }
     }
 
-    /// Hides the main window into the menu bar and automatically hides the Dock icon on macOS.
+    /// Keeps macOS Dock visibility at `Regular` whenever either `main` or `run-logs` is visible,
+    /// and switches to `Accessory` only when both windows are hidden.
+    pub fn sync_dock_visibility_on_main(&self, app: &AppHandle, force_show: Option<bool>) {
+        let show = force_show.unwrap_or_else(|| {
+            let main_visible = app
+                .get_webview_window("main")
+                .is_some_and(|w| w.is_visible().unwrap_or(false));
+            let logs_visible = app
+                .get_webview_window(RUN_LOGS_WINDOW_LABEL)
+                .is_some_and(|w| w.is_visible().unwrap_or(false));
+            main_visible || logs_visible
+        });
+        apply_dock_visibility_on_main(app, show);
+    }
+
+    /// Hides the main window into the menu bar and automatically hides the Dock icon on macOS
+    /// (unless the pop-out Run Logs window is currently open).
     pub fn hide_main_to_tray_on_main(&self, app: &AppHandle) {
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.hide();
@@ -308,7 +337,7 @@ impl TrayCoordinator {
         if let Ok(mut guard) = self.state.lock() {
             guard.main_hidden = true;
         }
-        apply_dock_visibility_on_main(app, false);
+        self.sync_dock_visibility_on_main(app, None);
     }
 
     /// Restores the Dock icon and brings the main window to the foreground, optionally forwarding
@@ -322,7 +351,7 @@ impl TrayCoordinator {
         if let Ok(mut guard) = self.state.lock() {
             guard.main_hidden = false;
         }
-        apply_dock_visibility_on_main(app, true);
+        self.sync_dock_visibility_on_main(app, Some(true));
         if let Some(main) = app.get_webview_window("main") {
             window_motion::activate_and_focus_main_on_main(&main);
             if let Some(act) = action {
@@ -374,6 +403,7 @@ impl TrayCoordinator {
             if let Some(popover) = app_for_main.get_webview_window(TRAY_POPOVER_LABEL) {
                 let _ = popover.destroy();
             }
+            crate::runner::logs_window::destroy_logs_window_on_main(&app_for_main);
             let _ = app_for_main.remove_tray_by_id(TRAY_ID);
         });
     }
@@ -461,8 +491,13 @@ pub fn tray_open_main_window(
 
 #[tauri::command]
 pub fn tray_quit_app(app: AppHandle) -> Result<(), crate::error::AppError> {
-    app.state::<TrayCoordinator>().teardown(&app);
-    exit_after_cleanup(&app);
+    let app_for_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        app_for_main
+            .state::<TrayCoordinator>()
+            .hide_popover_on_main(&app_for_main);
+    });
+    request_app_quit(&app);
     Ok(())
 }
 

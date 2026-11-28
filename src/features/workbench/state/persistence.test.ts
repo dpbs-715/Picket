@@ -435,38 +435,58 @@ describe('Workbench cross-restart v2 persistence projection and hydration', () =
 
     // High-frequency streaming updates (activeRun, messages, dockExpanded, replies) must reuse cached snapshot reference:
     const afterStart = workbenchReducer(base, {
-      type: 'customActionStarted',
+      type: 'actionStarted',
       worktreeId: 'pay-tree',
+      profile: 'customAction',
       runId: 'run-stream-1',
       actionId: 'act-1',
       actionLabel: 'Review',
+      frozenTarget: {
+        repositoryId: 'orders',
+        worktreeId: 'pay-tree',
+        sessionId: base.worktrees[0].sessionId,
+        scopeVersion: base.worktrees[0].scopeVersion,
+      },
+      frozenFileIds: [],
+      modelId: 'm-1',
       expandDock: true,
     });
     const afterTick = workbenchReducer(afterStart, {
       type: 'event',
       event: {
-        type: 'customActionProgress',
+        type: 'actionProgress',
         progress: {
-          protocolVersion: 1,
-          runId: 'run-stream-1',
-          repositoryId: 'orders',
-          worktreeId: 'pay-tree',
-          sessionId: afterStart.worktrees[0].sessionId,
-          actionId: 'act-1',
-          actionLabel: 'Review',
-          status: 'running',
-          message: {
-            id: 'progress-run-stream-1',
-            kind: 'progress',
-            title: 'Review',
-            description: 'Checking step 2',
+          protocolVersion: 2,
+          session: {
+            runId: 'run-stream-1',
+            repositoryId: 'orders',
+            worktreeId: 'pay-tree',
+            sessionId: afterStart.worktrees[0].sessionId,
+            actionId: 'act-1',
+            actionLabel: 'Review',
+            profile: 'customAction',
+            frozenScopeVersion: afterStart.worktrees[0].scopeVersion,
+            modelId: 'm-1',
+            frozenFileIds: [],
+            committedFileIds: [],
+            skippedFileIds: [],
+            status: 'running',
+            summary: '',
+            message: {
+              id: 'progress-run-stream-1',
+              kind: 'progress',
+              title: 'Review',
+              description: 'Checking step 2',
+            },
+            timeline: [
+              { state: 'done', label: 'Step 1' },
+              { state: 'active', label: 'Step 2' },
+            ],
+            qaLog: [],
+            commits: [],
+            links: [],
+            canRetryRemaining: false,
           },
-          timeline: [
-            { state: 'done', label: 'Step 1' },
-            { state: 'active', label: 'Step 2' },
-          ],
-          commits: [],
-          links: [],
         },
       },
     });
@@ -484,5 +504,62 @@ describe('Workbench cross-restart v2 persistence projection and hydration', () =
     const selectKeys = resolvePersistenceKeys(afterSelect, promptKeys);
     expect(selectKeys).not.toBe(promptKeys);
     expect(selectKeys.structuralKey).not.toBe(promptKeys.structuralKey);
+  });
+
+  it('persists and cold-restores global actionApprovalMode (ask, auto, allowAll) and defaults legacy payloads to auto', () => {
+    let state = emptyWorkbench();
+    expect(state.actionApprovalMode).toBe('auto');
+
+    state = workbenchReducer(state, { type: 'actionApprovalMode', mode: 'ask' });
+    expect(state.actionApprovalMode).toBe('ask');
+    expect(state.settingsModified).toBe(true);
+
+    const saved = serializeWorkbenchPersistence(state, 4);
+    expect(saved.actionApprovalMode).toBe('ask');
+
+    const decoded = decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: saved.locale,
+      theme: saved.theme,
+      actionApprovalMode: saved.actionApprovalMode,
+      editor: saved.editor,
+      defaultCommitLanguage: saved.defaultCommitLanguage,
+      repositorySettings: saved.repositorySettings,
+      windowPreferences: saved.windowPreferences,
+      activeWorktreeId: saved.activeWorktreeId,
+      emptyPrompt: saved.emptyPrompt,
+      worktrees: saved.worktrees,
+      snapshots: [],
+      warning: null,
+    });
+    expect(decoded.actionApprovalMode).toBe('ask');
+    expect(workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored: decoded }).actionApprovalMode).toBe('ask');
+
+    // Legacy payloads without actionApprovalMode default to 'auto':
+    const decodedLegacy = decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: 'en',
+      editor: 'idea',
+      activeWorktreeId: null,
+      emptyPrompt: '',
+      worktrees: [],
+      snapshots: [],
+      warning: null,
+    });
+    expect(decodedLegacy.actionApprovalMode).toBeUndefined();
+    expect(workbenchReducer(emptyWorkbench(), { type: 'workbenchHydrated', restored: decodedLegacy }).actionApprovalMode).toBe('auto');
+
+    // Invalid mode values are rejected by protocol decoder:
+    expect(() => decodeWorkbenchRestoreReply({
+      protocolVersion: 2,
+      locale: 'en',
+      actionApprovalMode: 'yolo',
+      editor: 'idea',
+      activeWorktreeId: null,
+      emptyPrompt: '',
+      worktrees: [],
+      snapshots: [],
+      warning: null,
+    })).toThrow(/protocol mismatch/i);
   });
 });

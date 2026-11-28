@@ -1,8 +1,5 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import {
-  isCustomActionWriteTrusted,
-  type CustomActionConfig,
-} from '../../../../shared/custom-action-protocol';
+import type { CustomActionConfig } from '../../../../shared/custom-action-protocol';
 import { useI18n } from '../../../i18n';
 import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
 import { Collapse } from '../../../ui/motion';
@@ -41,8 +38,6 @@ export function ActionContextStrip({
   const prevViewKeyRef = useRef(viewKey);
   const prevActionIdRef = useRef(activeCustomAction?.id);
 
-  const trustedAction = activeCustomAction ? isCustomActionWriteTrusted(activeCustomAction) : false;
-
   useLayoutEffect(() => {
     if (prevViewKeyRef.current !== viewKey) {
       prevViewKeyRef.current = viewKey;
@@ -72,7 +67,6 @@ export function ActionContextStrip({
               <Icon name="sparkles" className="accent" />
               <span className="action-context-name truncate">{activeCustomAction.label}</span>
               <span className="action-context-summary muted truncate">{activeCustomAction.prompt.replace(/\s+/g, ' ')}</span>
-              {trustedAction && <span className="action-meta-badge is-amber">{t.actions.autoApproveBadge}</span>}
               <RotatingChevron open={actionPreviewOpen} direction="down-up" className="action-context-chevron" />
             </button>
           </div>
@@ -82,7 +76,6 @@ export function ActionContextStrip({
               <div className="action-context-drawer-head">
                 <div className="custom-action-preview-meta">
                   <span className="action-meta-badge is-accent">{t.actions.customActionBadge}</span>
-                  {trustedAction && <span className="action-meta-badge is-amber">{t.actions.autoApproveBadge}</span>}
                 </div>
                 <div className="custom-action-preview-actions">
                   <button

@@ -30,11 +30,11 @@ export function commandInFlightKey(command: WorkbenchCommand, targetKey: string)
   if (command.kind === 'switchBranch' || command.kind === 'checkoutRemoteBranch') {
     return `${command.target.repositoryId}:write`;
   }
-  if (command.kind === 'pull') {
+  if (command.kind === 'runRecovery' && command.action.kind === 'pullRebase') {
     return `${command.target.repositoryId}:pull`;
   }
-  if (command.kind === 'runCustomAction') {
-    return `${command.target.repositoryId}:customAction`;
+  if (command.kind === 'startAction') {
+    return `${command.target.repositoryId}:action`;
   }
   if (command.kind === 'setLocalKeep') {
     return `${command.target.repositoryId}:localKeep:${command.requestId}`;
@@ -78,32 +78,25 @@ export function applyCommandReply(
     return true;
   }
 
-  if (command.kind === 'runCustomAction') {
-    if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'customAction') {
-      const expandDock = !isEditingCommitInput()
-        && !latestState.current.windowPrefs.compactMode
-        && reply.status === 'done'
-        && Boolean(reply.message);
-      dispatch({ type: 'customActionSettled', reply, expandDock });
-      if (reply.status === 'cancelled') {
-        notify(getMessages(latestState.current.locale).actions.actionCancelledNotice, targetKey, { tone: 'info' });
-      } else {
-        notify('', targetKey);
-      }
-    }
-    return true;
-  }
-
-  if (command.kind === 'cPush' || command.kind === 'respond' || command.kind === 'pull') {
-    if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'cPush') {
-      const expandDock = command.kind === 'pull'
-        && !isEditingCommitInput()
-        && !latestState.current.windowPrefs.compactMode
-        && reply.session.sessionStatus !== 'idle'
-        && !reply.session.autoCollapse;
-      dispatch({ type: 'cPushSettled', reply, expandDock });
-      if (command.kind === 'pull') {
-        if (reply.session.sessionStatus === 'idle') {
+  if (command.kind === 'startAction' || command.kind === 'runRecovery') {
+    if (reply && typeof reply === 'object' && 'kind' in reply && reply.kind === 'action') {
+      const isPullRebase = command.kind === 'runRecovery' && command.action.kind === 'pullRebase';
+      const isCustomAction = reply.session.profile === 'customAction';
+      const suppressExpand = isEditingCommitInput() || latestState.current.windowPrefs.compactMode;
+      const expandDock = !suppressExpand
+        && !reply.session.autoCollapse
+        && (
+          (isPullRebase && reply.session.status !== 'idle')
+          || (isCustomAction && reply.session.status === 'done' && Boolean(reply.session.message))
+          || (isCustomAction && (
+            reply.session.status === 'conflict'
+            || reply.session.status === 'pushFailed'
+            || reply.session.status === 'needsDecision'
+          ))
+        );
+      dispatch({ type: 'actionSettled', reply, expandDock, suppressExpand });
+      if (isPullRebase) {
+        if (reply.session.status === 'idle') {
           const syncedRemote = reply.repositorySnapshot?.worktrees.find((item) => item.worktreeId === command.target.worktreeId)?.remote;
           const currentMessages = getMessages(latestState.current.locale).workbench;
           notify(
@@ -113,6 +106,12 @@ export function applyCommandReply(
             targetKey,
             { tone: 'success' },
           );
+        } else {
+          notify('', targetKey);
+        }
+      } else if (isCustomAction) {
+        if (reply.session.status === 'cancelled') {
+          notify(getMessages(latestState.current.locale).actions.actionCancelledNotice, targetKey, { tone: 'info' });
         } else {
           notify('', targetKey);
         }
@@ -181,7 +180,11 @@ export function applyCommandReply(
       if (!preserveFeedback || recoveredFromReadError) notify('', targetKey);
       const sessionStatus = previousTree?.sessionStatus;
       if (sessionStatus && ['waitingManual', 'conflict', 'pushFailed'].includes(sessionStatus)) {
-        void backend.reconcileSession?.(command.target, latestState.current.locale).catch(() => {});
+        void backend.reconcileSession?.(
+          command.target,
+          latestState.current.locale,
+          previousTree?.activeRun?.runId,
+        ).catch(() => {});
       }
     }
   }
@@ -202,13 +205,15 @@ export function applyCommandError(
       ? error
       : getMessages(latestState.current.locale).workbench.genericOperationFailed;
 
-  if (command.kind === 'cPush') {
-    dispatch({ type: 'cPushStartFailed', worktreeId: command.target.worktreeId, runId: command.requestId });
+  if (command.kind === 'startAction') {
+    dispatch({
+      type: 'actionStartFailed',
+      worktreeId: command.target.worktreeId,
+      runId: command.requestId,
+      ...(command.profile === 'customAction' ? { message } : {}),
+    });
   }
-  if (command.kind === 'runCustomAction') {
-    dispatch({ type: 'customActionFailed', worktreeId: command.target.worktreeId, runId: command.requestId, message });
-  }
-  if (command.kind === 'pull' && backend.repositoryReadsAvailable) {
+  if (command.kind === 'runRecovery' && command.action.kind === 'pullRebase' && backend.repositoryReadsAvailable) {
     triggerRefresh(command.target);
   }
   if (command.kind === 'switchBranch' || command.kind === 'checkoutRemoteBranch') {
@@ -230,9 +235,8 @@ export function applyCommandError(
     });
   }
   const modelRelatedCommand = [
-    'cPush',
-    'runCustomAction',
-    'respond',
+    'startAction',
+    'runRecovery',
     'selectModel',
     'deleteModel',
     'deleteProviderConnection',

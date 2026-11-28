@@ -1,6 +1,9 @@
 import type { RefObject } from 'react';
-import type { CPushQaItem, CPushTimelineItem } from '../../../../shared/cpush-protocol';
-import type { CustomActionLink } from '../../../../shared/custom-action-protocol';
+import type {
+  CPushQaItem,
+  CustomActionLink,
+  WorkflowTimelineItem,
+} from '../../../../shared/custom-action-protocol';
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../../ui/controls';
 import type { Message } from '../state/workbench';
@@ -15,7 +18,7 @@ interface MessageDockBodyProps {
   isQuestionnaire: boolean;
   currentQuestionText?: string;
   effectiveLinks?: CustomActionLink[];
-  timeline: CPushTimelineItem[];
+  timeline: WorkflowTimelineItem[];
   qaLog: CPushQaItem[];
   hasTraceDetails: boolean;
   collapseTraceByDefault: boolean;
@@ -30,7 +33,7 @@ function TraceDetails({
   timeline,
   qaLog,
 }: {
-  timeline: CPushTimelineItem[];
+  timeline: WorkflowTimelineItem[];
   qaLog: CPushQaItem[];
 }) {
   const { t } = useI18n();

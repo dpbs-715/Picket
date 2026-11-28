@@ -1,16 +1,16 @@
-import type { CPushCommandReply } from '../../../shared/cpush-protocol';
 import type {
-  CustomActionCommandReply,
+  ActionApprovalMode,
+  ActionCommandReply,
   CustomActionConfig,
   GenerateCustomActionProgressEvent,
   GenerateCustomActionReply,
   GenerateCustomActionRequest,
-  RespondCustomActionRequest,
+  RespondActionQuestionRequest,
+  SessionRecoveryAction,
 } from '../../../shared/custom-action-protocol';
 import type { GitBranchReply } from '../../../shared/git-branch-protocol';
 import type { GitOpenFileReply } from '../../../shared/ide-protocol';
 import type { AppLocale, CommitLanguage } from '../../../shared/language-protocol';
-import type { MessageUserResponse } from '../../../shared/message-user-protocol';
 import type {
   CreateProviderConnectionInput,
   ListModelsInput,
@@ -26,6 +26,18 @@ import type {
   UpdateProviderConnectionInput,
 } from '../../../shared/model-protocol';
 import type { GitLocalKeepReply, GitReadReply } from '../../../shared/git-read-protocol';
+import type {
+  DiscoverRunCommandsProgressEvent,
+  DiscoverRunCommandsReply,
+  DiscoverRunCommandsRequest,
+  OpenRunLocalUrlRequest,
+  OpenRunLogsWindowRequest,
+  RestartRunCommandRequest,
+  RunProcessSnapshot,
+  StartRunCommandRequest,
+  StopRunCommandRequest,
+  UserEnvSummary,
+} from '../../../shared/run-protocol';
 import { PICKET_RELEASES_URL, type UpdateStateSnapshot } from '../../../shared/update-protocol';
 import type { SkillsStateSnapshot } from '../../../shared/skills-protocol';
 import type { WorkbenchRestoreReply, WorkbenchSaveRequest } from '../../../shared/workbench-persistence-protocol';
@@ -38,12 +50,35 @@ export type WorkbenchCommand =
   | { kind: 'openRepository'; requestId: string; locale?: AppLocale }
   | { kind: 'refresh'; target: Target; requestId: string; locale?: AppLocale }
   | { kind: 'setLocalKeep'; target: Target; requestId: string; paths: string[]; keep: boolean; locale?: AppLocale }
-  | { kind: 'pull'; target: Target; requestId: string; modelId?: string; locale?: AppLocale }
   | { kind: 'switchBranch' | 'checkoutRemoteBranch'; target: Target; requestId: string; branch: string; branchToken: string; locale?: AppLocale }
   | { kind: 'openFile'; target: Target; requestId: string; fileId?: string; path?: string; editor: EditorId; line?: number; locale?: AppLocale }
-  | { kind: 'cPush'; target: Target; requestId: string; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; prompt: string; push?: boolean; locale?: AppLocale; commitLanguage?: CommitLanguage }
-  | { kind: 'runCustomAction'; target: Target; requestId: string; action: CustomActionConfig; fileIds: string[]; selections?: ModelFileSelection[]; modelId: string; extraPrompt: string; followUpPrompt?: string; resumeFromRunId?: string; locale?: AppLocale; commitLanguage?: CommitLanguage }
-  | { kind: 'respond'; target: Target; requestId: string; runId?: string; messageId: string; optionId?: string; text?: string; questionnaireResponse?: MessageUserResponse; modelId?: string; locale?: AppLocale }
+  | {
+      kind: 'startAction';
+      profile: 'cpush' | 'customAction';
+      target: Target;
+      requestId: string;
+      action?: CustomActionConfig;
+      fileIds: string[];
+      selections?: ModelFileSelection[];
+      modelId: string;
+      extraPrompt: string;
+      push?: boolean;
+      followUpPrompt?: string;
+      resumeFromRunId?: string;
+      locale?: AppLocale;
+      commitLanguage?: CommitLanguage;
+      approvalMode?: ActionApprovalMode;
+    }
+  | {
+      kind: 'runRecovery';
+      target: Target;
+      requestId: string;
+      runId?: string;
+      messageId?: string;
+      action: SessionRecoveryAction;
+      modelId?: string;
+      locale?: AppLocale;
+    }
   | { kind: 'selectModel' | 'deleteModel'; modelId: string; locale?: AppLocale }
   | { kind: 'deleteProviderConnection'; connectionId: string; locale?: AppLocale };
 
@@ -53,20 +88,19 @@ export type WorkbenchCommandReply =
   | GitBranchReply
   | GitOpenFileReply
   | ModelMutateReply
-  | CPushCommandReply
-  | CustomActionCommandReply
+  | ActionCommandReply
   | void;
 
 export interface WorkbenchBackend {
   repositoryReadsAvailable?: boolean;
   execute(command: WorkbenchCommand): Promise<WorkbenchCommandReply>;
-  respondCustomAction?(request: RespondCustomActionRequest): Promise<boolean>;
+  respondActionQuestion?(request: RespondActionQuestionRequest): Promise<boolean>;
   generateCustomAction?(
     request: GenerateCustomActionRequest,
     onProgress?: (event: GenerateCustomActionProgressEvent) => void,
   ): Promise<GenerateCustomActionReply>;
-  cancelCustomAction?(requestId: string): Promise<void>;
-  reconcileSession?(target: Target, locale?: AppLocale): Promise<void>;
+  cancelAction?(requestId: string): Promise<void>;
+  reconcileSession?(target: Target, locale?: AppLocale, expectedRunId?: string): Promise<void>;
   dismissSessionDone?(target: Target, runId: string | undefined, messageId: string, locale?: AppLocale): Promise<void>;
   cancelRequest?(requestId: string): Promise<void>;
   loadWorkbenchState?(): Promise<WorkbenchRestoreReply>;
@@ -87,6 +121,19 @@ export interface WorkbenchBackend {
   syncSkills?(sourceRepo: string | undefined, locale?: AppLocale): Promise<SkillsStateSnapshot>;
   setEnabledSkills?(enabledSkills: string[], locale?: AppLocale): Promise<SkillsStateSnapshot>;
   resetSkills?(locale?: AppLocale): Promise<SkillsStateSnapshot>;
+  listRunProcesses?(): Promise<RunProcessSnapshot[]>;
+  startRunCommand?(request: StartRunCommandRequest): Promise<RunProcessSnapshot>;
+  stopRunCommand?(request: StopRunCommandRequest): Promise<RunProcessSnapshot>;
+  restartRunCommand?(request: RestartRunCommandRequest): Promise<RunProcessSnapshot>;
+  openRunLogsWindow?(request?: OpenRunLogsWindowRequest): Promise<void>;
+  openRunLocalUrl?(request: OpenRunLocalUrlRequest): Promise<void>;
+  refreshUserShellEnv?(locale?: AppLocale): Promise<UserEnvSummary>;
+  subscribeRunState?(receive: (snapshots: RunProcessSnapshot[]) => void): () => void;
+  discoverRunCommands?(
+    request: DiscoverRunCommandsRequest,
+    onProgress?: (event: DiscoverRunCommandsProgressEvent) => void,
+  ): Promise<DiscoverRunCommandsReply>;
+  cancelDiscoverRunCommands?(requestId: string): Promise<void>;
   subscribe?(receive: (event: WorkbenchEvent) => void): () => void;
 }
 
@@ -95,7 +142,8 @@ export interface WorkbenchBackend {
 export const disconnectedBackend: WorkbenchBackend = {
   async execute(command) {
     const t = getMessages(command.locale).desktop;
-    if (['selectModel', 'deleteModel', 'deleteProviderConnection', 'cPush', 'runCustomAction', 'respond'].includes(command.kind)) {
+    if (['selectModel', 'deleteModel', 'deleteProviderConnection', 'startAction'].includes(command.kind)
+      || (command.kind === 'runRecovery' && command.action.kind !== 'pullRebase')) {
       throw new Error(t.disconnectedModelOrCPush);
     }
     throw new Error(t.disconnectedGit);

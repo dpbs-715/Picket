@@ -84,7 +84,7 @@ export function useWorkbenchSync({
 
   useEffect(
     () => backend.subscribe?.((event) => {
-      const suppressExpand = (event.type === 'customActionProgress' || event.type === 'cPushProgress')
+      const suppressExpand = event.type === 'actionProgress'
         && (isEditingRef.current() || latestState.current.windowPrefs.compactMode);
       dispatch({ type: 'event', event, ...(suppressExpand ? { suppressExpand: true } : {}) });
     }),

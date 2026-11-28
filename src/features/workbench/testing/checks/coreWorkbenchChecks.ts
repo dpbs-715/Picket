@@ -250,15 +250,15 @@ export async function runCoreWorkbenchChecks(harness: BrowserCheckHarness) {
   const directState = fixture('typing');
   await mount(directState, { ...disconnectedBackend, execute(command) { calls.push(command); return new Promise<void>((resolve) => { finishCPush = resolve; }); } });
   await act(async () => { button('C-Push').click(); button('C-Push').click(); });
-  assert(calls.length === 1 && calls[0].kind === 'cPush', 'Direct one-click C-Push duplicated dispatch');
+  assert(calls.length === 1 && calls[0].kind === 'startAction' && calls[0].profile === 'cpush', 'Direct one-click C-Push duplicated dispatch');
   assert(!document.querySelector('.scope-menu') && !document.querySelector('.plan-group-textarea'), 'C-Push must run directly without scope popover or Preview Plan UI');
-  if (calls[0].kind === 'cPush') {
+  if (calls[0].kind === 'startAction') {
     assert(
       !calls[0].fileIds.includes('lock')
         && calls[0].target.worktreeId === 'pay-tree'
         && calls[0].locale === 'en'
         && calls[0].commitLanguage === 'en'
-        && calls[0].prompt === 'split release notes into its own commit and write detailed bullets',
+        && calls[0].extraPrompt === 'split release notes into its own commit and write detailed bullets',
       'C-Push expanded scope, mismatched target, or omitted prompt/locale/commitLanguage',
     );
   }
@@ -283,7 +283,7 @@ export async function runCoreWorkbenchChecks(harness: BrowserCheckHarness) {
   await mount(fixture('typing'), {
     ...disconnectedBackend,
     async execute(command) {
-      if (command.kind === 'cPush') {
+      if (command.kind === 'startAction' && command.profile === 'cpush') {
         throw new DesktopCommandError({
           code: 'modelRateLimited',
           category: 'model',

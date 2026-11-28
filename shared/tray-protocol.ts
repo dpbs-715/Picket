@@ -1,6 +1,7 @@
 import type {
   TrayMainWindowAction,
   TrayRepositorySummary,
+  TrayRunningServiceSummary,
   TraySessionStatus,
   TrayStateSnapshot,
   TrayUiContextUpdate,
@@ -9,6 +10,7 @@ import type {
 export type {
   TrayMainWindowAction,
   TrayRepositorySummary,
+  TrayRunningServiceSummary,
   TraySessionStatus,
   TrayStateSnapshot,
   TrayUiContextUpdate,

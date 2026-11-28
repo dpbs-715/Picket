@@ -486,4 +486,254 @@ describe('Phase 2 Pi sidecar runCustomAction & generateCustomAction tool loops',
       summary: 'Created CHANGELOG.md and committed it.',
     });
   });
+
+  it('injects upstream and recentCommits into custom actions, exposes read_scope_diff & multi-group commit_exact_scope, and stops immediately on handoff_to_recovery', async () => {
+    let seenUserPrompt = '';
+    let seenToolNames: string[] = [];
+    let httpCalls = 0;
+    const srv = await startMockOpenAiServer((body, callIndex) => {
+      httpCalls = callIndex;
+      if (callIndex === 1) {
+        const messages = Array.isArray(body.messages) ? body.messages as Array<{ role?: string; content?: unknown }> : [];
+        const userContent = messages.find((m) => m.role === 'user')?.content;
+        seenUserPrompt = typeof userContent === 'string' ? userContent : JSON.stringify(userContent ?? '');
+        const tools = Array.isArray(body.tools) ? body.tools as Array<{ function?: { name?: string } }> : [];
+        seenToolNames = tools.map((t) => t.function?.name ?? '').filter(Boolean);
+        return {
+          toolCalls: [{
+            id: 'd1',
+            name: 'read_scope_diff',
+            arguments: { path: 'src/app.ts', startLine: 1, endLine: 40 },
+          }],
+        };
+      }
+      if (callIndex === 2) {
+        return {
+          toolCalls: [{
+            id: 'cm1',
+            name: 'commit_exact_scope',
+            arguments: {
+              groups: [
+                { fileIds: ['@1'], message: 'feat(app): update runtime flow\n\n- refine app logic' },
+                { fileIds: ['@2'], message: 'test(app): update unit test\n\n- cover runtime flow' },
+              ],
+              push: true,
+            },
+          }],
+        };
+      }
+      if (callIndex === 3) {
+        return {
+          toolCalls: [{
+            id: 'hr1',
+            name: 'handoff_to_recovery',
+            arguments: {
+              handleId: 'rh-1',
+              summary: 'Commits landed locally; handing push failure off to host recovery.',
+            },
+          }],
+        };
+      }
+      throw new Error(`Unexpected extra LLM turn #${callIndex} after stopAgent=true`);
+    });
+    closers.push(srv.close);
+
+    const events: ProbeEvent[] = [];
+    const executedTools: Array<{ name: string; args: Record<string, unknown> }> = [];
+    let runner!: ReturnType<typeof createTaskRunner>;
+    runner = createTaskRunner(
+      {
+        type: 'runCustomAction',
+        requestId: 'req-unified-act-1',
+        context: { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' },
+        model: {
+          provider: 'openai',
+          apiFormat: 'openai-completions',
+          modelId: 'mock-model',
+          baseUrl: srv.url,
+          apiKey: 'sk-mock',
+        },
+        branch: 'feat/unified',
+        detached: false,
+        upstream: 'origin/feat/unified (ahead 0, behind 0)',
+        remoteBranches: ['origin/main', 'origin/feat/unified'],
+        recentCommits: ['feat: previous baseline commit'],
+        actionLabel: 'Smart Commit & Push',
+        actionPrompt: 'Split code and tests into separate commits and push.',
+        extraPrompt: '',
+        selectedFiles: [
+          { fileId: 'f-1', path: 'src/app.ts', status: 'M', rangeKind: 'unstaged', added: 5, removed: 1 },
+          { fileId: 'f-2', path: 'src/app.test.ts', status: 'M', rangeKind: 'unstaged', added: 10, removed: 0 },
+        ],
+        unselectedPaths: [],
+        localKeepPaths: [],
+        locale: 'en',
+        commitLanguage: 'en',
+      },
+      (event) => {
+        events.push(event);
+        if (event.type === 'toolCall') {
+          executedTools.push({ name: event.toolName, args: event.args });
+          queueMicrotask(() => {
+            if (event.toolName === 'read_scope_diff') {
+              runner.deliverToolResult?.({
+                type: 'toolResult',
+                requestId: event.requestId,
+                callId: event.callId,
+                ok: true,
+                content: '1: +export const unified = true;',
+              });
+            } else if (event.toolName === 'commit_exact_scope') {
+              runner.deliverToolResult?.({
+                type: 'toolResult',
+                requestId: event.requestId,
+                callId: event.callId,
+                ok: true,
+                content: JSON.stringify({
+                  committed: true,
+                  commitCount: 2,
+                  pushed: false,
+                  pushError: 'remote rejected',
+                  recoveryHandle: { handleId: 'rh-1', kind: 'pushFailed', summary: 'remote rejected' },
+                }),
+              });
+            } else if (event.toolName === 'handoff_to_recovery') {
+              runner.deliverToolResult?.({
+                type: 'toolResult',
+                requestId: event.requestId,
+                callId: event.callId,
+                ok: true,
+                content: 'Commits landed locally; handing push failure off to host recovery.',
+                details: {
+                  stopAgent: true,
+                  summary: 'Commits landed locally; handing push failure off to host recovery.',
+                  links: [],
+                },
+              });
+            }
+          });
+        }
+      },
+    );
+
+    await runner.run();
+    expect(httpCalls).toBe(3);
+    expect(seenToolNames).toContain('read_scope_diff');
+    expect(seenToolNames).toContain('commit_exact_scope');
+    expect(seenToolNames).toContain('handoff_to_recovery');
+    expect(seenUserPrompt).toContain('origin/feat/unified (ahead 0, behind 0)');
+    expect(seenUserPrompt).toContain('feat: previous baseline commit');
+    expect(executedTools.map((t) => t.name)).toEqual([
+      'read_scope_diff',
+      'commit_exact_scope',
+      'handoff_to_recovery',
+    ]);
+    expect(executedTools[1]?.args).toMatchObject({
+      groups: [
+        { fileIds: ['@1'], message: expect.stringContaining('feat(app)') },
+        { fileIds: ['@2'], message: expect.stringContaining('test(app)') },
+      ],
+      push: true,
+    });
+    const done = events.find((e) => e.type === 'customActionCompleted');
+    expect(done).toMatchObject({
+      type: 'customActionCompleted',
+      summary: 'Commits landed locally; handing push failure off to host recovery.',
+    });
+  });
+
+  it('fences subsequent tool calls in the same turn after message_user returns stopAgent and injects approvalMode guidance', async () => {
+    let seenSystemPrompt = '';
+    const srv = await startMockOpenAiServer((body, callIndex) => {
+      if (callIndex === 1) {
+        const messages = Array.isArray(body.messages) ? body.messages as Array<{ role?: string; content?: string }> : [];
+        seenSystemPrompt = messages.find((m) => m.role === 'system')?.content ?? '';
+        return {
+          toolCalls: [
+            {
+              id: 'm1',
+              name: 'message_user',
+              arguments: {
+                title: 'Confirm Action',
+                questions: [{
+                  header: 'Confirm',
+                  question: 'Proceed?',
+                  options: [
+                    { id: 'yes', label: 'Yes', description: 'Continue execution' },
+                    { id: 'no', label: 'No', description: 'Stop now' },
+                  ],
+                }],
+              },
+            },
+            {
+              id: 'g-after-stop',
+              name: 'run_git',
+              arguments: { args: ['status'] },
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected extra LLM turn #${callIndex} after stopAgent=true`);
+    });
+    closers.push(srv.close);
+
+    const events: ProbeEvent[] = [];
+    const executedTools: string[] = [];
+    let runner!: ReturnType<typeof createTaskRunner>;
+    runner = createTaskRunner(
+      {
+        type: 'runCustomAction',
+        requestId: 'req-fence-1',
+        context: { repositoryId: 'r1', worktreeId: 'w1', sessionId: 's1', scopeVersion: 'v1' },
+        model: {
+          provider: 'openai',
+          apiFormat: 'openai-completions',
+          modelId: 'mock-model',
+          baseUrl: srv.url,
+          apiKey: 'sk-mock',
+        },
+        branch: 'main',
+        detached: false,
+        remoteBranches: ['origin/main'],
+        actionLabel: 'Fence Test',
+        actionPrompt: 'Ask user then run git status.',
+        extraPrompt: '',
+        selectedFiles: [],
+        unselectedPaths: [],
+        localKeepPaths: [],
+        locale: 'en',
+        commitLanguage: 'en',
+        approvalMode: 'ask',
+      },
+      (event) => {
+        events.push(event);
+        if (event.type === 'toolCall') {
+          executedTools.push(event.toolName);
+          queueMicrotask(() => {
+            runner.deliverToolResult?.({
+              type: 'toolResult',
+              requestId: event.requestId,
+              callId: event.callId,
+              ok: true,
+              content: 'User declined or stopped.',
+              details: {
+                stopAgent: true,
+                summary: 'Stopped cleanly after user decision.',
+                links: [],
+              },
+            });
+          });
+        }
+      },
+    );
+
+    await runner.run();
+    expect(seenSystemPrompt).toContain('Host write-approval mode is `ask`');
+    expect(executedTools).toEqual(['message_user']);
+    const done = events.find((e) => e.type === 'customActionCompleted');
+    expect(done).toMatchObject({
+      type: 'customActionCompleted',
+      summary: 'Stopped cleanly after user decision.',
+    });
+  });
 });

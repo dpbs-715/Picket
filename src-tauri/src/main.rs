@@ -16,6 +16,7 @@ mod protocol_contract_tests;
 mod protocol_export;
 mod repo_lock;
 mod repository;
+mod runner;
 mod skills;
 mod startup_splash;
 mod storage;
@@ -26,7 +27,7 @@ mod window_motion;
 
 use actions::CustomActionCoordinator;
 use commands::{RepositoryPicker, picket_data_dir};
-use lifecycle::{DesktopLifecycle, exit_after_cleanup};
+use lifecycle::{DesktopLifecycle, exit_after_cleanup, request_app_quit};
 #[cfg(feature = "smoke-harness")]
 use models::smoke::ModelSmokeState;
 use models::store::ModelStore;
@@ -84,6 +85,7 @@ fn main() {
         .manage(RepositoryPicker::default())
         .manage(PiSupervisor::default())
         .manage(CustomActionCoordinator::with_write_coordinator(repo_writes))
+        .manage(runner::RunProcessManager::default())
         .manage(SkillManager::default())
         .manage(UpdateManager::default())
         .manage(startup_splash::StartupSplashCoordinator::default())
@@ -151,19 +153,29 @@ fn main() {
                 commands::models::delete_model,
                 commands::models::reveal_provider_api_key,
                 commands::models::cancel_model_request,
-                commands::cpush::start_cpush,
-                commands::cpush::respond_cpush,
-                commands::cpush::pull_rebase_repository,
-                commands::cpush::reconcile_cpush_session,
-                commands::actions::start_custom_action,
-                commands::actions::respond_custom_action,
+                commands::actions::start_action,
+                commands::actions::respond_action_question,
+                commands::actions::run_session_recovery,
+                commands::actions::reconcile_action_session,
                 commands::actions::generate_custom_action,
-                commands::actions::cancel_custom_action,
+                commands::actions::cancel_action,
                 commands::actions::dismiss_session_done,
                 commands::skills::get_skills_state,
                 commands::skills::sync_skills,
                 commands::skills::set_enabled_skills,
                 commands::skills::reset_skills_to_bundled,
+                commands::runner::list_run_processes,
+                commands::runner::get_selected_run_logs_process,
+                commands::runner::start_run_command,
+                commands::runner::stop_run_command,
+                commands::runner::restart_run_command,
+                commands::runner::get_run_process_logs,
+                commands::runner::clear_run_process_logs,
+                commands::runner::open_run_logs_window,
+                commands::runner::open_run_local_url,
+                commands::runner::refresh_user_shell_env,
+                commands::runner::discover_run_commands,
+                commands::runner::cancel_discover_run_commands,
                 $($extra),*
             ]
         };
@@ -239,6 +251,10 @@ fn main() {
                     .state::<tray::TrayCoordinator>()
                     .hide_popover_on_main(window.app_handle());
             }
+            (runner::RUN_LOGS_WINDOW_LABEL, tauri::WindowEvent::CloseRequested { api, .. }) => {
+                api.prevent_close();
+                runner::logs_window::hide_logs_window_on_main(window.app_handle());
+            }
             _ => {}
         })
         .build(tauri::generate_context!())
@@ -249,7 +265,7 @@ fn main() {
             code: None, api, ..
         } => {
             api.prevent_exit();
-            exit_after_cleanup(app);
+            request_app_quit(app);
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. }

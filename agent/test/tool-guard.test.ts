@@ -78,7 +78,10 @@ describe('Pi Agent tool loop guard', () => {
     expect(blocked?.block).toBe(true);
     expect(blocked?.reason).toContain('8 consecutive failing');
 
-    // message_user stays unblocked so the agent can ask the user for help; successful message_user resets error streak:
+    // message_user and handoff_to_recovery stay unblocked so the agent can ask for help or hand off to host recovery:
+    const handoffCtx = makeCall('handoff_to_recovery', { handleId: 'rh-1' });
+    expect(await guard.beforeToolCall(handoffCtx)).toBeUndefined();
+
     const askCtx = makeCall('message_user', { title: 'Need help', questions: [] });
     expect(await guard.beforeToolCall(askCtx)).toBeUndefined();
     await guard.afterToolCall({ toolCall: askCtx.toolCall, isError: false });
@@ -93,5 +96,41 @@ describe('Pi Agent tool loop guard', () => {
     const blocked = await fixed.beforeToolCall(makeCall('read_repo_file', { path: 'c.ts' }));
     expect(blocked?.block).toBe(true);
     expect(blocked?.reason).toContain('Tool call budget (2 calls)');
+  });
+
+  it('bounds identical and consecutive failing overhead tool calls (handoff_to_recovery / message_user)', async () => {
+    const guard = createToolLoopGuard({
+      kind: 'adaptive',
+      maxIdenticalConsecutive: 3,
+      maxConsecutiveErrors: 8,
+      runawayCeiling: 300,
+    })!;
+
+    // 1. Repeated identical handoff_to_recovery calls trip the identical-streak guard on the 4th call:
+    const sameHandoff = makeCall('handoff_to_recovery', { handleId: 'rh-invalid' });
+    expect(await guard.beforeToolCall(sameHandoff)).toBeUndefined();
+    expect(await guard.beforeToolCall(sameHandoff)).toBeUndefined();
+    expect(await guard.beforeToolCall(sameHandoff)).toBeUndefined();
+    const blockedSame = await guard.beforeToolCall(sameHandoff);
+    expect(blockedSame?.block).toBe(true);
+    expect(blockedSame?.reason).toContain('Loop detected');
+
+    // 2. Distinct failing handoff_to_recovery calls trip the overhead consecutive-error cap:
+    const guard2 = createToolLoopGuard({
+      kind: 'adaptive',
+      maxIdenticalConsecutive: 3,
+      maxConsecutiveErrors: 8,
+      runawayCeiling: 300,
+    })!;
+    for (let i = 0; i < 4; i += 1) {
+      const ctx = makeCall('handoff_to_recovery', { handleId: `rh-bad-${i}` });
+      expect(await guard2.beforeToolCall(ctx)).toBeUndefined();
+      await guard2.afterToolCall({ toolCall: ctx.toolCall, isError: true });
+    }
+    const blockedErrors = await guard2.beforeToolCall(
+      makeCall('handoff_to_recovery', { handleId: 'rh-bad-5' }),
+    );
+    expect(blockedErrors?.block).toBe(true);
+    expect(blockedErrors?.reason).toContain('consecutive failing');
   });
 });

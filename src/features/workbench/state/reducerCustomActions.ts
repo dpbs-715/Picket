@@ -4,24 +4,18 @@ import {
   sanitizeCustomActionConfig,
   type CustomActionConfig,
 } from '../../../../shared/custom-action-protocol';
-import { getMessages } from '../../../i18n/messages';
-import { finishCustomActionCommand } from './repositories';
 import {
   computeSyncCustomActionAcrossRepos,
   effectiveCommitLanguageFor,
   effectiveEditorFor,
-  isActiveSession,
   localKeepPathsFor,
 } from './selectors';
-import type { Message, WorkbenchAction, WorkbenchState } from './types';
+import type { WorkbenchAction, WorkbenchState } from './types';
 
 export type CustomActionWorkbenchAction = Extract<
   WorkbenchAction,
   {
     type:
-      | 'customActionStarted'
-      | 'customActionSettled'
-      | 'customActionFailed'
       | 'selectActiveAction'
       | 'saveCustomAction'
       | 'deleteCustomAction'
@@ -35,10 +29,7 @@ export function isCustomActionWorkbenchAction(
   action: WorkbenchAction,
 ): action is CustomActionWorkbenchAction {
   return (
-    action.type === 'customActionStarted'
-    || action.type === 'customActionSettled'
-    || action.type === 'customActionFailed'
-    || action.type === 'selectActiveAction'
+    action.type === 'selectActiveAction'
     || action.type === 'saveCustomAction'
     || action.type === 'deleteCustomAction'
     || action.type === 'syncCustomActionToAllRepos'
@@ -48,74 +39,6 @@ export function isCustomActionWorkbenchAction(
 }
 
 export function reduceCustomAction(state: WorkbenchState, action: CustomActionWorkbenchAction): WorkbenchState {
-  if (action.type === 'customActionStarted') {
-    const t = getMessages(state.locale).workbench;
-    return {
-      ...state,
-      worktrees: state.worktrees.map((tree) => {
-        if (tree.worktreeId !== action.worktreeId || isActiveSession(tree)) return tree;
-        const progressMsg: Message = {
-          id: `progress-${action.runId}`,
-          kind: 'progress',
-          title: action.actionLabel,
-          description: t.cPushInitialDescription,
-          progress: { completed: 1, total: 3, label: t.cPushInitialProgressLabel },
-        };
-        return {
-          ...tree,
-          sessionStatus: 'running',
-          dockExpanded: action.expandDock ? true : tree.dockExpanded,
-          messages: [progressMsg],
-          activeRun: {
-            kind: 'customAction',
-            runId: action.runId,
-            actionId: action.actionId,
-            actionLabel: action.actionLabel,
-            timeline: [{ state: 'active', label: action.actionLabel }],
-            commits: [],
-            links: [],
-          },
-        };
-      }),
-    };
-  }
-  if (action.type === 'customActionSettled') {
-    return finishCustomActionCommand(state, action.reply, action.expandDock);
-  }
-  if (action.type === 'customActionFailed') {
-    return {
-      ...state,
-      worktrees: state.worktrees.map((tree) => {
-        if (
-          tree.worktreeId !== action.worktreeId
-          || tree.activeRun?.kind !== 'customAction'
-          || tree.activeRun.runId !== action.runId
-        ) {
-          return tree;
-        }
-        const errorMsg: Message | undefined = action.message
-          ? {
-              id: `error-${action.runId}`,
-              kind: 'error',
-              title: tree.activeRun.actionLabel,
-              description: action.message,
-            }
-          : undefined;
-        return {
-          ...tree,
-          sessionStatus: 'idle',
-          dockExpanded: errorMsg ? tree.dockExpanded : false,
-          messages: errorMsg ? [errorMsg] : [],
-          activeRun: errorMsg
-            ? {
-                ...tree.activeRun,
-                pendingCallId: undefined,
-              }
-            : undefined,
-        };
-      }),
-    };
-  }
   if (action.type === 'selectActiveAction') {
     const prev = state.repositorySettings[action.repositoryId];
     const actions = prev?.customActions ?? [];
@@ -133,6 +56,8 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
           ...(actions.length ? { customActions: actions } : {}),
           ...(nextActiveId ? { activeActionId: nextActiveId } : {}),
+          ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+          ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
         },
       },
       settingsModified: true,
@@ -178,6 +103,8 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
           customActions: nextActions,
           ...(nextActiveId ? { activeActionId: nextActiveId } : {}),
+          ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+          ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
         },
       },
       settingsModified: true,
@@ -214,6 +141,8 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
           ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
           ...(nextActions.length ? { customActions: nextActions } : {}),
           ...(nextActiveId ? { activeActionId: nextActiveId } : {}),
+          ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+          ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
         },
       },
       settingsModified: true,
@@ -270,6 +199,8 @@ export function reduceCustomAction(state: WorkbenchState, action: CustomActionWo
         ...(keepPaths.length ? { localKeepPaths: keepPaths } : {}),
         customActions: nextActions,
         ...(prev?.activeActionId ? { activeActionId: prev.activeActionId } : {}),
+        ...(prev?.runCommands?.length ? { runCommands: prev.runCommands } : {}),
+        ...(prev?.runSharedEnv?.length ? { runSharedEnv: prev.runSharedEnv } : {}),
       },
     },
     settingsModified: true,

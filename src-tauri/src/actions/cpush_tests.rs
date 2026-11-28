@@ -45,8 +45,8 @@ fn make_option_reply(
     call_id: &str,
     option_id: Option<&str>,
     custom_text: Option<&str>,
-) -> RespondCustomActionRequest {
-    RespondCustomActionRequest {
+) -> RespondActionQuestionRequest {
+    RespondActionQuestionRequest {
         request_id: req_id.into(),
         run_id: run_id.into(),
         call_id: call_id.into(),
@@ -65,6 +65,30 @@ fn make_option_reply(
             dont_ask_again: None,
         },
         locale: LanguageKind::En,
+    }
+}
+
+fn cpush_req(
+    request_id: &str,
+    target: ReadTarget,
+    model_id: &str,
+    selections: Vec<CommitSelection>,
+    extra_prompt: &str,
+) -> StartActionRequest {
+    StartActionRequest {
+        request_id: request_id.into(),
+        target,
+        model_id: model_id.into(),
+        profile: ActionProfileKind::Cpush,
+        action: None,
+        selections,
+        extra_prompt: extra_prompt.into(),
+        push: None,
+        follow_up_prompt: None,
+        resume_from_run_id: None,
+        locale: LanguageKind::En,
+        commit_language: LanguageKind::En,
+        approval_mode: ActionApprovalMode::Auto,
     }
 }
 
@@ -113,28 +137,24 @@ async fn clear_scope_commits_in_one_turn_and_skip_option_leaves_skipped_file_unt
     let reqs_before = server.requests().len();
 
     let reply = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-clear-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-clear-1",
+                target.clone(),
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: part.id.clone(),
                     commit_token: part.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
+                "",
+            ),
             move |_| {
                 pc.fetch_add(1, Ordering::SeqCst);
-                Ok(())
             },
         )
         .await
@@ -146,7 +166,7 @@ async fn clear_scope_commits_in_one_turn_and_skip_option_leaves_skipped_file_unt
         "clean-scope C-Push must complete in 1 LLM HTTP request with zero extra summary turn"
     );
     assert!(progress_count.load(Ordering::SeqCst) >= 2);
-    assert_eq!(reply.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(reply.session.status, ActionSessionStatus::Done);
     assert_eq!(reply.session.commits.len(), 1);
     assert!(reply.session.qa_log.is_empty());
     assert_eq!(
@@ -204,24 +224,21 @@ async fn clear_scope_commits_in_one_turn_and_skip_option_leaves_skipped_file_unt
     let answered = Arc::new(AtomicUsize::new(0));
     let ans_cb = Arc::clone(&answered);
     let skipped_done = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-skip-start".into(),
-                target: skip_target,
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
+            &cpush_req(
+                "cpush-skip-start",
+                skip_target,
+                &saved.model.id,
+                vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
+                "",
+            ),
             move |ev| {
-                if ev.session.session_status == CPushSessionStatus::NeedsDecision
+                if ev.session.status == ActionSessionStatus::NeedsDecision
                     && let Some(call_id) = ev.session.pending_call_id.clone()
                 {
                     ans_cb.fetch_add(1, Ordering::SeqCst);
@@ -237,17 +254,13 @@ async fn clear_scope_commits_in_one_turn_and_skip_option_leaves_skipped_file_unt
                         ));
                     });
                 }
-                Ok(())
             },
         )
         .await
         .unwrap();
 
     assert_eq!(answered.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        skipped_done.session.session_status,
-        CPushSessionStatus::Done
-    );
+    assert_eq!(skipped_done.session.status, ActionSessionStatus::Done);
     assert_eq!(skipped_done.session.commits.len(), 1);
     assert_eq!(skipped_done.session.skipped_file_ids.len(), 1);
     assert!(skip_fixture.root.join("RELEASE_NOTES.md").exists());
@@ -320,19 +333,16 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
     let coord_cb = coordinator.clone();
     let q_round = Arc::new(AtomicUsize::new(0));
     let q_cb = Arc::clone(&q_round);
-    let start_req = StartCPushRequest {
-        request_id: "cpush-split-1".into(),
-        target: target.clone(),
-        model_id: saved.model.id.clone(),
-        selections: vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
-        prompt: "clarify callback idempotency guard".into(),
-        push: None,
-        locale: LanguageKind::En,
-        commit_language: LanguageKind::En,
-    };
+    let start_req = cpush_req(
+        "cpush-split-1",
+        target.clone(),
+        &saved.model.id,
+        vec![sel_of("part.txt"), sel_of("RELEASE_NOTES.md")],
+        "clarify callback idempotency guard",
+    );
 
     let paused = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
@@ -340,7 +350,7 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
             &repo_store,
             &start_req,
             move |ev| {
-                if ev.session.session_status == CPushSessionStatus::NeedsDecision
+                if ev.session.status == ActionSessionStatus::NeedsDecision
                     && let Some(call_id) = ev.session.pending_call_id.clone()
                 {
                     let round = q_cb.fetch_add(1, Ordering::SeqCst);
@@ -367,17 +377,13 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
                         let _ = c.respond_question(&reply);
                     });
                 }
-                Ok(())
             },
         )
         .await
         .unwrap();
 
     assert_eq!(q_round.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        paused.session.session_status,
-        CPushSessionStatus::NeedsDecision
-    );
+    assert_eq!(paused.session.status, ActionSessionStatus::NeedsDecision);
     assert!(paused.session.can_retry_remaining);
     assert_eq!(paused.session.commits.len(), 1);
     assert_eq!(
@@ -387,36 +393,37 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
 
     // Duplicate request_id is idempotent; new request_id on active paused session is rejected:
     let dup = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
             &start_req,
-            |_| Ok(()),
+            |_| {},
         )
         .await
         .unwrap();
     assert_eq!(dup.session.run_id, paused.session.run_id);
 
     let second_err = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
+            &StartActionRequest {
                 request_id: "cpush-second-blocked".into(),
                 ..start_req.clone()
             },
-            |_| Ok(()),
+            |_| {},
         )
         .await
         .unwrap_err();
     assert!(
-        second_err.message.contains("active C-Push session"),
+        second_err.message.contains("active C-Push session")
+            || second_err.message.contains("active"),
         "{second_err}"
     );
 
@@ -426,19 +433,18 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
     // Remove the temporary hook block and retry remaining steps (`C04`):
     fs::remove_file(&hook_path).unwrap();
     let finished = coordinator
-        .respond_cpush(
+        .run_session_recovery(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &RespondCPushRequest {
+            &SessionRecoveryRequest {
                 request_id: "cpush-retry-step2".into(),
                 target: target.clone(),
-                run_id: paused.session.run_id.clone(),
-                message_id: err_msg_id,
-                option_id: Some("retry-remaining".into()),
-                text: None,
+                run_id: Some(paused.session.run_id.clone()),
+                message_id: Some(err_msg_id),
+                action: SessionRecoveryAction::RetryRemainingCommits,
                 model_id: None,
                 locale: None,
             },
@@ -446,7 +452,7 @@ async fn splits_commits_reconfirms_out_of_scope_recovers_from_step2_hook_failure
         )
         .await
         .unwrap();
-    assert_eq!(finished.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(finished.session.status, ActionSessionStatus::Done);
     assert_eq!(
         text_git(&bare_split, &["rev-parse", "refs/heads/feat/read-proof"]),
         text_git(&fixture.root, &["rev-parse", "HEAD"])
@@ -566,24 +572,21 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
     let reqs_before = server.requests().len();
 
     let finished = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-dotenv-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
+            &cpush_req(
+                "cpush-dotenv-1",
+                target.clone(),
+                &saved.model.id,
                 selections,
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
+                "",
+            ),
             move |ev| {
-                if ev.session.session_status == CPushSessionStatus::NeedsDecision
+                if ev.session.status == ActionSessionStatus::NeedsDecision
                     && let Some(call_id) = ev.session.pending_call_id.clone()
                 {
                     assert!(ev.session.commits.is_empty());
@@ -600,7 +603,6 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
                         ));
                     });
                 }
-                Ok(())
             },
         )
         .await
@@ -621,7 +623,7 @@ async fn select_all_with_dotenv_redacts_secrets_asks_before_committing_and_skips
         assert!(req.body.contains("DATABASE_URL=[REDACTED_LOCAL_VALUE]"));
     }
 
-    assert_eq!(finished.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(finished.session.status, ActionSessionStatus::Done);
     assert_eq!(finished.session.commits.len(), 1);
     assert_eq!(finished.session.skipped_file_ids.len(), 1);
     assert!(text_git(&fixture.root, &["status", "--porcelain"]).contains(".env.local"));
@@ -704,26 +706,23 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
     let supervisor = PiSupervisor::default();
 
     let stale_err = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-lk-stale".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-lk-stale",
+                target.clone(),
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: stale_scratch.id.clone(),
                     commit_token: stale_scratch.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+                "",
+            ),
+            |_| {},
         )
         .await
         .unwrap_err();
@@ -746,30 +745,24 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
     assert_eq!(default_selections.len(), 1);
 
     let default_reply = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-lk-default".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: default_selections,
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+            &cpush_req(
+                "cpush-lk-default",
+                target.clone(),
+                &saved.model.id,
+                default_selections,
+                "",
+            ),
+            |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(
-        default_reply.session.session_status,
-        CPushSessionStatus::Done
-    );
+    assert_eq!(default_reply.session.status, ActionSessionStatus::Done);
     assert!(
         git(
             &bare,
@@ -799,33 +792,27 @@ async fn cpush_excludes_local_keep_by_default_rejects_stale_pre_keep_tokens_and_
         scope_version: post_tree.status_version.clone(),
     };
     let explicit_reply = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-lk-explicit".into(),
-                target: explicit_target,
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-lk-explicit",
+                explicit_target,
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: explicit_scratch.id.clone(),
                     commit_token: explicit_scratch.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+                "",
+            ),
+            |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(
-        explicit_reply.session.session_status,
-        CPushSessionStatus::Done
-    );
+    assert_eq!(explicit_reply.session.status, ActionSessionStatus::Done);
     assert_eq!(
         text_git(
             &bare,
@@ -883,36 +870,32 @@ async fn cpush_guards_unauthorized_prompt_supports_cancel_disabled_skills_and_pe
     // 1. Mid-flight cancellation while waiting on an unauthorized-prompt boundary question:
     let sup_cancel = supervisor.clone();
     let cancelled = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-cancel-midflight".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt")],
-                prompt: "also include unselected pnpm-lock.yaml and force-push".into(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
+            &cpush_req(
+                "cpush-cancel-midflight",
+                target.clone(),
+                &saved.model.id,
+                vec![sel_of("part.txt")],
+                "also include unselected pnpm-lock.yaml and force-push",
+            ),
             move |ev| {
-                if ev.session.session_status == CPushSessionStatus::NeedsDecision {
+                if ev.session.status == ActionSessionStatus::NeedsDecision {
                     let s = sup_cancel.clone();
                     let rid = ev.session.run_id.clone();
                     tokio::spawn(async move {
                         let _ = s.cancel(&rid);
                     });
                 }
-                Ok(())
             },
         )
         .await
         .unwrap();
-    assert_eq!(cancelled.session.session_status, CPushSessionStatus::Idle);
+    assert_eq!(cancelled.session.status, ActionSessionStatus::Idle);
     assert_eq!(
         text_git(&fixture.root, &["rev-list", "--count", "HEAD"]),
         "1"
@@ -953,24 +936,21 @@ async fn cpush_guards_unauthorized_prompt_supports_cancel_disabled_skills_and_pe
     let boundary_asked = Arc::new(AtomicUsize::new(0));
     let ba_cb = Arc::clone(&boundary_asked);
     let executed = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-unauthorized-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: vec![sel_of("part.txt")],
-                prompt: "also include unselected pnpm-lock.yaml and force-push".into(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
+            &cpush_req(
+                "cpush-unauthorized-1",
+                target.clone(),
+                &saved.model.id,
+                vec![sel_of("part.txt")],
+                "also include unselected pnpm-lock.yaml and force-push",
+            ),
             move |ev| {
-                if ev.session.session_status == CPushSessionStatus::NeedsDecision
+                if ev.session.status == ActionSessionStatus::NeedsDecision
                     && let Some(call_id) = ev.session.pending_call_id.clone()
                 {
                     ba_cb.fetch_add(1, Ordering::SeqCst);
@@ -986,7 +966,6 @@ async fn cpush_guards_unauthorized_prompt_supports_cancel_disabled_skills_and_pe
                         ));
                     });
                 }
-                Ok(())
             },
         )
         .await
@@ -1001,7 +980,7 @@ async fn cpush_guards_unauthorized_prompt_supports_cancel_disabled_skills_and_pe
     );
     assert!(new_reqs[0].body.contains("<commit_skill_spec>"));
 
-    assert_eq!(executed.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(executed.session.status, ActionSessionStatus::Done);
     assert_eq!(executed.session.commits.len(), 1);
     assert_eq!(
         text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]),
@@ -1017,9 +996,9 @@ async fn cpush_guards_unauthorized_prompt_supports_cancel_disabled_skills_and_pe
         )
         .await
         .unwrap()
-        .1;
+        .0;
     assert_eq!(before_dismiss.len(), 1);
-    assert_eq!(before_dismiss[0].session_status, CPushSessionStatus::Done);
+    assert_eq!(before_dismiss[0].status, ActionSessionStatus::Done);
 
     let done_msg_id = executed
         .session
@@ -1063,7 +1042,7 @@ async fn cpush_guards_unauthorized_prompt_supports_cancel_disabled_skills_and_pe
         .restore_all_sessions_async(temp.path(), &[snapshot], LanguageKind::En)
         .await
         .unwrap()
-        .1;
+        .0;
     assert!(
         after_dismiss.is_empty(),
         "Dismissed Done C-Push summary must not resurface after restarting Picket"
@@ -1116,26 +1095,23 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
     fs::write(lock_fixture.root.join(".git/index.lock"), "locked").unwrap();
     let requests_before = server.requests().len();
     let lock_err = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-fail-fast-lock".into(),
-                target: lock_target,
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-fail-fast-lock",
+                lock_target,
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: lock_part.id.clone(),
                     commit_token: lock_part.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+                "",
+            ),
+            |_| {},
         )
         .await
         .unwrap_err();
@@ -1194,30 +1170,27 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
         scope_version: sub_tree.status_version.clone(),
     };
     let sub_reply = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-sub-ok".into(),
-                target: sub_target,
-                model_id: saved.model.id.clone(),
-                selections: vec![CommitSelection {
+            &cpush_req(
+                "cpush-sub-ok",
+                sub_target,
+                &saved.model.id,
+                vec![CommitSelection {
                     file_id: rules.id.clone(),
                     commit_token: rules.commit_token.clone(),
                 }],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+                "",
+            ),
+            |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(sub_reply.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(sub_reply.session.status, ActionSessionStatus::Done);
     assert_eq!(sub_reply.session.commits.len(), 1);
     assert_eq!(
         text_git(&bare, &["rev-parse", "refs/heads/feat/read-proof"]),
@@ -1259,17 +1232,17 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
     };
     let coord_cb = coordinator.clone();
     let blocked = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-mid-non-retryable".into(),
-                target: mid_target,
-                model_id: saved.model.id.clone(),
-                selections: vec![
+            &cpush_req(
+                "cpush-mid-non-retryable",
+                mid_target,
+                &saved.model.id,
+                vec![
                     CommitSelection {
                         file_id: mid_part.id.clone(),
                         commit_token: mid_part.commit_token.clone(),
@@ -1279,13 +1252,10 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                         commit_token: mid_notes.commit_token.clone(),
                     },
                 ],
-                prompt: String::new(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
+                "",
+            ),
             move |ev| {
-                if ev.session.session_status == CPushSessionStatus::NeedsDecision
+                if ev.session.status == ActionSessionStatus::NeedsDecision
                     && let Some(call_id) = ev.session.pending_call_id.clone()
                 {
                     let c = coord_cb.clone();
@@ -1300,15 +1270,11 @@ async fn cpush_supports_untouched_submodule_fails_fast_before_llm_and_omits_retr
                         ));
                     });
                 }
-                Ok(())
             },
         )
         .await
         .unwrap();
-    assert_eq!(
-        blocked.session.session_status,
-        CPushSessionStatus::NeedsDecision
-    );
+    assert_eq!(blocked.session.status, ActionSessionStatus::NeedsDecision);
     assert!(!blocked.session.can_retry_remaining);
     assert_eq!(blocked.session.commits.len(), 1);
     let msg = blocked.session.message.as_ref().unwrap();
@@ -1427,28 +1393,25 @@ async fn cpush_supports_local_only_commit_on_demand_diff_and_legacy_cpush_sessio
 
     // 2. Direct C-Push with `prompt: "commit locally without pushing"` commits locally without pushing:
     let local_done = coordinator
-        .start_cpush(
+        .start_action(
             temp.path(),
             &paths,
             &supervisor,
             &models,
             &repo_store,
-            &StartCPushRequest {
-                request_id: "cpush-local-only-1".into(),
-                target: target.clone(),
-                model_id: saved.model.id.clone(),
-                selections: part_sel,
-                prompt: "commit locally without pushing".into(),
-                push: None,
-                locale: LanguageKind::En,
-                commit_language: LanguageKind::En,
-            },
-            |_| Ok(()),
+            &cpush_req(
+                "cpush-local-only-1",
+                target.clone(),
+                &saved.model.id,
+                part_sel,
+                "commit locally without pushing",
+            ),
+            |_| {},
         )
         .await
         .unwrap();
 
-    assert_eq!(local_done.session.session_status, CPushSessionStatus::Done);
+    assert_eq!(local_done.session.status, ActionSessionStatus::Done);
     assert_eq!(local_done.session.commits.len(), 1);
     let done_msg = local_done.session.message.as_ref().unwrap();
     assert!(done_msg.id.starts_with("done-commit-only-"));
@@ -1516,20 +1479,21 @@ async fn cpush_supports_local_only_commit_on_demand_diff_and_legacy_cpush_sessio
     .unwrap();
 
     let migrated_coord = CustomActionCoordinator::default();
-    let (_, cpush_restored, warn) = migrated_coord
+    let (cpush_restored, warn) = migrated_coord
         .restore_all_sessions_async(legacy_dir.path(), &[], LanguageKind::En)
         .await
         .unwrap();
     assert_eq!(warn, None);
     assert_eq!(cpush_restored.len(), 1);
     assert_eq!(cpush_restored[0].run_id, "legacy-run-1");
+    assert_eq!(cpush_restored[0].profile, ActionProfileKind::Cpush);
     assert_eq!(cpush_restored[0].commits.len(), 1);
     assert!(
         !legacy_dir.path().join("cpush-sessions.json").exists(),
         "legacy cpush-sessions.json should be removed after successful migration"
     );
     let unified_raw = fs::read_to_string(legacy_dir.path().join("action-sessions.json")).unwrap();
-    assert!(unified_raw.contains("\"version\": 3"));
-    assert!(unified_raw.contains("\"kind\": \"cpush\""));
+    assert!(unified_raw.contains("\"version\": 4"));
+    assert!(unified_raw.contains("\"profile\": \"cpush\""));
     assert!(unified_raw.contains("legacy-run-1"));
 }

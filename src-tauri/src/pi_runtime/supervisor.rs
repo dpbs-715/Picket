@@ -486,8 +486,15 @@ impl PiSupervisor {
                     } => {
                         // Pause the active LLM execution budget while host tools (including
                         // blocking `message_user` questionnaires and Tier-2 human approvals) run.
-                        // Automated host tools enforce their own per-tool timeouts, and explicit
-                        // cancellation still interrupts immediately.
+                        // Git-mutating tools are non-interruptible once started so we never drop
+                        // an in-flight commit, rebase, push, or worktree cleanup mid-write.
+                        let non_interruptible = matches!(
+                            tool_name.as_str(),
+                            "commit_exact_scope"
+                                | "sync_and_push"
+                                | "manage_submit_worktree"
+                                | "cleanup_submit_duplicates"
+                        );
                         let tool_future = on_tool_call(call_id.clone(), tool_name, args);
                         tokio::pin!(tool_future);
                         let outcome = tokio::select! {
@@ -503,6 +510,9 @@ impl PiSupervisor {
                                     .await
                                     .map_err(|msg| AppError::model(AppErrorCode::PiRuntimeError, msg))?;
                                 cancel_sent = true;
+                                if non_interruptible {
+                                    let _ = (&mut tool_future).await;
+                                }
                                 continue;
                             }
                             result = &mut tool_future => result,
@@ -530,6 +540,11 @@ impl PiSupervisor {
                     }
                     PiEvent::CustomActionDrafted { draft, .. } => {
                         return Ok(PiTaskOutcome::CustomActionDrafted { draft });
+                    }
+                    PiEvent::RunCommandsDiscovered {
+                        summary, commands, ..
+                    } => {
+                        return Ok(PiTaskOutcome::RunCommandsDiscovered { summary, commands });
                     }
                     PiEvent::Cancelled { .. } => return Ok(PiTaskOutcome::Cancelled),
                     PiEvent::Failed {

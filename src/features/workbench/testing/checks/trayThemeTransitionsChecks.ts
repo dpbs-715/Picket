@@ -86,13 +86,24 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
     followUpState.worktrees[0].sessionStatus = 'done';
     followUpState.worktrees[0].dockExpanded = true;
     followUpState.worktrees[0].activeRun = {
-      kind: 'customAction',
+      profile: 'customAction',
       runId: 'run-prev-42',
       actionId: 'act-release',
       actionLabel: 'Patch Release',
+      frozenTarget: {
+        repositoryId: followUpState.worktrees[0].repositoryId,
+        worktreeId: followUpState.worktrees[0].worktreeId,
+        sessionId: followUpState.worktrees[0].sessionId,
+        scopeVersion: followUpState.worktrees[0].scopeVersion,
+      },
+      frozenFileIds: [],
+      promptRevisionAtStart: 0,
+      modelId: 'test-claude',
       timeline: [{ state: 'done', label: 'Edited package.json' }],
+      qaLog: [],
       commits: [],
       links: [],
+      canRetryRemaining: false,
     };
     followUpState.worktrees[0].messages = [{
       id: 'done-action-run-prev-42',
@@ -104,28 +115,38 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
       ...disconnectedBackend,
       async execute(command) {
         followUpCommands.push(command);
-        if (command.kind === 'runCustomAction') {
+        if (command.kind === 'startAction' && command.profile === 'customAction' && command.action) {
           return {
-            protocolVersion: 1,
-            kind: 'customAction',
+            protocolVersion: 2,
+            kind: 'action',
             requestId: command.requestId,
-            runId: command.requestId,
-            repositoryId: command.target.repositoryId,
-            worktreeId: command.target.worktreeId,
-            sessionId: command.target.sessionId,
-            actionId: command.action.id,
-            actionLabel: command.action.label,
-            status: 'done',
-            summary: 'Committed and pushed follow-up changes.',
-            message: {
-              id: `done-action-${command.requestId}`,
-              kind: 'done',
-              title: `${command.action.label} completed`,
-              description: 'Committed and pushed follow-up changes.',
+            session: {
+              runId: command.requestId,
+              repositoryId: command.target.repositoryId,
+              worktreeId: command.target.worktreeId,
+              sessionId: command.target.sessionId,
+              actionId: command.action.id,
+              actionLabel: command.action.label,
+              profile: 'customAction',
+              frozenScopeVersion: command.target.scopeVersion,
+              modelId: command.modelId,
+              frozenFileIds: command.fileIds,
+              committedFileIds: [],
+              skippedFileIds: [],
+              status: 'done',
+              summary: 'Committed and pushed follow-up changes.',
+              message: {
+                id: `done-action-${command.requestId}`,
+                kind: 'done',
+                title: `${command.action.label} completed`,
+                description: 'Committed and pushed follow-up changes.',
+              },
+              timeline: [{ state: 'done', label: 'Committed follow-up' }],
+              qaLog: [],
+              commits: [],
+              links: [],
+              canRetryRemaining: false,
             },
-            timeline: [{ state: 'done', label: 'Committed follow-up' }],
-            commits: [],
-            links: [],
           };
         }
         return undefined;
@@ -140,12 +161,12 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
     await tick();
     await click('Send Reply');
     await tick();
-    const sent = followUpCommands.find((cmd) => cmd.kind === 'runCustomAction');
+    const sent = followUpCommands.find((cmd) => cmd.kind === 'startAction' && cmd.profile === 'customAction');
     assert(
-      sent?.kind === 'runCustomAction'
+      sent?.kind === 'startAction'
         && sent.followUpPrompt === 'Create CHANGELOG.md and push v0.2.2'
         && sent.resumeFromRunId === 'run-prev-42'
-        && sent.action.id === 'act-release',
+        && sent.action?.id === 'act-release',
       `Follow-up submission did not forward followUpPrompt and resumeFromRunId: ${JSON.stringify(sent)}`,
     );
     assert(text().includes('Committed and pushed follow-up changes.'), 'Follow-up completion message did not render in MessageDock');
@@ -167,16 +188,27 @@ export async function runTrayThemeTransitionsChecks(harness: BrowserCheckHarness
     progressState.worktrees[0].sessionStatus = 'running';
     progressState.worktrees[0].dockExpanded = true;
     progressState.worktrees[0].activeRun = {
-      kind: 'customAction',
+      profile: 'customAction',
       runId: 'run-progress-scroll',
       actionId: 'act-merge',
       actionLabel: 'Merge test',
+      frozenTarget: {
+        repositoryId: progressState.worktrees[0].repositoryId,
+        worktreeId: progressState.worktrees[0].worktreeId,
+        sessionId: progressState.worktrees[0].sessionId,
+        scopeVersion: progressState.worktrees[0].scopeVersion,
+      },
+      frozenFileIds: [],
+      promptRevisionAtStart: 0,
+      modelId: 'test-claude',
       timeline: [
         ...Array.from({ length: 17 }, (_, idx) => ({ state: 'done' as const, label: `Run command step ${idx + 1}` })),
         { state: 'active' as const, label: 'Run glab label' },
       ],
+      qaLog: [],
       commits: [],
       links: [],
+      canRetryRemaining: false,
     };
     progressState.worktrees[0].messages = [{
       id: 'progress-run-scroll',

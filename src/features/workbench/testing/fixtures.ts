@@ -240,13 +240,24 @@ export function fixture(scenario: Scenario = 'typing'): WorkbenchState {
       tree.sessionStatus = 'done';
       tree.dockExpanded = true;
       tree.activeRun = {
-        kind: 'customAction',
+        profile: 'customAction',
         runId: 'run-review-1',
         actionId: 'act-review',
         actionLabel: 'Review Diff',
+        frozenTarget: {
+          repositoryId: tree.repositoryId,
+          worktreeId: tree.worktreeId,
+          sessionId: tree.sessionId,
+          scopeVersion: tree.scopeVersion,
+        },
+        frozenFileIds: [],
+        promptRevisionAtStart: 0,
+        modelId: 'test-claude',
         timeline: [{ state: 'done', label: 'Inspected 4 files' }],
+        qaLog: [],
         commits: [],
         links: [{ label: 'PR #128', url: 'https://github.com/acme/orders/pull/128' }],
+        canRetryRemaining: false,
       };
       tree.messages = [sampleRichCardMessage()];
       break;

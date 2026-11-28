@@ -1,9 +1,9 @@
 //! Tauri IPC command handlers grouped by domain, plus shared desktop runtime helpers.
 
 pub mod actions;
-pub mod cpush;
 pub mod models;
 pub mod repository;
+pub mod runner;
 pub mod skills;
 #[cfg(feature = "smoke-harness")]
 pub mod smoke;

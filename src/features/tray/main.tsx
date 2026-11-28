@@ -3,6 +3,10 @@ import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { TrayMainWindowAction, TrayStateSnapshot } from '../../../shared/tray-protocol';
 import {
+  openDesktopRunLogsWindow,
+  stopDesktopRunCommand,
+} from '../../desktop/runner';
+import {
   hideTrayPopover,
   openMainWindowFromTray,
   quitAppFromTray,
@@ -31,18 +35,23 @@ function TrayApp() {
   useEffect(() => {
     if (!isTauri()) return;
     let mounted = true;
-    void readTrayState()
-      .then((initial) => {
-        if (mounted) setSnapshot(initial);
-      })
-      .catch(() => {});
+    let receivedLiveState = false;
 
     const unsubState = subscribeTrayState((next) => {
-      if (mounted) setSnapshot(next);
+      if (!mounted) return;
+      receivedLiveState = true;
+      setSnapshot(next);
     });
     const unsubShown = subscribeTrayPopoverShown(() => {
       if (mounted) setOpenGeneration((value) => value + 1);
     });
+
+    void readTrayState()
+      .then((initial) => {
+        if (mounted && !receivedLiveState) setSnapshot(initial);
+      })
+      .catch(() => {});
+
     return () => {
       mounted = false;
       unsubState();
@@ -54,12 +63,14 @@ function TrayApp() {
     <TrayPopover
       snapshot={snapshot}
       openGeneration={openGeneration}
-      onRefresh={() => void requestTrayRefresh()}
-      onOpenSettings={() => void openMainWindowFromTray({ kind: 'openSettings' })}
-      onOpenMainWindow={(action?: TrayMainWindowAction) => void openMainWindowFromTray(action)}
-      onQuit={() => void quitAppFromTray()}
-      onDismiss={() => void hideTrayPopover()}
-      onHeightChange={(height) => void resizeTrayPopover(height)}
+      onRefresh={() => void requestTrayRefresh().catch(() => {})}
+      onOpenSettings={() => void openMainWindowFromTray({ kind: 'openSettings' }).catch(() => {})}
+      onOpenMainWindow={(action?: TrayMainWindowAction) => void openMainWindowFromTray(action).catch(() => {})}
+      onStopRunService={(processId) => void stopDesktopRunCommand({ processId, locale: snapshot.locale }).catch(() => {})}
+      onOpenRunLogs={(processId) => void openDesktopRunLogsWindow({ processId }).catch(() => {})}
+      onQuit={() => void quitAppFromTray().catch(() => {})}
+      onDismiss={() => void hideTrayPopover().catch(() => {})}
+      onHeightChange={(height) => void resizeTrayPopover(height).catch(() => {})}
     />
   );
 }

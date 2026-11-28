@@ -69,12 +69,16 @@ pub async fn set_window_theme(
         .get_webview_window("main")
         .ok_or_else(|| crate::error::AppError::window("Main window is unavailable"))?;
     let tray = app.get_webview_window(crate::tray::TRAY_POPOVER_LABEL);
+    let logs = app.get_webview_window(crate::runner::RUN_LOGS_WINDOW_LABEL);
     let (tx, rx) = oneshot::channel::<&'static str>();
     let main_for_thread = main.clone();
     main.run_on_main_thread(move || {
         let resolved = apply_window_theme(&main_for_thread, theme, true);
         if let Some(popover) = tray {
             let _ = apply_window_theme(&popover, theme, false);
+        }
+        if let Some(logs_win) = logs {
+            let _ = apply_window_theme(&logs_win, theme, true);
         }
         let _ = tx.send(resolved);
     })

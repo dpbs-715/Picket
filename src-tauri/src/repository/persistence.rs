@@ -4,6 +4,7 @@
 //! Never stores API keys or Git write tokens; repository paths come only from Rust.
 use super::*;
 use crate::{
+    actions::types::{ActionApprovalMode, deserialize_approval_mode_or_default},
     i18n::{self, LanguageKind, deserialize_language_or_default},
     storage,
 };
@@ -140,6 +141,8 @@ struct StoredWorkbenchFile {
     locale: LanguageKind,
     #[serde(default, deserialize_with = "deserialize_theme_or_default")]
     theme: ThemeKind,
+    #[serde(default, deserialize_with = "deserialize_approval_mode_or_default")]
+    action_approval_mode: ActionApprovalMode,
     editor: EditorKind,
     #[serde(default, deserialize_with = "deserialize_language_or_default")]
     default_commit_language: LanguageKind,
@@ -198,6 +201,7 @@ fn empty_restore_reply(warning: Option<String>) -> WorkbenchRestoreReply {
         protocol_version: STORAGE_VERSION,
         locale: LanguageKind::En,
         theme: ThemeKind::System,
+        action_approval_mode: ActionApprovalMode::Auto,
         editor: EditorKind::Idea,
         default_commit_language: LanguageKind::En,
         repository_settings: Vec::new(),
@@ -210,7 +214,6 @@ fn empty_restore_reply(warning: Option<String>) -> WorkbenchRestoreReply {
         connections: None,
         models: None,
         active_model_id: None,
-        c_push_sessions: None,
         action_sessions: None,
         warning,
     }
@@ -233,6 +236,7 @@ fn parse_workbench_bytes(bytes: &[u8]) -> Option<StoredWorkbenchFile> {
             version: STORAGE_VERSION,
             locale: v1.locale,
             theme: ThemeKind::System,
+            action_approval_mode: ActionApprovalMode::Auto,
             editor: v1.editor,
             default_commit_language: v1.default_commit_language,
             repository_settings: v1.repository_settings,
@@ -320,6 +324,15 @@ fn sanitize_repository_settings(
                 .active_action_id
                 .map(|id| id.trim().to_owned())
                 .filter(|id| !id.is_empty() && entry.custom_actions.iter().any(|a| a.id == *id));
+            let mut seen_run_commands = HashSet::new();
+            entry.run_commands = entry
+                .run_commands
+                .into_iter()
+                .filter_map(crate::runner::sanitize_run_command)
+                .filter(|cmd| seen_run_commands.insert(cmd.id.clone()))
+                .take(crate::runner::types::MAX_RUN_COMMANDS_PER_REPO)
+                .collect();
+            entry.run_shared_env = crate::runner::sanitize_run_env_entries(entry.run_shared_env);
             entry
         })
         .collect()
@@ -470,6 +483,7 @@ impl WorkbenchPersistence {
             protocol_version: STORAGE_VERSION,
             locale: stored.locale,
             theme: stored.theme,
+            action_approval_mode: stored.action_approval_mode,
             editor: stored.editor,
             default_commit_language: stored.default_commit_language,
             repository_settings,
@@ -482,7 +496,6 @@ impl WorkbenchPersistence {
             connections: None,
             models: None,
             active_model_id: None,
-            c_push_sessions: None,
             action_sessions: None,
             warning,
         })
@@ -517,6 +530,8 @@ impl WorkbenchPersistence {
                     .iter()
                     .all(|path| is_valid_local_keep_path(path))
                 || !validate_custom_actions(&setting.custom_actions)
+                || !crate::runner::validate_run_commands(&setting.run_commands)
+                || !crate::runner::validate_run_env_entries(&setting.run_shared_env)
                 || !seen_repo_settings.insert(setting.repository_id.as_str())
             {
                 return Err(
@@ -617,6 +632,7 @@ impl WorkbenchPersistence {
             version: STORAGE_VERSION,
             locale,
             theme: request.theme,
+            action_approval_mode: request.action_approval_mode,
             editor: request.editor,
             default_commit_language: request.default_commit_language,
             repository_settings,
@@ -689,6 +705,7 @@ impl WorkbenchPersistence {
                 version: STORAGE_VERSION,
                 locale,
                 theme: ThemeKind::System,
+                action_approval_mode: ActionApprovalMode::Auto,
                 editor: EditorKind::Idea,
                 default_commit_language: LanguageKind::En,
                 repository_settings: Vec::new(),

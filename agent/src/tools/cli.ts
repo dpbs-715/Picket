@@ -185,7 +185,7 @@ export function createCommitExactScopeTool(
     label: 'Commit Exact Scope',
     description: cpushMode
       ? 'Commit all authorized selected files as one or more cohesive exact-scope commits (preserving partial staging, unselected files, and Local Keep byte-for-byte) and optionally push the current branch. Reference authorized files by their "@1".."@N" alias or exact `fileId`. Every authorized file must appear once across `groups[].fileIds` and user-confirmed `skippedFileIds`.'
-      : 'Create a local Git commit containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte).',
+      : 'Create one or more local Git commits containing ONLY authorized files: pre-selected `fileIds` from `Authorized selected files` and/or `editedPaths` created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (preserving partial staging, unselected files, and Local Keep byte-for-byte). Accepts either a single commit (`fileIds`/`editedPaths` + `message`) or multiple cohesive commits via `groups`. When `push: true` fails or hits a conflict, returns a `recoveryHandle` so you can either handle it in-workflow or call `handoff_to_recovery`.',
     parameters: cpushMode
       ? {
           type: 'object',
@@ -232,25 +232,54 @@ export function createCommitExactScopeTool(
       : {
           type: 'object',
           additionalProperties: false,
-          required: ['message'],
           properties: {
+            groups: {
+              type: 'array',
+              description: 'Optional ordered list of cohesive commit groups for multi-commit splits (each group has `message` and `fileIds` and/or `editedPaths`). Omit to create a single commit using top-level `fileIds`/`editedPaths` + `message`.',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['message'],
+                properties: {
+                  id: { type: 'string', description: 'Optional short group ID (e.g. `group-1`).' },
+                  fileIds: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Authorized file references (`"@1"`, `"@2"`, ... or exact `fileId`s) from `Authorized selected files`.',
+                  },
+                  editedPaths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Repository-relative paths created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run.',
+                  },
+                  message: {
+                    type: 'string',
+                    description: 'Two-part Conventional Commit message (`<type>(<scope>): <subject>\\n\\n- bullet 1`).',
+                  },
+                },
+              },
+            },
             fileIds: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Exact `fileId`s from `Authorized selected files` to include in this commit.',
+              description: 'Exact `fileId`s (or `"@1"`..`"@N"` aliases) from `Authorized selected files` to include in a single commit.',
             },
             editedPaths: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Repository-relative paths created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (or verified from the previous run checkpoint) to include in this commit.',
+              description: 'Repository-relative paths created or modified via `edit_repo_file`, `write_repo_file`, or `run_repo_command` during this run (or verified from the previous run checkpoint) to include in a single commit.',
             },
             message: {
               type: 'string',
-              description: 'Two-part Conventional Commit message (`<type>(<scope>): <subject>\\n\\n- bullet 1`).',
+              description: 'Two-part Conventional Commit message (`<type>(<scope>): <subject>\\n\\n- bullet 1`) for a single commit.',
             },
             push: {
               type: 'boolean',
               description: 'If true, immediately push the current branch after committing (default false).',
+            },
+            summary: {
+              type: 'string',
+              description: 'Optional concise 1-line summary in the UI language.',
             },
           },
         },
@@ -265,12 +294,12 @@ export function createCommitExactScopeTool(
 
       if (Array.isArray(params?.groups) || (cpushMode && !Array.isArray(params?.fileIds))) {
         const rawGroups = Array.isArray(params?.groups) ? params.groups : [];
-        const groups: Array<{ id: string; fileIds: string[]; message: string }> = [];
+        const groups: Array<{ id: string; fileIds: string[]; editedPaths?: string[]; message: string }> = [];
         for (let idx = 0; idx < rawGroups.length; idx += 1) {
           const entry = rawGroups[idx];
           if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
             return {
-              content: [{ type: 'text', text: `Invalid commit group at index ${idx}: expected an object with \`fileIds\` and \`message\`.` }],
+              content: [{ type: 'text', text: `Invalid commit group at index ${idx}: expected an object with \`fileIds\`/\`editedPaths\` and \`message\`.` }],
               details: { fileIds: [], editedPaths: [] },
               isError: true,
             };
@@ -279,10 +308,13 @@ export function createCommitExactScopeTool(
           const gFileIds = Array.isArray(rec.fileIds)
             ? rec.fileIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
             : [];
+          const gEditedPaths = !cpushMode && Array.isArray(rec.editedPaths)
+            ? rec.editedPaths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0)
+            : [];
           const gMessage = typeof rec.message === 'string' ? rec.message.trim() : '';
-          if (gFileIds.length === 0 || !gMessage) {
+          if ((gFileIds.length === 0 && gEditedPaths.length === 0) || !gMessage) {
             return {
-              content: [{ type: 'text', text: `Commit group ${idx + 1} requires non-empty \`fileIds\` and non-empty \`message\`.` }],
+              content: [{ type: 'text', text: `Commit group ${idx + 1} requires non-empty \`message\` and at least one entry in \`fileIds\`${cpushMode ? '' : ' or `editedPaths`'}.` }],
               details: { fileIds: [], editedPaths: [] },
               isError: true,
             };
@@ -290,7 +322,12 @@ export function createCommitExactScopeTool(
           const gId = typeof rec.id === 'string' && rec.id.trim()
             ? rec.id.trim().slice(0, 64)
             : `group-${idx + 1}`;
-          groups.push({ id: gId, fileIds: gFileIds, message: gMessage });
+          groups.push({
+            id: gId,
+            fileIds: gFileIds,
+            ...(gEditedPaths.length > 0 ? { editedPaths: gEditedPaths } : {}),
+            message: gMessage,
+          });
         }
         if (groups.length === 0 && skippedFileIds.length === 0) {
           return {
@@ -315,7 +352,7 @@ export function createCommitExactScopeTool(
           content: [{ type: 'text', text: response.content }],
           details: {
             fileIds: groups.flatMap((g) => g.fileIds),
-            editedPaths: [],
+            editedPaths: groups.flatMap((g) => g.editedPaths ?? []),
             groupCount: groups.length,
             ...(stopAgent ? { stopAgent: true } : {}),
           },
