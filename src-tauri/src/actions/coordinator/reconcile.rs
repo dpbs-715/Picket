@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     actions::types::*,
+    error::{AppError, AppErrorCode},
     i18n,
     repository::{self, RepositoryStore},
 };
@@ -18,14 +19,15 @@ impl CustomActionCoordinator {
         storage_dir: &Path,
         repo_store: &RepositoryStore,
         request: &ReconcileCPushRequest,
-    ) -> Result<Option<CPushProgressEvent>, String> {
+    ) -> Result<Option<CPushProgressEvent>, AppError> {
         let req_locale = request.locale.unwrap_or_default();
-        repository::validate_request_id_with_locale(&request.request_id, req_locale)?;
+        repository::validate_request_id_with_locale(&request.request_id, req_locale)
+            .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))?;
         let candidate_status = self
             .inner
             .cpush_sessions
             .lock()
-            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .map_err(|_| AppError::internal("C-Push session cache lock is unavailable"))?
             .get(&request.target.worktree_id)
             .map(|s| s.session_status);
         if !matches!(
@@ -45,7 +47,9 @@ impl CustomActionCoordinator {
         ) else {
             return Ok(None);
         };
-        let wt_gate = self.worktree_gate(&request.target.worktree_id)?;
+        let wt_gate = self
+            .worktree_gate(&request.target.worktree_id)
+            .map_err(AppError::internal)?;
         let Ok(_wt_guard) = wt_gate.try_lock_owned() else {
             return Ok(None);
         };
@@ -54,7 +58,7 @@ impl CustomActionCoordinator {
             .inner
             .cpush_sessions
             .lock()
-            .map_err(|_| "C-Push session cache lock is unavailable")?
+            .map_err(|_| AppError::internal("C-Push session cache lock is unavailable"))?
             .get(&request.target.worktree_id)
             .cloned()
         {
@@ -77,7 +81,8 @@ impl CustomActionCoordinator {
 
         let (local_live, local_snapshot) = repo_store
             .inspect_live_remote_status(&request.target, false, locale)
-            .await?;
+            .await
+            .map_err(|msg| AppError::git(AppErrorCode::GitFailed, msg))?;
 
         // 1. If conflicts or rebase are still unfinished -> keep waiting without auto-writing (`R04`):
         if local_live.rebase_in_progress
@@ -101,8 +106,11 @@ impl CustomActionCoordinator {
                     msg.files = (!chips.is_empty()).then_some(chips);
                 }
                 session.auto_collapse = false;
-                self.save_cpush_in_memory(&session)?;
-                self.persist_cpush_sessions(storage_dir).await?;
+                self.save_cpush_in_memory(&session)
+                    .map_err(AppError::internal)?;
+                self.persist_cpush_sessions(storage_dir)
+                    .await
+                    .map_err(AppError::storage)?;
                 return Ok(Some(CPushProgressEvent {
                     protocol_version: CPUSH_PROTOCOL_VERSION,
                     session: session.to_public(),
@@ -115,7 +123,8 @@ impl CustomActionCoordinator {
         // 2. Rebase / conflict is no longer active! Verify live remote reachability:
         let (verified_live, verified_snapshot) = repo_store
             .inspect_live_remote_status(&request.target, true, locale)
-            .await?;
+            .await
+            .map_err(|msg| AppError::git(AppErrorCode::GitFailed, msg))?;
 
         let remote_verified = verified_snapshot
             .worktrees
@@ -158,8 +167,11 @@ impl CustomActionCoordinator {
                     questionnaire: None,
                     progress: None,
                 });
-                self.save_cpush_in_memory(&session)?;
-                self.persist_cpush_sessions(storage_dir).await?;
+                self.save_cpush_in_memory(&session)
+                    .map_err(AppError::internal)?;
+                self.persist_cpush_sessions(storage_dir)
+                    .await
+                    .map_err(AppError::storage)?;
                 return Ok(Some(CPushProgressEvent {
                     protocol_version: CPUSH_PROTOCOL_VERSION,
                     session: session.to_public(),
@@ -277,8 +289,11 @@ impl CustomActionCoordinator {
             });
         }
 
-        self.save_cpush_in_memory(&session)?;
-        self.persist_cpush_sessions(storage_dir).await?;
+        self.save_cpush_in_memory(&session)
+            .map_err(AppError::internal)?;
+        self.persist_cpush_sessions(storage_dir)
+            .await
+            .map_err(AppError::storage)?;
         Ok(Some(CPushProgressEvent {
             protocol_version: CPUSH_PROTOCOL_VERSION,
             session: session.to_public(),

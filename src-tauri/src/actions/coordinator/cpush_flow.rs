@@ -63,8 +63,7 @@ impl CustomActionCoordinator {
         {
             return Ok(existing_reply);
         }
-        self.ensure_no_busy_cpush_session(&request.target.worktree_id, locale, true)
-            .map_err(|msg| AppError::action(AppErrorCode::ActionBusy, msg).with_retryable(true))?;
+        self.ensure_no_busy_cpush_session(&request.target.worktree_id, locale, true)?;
 
         let spec = models
             .resolve_runtime_spec_with_locale(storage_dir, &request.model_id, locale)

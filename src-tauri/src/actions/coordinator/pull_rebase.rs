@@ -39,8 +39,7 @@ impl CustomActionCoordinator {
         {
             return Ok(existing_reply);
         }
-        self.ensure_no_busy_cpush_session(&request.target.worktree_id, locale, false)
-            .map_err(|msg| AppError::action(AppErrorCode::ActionBusy, msg).with_retryable(true))?;
+        self.ensure_no_busy_cpush_session(&request.target.worktree_id, locale, false)?;
 
         let outcome = repo_store
             .sync_rebase_onto_upstream_with_locale(&request.target, locale)

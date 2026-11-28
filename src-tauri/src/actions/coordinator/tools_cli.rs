@@ -176,13 +176,7 @@ pub(super) async fn handle_message_user(
     call_id: &str,
     args: Value,
 ) -> PiToolExecutionResult {
-    let raw_req: MessageUserRequest = match serde_json::from_value(args) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            return PiToolExecutionResult::error(format!("Invalid message_user payload: {err}"));
-        }
-    };
-    let req = match raw_req.sanitize_and_validate() {
+    let req = match MessageUserRequest::parse_and_validate(args) {
         Ok(valid) => valid,
         Err(err) => return PiToolExecutionResult::error(err),
     };

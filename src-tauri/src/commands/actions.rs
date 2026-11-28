@@ -58,9 +58,7 @@ pub fn respond_custom_action(
     actions: State<'_, CustomActionCoordinator>,
     request: RespondCustomActionRequest,
 ) -> Result<bool, AppError> {
-    actions
-        .respond_question(&request)
-        .map_err(|msg| AppError::action(AppErrorCode::ActionInvalidInput, msg))
+    actions.respond_question(&request)
 }
 
 #[tauri::command]
@@ -109,10 +107,7 @@ pub async fn dismiss_session_done(
     request: DismissSessionDoneRequest,
 ) -> Result<bool, AppError> {
     let data_dir = picket_data_dir().map_err(AppError::storage)?;
-    let result = actions
-        .dismiss_done_notice_async(&data_dir, &request)
-        .await
-        .map_err(|msg| AppError::action(AppErrorCode::ActionFailed, msg));
+    let result = actions.dismiss_done_notice_async(&data_dir, &request).await;
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     result

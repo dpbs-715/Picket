@@ -124,8 +124,7 @@ pub async fn reconcile_cpush_session(
     let data_dir = picket_data_dir().map_err(AppError::storage)?;
     let result = actions
         .reconcile_worktree(&data_dir, &store, &request)
-        .await
-        .map_err(|msg| AppError::action(AppErrorCode::ActionFailed, msg));
+        .await;
     app.state::<crate::tray::TrayCoordinator>()
         .refresh_from_app(&app);
     result
