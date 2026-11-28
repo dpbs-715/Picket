@@ -3,10 +3,14 @@ import type { Change } from '../state/workbench';
 import {
   LOCAL_KEEP_DEFAULT_HEIGHT_PX,
   LOCAL_KEEP_MIN_HEIGHT_PX,
+  VIRTUALIZE_OVERSCAN_ROWS,
+  VIRTUALIZE_ROW_THRESHOLD,
   buildDirectoryTree,
   clampLocalKeepHeight,
   collectVisibleTreePaths,
   computeChangesDragScrollDelta,
+  computeVirtualWindow,
+  flattenChangesForRender,
   formatDirectoryLabel,
   resolveContextMenuSelection,
   resolveRowSelectionOnClick,
@@ -247,5 +251,99 @@ describe('ChangesPanel hierarchical compressed directory tree', () => {
     });
     expect(splitFileNameExt('Dockerfile')).toEqual({ stem: 'Dockerfile', ext: '' });
     expect(splitFileNameExt('.gitignore')).toEqual({ stem: '.gitignore', ext: '' });
+  });
+});
+
+describe('ChangesPanel virtualized windowing for large change sets', () => {
+  it('stays non-virtualized at or below threshold while tracking exact mixed row heights', () => {
+    const files: Change[] = [
+      makeChange('root-1', 'README.md'),
+      makeChange('nested-1', 'src/app.ts'),
+      makeChange('nested-2', 'src/main.ts'),
+    ];
+    const rows = flattenChangesForRender({
+      view: 'list',
+      files,
+      tree: [],
+      collapsedDirs: new Set(),
+      keyPrefix: 'wt:normal',
+    });
+    expect(rows.map((row) => row.estimatedHeightPx)).toEqual([28, 40, 40]);
+
+    const win = computeVirtualWindow(rows, 0, 400);
+    expect(win).toEqual({
+      virtualized: false,
+      startIndex: 0,
+      endIndex: 3,
+      topSpacerPx: 0,
+      bottomSpacerPx: 0,
+      totalHeightPx: 108,
+    });
+  });
+
+  it('windows 500 mixed list rows with exact spacer preservation across top, middle, and bottom scroll', () => {
+    const files: Change[] = Array.from({ length: 500 }, (_, i) => (
+      makeChange(`f-${i}`, i % 5 === 0 ? `file-${i}.md` : `packages/mod-${i % 10}/file-${i}.ts`)
+    ));
+    const rows = flattenChangesForRender({
+      view: 'list',
+      files,
+      tree: [],
+      collapsedDirs: new Set(),
+      keyPrefix: 'wt:normal',
+    });
+    expect(rows.length).toBeGreaterThan(VIRTUALIZE_ROW_THRESHOLD);
+
+    for (const scrollTop of [0, 4200, 12000, 999999]) {
+      const win = computeVirtualWindow(rows, scrollTop, 480);
+      expect(win.virtualized).toBe(true);
+      expect(win.startIndex).toBeGreaterThanOrEqual(0);
+      expect(win.endIndex).toBeLessThanOrEqual(rows.length);
+      expect(win.endIndex - win.startIndex).toBeGreaterThan(0);
+      expect(win.endIndex - win.startIndex).toBeLessThanOrEqual(20 + VIRTUALIZE_OVERSCAN_ROWS * 2);
+
+      const renderedHeight = rows
+        .slice(win.startIndex, win.endIndex)
+        .reduce((sum, row) => sum + row.estimatedHeightPx, 0);
+      expect(win.topSpacerPx + renderedHeight + win.bottomSpacerPx).toBe(win.totalHeightPx);
+    }
+
+    // Zero viewport height falls back safely instead of collapsing to empty render:
+    const fallbackWin = computeVirtualWindow(rows, 0, 0);
+    expect(fallbackWin.virtualized).toBe(true);
+    expect(fallbackWin.startIndex).toBe(0);
+    expect(fallbackWin.endIndex).toBeGreaterThan(10);
+  });
+
+  it('flattens large directory trees depth-first and omits descendants of collapsed directories', () => {
+    const files: Change[] = Array.from({ length: 240 }, (_, i) => (
+      makeChange(`t-${i}`, `mod-${Math.floor(i / 40)}/sub-${i % 2}/file-${i}.ts`)
+    ));
+    const tree = buildDirectoryTree(files, '(root)');
+    const expandedRows = flattenChangesForRender({
+      view: 'tree',
+      files,
+      tree,
+      collapsedDirs: new Set(),
+      keyPrefix: 'wt:normal',
+    });
+    expect(expandedRows.length).toBeGreaterThan(240);
+    expect(expandedRows.some((row) => row.kind === 'dir')).toBe(true);
+    expect(expandedRows.filter((row) => row.kind === 'file').length).toBe(240);
+
+    const collapsed = new Set<string>(['wt:normal:mod-0', 'wt:normal:mod-1']);
+    const collapsedRows = flattenChangesForRender({
+      view: 'tree',
+      files,
+      tree,
+      collapsedDirs: collapsed,
+      keyPrefix: 'wt:normal',
+    });
+    expect(collapsedRows.filter((row) => row.kind === 'file').length).toBe(160);
+    // Still virtualizes smoothly even when scrollTop was deep before collapsing:
+    const win = computeVirtualWindow(collapsedRows, 99999, 400);
+    expect(win.virtualized).toBe(true);
+    expect(win.endIndex).toBe(collapsedRows.length);
+    expect(win.bottomSpacerPx).toBe(0);
   });
 });

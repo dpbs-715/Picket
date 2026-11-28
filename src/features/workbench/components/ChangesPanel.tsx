@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { useMemo, useState } from 'react';
 import { useI18n } from '../../../i18n';
 import { Icon, IconButton, RotatingChevron } from '../../../ui/controls';
 import { Collapse } from '../../../ui/motion';
@@ -13,14 +12,7 @@ import {
 } from '../state/workbench';
 import { ChangeFileRow, TriStateCheckbox } from './ChangeFileRow';
 import { ChangesPanelOverlays } from './ChangesPanelOverlays';
-import {
-  LOCAL_KEEP_DEFAULT_HEIGHT_PX,
-  LOCAL_KEEP_PEEK_HEIGHT_PX,
-  clampLocalKeepHeight,
-  readSavedLocalKeepHeight,
-  targetDropZone,
-  writeSavedLocalKeepHeight,
-} from './changesPanelSelection';
+import { targetDropZone } from './changesPanelSelection';
 import {
   buildDirectoryTree,
   collectVisibleTreePaths,
@@ -29,7 +21,15 @@ import {
   treeIndentPx,
   type DirectoryTreeNode,
 } from './changesPanelTree';
+import {
+  VIRTUALIZE_ROW_THRESHOLD,
+  computeVirtualWindow,
+  flattenChangesForRender,
+  useVirtualScroll,
+  type VirtualChangeRow,
+} from './changesPanelVirtual';
 import { useChangesPanelInteractions } from './useChangesPanelInteractions';
+import { useLocalKeepResize } from './useLocalKeepResize';
 
 export {
   DRAG_AUTOSCROLL_EDGE_PX,
@@ -50,6 +50,14 @@ export {
   treeIndentPx,
   type DirectoryTreeNode,
 } from './changesPanelTree';
+export {
+  VIRTUALIZE_OVERSCAN_ROWS,
+  VIRTUALIZE_ROW_THRESHOLD,
+  computeVirtualWindow,
+  flattenChangesForRender,
+  type VirtualChangeRow,
+  type VirtualWindow,
+} from './changesPanelVirtual';
 
 interface Props {
   worktree?: Worktree;
@@ -74,40 +82,73 @@ export function ChangesPanel(props: Props) {
   const [view, setView] = useState<'list' | 'tree'>('list');
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(() => new Set());
   const [localKeepExpanded, setLocalKeepExpanded] = useState(false);
-  const [preferredLocalKeepHeight, setPreferredLocalKeepHeight] = useState<number>(
-    () => readSavedLocalKeepHeight() ?? LOCAL_KEEP_DEFAULT_HEIGHT_PX,
-  );
-  const [panelHeight, setPanelHeight] = useState(0);
-  const [resizingLocalKeep, setResizingLocalKeep] = useState(false);
-  const localKeepListRef = useRef<HTMLDivElement>(null);
-  const cleanupResizeRef = useRef<(() => void) | null>(null);
 
   const worktree = props.worktree;
   const hasChanges = !!worktree && !worktree.readError && worktree.files.length > 0;
-  const normal = worktree ? normalChanges(worktree) : [];
-  const kept = worktree ? localKeepChanges(worktree) : [];
-  const selectedKept = worktree ? selectedLocalKeepChanges(worktree) : [];
-  const normalSelectedCount = normal.filter((file) => worktree!.selectedIds.includes(file.id)).length;
+  const normal = useMemo(() => (worktree ? normalChanges(worktree) : []), [worktree]);
+  const kept = useMemo(() => (worktree ? localKeepChanges(worktree) : []), [worktree]);
+  const selectedKept = useMemo(() => (worktree ? selectedLocalKeepChanges(worktree) : []), [worktree]);
+  const selectedIdSet = useMemo(() => new Set(worktree?.selectedIds ?? []), [worktree?.selectedIds]);
+  const normalSelectedCount = useMemo(
+    () => normal.reduce((count, file) => (selectedIdSet.has(file.id) ? count + 1 : count), 0),
+    [normal, selectedIdSet],
+  );
   const allSelected = normal.length > 0 && normalSelectedCount === normal.length;
   const partiallySelected = normal.length > 0
     ? normalSelectedCount > 0 && normalSelectedCount < normal.length
     : selectedKept.length > 0;
   const selectAllDisabled = normal.length === 0 && selectedKept.length === 0;
   const shouldDeselectOnToggle = allSelected || (normal.length === 0 && selectedKept.length > 0);
-  const keptConflictCount = kept.filter((file) => file.status === 'U').length;
+  const keptConflictCount = useMemo(
+    () => kept.reduce((count, file) => (file.status === 'U' ? count + 1 : count), 0),
+    [kept],
+  );
   const normalTreeKey = `${worktree?.worktreeId ?? ''}:normal`;
   const keepTreeKey = `${worktree?.worktreeId ?? ''}:keep`;
-  const normalTree = worktree && view === 'tree' ? buildDirectoryTree(normal, t.changes.rootDirectory) : [];
-  const keptTree = worktree && view === 'tree' ? buildDirectoryTree(kept, t.changes.rootDirectory) : [];
-  const orderedNormalPaths = view === 'list'
-    ? normal.map((file) => file.path)
-    : collectVisibleTreePaths(normalTree, collapsedDirs, normalTreeKey);
-  const orderedKeptPaths = view === 'list'
-    ? kept.map((file) => file.path)
-    : collectVisibleTreePaths(keptTree, collapsedDirs, keepTreeKey);
-  const orderedVisiblePaths = localKeepExpanded
-    ? [...orderedNormalPaths, ...orderedKeptPaths]
-    : orderedNormalPaths;
+  const normalTree = useMemo(
+    () => (worktree && view === 'tree' ? buildDirectoryTree(normal, t.changes.rootDirectory) : []),
+    [normal, t.changes.rootDirectory, view, worktree],
+  );
+  const keptTree = useMemo(
+    () => (worktree && view === 'tree' ? buildDirectoryTree(kept, t.changes.rootDirectory) : []),
+    [kept, t.changes.rootDirectory, view, worktree],
+  );
+  const normalRows = useMemo(
+    () => flattenChangesForRender({
+      view,
+      files: normal,
+      tree: normalTree,
+      collapsedDirs,
+      keyPrefix: normalTreeKey,
+    }),
+    [collapsedDirs, normal, normalTree, normalTreeKey, view],
+  );
+  const keptRows = useMemo(
+    () => flattenChangesForRender({
+      view,
+      files: kept,
+      tree: keptTree,
+      collapsedDirs,
+      keyPrefix: keepTreeKey,
+    }),
+    [collapsedDirs, keepTreeKey, kept, keptTree, view],
+  );
+  const orderedNormalPaths = useMemo(
+    () => (view === 'list'
+      ? normal.map((file) => file.path)
+      : collectVisibleTreePaths(normalTree, collapsedDirs, normalTreeKey)),
+    [collapsedDirs, normal, normalTree, normalTreeKey, view],
+  );
+  const orderedKeptPaths = useMemo(
+    () => (view === 'list'
+      ? kept.map((file) => file.path)
+      : collectVisibleTreePaths(keptTree, collapsedDirs, keepTreeKey)),
+    [collapsedDirs, keepTreeKey, kept, keptTree, view],
+  );
+  const orderedVisiblePaths = useMemo(
+    () => (localKeepExpanded ? [...orderedNormalPaths, ...orderedKeptPaths] : orderedNormalPaths),
+    [localKeepExpanded, orderedKeptPaths, orderedNormalPaths],
+  );
 
   const {
     panelRef,
@@ -132,6 +173,35 @@ export function ChangesPanel(props: Props) {
     onSetLocalKeep: props.onSetLocalKeep,
     onOpenFile: props.onOpenFile,
   });
+
+  const layoutMode = props.layoutMode ?? 'idle';
+  const {
+    localKeepListRef,
+    canResizeLocalKeep,
+    effectiveLocalKeepHeight,
+    resizingLocalKeep,
+    handleLocalKeepResizeStart,
+    handleLocalKeepResizeReset,
+    handleLocalKeepResizeKeyDown,
+  } = useLocalKeepResize({
+    panelRef,
+    localKeepExpanded,
+    keptCount: kept.length,
+    layoutMode,
+  });
+
+  const normalVirtualEnabled = hasChanges && normalRows.length > VIRTUALIZE_ROW_THRESHOLD;
+  const keptVirtualEnabled = hasChanges && localKeepExpanded && keptRows.length > VIRTUALIZE_ROW_THRESHOLD;
+  const normalScroll = useVirtualScroll(listRef, normalVirtualEnabled);
+  const keptScroll = useVirtualScroll(localKeepListRef, keptVirtualEnabled);
+  const normalWindow = useMemo(
+    () => computeVirtualWindow(normalRows, normalScroll.scrollTop, normalScroll.viewportHeight),
+    [normalRows, normalScroll.scrollTop, normalScroll.viewportHeight],
+  );
+  const keptWindow = useMemo(
+    () => computeVirtualWindow(keptRows, keptScroll.scrollTop, keptScroll.viewportHeight),
+    [keptRows, keptScroll.scrollTop, keptScroll.viewportHeight],
+  );
 
   const activeTargetZone = dragState ? targetDropZone(dragState.fromLocalKeep) : null;
 
@@ -166,61 +236,79 @@ export function ChangesPanel(props: Props) {
     );
   }
 
+  function renderDirectoryHeading(
+    node: DirectoryTreeNode,
+    nodeKey: string,
+    depth: number,
+    isCollapsed: boolean,
+    isModuleHead: boolean,
+    withKey = false,
+  ) {
+    let groupSelectedCount = 0;
+    let conflictCount = 0;
+    for (const file of node.allFiles) {
+      if (selectedIdSet.has(file.id)) groupSelectedCount += 1;
+      if (file.status === 'U') conflictCount += 1;
+    }
+    const groupAllSelected = node.allFiles.length > 0 && groupSelectedCount === node.allFiles.length;
+    const groupIndeterminate = groupSelectedCount > 0 && groupSelectedCount < node.allFiles.length;
+    const formatted = formatDirectoryLabel(node.segments);
+    const guides = treeGuideOffsets(depth);
+    const showCount = isModuleHead || isCollapsed;
+
+    return (
+      <div
+        key={withKey ? nodeKey : undefined}
+        className={`directory-heading mono ${isModuleHead ? 'is-module' : ''} ${isCollapsed ? 'is-collapsed' : ''}`}
+        data-dir-path={node.fullPath}
+        data-depth={depth}
+        style={{ paddingLeft: `${treeIndentPx(depth)}px` }}
+      >
+        {guides.map((leftPx) => (
+          <span key={leftPx} className="tree-guide" style={{ left: `${leftPx}px` }} aria-hidden="true" />
+        ))}
+        <TriStateCheckbox
+          checked={groupAllSelected}
+          indeterminate={groupIndeterminate}
+          label={groupAllSelected ? t.changes.deselectDirectory(node.fullPath) : t.changes.selectDirectory(node.fullPath)}
+          onChange={() => props.onSelectFiles(node.allFiles.map((file) => file.id))}
+        />
+        <button
+          type="button"
+          className="directory-toggle min-width-zero"
+          aria-expanded={!isCollapsed}
+          aria-label={isCollapsed ? t.changes.expandDirectory(node.fullPath) : t.changes.collapseDirectory(node.fullPath)}
+          title={node.fullPath}
+          onClick={() => toggleDirectoryCollapsed(nodeKey)}
+        >
+          <RotatingChevron open={!isCollapsed} className="directory-chevron" />
+          <Icon name="folder" className="directory-folder-icon" />
+          <span className="directory-path min-width-zero">
+            {formatted.prefix && (
+              <>
+                <span className="directory-prefix">{formatted.prefix}</span>
+                <span className="directory-sep">/</span>
+              </>
+            )}
+            <span className="directory-leaf">{formatted.leaf}</span>
+          </span>
+          {isCollapsed && conflictCount > 0 && (
+            <span className="directory-conflict-dot" title={t.changes.localKeepConflicts(conflictCount)} aria-hidden="true" />
+          )}
+          {showCount && <span className="directory-count">{node.allFiles.length}</span>}
+        </button>
+      </div>
+    );
+  }
+
   function renderDirectoryNodes(nodes: readonly DirectoryTreeNode[], keyPrefix: string, depth = 0) {
     return nodes.map((node) => {
       const nodeKey = `${keyPrefix}:${node.id}`;
       const isCollapsed = collapsedDirs.has(nodeKey);
-      const groupSelectedCount = node.allFiles.filter((file) => worktree!.selectedIds.includes(file.id)).length;
-      const groupAllSelected = node.allFiles.length > 0 && groupSelectedCount === node.allFiles.length;
-      const groupIndeterminate = groupSelectedCount > 0 && groupSelectedCount < node.allFiles.length;
       const isModuleHead = depth === 0 && node.children.length > 0;
-      const conflictCount = node.allFiles.filter((file) => file.status === 'U').length;
-      const formatted = formatDirectoryLabel(node.segments);
-      const guides = treeGuideOffsets(depth);
-      const showCount = isModuleHead || isCollapsed;
-
       return (
         <div key={nodeKey} className="directory-branch">
-          <div
-            className={`directory-heading mono ${isModuleHead ? 'is-module' : ''} ${isCollapsed ? 'is-collapsed' : ''}`}
-            data-dir-path={node.fullPath}
-            data-depth={depth}
-            style={{ paddingLeft: `${treeIndentPx(depth)}px` }}
-          >
-            {guides.map((leftPx) => (
-              <span key={leftPx} className="tree-guide" style={{ left: `${leftPx}px` }} aria-hidden="true" />
-            ))}
-            <TriStateCheckbox
-              checked={groupAllSelected}
-              indeterminate={groupIndeterminate}
-              label={groupAllSelected ? t.changes.deselectDirectory(node.fullPath) : t.changes.selectDirectory(node.fullPath)}
-              onChange={() => props.onSelectFiles(node.allFiles.map((file) => file.id))}
-            />
-            <button
-              type="button"
-              className="directory-toggle min-width-zero"
-              aria-expanded={!isCollapsed}
-              aria-label={isCollapsed ? t.changes.expandDirectory(node.fullPath) : t.changes.collapseDirectory(node.fullPath)}
-              title={node.fullPath}
-              onClick={() => toggleDirectoryCollapsed(nodeKey)}
-            >
-              <RotatingChevron open={!isCollapsed} className="directory-chevron" />
-              <Icon name="folder" className="directory-folder-icon" />
-              <span className="directory-path min-width-zero">
-                {formatted.prefix && (
-                  <>
-                    <span className="directory-prefix">{formatted.prefix}</span>
-                    <span className="directory-sep">/</span>
-                  </>
-                )}
-                <span className="directory-leaf">{formatted.leaf}</span>
-              </span>
-              {isCollapsed && conflictCount > 0 && (
-                <span className="directory-conflict-dot" title={t.changes.localKeepConflicts(conflictCount)} aria-hidden="true" />
-              )}
-              {showCount && <span className="directory-count">{node.allFiles.length}</span>}
-            </button>
-          </div>
+          {renderDirectoryHeading(node, nodeKey, depth, isCollapsed, isModuleHead)}
           {!isCollapsed && (
             <>
               {node.children.length > 0 && renderDirectoryNodes(node.children, keyPrefix, depth + 1)}
@@ -232,113 +320,18 @@ export function ChangesPanel(props: Props) {
     });
   }
 
-  const layoutMode = props.layoutMode ?? 'idle';
-  const canResizeLocalKeep = localKeepExpanded && kept.length > 0 && layoutMode === 'idle';
-  const effectiveLocalKeepHeight = layoutMode === 'peek'
-    ? LOCAL_KEEP_PEEK_HEIGHT_PX
-    : clampLocalKeepHeight(preferredLocalKeepHeight, panelHeight);
-
-  useEffect(() => {
-    if (!canResizeLocalKeep) {
-      cleanupResizeRef.current?.();
-    }
-  }, [canResizeLocalKeep]);
-
-  useEffect(() => {
-    if (!canResizeLocalKeep) return;
-    const panelEl = panelRef.current;
-    if (!panelEl) return;
-    const syncHeight = () => {
-      const measured = Math.round(panelEl.getBoundingClientRect().height);
-      if (measured > 0) {
-        setPanelHeight((prev) => (prev === measured ? prev : measured));
-      }
-    };
-    syncHeight();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => syncHeight());
-    observer.observe(panelEl);
-    return () => observer.disconnect();
-  }, [panelRef, canResizeLocalKeep]);
-
-  useEffect(() => () => {
-    cleanupResizeRef.current?.();
-  }, []);
-
-  function handleLocalKeepResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || !canResizeLocalKeep) return;
-    event.preventDefault();
-    event.stopPropagation();
-    cleanupResizeRef.current?.();
-    const measuredPanelHeight = panelRef.current?.getBoundingClientRect().height ?? panelHeight;
-    if (measuredPanelHeight > 0) setPanelHeight(measuredPanelHeight);
-    const listHeight = localKeepListRef.current?.getBoundingClientRect().height ?? 0;
-    const startHeight = listHeight > 0 ? Math.round(listHeight) : effectiveLocalKeepHeight;
-    const pointerId = event.pointerId;
-    const startY = event.clientY;
-    let latestHeight = startHeight;
-
-    const previousCursor = document.body.style.cursor;
-    const previousSelect = document.body.style.userSelect;
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    setResizingLocalKeep(true);
-
-    const teardown = () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousSelect;
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', finishResize);
-      window.removeEventListener('pointercancel', finishResize);
-      window.removeEventListener('blur', handleBlur);
-      cleanupResizeRef.current = null;
-      setResizingLocalKeep(false);
-    };
-
-    const handleMove = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId !== pointerId) return;
-      const currentPanelHeight = panelRef.current?.getBoundingClientRect().height ?? measuredPanelHeight;
-      const nextHeight = clampLocalKeepHeight(startHeight + (startY - moveEvent.clientY), currentPanelHeight);
-      latestHeight = nextHeight;
-      setPreferredLocalKeepHeight(nextHeight);
-    };
-
-    const finishResize = (endEvent: PointerEvent) => {
-      if (endEvent.pointerId !== pointerId) return;
-      teardown();
-      writeSavedLocalKeepHeight(latestHeight);
-    };
-
-    const handleBlur = () => {
-      teardown();
-      writeSavedLocalKeepHeight(latestHeight);
-    };
-
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', finishResize);
-    window.addEventListener('pointercancel', finishResize);
-    window.addEventListener('blur', handleBlur);
-    cleanupResizeRef.current = teardown;
-  }
-
-  function handleLocalKeepResizeReset() {
-    setPreferredLocalKeepHeight(LOCAL_KEEP_DEFAULT_HEIGHT_PX);
-    writeSavedLocalKeepHeight(null);
-  }
-
-  function handleLocalKeepResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (!canResizeLocalKeep) return;
-    const currentPanelHeight = panelRef.current?.getBoundingClientRect().height ?? panelHeight;
-    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-      event.preventDefault();
-      const step = event.key === 'ArrowUp' ? 24 : -24;
-      const next = clampLocalKeepHeight(effectiveLocalKeepHeight + step, currentPanelHeight);
-      setPreferredLocalKeepHeight(next);
-      writeSavedLocalKeepHeight(next);
-    } else if (event.key === 'Home' || event.key === '0') {
-      event.preventDefault();
-      handleLocalKeepResizeReset();
-    }
+  function renderVirtualRows(rows: readonly VirtualChangeRow[], startIndex: number, endIndex: number, topSpacerPx: number, bottomSpacerPx: number) {
+    return (
+      <>
+        {topSpacerPx > 0 && <div className="virtual-spacer" style={{ height: `${topSpacerPx}px` }} aria-hidden="true" />}
+        {rows.slice(startIndex, endIndex).map((row) => (
+          row.kind === 'dir'
+            ? renderDirectoryHeading(row.node, row.key, row.depth, row.isCollapsed, row.isModuleHead, true)
+            : renderFileRow(row.file, row.grouped, row.treeDepth)
+        ))}
+        {bottomSpacerPx > 0 && <div className="virtual-spacer" style={{ height: `${bottomSpacerPx}px` }} aria-hidden="true" />}
+      </>
+    );
   }
 
   return (
@@ -439,12 +432,21 @@ export function ChangesPanel(props: Props) {
           <div
             className={`normal-changes-zone ${activeTargetZone === 'normal-changes' ? 'drop-zone-ready' : ''} ${dragState?.overZone === 'normal-changes' ? 'drop-zone-over' : ''}`}
             data-drop-zone="normal-changes"
+            data-virtualized={normalWindow.virtualized ? 'true' : undefined}
           >
             {dragState?.overZone === 'normal-changes' && (
               <div className="drop-zone-banner accent">{t.changes.dropToChangesHint}</div>
             )}
             {normal.length === 0 ? (
               <p className="normal-changes-empty muted help">{t.changes.noNormalChanges}</p>
+            ) : normalWindow.virtualized ? (
+              renderVirtualRows(
+                normalRows,
+                normalWindow.startIndex,
+                normalWindow.endIndex,
+                normalWindow.topSpacerPx,
+                normalWindow.bottomSpacerPx,
+              )
             ) : view === 'list' ? (
               normal.map((file) => renderFileRow(file))
             ) : (
@@ -500,14 +502,23 @@ export function ChangesPanel(props: Props) {
             <div
               ref={localKeepListRef}
               className="local-keep-list scroll-area"
+              data-virtualized={keptWindow.virtualized ? 'true' : undefined}
               style={{ maxHeight: `${effectiveLocalKeepHeight}px` }}
               onScroll={() => { if (contextMenu) dismissContextMenu(); }}
             >
               {kept.length === 0
                 ? <p className="local-keep-empty muted help">{t.changes.localKeepEmptyHint}</p>
-                : view === 'list'
-                  ? kept.map((file) => renderFileRow(file, false))
-                  : renderDirectoryNodes(keptTree, keepTreeKey)}
+                : keptWindow.virtualized
+                  ? renderVirtualRows(
+                      keptRows,
+                      keptWindow.startIndex,
+                      keptWindow.endIndex,
+                      keptWindow.topSpacerPx,
+                      keptWindow.bottomSpacerPx,
+                    )
+                  : view === 'list'
+                    ? kept.map((file) => renderFileRow(file, false))
+                    : renderDirectoryNodes(keptTree, keepTreeKey)}
             </div>
           </Collapse>
         </div>
